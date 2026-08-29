@@ -14,7 +14,7 @@ import re
 import stat
 import subprocess
 import sys
-from typing import Mapping, Sequence, cast
+from typing import Callable, Mapping, Sequence, cast
 from weakref import WeakSet
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,8 +62,8 @@ from scripts.validate_package6_runtime_approval import (
 from services.job_store.config import P1_DISPOSABLE_DATABASE_REVISION
 from services.job_worker.command_registry import (
     WorkerRuntimeAuthority,
+    _issue_p1_staging_safety_authority_refresher,
     attest_worker_runtime_authority,
-    refresh_staging_worker_runtime_authority,
 )
 from services.safety_state_exporter.exporter import SafetyStateExporter
 
@@ -718,6 +718,8 @@ def _consume_p1_operation(
     operation: _ValidatedP1Operation,
     authority: WorkerRuntimeAuthority,
     arguments: Sequence[str],
+    *,
+    refresh_dynamic_evidence: Callable[[], None],
 ) -> int:
     if (
         type(operation) is not _ValidatedP1Operation
@@ -729,10 +731,32 @@ def _consume_p1_operation(
         or operation.arguments != tuple(arguments)
     ):
         raise HostAuthorityError("P1 execution capability changed")
+    refresher = _issue_p1_staging_safety_authority_refresher(
+        authority,
+        refresh_dynamic_evidence=refresh_dynamic_evidence,
+        operation_token=operation,
+        operation_binding=(
+            operation.authority_pin,
+            operation.semantic_sha256,
+            operation.arguments,
+        ),
+    )
+    if not refresher.matches_operation(
+        operation_token=operation,
+        authority_pin=operation.authority_pin,
+        semantic_sha256=operation.semantic_sha256,
+        arguments=operation.arguments,
+    ):
+        raise HostAuthorityError("P1 safety capability changed")
     _ISSUED_P1_OPERATIONS.discard(operation)
+    refreshed = refresher.refresh(authority)
     import scripts.run_p1_nautilus_vertical_slice as vertical
 
-    return vertical.main(list(arguments), worker_authority=authority)
+    return vertical.main(
+        list(arguments),
+        worker_authority=refreshed,
+        safety_authority_refresher=refresher,
+    )
 
 
 def _activate_and_exec(arguments: Sequence[str]) -> int:
@@ -756,10 +780,12 @@ def _activate_and_exec(arguments: Sequence[str]) -> int:
             authority, _digest_file(authority.runtime_paths.safety_snapshot)
         )
 
-    refreshed = refresh_staging_worker_runtime_authority(
-        initial, refresh_dynamic_evidence=rotate_dynamic_evidence
+    return _consume_p1_operation(
+        operation,
+        initial,
+        arguments,
+        refresh_dynamic_evidence=rotate_dynamic_evidence,
     )
-    return _consume_p1_operation(operation, refreshed, arguments)
 
 
 def _parser() -> argparse.ArgumentParser:

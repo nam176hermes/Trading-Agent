@@ -78,6 +78,7 @@ from services.job_store.records import JobDetailRecord
 from services.job_store.repository import JobRepository
 from services.job_store.worker_repository import WorkerRepository
 from services.job_worker.command_registry import (
+    P1StagingSafetyAuthorityRefresher,
     WorkerRuntimeAuthority,
     attest_worker_runtime_authority,
 )
@@ -978,6 +979,8 @@ def _durable_success_evidence(
 def _run_p1_disposable_once(
     arguments: argparse.Namespace,
     worker_authority: WorkerRuntimeAuthority,
+    *,
+    safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
 ) -> dict[str, object]:
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
@@ -1017,6 +1020,7 @@ def _run_p1_disposable_once(
                 p1_projection_authority_factory=_FixedProjectionAuthorityFactory(
                     arguments
                 ),
+                safety_authority_refresher=safety_authority_refresher,
             )
             failure_stage = "APP_COMPOSITION"
             app = create_p1_disposable_app(
@@ -1074,8 +1078,19 @@ def main(
     argv: list[str] | None = None,
     *,
     worker_authority: WorkerRuntimeAuthority | None = None,
+    safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
 ) -> int:
-    if worker_authority is not None and type(worker_authority) is not WorkerRuntimeAuthority:
+    if (
+        worker_authority is not None
+        and type(worker_authority) is not WorkerRuntimeAuthority
+    ) or (
+        safety_authority_refresher is not None
+        and (
+            type(safety_authority_refresher)
+            is not P1StagingSafetyAuthorityRefresher
+            or worker_authority is None
+        )
+    ):
         return _emit(
             "BLOCKED",
             "EXTERNAL_AUTHORITY_PARTIAL_OR_INVALID",
@@ -1116,7 +1131,11 @@ def main(
         )
     if arguments.execute:
         try:
-            execution = _run_p1_disposable_once(arguments, worker_authority)
+            execution = _run_p1_disposable_once(
+                arguments,
+                worker_authority,
+                safety_authority_refresher=safety_authority_refresher,
+            )
         except VerticalSliceExecutionError as error:
             failure_evidence = {**evidence, "failure_stage": error.failure_stage}
             if error.failure_family is not None:

@@ -232,7 +232,6 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
         safety=SimpleNamespace(source_fingerprint="2" * 64),
     )
     initial = SimpleNamespace(runtime_authority=runtime)
-    refreshed = object()
     operation = object()
     calls: list[object] = []
     monkeypatch.setattr(builder.os, "environ", {
@@ -252,14 +251,6 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
     )
     monkeypatch.setattr(builder, "_digest_file", lambda _path: "4" * 64)
     monkeypatch.setattr(builder, "_replace_activation", lambda selected, digest: calls.append(("activation", selected, digest)))
-    def refresh(selected: object, *, refresh_dynamic_evidence: object) -> object:
-        calls.append(("refresh", selected))
-        assert callable(refresh_dynamic_evidence)
-        refresh_dynamic_evidence()
-        return refreshed
-
-    monkeypatch.setattr(builder, "refresh_staging_worker_runtime_authority", refresh)
-
     class Exporter:
         def __init__(self, **_kwargs: object) -> None:
             calls.append("exporter")
@@ -268,24 +259,28 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
             calls.append("export")
 
     monkeypatch.setattr(builder, "SafetyStateExporter", Exporter)
-    monkeypatch.setattr(
-        builder,
-        "_consume_p1_operation",
-        lambda selected, authority, arguments: calls.append(
-            ("consume", selected, authority, tuple(arguments))
-        )
-        or 0,
-    )
+    def consume(
+        selected: object,
+        authority: object,
+        arguments: object,
+        *,
+        refresh_dynamic_evidence: object,
+    ) -> int:
+        calls.append(("consume", selected, authority, tuple(arguments)))
+        assert callable(refresh_dynamic_evidence)
+        refresh_dynamic_evidence()
+        return 0
+
+    monkeypatch.setattr(builder, "_consume_p1_operation", consume)
 
     assert builder._activate_and_exec(["--execute"]) == 0
     assert calls == [
         "attest",
         ("approve", runtime, ("--execute",)),
-        ("refresh", initial),
+        ("consume", operation, initial, ("--execute",)),
         "exporter",
         "export",
         ("activation", runtime, "4" * 64),
-        ("consume", operation, refreshed, ("--execute",)),
     ]
 
 
@@ -337,7 +332,10 @@ def test_p1_operation_capability_must_equal_performed_operation(
 
     with pytest.raises(builder.HostAuthorityError, match="capability changed"):
         builder._consume_p1_operation(
-            operation, authority, arguments  # type: ignore[arg-type]
+            operation,
+            authority,  # type: ignore[arg-type]
+            arguments,
+            refresh_dynamic_evidence=lambda: None,
         )
 
     assert calls == []
@@ -361,6 +359,42 @@ def test_p1_operation_capability_requires_execute_before_authority_reads(
     assert reads == []
 
 
+def test_p1_safety_refresher_must_bind_the_consumed_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issued = object()
+    operation = builder._ValidatedP1Operation(
+        package6_capability=issued,  # type: ignore[arg-type]
+        authority_pin=("static",),
+        semantic_sha256="1" * 64,
+        arguments=("--execute",),
+    )
+    authority = SimpleNamespace(
+        authority_pin=("static",),
+        semantic_evidence=SimpleNamespace(active_authority_sha256="1" * 64),
+    )
+    refresher = SimpleNamespace(matches_operation=lambda **_kwargs: False)
+    builder._ISSUED_P1_OPERATIONS.add(operation)
+    monkeypatch.setattr(
+        builder, "is_issued_capability", lambda selected: selected is issued
+    )
+    monkeypatch.setattr(
+        builder,
+        "_issue_p1_staging_safety_authority_refresher",
+        lambda *_args, **_kwargs: refresher,
+    )
+
+    with pytest.raises(builder.HostAuthorityError, match="safety capability changed"):
+        builder._consume_p1_operation(  # type: ignore[arg-type]
+            operation,
+            authority,
+            ["--execute"],
+            refresh_dynamic_evidence=lambda: None,
+        )
+
+    assert operation in builder._ISSUED_P1_OPERATIONS
+
+
 def test_p1_operation_capability_is_consumed_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,14 +414,38 @@ def test_p1_operation_capability_is_consumed_once(
         builder, "is_issued_capability", lambda selected: selected is issued
     )
     import scripts.run_p1_nautilus_vertical_slice as vertical
-    monkeypatch.setattr(vertical, "main", lambda *_args, **_kwargs: 0)
+    received: dict[str, object] = {}
+    monkeypatch.setattr(
+        vertical,
+        "main",
+        lambda *_args, **kwargs: received.update(kwargs) or 0,
+    )
+    refresher = SimpleNamespace(
+        refresh=lambda selected: selected,
+        matches_operation=lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        builder,
+        "_issue_p1_staging_safety_authority_refresher",
+        lambda *_args, **_kwargs: refresher,
+    )
 
     assert builder._consume_p1_operation(  # type: ignore[arg-type]
-        operation, authority, ["--execute"]
+        operation,
+        authority,
+        ["--execute"],
+        refresh_dynamic_evidence=lambda: None,
     ) == 0
+    assert received == {
+        "safety_authority_refresher": refresher,
+        "worker_authority": authority,
+    }
     with pytest.raises(builder.HostAuthorityError, match="capability changed"):
         builder._consume_p1_operation(  # type: ignore[arg-type]
-            operation, authority, ["--execute"]
+            operation,
+            authority,
+            ["--execute"],
+            refresh_dynamic_evidence=lambda: None,
         )
 
 

@@ -494,6 +494,7 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         lambda: pytest.fail("execution must reuse the preflight authority"),
     )
     captured: dict[str, object] = {}
+    safety_authority_refresher = object()
 
     def build(repository: object, source: object, **kwargs: object) -> _Worker:
         calls.append("worker:build")
@@ -502,7 +503,11 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 
     monkeypatch.setattr(vertical, "build_p1_worker", build)
 
-    evidence = vertical._run_p1_disposable_once(arguments, worker_authority)
+    evidence = vertical._run_p1_disposable_once(
+        arguments,
+        worker_authority,
+        safety_authority_refresher=safety_authority_refresher,
+    )
 
     assert evidence["job_id"] == JOB_ID
     assert evidence["attempt_id"] == ATTEMPT_ID
@@ -524,6 +529,7 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
     ]
     assert captured["source"] == {}
     assert captured["authority"] is worker_authority
+    assert captured["safety_authority_refresher"] is safety_authority_refresher
 
 
 @pytest.mark.parametrize(
@@ -739,30 +745,49 @@ def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
         "source_tree": "2" * 40,
     }
     preflight_authority = object()
+    safety_authority_refresher = object()
     calls: list[str] = []
-    monkeypatch.setattr(
-        vertical,
-        "_validate_complete",
-        lambda _args: calls.append("validate")
-        or (validation, preflight_authority),
-    )
+    monkeypatch.setattr(vertical, "WorkerRuntimeAuthority", object)
+    monkeypatch.setattr(vertical, "P1StagingSafetyAuthorityRefresher", object)
+
+    def validate(_args: object, authority: object) -> tuple[dict[str, str], object]:
+        calls.append("validate")
+        assert authority is preflight_authority
+        return validation, preflight_authority
+
+    monkeypatch.setattr(vertical, "_validate_complete", validate)
     monkeypatch.setattr(
         vertical,
         "_run_p1_disposable_once",
-        lambda _args, execution_authority: calls.append("execute")
+        lambda _args, execution_authority, **kwargs: calls.append("execute")
         or calls.append(
             "authority-bound"
             if execution_authority is preflight_authority
             else "authority-mixed"
         )
+        or calls.append(
+            "refresher-bound"
+            if kwargs.get("safety_authority_refresher")
+            is safety_authority_refresher
+            else "refresher-mixed"
+        )
         or {"job_id": "job_" + "1" * 32, "worker_run_count": 1},
     )
 
-    result = vertical.main([*_complete_arguments(tmp_path), "--execute"])
+    result = vertical.main(
+        [*_complete_arguments(tmp_path), "--execute"],
+        worker_authority=preflight_authority,  # type: ignore[arg-type]
+        safety_authority_refresher=safety_authority_refresher,  # type: ignore[arg-type]
+    )
 
     assert result == 0
     receipt = json.loads(capsys.readouterr().out)
-    assert calls == ["validate", "execute", "authority-bound"]
+    assert calls == [
+        "validate",
+        "execute",
+        "authority-bound",
+        "refresher-bound",
+    ]
     assert receipt["status"] == "PASS"
     assert receipt["reason"] == "P1_VERTICAL_SLICE_COMPLETED"
     assert receipt["job_mutated"] is True
@@ -794,7 +819,9 @@ def test_execution_blocked_receipt_exposes_only_closed_failure_stage(
         lambda _arguments: (evidence, object()),
     )
 
-    def fail(_arguments: object, _authority: object) -> dict[str, object]:
+    def fail(
+        _arguments: object, _authority: object, **_kwargs: object
+    ) -> dict[str, object]:
         try:
             raise RuntimeError("sensitive arbitrary diagnostic text")
         except RuntimeError as cause:
@@ -840,7 +867,9 @@ def test_worker_composition_blocked_receipt_exposes_only_closed_family(
         lambda _arguments: (evidence, object()),
     )
 
-    def fail(_arguments: object, _authority: object) -> dict[str, object]:
+    def fail(
+        _arguments: object, _authority: object, **_kwargs: object
+    ) -> dict[str, object]:
         try:
             raise RuntimeError("sensitive arbitrary diagnostic text")
         except RuntimeError as cause:

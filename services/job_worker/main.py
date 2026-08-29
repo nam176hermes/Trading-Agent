@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Mapping, NoReturn
 from services.job_store.config import CANONICAL_DATABASE_REVISION, JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
 from .artifacts import ArtifactWriter
-from .command_registry import attest_worker_runtime_authority
+from .command_registry import (
+    P1StagingSafetyAuthorityRefresher,
+    attest_worker_runtime_authority,
+)
 from .environment import ResearchEnvironmentSettings
 from .process_runner import ProcessRunner
 from .recovery import ProcProcessInspector
@@ -52,6 +55,7 @@ def build_worker(
     engine_event_ingestor: object | None = None,
     p1_projection_authority_factory: P1ProjectionAuthorityFactory | None = None,
     p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
+    _p1_safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
@@ -74,23 +78,64 @@ def build_worker(
         or engine_event_ingestor is None
     ):
         raise ValueError("P1 portfolio parity requires complete engine authority")
+    if _p1_safety_authority_refresher is not None and type(
+        _p1_safety_authority_refresher
+    ) is not P1StagingSafetyAuthorityRefresher:
+        raise TypeError("exact P1 staging safety refresher is required")
+    if _p1_safety_authority_refresher is not None and (
+        engine_spawn_provider is None
+        or engine_result_validator is None
+        or engine_event_ingestor is None
+        or p1_projection_authority_factory is None
+        or p1_portfolio_parity_verifier is None
+    ):
+        raise ValueError(
+            "P1 safety refresh requires complete P1 engine authority"
+        )
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
-    safety_authority = getattr(runtime_authority, "safety", None)
     environment = ResearchEnvironmentSettings.from_authority(
         runtime_authority, values
     )
     runtime_paths = selected_authority.runtime_paths
-    safety = SafetyStateClient(
-        selected_authority.safety_snapshot_path,
-        expected_exporter_commit=selected_authority.safety_exporter_commit,
-        expected_source_fingerprint=selected_authority.safety_source_fingerprint,
-        expected_owner_uid=getattr(safety_authority, "expected_owner_uid", 0),
-        protected_root_owned=getattr(
-            safety_authority, "protected_root_owned", True
-        ),
-    )
-    safety_preflight = AuthorityBoundSafetyPreflight(selected_authority, safety)
+    if _p1_safety_authority_refresher is None:
+        safety_authority = getattr(runtime_authority, "safety", None)
+        safety = SafetyStateClient(
+            selected_authority.safety_snapshot_path,
+            expected_exporter_commit=selected_authority.safety_exporter_commit,
+            expected_source_fingerprint=selected_authority.safety_source_fingerprint,
+            expected_owner_uid=getattr(safety_authority, "expected_owner_uid", 0),
+            protected_root_owned=getattr(
+                safety_authority, "protected_root_owned", True
+            ),
+        )
+        safety_preflight = AuthorityBoundSafetyPreflight(selected_authority, safety)
+    else:
+        current_authority = selected_authority
+
+        def safety_preflight():
+            nonlocal current_authority
+            current_authority = _p1_safety_authority_refresher.refresh(
+                current_authority
+            )
+            current_safety_authority = getattr(
+                current_authority.runtime_authority, "safety", None
+            )
+            current_client = SafetyStateClient(
+                current_authority.safety_snapshot_path,
+                expected_exporter_commit=current_authority.safety_exporter_commit,
+                expected_source_fingerprint=current_authority.safety_source_fingerprint,
+                expected_owner_uid=getattr(
+                    current_safety_authority, "expected_owner_uid", 0
+                ),
+                protected_root_owned=getattr(
+                    current_safety_authority, "protected_root_owned", True
+                ),
+            )
+            return AuthorityBoundSafetyPreflight(
+                current_authority, current_client
+            )()
+
     # Fail before the worker can recover leases, claim, or construct a runner.
     safety_preflight()
     worker_id = values.get("TRADING_WORKER_ID") or f"worker-{socket.gethostname()}"
@@ -142,6 +187,7 @@ def build_p1_worker(
     transport_root: Path,
     artifact_bindings: tuple[EngineArtifactBinding, ...],
     p1_projection_authority_factory: P1ProjectionAuthorityFactory,
+    safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
     authority: WorkerRuntimeAuthority | None = None,
 ) -> JobWorker:
     """Compose the fixed P1 lane from deployment-owned authority inputs."""
@@ -178,6 +224,7 @@ def build_p1_worker(
         engine_event_ingestor=repository.engine_event_ingestor(),
         p1_projection_authority_factory=p1_projection_authority_factory,
         p1_portfolio_parity_verifier=verify_p1_portfolio_parity,
+        _p1_safety_authority_refresher=safety_authority_refresher,
     )
 
 

@@ -56,6 +56,7 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
     )
     captured: dict[str, object] = {}
     projection_authority_factory = object()
+    safety_authority_refresher = object()
 
     def capture(repository_arg: object, source: object, **kwargs: object) -> str:
         captured.update(repository=repository_arg, source=source, **kwargs)
@@ -75,6 +76,7 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
         transport_root=tmp_path / "transport",
         artifact_bindings=_bindings(tmp_path / "inputs"),
         p1_projection_authority_factory=projection_authority_factory,
+        safety_authority_refresher=safety_authority_refresher,
     )
 
     provider = captured["engine_spawn_provider"]
@@ -85,6 +87,10 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
     assert captured["engine_event_ingestor"] is ingestor
     assert captured["p1_projection_authority_factory"] is projection_authority_factory
     assert captured["p1_portfolio_parity_verifier"] is verify_p1_portfolio_parity
+    assert (
+        captured["_p1_safety_authority_refresher"]
+        is safety_authority_refresher
+    )
     assert type(provider) is P1EngineSpawnProvider
     assert type(provider._provider._attest_inputs) is HashBoundArtifactResolver
     assert type(validator) is EngineResultValidator

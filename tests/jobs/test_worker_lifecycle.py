@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from inspect import signature
 from pathlib import Path
@@ -665,6 +665,180 @@ def test_worker_composition_requires_fresh_snapshot_at_construction(monkeypatch)
 
     assert raised.value.reason_code == "SAFETY_STATE_STALE"
     assert observed[-1] == "snapshot"
+
+
+def test_p1_worker_rotates_dynamic_safety_before_every_real_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.job_worker import command_registry, main
+    from tests.jobs.test_command_registry_v2 import _authority, _worker_authority
+
+    selected = _worker_authority(
+        replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    )
+    now = [0]
+    expires_at = [-1]
+    rotations: list[int] = []
+
+    def rotate() -> None:
+        rotations.append(now[0])
+        expires_at[0] = now[0] + 6
+
+    def refresh(
+        authority: object, *, refresh_dynamic_evidence: object
+    ) -> object:
+        assert authority is selected
+        assert callable(refresh_dynamic_evidence)
+        refresh_dynamic_evidence()
+        return selected
+
+    monkeypatch.setattr(
+        command_registry, "refresh_staging_worker_runtime_authority", refresh
+    )
+    refresher = command_registry._issue_p1_staging_safety_authority_refresher(
+        selected,
+        refresh_dynamic_evidence=rotate,
+        operation_token=object(),
+        operation_binding=(selected.authority_pin, "1" * 64, ("--execute",)),
+    )
+    monkeypatch.setattr(
+        main.ResearchEnvironmentSettings,
+        "from_authority",
+        lambda _authority, _source: object(),
+    )
+    monkeypatch.setattr(main, "SafetyStateClient", lambda *_args, **_kwargs: object())
+
+    def preflight(_authority: object, _client: object):
+        def validate() -> SafetyEvidence:
+            if now[0] >= expires_at[0]:
+                raise SafetyBlockedError("SAFETY_STATE_STALE", "closed")
+            return safety_evidence(str(len(rotations)) * 64)
+
+        return validate
+
+    monkeypatch.setattr(main, "AuthorityBoundSafetyPreflight", preflight)
+    monkeypatch.setattr(main, "ArtifactWriter", lambda _root: object())
+    monkeypatch.setattr(main, "ProcessRunner", lambda _artifacts: object())
+    monkeypatch.setattr(main, "ResultValidator", lambda *_roots: object())
+    monkeypatch.setattr(
+        main,
+        "JobWorker",
+        lambda *_args, **kwargs: kwargs["safety_preflight"],
+    )
+
+    safety_preflight = main.build_worker(
+        object(),
+        {},
+        authority=selected,
+        engine_spawn_provider=object(),
+        engine_result_validator=object(),
+        engine_event_ingestor=object(),
+        p1_projection_authority_factory=lambda _job, _request: object(),
+        p1_portfolio_parity_verifier=lambda **_kwargs: object(),
+        _p1_safety_authority_refresher=refresher,
+    )
+    now[0] += 7
+    safety_preflight()
+
+    assert rotations == [0, 7]
+
+
+def test_generic_worker_rejects_p1_safety_refresh_capability() -> None:
+    from services.job_worker import command_registry, main
+    from tests.jobs.test_command_registry_v2 import _authority, _worker_authority
+
+    selected = _worker_authority(
+        replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    )
+    refresher = command_registry._issue_p1_staging_safety_authority_refresher(
+        selected,
+        refresh_dynamic_evidence=lambda: None,
+        operation_token=object(),
+        operation_binding=(selected.authority_pin, "1" * 64, ("--execute",)),
+    )
+
+    with pytest.raises(ValueError, match="complete P1 engine authority"):
+        main.build_worker(
+            object(),
+            {},
+            authority=selected,
+            _p1_safety_authority_refresher=refresher,
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason_code"),
+    (
+        ("rotation", "RUNTIME_AUTHORITY_CHANGED"),
+        ("stale", "SAFETY_STATE_STALE"),
+        ("unsafe", "SAFETY_MODE_NOT_PAPER"),
+    ),
+)
+def test_p1_safety_refresh_failure_blocks_before_worker_construction(
+    failure: str,
+    reason_code: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.job_worker import command_registry, main
+    from services.job_worker.command_registry import CommandRegistryError
+    from tests.jobs.test_command_registry_v2 import _authority, _worker_authority
+
+    selected = _worker_authority(
+        replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    )
+    refresher = command_registry._issue_p1_staging_safety_authority_refresher(
+        selected,
+        refresh_dynamic_evidence=lambda: None,
+        operation_token=object(),
+        operation_binding=(selected.authority_pin, "1" * 64, ("--execute",)),
+    )
+    if failure == "rotation":
+        monkeypatch.setattr(
+            command_registry,
+            "refresh_staging_worker_runtime_authority",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                CommandRegistryError(reason_code, "closed")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            command_registry,
+            "refresh_staging_worker_runtime_authority",
+            lambda authority, **_kwargs: authority,
+        )
+        monkeypatch.setattr(
+            main,
+            "AuthorityBoundSafetyPreflight",
+            lambda *_args: lambda: (_ for _ in ()).throw(
+                SafetyBlockedError(reason_code, "closed")
+            ),
+        )
+    monkeypatch.setattr(
+        main.ResearchEnvironmentSettings,
+        "from_authority",
+        lambda *_args: object(),
+    )
+    monkeypatch.setattr(main, "SafetyStateClient", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        main,
+        "ArtifactWriter",
+        lambda _root: pytest.fail("worker construction followed safety refusal"),
+    )
+
+    with pytest.raises((CommandRegistryError, SafetyBlockedError)) as raised:
+        main.build_worker(
+            object(),
+            {},
+            authority=selected,
+            engine_spawn_provider=object(),
+            engine_result_validator=object(),
+            engine_event_ingestor=object(),
+            p1_projection_authority_factory=lambda _job, _request: object(),
+            p1_portfolio_parity_verifier=lambda **_kwargs: object(),
+            _p1_safety_authority_refresher=refresher,
+        )
+
+    assert raised.value.reason_code == reason_code
 
 
 def test_worker_authority_failure_precedes_environment_repository_and_spawn(monkeypatch) -> None:

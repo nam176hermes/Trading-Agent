@@ -274,3 +274,77 @@ def test_staging_dynamic_refresh_rejects_changed_stage_before_rotation(
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
     assert calls == []
+
+
+def test_p1_staging_safety_refresher_rotates_dynamic_evidence_on_every_use(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = _worker_authority(replace(_authority(), scope="PACKAGE6_STAGING_ONLY"))
+    first = replace(original, authority_identity=(21, 23))
+    second = replace(original, authority_identity=(25, 27))
+    refreshed = iter((first, second))
+    calls: list[object] = []
+
+    def refresh(
+        selected: module.WorkerRuntimeAuthority,
+        *,
+        refresh_dynamic_evidence: object,
+    ) -> module.WorkerRuntimeAuthority:
+        calls.append(selected)
+        assert callable(refresh_dynamic_evidence)
+        refresh_dynamic_evidence()
+        return next(refreshed)
+
+    monkeypatch.setattr(module, "refresh_staging_worker_runtime_authority", refresh)
+    operation = object()
+    capability = module._issue_p1_staging_safety_authority_refresher(
+        original,
+        refresh_dynamic_evidence=lambda: calls.append("rotate"),
+        operation_token=operation,
+        operation_binding=(original.authority_pin, "1" * 64, ("--execute",)),
+    )
+
+    assert capability.matches_operation(
+        operation_token=operation,
+        authority_pin=original.authority_pin,
+        semantic_sha256="1" * 64,
+        arguments=("--execute",),
+    )
+    assert not capability.matches_operation(
+        operation_token=object(),
+        authority_pin=original.authority_pin,
+        semantic_sha256="1" * 64,
+        arguments=("--execute",),
+    )
+
+    assert capability.refresh(original) is first
+    assert capability.refresh(first) is second
+    assert calls == [original, "rotate", first, "rotate"]
+
+
+def test_p1_staging_safety_refresher_rejects_mixed_or_failed_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = _worker_authority(replace(_authority(), scope="PACKAGE6_STAGING_ONLY"))
+    mixed = replace(original, authority_document_sha256="9" * 64)
+    capability = module._issue_p1_staging_safety_authority_refresher(
+        original,
+        refresh_dynamic_evidence=lambda: None,
+        operation_token=object(),
+        operation_binding=(original.authority_pin, "1" * 64, ("--execute",)),
+    )
+
+    with pytest.raises(CommandRegistryError) as mixed_error:
+        capability.refresh(mixed)
+    assert mixed_error.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
+
+    monkeypatch.setattr(
+        module,
+        "refresh_staging_worker_runtime_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CommandRegistryError("RUNTIME_AUTHORITY_CHANGED", "closed")
+        ),
+    )
+    with pytest.raises(CommandRegistryError) as failed_error:
+        capability.refresh(original)
+    assert failed_error.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
