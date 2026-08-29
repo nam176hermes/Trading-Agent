@@ -171,7 +171,18 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
 
+            connection.exec_driver_sql(
+                "CREATE FUNCTION public.length(value text) RETURNS integer "
+                "LANGUAGE plpgsql AS $$BEGIN "
+                "RAISE EXCEPTION 'hostile search path function executed'; "
+                "END$$"
+            )
+            connection.exec_driver_sql("SET search_path = public, pg_catalog")
+            connection.commit()
             command.upgrade(config, "head")
+            connection.exec_driver_sql("DROP FUNCTION public.length(text)")
+            connection.exec_driver_sql("RESET search_path")
+            connection.commit()
             after = _p1_ingest_authority(connection)
             assert after[0] == before_definition.replace(
                 P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
