@@ -69,6 +69,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
     "HOME": "/nonexistent",
     "LANG": "C",
     "LC_ALL": "C",

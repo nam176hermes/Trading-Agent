@@ -254,6 +254,36 @@ def test_source_identity_ignores_ambient_foreign_git_repository(
     assert vertical._source_identity() == expected
 
 
+def test_source_identity_ignores_git_replace_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    source = tmp_path / "source"
+    expected = _initialize_git_repository(source, "accepted")
+    (source / "marker.txt").write_text("replacement", encoding="utf-8")
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(source), "commit", "-q", "-am", "replacement"],
+        check=True,
+    )
+    replacement = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(source), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(source), "checkout", "-q", "--detach", expected[0]],
+        check=True,
+    )
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(source), "replace", expected[0], replacement],
+        check=True,
+    )
+    monkeypatch.setattr(vertical, "ROOT", source)
+
+    assert vertical._source_identity() == expected
+
+
 def test_wrong_sandbox_executable_is_blocked_before_native_attestation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
