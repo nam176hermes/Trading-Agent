@@ -34,6 +34,7 @@ _LINEAGE_TARGET = PurePosixPath("/engine/p1-product-lineage.json")
 _MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
 _GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
 _PYTHON_TARGET = PurePosixPath("/usr/bin/python3.12")
+_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _SOURCE_COMMIT = re.compile(r"[0-9a-f]{40}", re.ASCII)
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _POLICY_FIELDS = {
@@ -193,6 +194,8 @@ def _manifest_snapshot(
             | getattr(os, "O_NONBLOCK", 0),
         )
         before = os.fstat(descriptor)
+        if before.st_size > _MAX_MANIFEST_BYTES:
+            _blocked("P1 closure manifest exceeds the maximum size")
         mode = stat.S_IMODE(before.st_mode)
         if (
             not stat.S_ISREG(before.st_mode)

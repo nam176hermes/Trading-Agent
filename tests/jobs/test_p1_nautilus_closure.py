@@ -387,3 +387,27 @@ def test_schema8_attestor_pins_one_manifest_snapshot_across_a_path_replacement(
     replaced = (config.runtime_root / "closure-manifest.json").stat()
     replacement_identity = (replaced.st_dev, replaced.st_ino)
     assert attestation.closure_manifest.identity != replacement_identity
+
+
+def test_schema8_attestor_rejects_an_oversized_sparse_manifest_before_reading(
+    p1_closure: tuple[Path, NautilusClosureConfig, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base, config, _manifest_value = p1_closure
+    _unseal(config.runtime_root)
+    manifest_path = config.runtime_root / "closure-manifest.json"
+    with manifest_path.open("r+b") as manifest_file:
+        manifest_file.truncate(8 * 1024 * 1024 + 1)
+    _seal(config.runtime_root)
+
+    def forbidden_pread(
+        descriptor: int, size: int, offset: int
+    ) -> bytes:
+        raise AssertionError(
+            f"oversized manifest was read: fd={descriptor} size={size} offset={offset}"
+        )
+
+    monkeypatch.setattr(closure_module.os, "pread", forbidden_pread)
+    with pytest.raises(EngineSpawnError) as error:
+        attest_p1_nautilus_closure(config)
+    assert error.value.reason == "ENGINE_CLOSURE_INVALID"
