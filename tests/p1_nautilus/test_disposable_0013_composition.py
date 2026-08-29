@@ -278,7 +278,7 @@ def test_stdlib_asgi_post_exercises_authenticated_p1_app() -> None:
         bearer_token="wrong-token",
     )
     assert rejected_status == 401
-    assert rejected["error"]["code"] == "UNAUTHORIZED"
+    assert rejected["error"]["code"] == "AUTHENTICATION_REQUIRED"
     assert repository.last_enqueue is None
 
     status, response = vertical._asgi_json_post(

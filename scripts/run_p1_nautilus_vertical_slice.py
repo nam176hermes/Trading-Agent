@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 import hashlib
@@ -15,6 +16,7 @@ import re
 import stat
 import subprocess
 import sys
+from typing import cast
 from uuid import UUID
 
 
@@ -30,7 +32,6 @@ from packages.nautilus_runtime_contracts import (
 )
 from apps.job_api.app import create_p1_disposable_app
 from apps.job_api.config import JobApiSettings
-from fastapi.testclient import TestClient
 from packages.domain import (
     AccountBalanceSnapshot,
     AssetClass,
@@ -120,6 +121,7 @@ _PRINCIPAL = ActorIdentity(
 )
 _COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
+_MAX_ASGI_RESPONSE_BYTES = 1024 * 1024
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -130,6 +132,12 @@ _GIT_ENVIRONMENT = {
     "PATH": "/usr/bin:/bin",
     "XDG_CONFIG_HOME": "/nonexistent",
 }
+_AsgiMessage = dict[str, object]
+_AsgiReceive = Callable[[], Awaitable[_AsgiMessage]]
+_AsgiSend = Callable[[_AsgiMessage], Awaitable[None]]
+_AsgiApplication = Callable[
+    [dict[str, object], _AsgiReceive, _AsgiSend], Awaitable[None]
+]
 
 
 class VerticalSliceError(ValueError):
@@ -142,6 +150,170 @@ class VerticalSliceExecutionError(RuntimeError):
     def __init__(self, *, job_mutated: bool) -> None:
         super().__init__("P1 disposable execution failed")
         self.job_mutated = job_mutated
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+
+async def _invoke_asgi_json_post(
+    app: object,
+    *,
+    path: str,
+    body: Mapping[str, object],
+    bearer_token: str,
+) -> tuple[int, dict[str, object]]:
+    request_body = json.dumps(
+        dict(body),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    scope: dict[str, object] = {
+        "asgi": {"spec_version": "2.3", "version": "3.0"},
+        "client": ("127.0.0.1", 0),
+        "extensions": {},
+        "headers": [
+            (b"authorization", f"Bearer {bearer_token}".encode("utf-8")),
+            (b"content-length", str(len(request_body)).encode("ascii")),
+            (b"content-type", b"application/json"),
+            (b"host", b"p1-disposable.local"),
+        ],
+        "http_version": "1.1",
+        "method": "POST",
+        "path": path,
+        "query_string": b"",
+        "raw_path": path.encode("ascii"),
+        "root_path": "",
+        "scheme": "http",
+        "server": ("p1-disposable.local", 80),
+        "state": {},
+        "type": "http",
+    }
+    request_delivered = False
+    messages: list[_AsgiMessage] = []
+    protocol_error: VerticalSliceError | None = None
+
+    async def receive() -> _AsgiMessage:
+        nonlocal request_delivered
+        if request_delivered:
+            return {"type": "http.disconnect"}
+        request_delivered = True
+        return {
+            "body": request_body,
+            "more_body": False,
+            "type": "http.request",
+        }
+
+    async def send(message: _AsgiMessage) -> None:
+        nonlocal protocol_error
+
+        def reject() -> None:
+            nonlocal protocol_error
+            protocol_error = VerticalSliceError("ASGI response is invalid")
+            raise protocol_error
+
+        expected_type = (
+            "http.response.start" if not messages else "http.response.body"
+        )
+        if (
+            type(message) is not dict
+            or len(messages) >= 2
+            or message.get("type") != expected_type
+        ):
+            reject()
+        if expected_type == "http.response.start":
+            if (
+                not {"type", "status", "headers"}.issubset(message)
+                or not set(message).issubset(
+                    {"type", "status", "headers", "trailers"}
+                )
+                or isinstance(message["status"], bool)
+                or not isinstance(message["status"], int)
+                or not 100 <= message["status"] <= 599
+                or type(message["headers"]) is not list
+                or message.get("trailers", False) is not False
+            ):
+                reject()
+            headers = message["headers"]
+            assert type(headers) is list
+            if any(
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not bytes
+                or type(item[1]) is not bytes
+                for item in headers
+            ):
+                reject()
+        else:
+            if (
+                not set(message).issubset({"type", "body", "more_body"})
+                or type(message.get("body", b"")) is not bytes
+                or message.get("more_body", False) is not False
+            ):
+                reject()
+            observed_body = message.get("body", b"")
+            assert isinstance(observed_body, bytes)
+            if len(observed_body) > _MAX_ASGI_RESPONSE_BYTES:
+                reject()
+        messages.append(message)
+
+    application = cast(_AsgiApplication, app)
+    try:
+        await application(scope, receive, send)
+    except VerticalSliceError:
+        if protocol_error is not None:
+            raise protocol_error from None
+        raise
+    if protocol_error is not None:
+        raise protocol_error
+    if len(messages) != 2:
+        raise VerticalSliceError("ASGI response is incomplete")
+    start, finish = messages
+    response_status = cast(int, start["status"])
+    response_headers = cast(list[tuple[bytes, bytes]], start["headers"])
+    response_body = cast(bytes, finish.get("body", b""))
+    content_types = [
+        value.split(b";", 1)[0].strip().lower()
+        for key, value in response_headers
+        if key.lower() == b"content-type"
+    ]
+    if content_types != [b"application/json"]:
+        raise VerticalSliceError("ASGI response is not canonical JSON")
+    try:
+        decoded = json.loads(
+            response_body,
+            object_pairs_hook=_unique_json_object,
+        )
+    except (UnicodeDecodeError, ValueError):
+        raise VerticalSliceError("ASGI response JSON is invalid") from None
+    if type(decoded) is not dict:
+        raise VerticalSliceError("ASGI response JSON is invalid")
+    return response_status, decoded
+
+
+def _asgi_json_post(
+    app: object,
+    *,
+    path: str,
+    body: Mapping[str, object],
+    bearer_token: str,
+) -> tuple[int, dict[str, object]]:
+    """Invoke one bounded JSON ASGI request without an HTTP client dependency."""
+
+    return asyncio.run(
+        _invoke_asgi_json_post(
+            app,
+            path=path,
+            body=body,
+            bearer_token=bearer_token,
+        )
+    )
 
 
 def _digest(path: Path) -> str:
@@ -542,7 +714,9 @@ def _validate_sandbox_executable(path: Path) -> None:
         raise VerticalSliceError("sandbox executable does not match policy")
 
 
-def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
+def _validate_complete(
+    arguments: argparse.Namespace,
+) -> tuple[dict[str, object], WorkerRuntimeAuthority]:
     commit, tree = _source_identity()
     if arguments.postgres_scope != "DISPOSABLE_PG_GREEN":
         raise VerticalSliceError("PostgreSQL scope is invalid")
@@ -599,13 +773,18 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
     )
     if closure.closure_sha256 != P1_REAL_BACKTEST_POLICY.closure_sha256:
         raise VerticalSliceError("P1 closure does not match the accepted policy")
-    return {
-        "closure_sha256": closure.closure_sha256,
-        "postgres_approval_sha256": canonical_record_sha256(approval),
-        "runtime_authority_sha256": worker_authority.authority_document_sha256,
-        "source_commit": commit,
-        "source_tree": tree,
-    }
+    return (
+        {
+            "closure_sha256": closure.closure_sha256,
+            "postgres_approval_sha256": canonical_record_sha256(approval),
+            "runtime_authority_sha256": (
+                worker_authority.authority_document_sha256
+            ),
+            "source_commit": commit,
+            "source_tree": tree,
+        },
+        worker_authority,
+    )
 
 
 def _store_settings(
@@ -730,26 +909,9 @@ def _durable_success_evidence(
     }
 
 
-def _validate_execution_worker_authority(
-    authority: WorkerRuntimeAuthority,
-    preflight_evidence: Mapping[str, object],
-) -> None:
-    """Reject any authority rotation between preflight and job mutation."""
-
-    if (
-        authority.application_revision != preflight_evidence.get("source_commit")
-        or authority.backend_revision != preflight_evidence.get("source_commit")
-        or authority.runtime_authority.source_tree
-        != preflight_evidence.get("source_tree")
-        or authority.authority_document_sha256
-        != preflight_evidence.get("runtime_authority_sha256")
-    ):
-        raise VerticalSliceExecutionError(job_mutated=False)
-
-
 def _run_p1_disposable_once(
     arguments: argparse.Namespace,
-    preflight_evidence: Mapping[str, object],
+    worker_authority: WorkerRuntimeAuthority,
 ) -> dict[str, object]:
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
@@ -771,10 +933,6 @@ def _run_p1_disposable_once(
             worker_store
         ) as worker_repository:
             worker_repository.assert_p1_disposable_runtime_identity()
-            worker_authority = attest_worker_runtime_authority()
-            _validate_execution_worker_authority(
-                worker_authority, preflight_evidence
-            )
             worker = build_p1_worker(
                 worker_repository,
                 {},
@@ -793,17 +951,17 @@ def _run_p1_disposable_once(
             app = create_p1_disposable_app(
                 api_settings, api_repository, api_authority
             )
-            with TestClient(app) as client:
-                job_mutated = True
-                response = client.post(
-                    "/v1/jobs",
-                    json=_enqueue_body(),
-                    headers={"Authorization": f"Bearer {_API_TOKEN}"},
-                )
-            if response.status_code != 201:
+            job_mutated = True
+            status_code, response_body = _asgi_json_post(
+                app,
+                path="/v1/jobs",
+                body=_enqueue_body(),
+                bearer_token=_API_TOKEN,
+            )
+            if status_code != 201:
                 raise VerticalSliceExecutionError(job_mutated=True)
             try:
-                job_id = response.json()["data"]["job"]["job_id"]
+                job_id = response_body["data"]["job"]["job_id"]
             except (KeyError, TypeError, ValueError) as exc:
                 raise VerticalSliceExecutionError(job_mutated=True) from exc
             if not isinstance(job_id, str) or re.fullmatch(
@@ -844,7 +1002,7 @@ def main(argv: list[str] | None = None) -> int:
             authority={"native": "INVALID", "postgres": "INVALID"},
         )
     try:
-        evidence = _validate_complete(arguments)
+        evidence, worker_authority = _validate_complete(arguments)
     except Exception:
         return _emit(
             "BLOCKED",
@@ -853,7 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if arguments.execute:
         try:
-            execution = _run_p1_disposable_once(arguments, evidence)
+            execution = _run_p1_disposable_once(arguments, worker_authority)
         except VerticalSliceExecutionError as error:
             return _emit(
                 "BLOCKED",
