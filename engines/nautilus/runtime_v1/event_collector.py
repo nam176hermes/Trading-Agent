@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 
 
 _SCALAR = {str, int, type(None)}
@@ -39,7 +39,7 @@ class CollectedExecution:
     plan: tuple[tuple[str, str | int | None], ...]
     planned_quantity: str
     order: tuple[tuple[str, str | int | None], ...] | None
-    fill: tuple[tuple[str, str | int | None], ...] | None
+    fills: tuple[tuple[tuple[str, str | int | None], ...], ...]
 
 
 def _attributes(fact: object) -> tuple[tuple[str, str | int | None], ...]:
@@ -161,29 +161,50 @@ def collect_executions(
             raise ValueError("native fact stream is invalid")
         target_ids.append(target_id)
         index += 2
-        order = fill = None
+        order = None
+        order_fills: list[tuple[tuple[str, str | int | None], ...]] = []
         if index < len(facts) - 1 and facts[index].kind == "order_submitted":
             order = _document(facts[index], "order_submitted", _ORDER, signals=True)
-            fill = _document(facts[index + 1], "order_filled", _FILL)
+            index += 1
             if (
                 _text(order, "target_id") != target_id
                 or _signals(order) != _signals(plan)
                 or _text(order, "quantity") != planned_quantity
                 or _text(order, "side") != _text(plan, "side")
                 or _text(order, "order_type") != "MARKET"
-                or _text(fill, "client_order_id") != _text(order, "client_order_id")
-                or _text(fill, "side") != _text(order, "side")
-                or _text(fill, "quantity") != planned_quantity
-                or _text(fill, "commission_currency") != "USDT"
             ):
                 raise ValueError("native fact stream is invalid")
             native_order_ids.append(_text(order, "client_order_id"))
-            native_fill_ids.append(_text(fill, "trade_id"))
-            index += 2
+            with localcontext() as context:
+                context.prec = 96
+                filled = Decimal(0)
+                while index < len(facts) - 1 and facts[index].kind == "order_filled":
+                    fill = _document(facts[index], "order_filled", _FILL)
+                    try:
+                        quantity = Decimal(_text(fill, "quantity"))
+                    except InvalidOperation as exc:
+                        raise ValueError("native fact stream is invalid") from exc
+                    trade_id = _text(fill, "trade_id")
+                    if (
+                        not quantity.is_finite()
+                        or quantity <= 0
+                        or _text(fill, "client_order_id")
+                        != _text(order, "client_order_id")
+                        or _text(fill, "side") != _text(order, "side")
+                        or _text(fill, "commission_currency") != "USDT"
+                        or trade_id in native_fill_ids
+                    ):
+                        raise ValueError("native fact stream is invalid")
+                    filled += quantity
+                    native_fill_ids.append(trade_id)
+                    order_fills.append(fill)
+                    index += 1
+            if not order_fills or filled != Decimal(planned_quantity):
+                raise ValueError("native fact stream is invalid")
         elif planned_quantity != "0" or dict(plan)["side"] is not None:
             raise ValueError("native fact stream is invalid")
         executions.append(
-            CollectedExecution(quote, plan, planned_quantity, order, fill)
+            CollectedExecution(quote, plan, planned_quantity, order, tuple(order_fills))
         )
 
     stopped = _document(facts[-1], "stopped", ("state",))

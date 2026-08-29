@@ -255,7 +255,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         != len(callback_fill_records)
         or len({record[:2] for record in cached_fill_records})
         != len(cached_fill_records)
-        or set(callback_fill_records) != set(cached_fill_records)
+        or callback_fill_records != cached_fill_records
     ):
         raise BacktestRunError("native fill callback/cache proof is inconsistent")
     rejected = tuple(
@@ -289,7 +289,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
                     for order in orders
                 ),
             ),
-            ("fills", len(fill_facts) != len(orders)),
+            ("fills", len(fill_facts) < len(orders)),
             (
                 "fill_orders",
                 {fact.client_order_id for fact in fill_facts} != set(order_ids),
@@ -397,14 +397,21 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         }
         base = str(instruments[0].base_currency)
         quote = str(instruments[0].quote_currency)
+        base_quantum = Decimal(1).scaleb(-instruments[0].base_currency.precision)
+        quote_quantum = Decimal(1).scaleb(-instruments[0].quote_currency.precision)
         expected.setdefault(base, Decimal(0))
         expected.setdefault(quote, Decimal(0))
         for fact in fill_facts:
             quantity = Decimal(fact.quantity)
             notional = quantity * Decimal(fact.price)
-            expected[base] += quantity if fact.side == "BUY" else -quantity
-            expected[quote] += -notional if fact.side == "BUY" else notional
-            expected[fact.commission_currency] -= Decimal(fact.commission)
+            expected[base] = (
+                expected[base] + (quantity if fact.side == "BUY" else -quantity)
+            ).quantize(base_quantum)
+            expected[quote] = (
+                expected[quote]
+                + (-notional if fact.side == "BUY" else notional)
+                - Decimal(fact.commission)
+            ).quantize(quote_quantum)
         observed = {
             str(currency): money.as_decimal() for currency, money in balances.items()
         }

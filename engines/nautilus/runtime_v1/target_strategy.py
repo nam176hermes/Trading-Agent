@@ -291,7 +291,10 @@ class TargetStrategy(Strategy):
             account_equity=total_decimal + current * quote.bid_price.as_decimal(),
             available_cash=free.as_decimal(),
             current_quantity=current,
-            ask_price=quote.ask_price.as_decimal(),
+            ask_price=(
+                quote.ask_price.as_decimal()
+                + self._instrument.price_increment.as_decimal()
+            ),
             fee_rate=_decimal(self.config.fee_rate),
             step_size=_decimal(self.config.step_size),
             min_quantity=_decimal(self.config.min_quantity),

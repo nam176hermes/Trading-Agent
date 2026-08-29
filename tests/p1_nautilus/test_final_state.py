@@ -198,6 +198,37 @@ def test_final_state_builds_completion_only_from_consistent_scalar_proof() -> No
     assert completion.unrealized_pnl == "1"
 
 
+def test_final_state_consumes_each_partial_fill_exactly_once() -> None:
+    run = _run()
+    facts = list(run.native_facts)
+    first = facts[4]
+    first_values = dict(first.attributes)
+    first_values.update(trade_id="trade-1a", quantity="0.4", commission="0.04")
+    second_values = dict(first.attributes)
+    second_values.update(trade_id="trade-1b", quantity="0.6", commission="0.06")
+    facts[4] = _fact("order_filled", **first_values)
+    facts.insert(5, _fact("order_filled", **second_values))
+    partial = _run(
+        native_facts=tuple(facts),
+        native_fill_ids=("trade-1a", "trade-1b"),
+        fill_count=2,
+        total_events=3,
+        account_event_count=3,
+        result_summary=tuple(
+            (name, "3" if name in {"account.BINANCE.event_count", "total_events"} else value)
+            for name, value in run.result_summary
+        ),
+    )
+
+    completion = validate_final_state(_inputs(), _lineage(), partial)
+
+    assert completion.order_count == 1
+    assert completion.fill_count == 2
+    assert completion.final_cash == "899.9"
+    assert completion.final_position == "1"
+    assert completion.fees == "0.1"
+
+
 def test_final_state_accepts_zero_order_with_canonical_zero_fees() -> None:
     run = _run(
         total_events=0,
@@ -589,6 +620,6 @@ print(json.dumps({
     assert completed.returncode == 0, completed.stderr
     assert completed.stderr == ""
     assert json.loads(completed.stdout) == {
-        "cash": "1007982.01798201",
-        "fees": "2007.99200799",
+        "cash": "1007981.219859",
+        "fees": "2007.791229",
     }

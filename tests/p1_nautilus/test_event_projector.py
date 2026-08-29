@@ -14,6 +14,7 @@ from engines.nautilus.runtime_v1.event_projector import (
     CompletionAuthority,
     project_event_stream,
 )
+from engines.nautilus.runtime_v1.event_collector import collect_executions
 from engines.nautilus.runtime_v1.input_loader import (
     ArtifactReference,
     RunBacktestRequest,
@@ -61,15 +62,15 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 ("effective_at", "2026-08-05T12:00:00Z"),
                 ("instrument_id", "BTCUSDT.BINANCE"),
                 ("current_quantity", "0"),
-                ("target_quantity", "9990.00999"),
-                ("delta", "9990.00999"),
+                ("target_quantity", "9989.011088"),
+                ("delta", "9989.011088"),
                 ("side", "BUY"),
-                ("price_basis", "100"),
-                ("notional", "999000.999"),
+                ("price_basis", "100.01"),
+                ("notional", "999000.99891088"),
                 ("reason", "ORDER"),
             ),
         ),
-        Fact("target_quantity_planned", (("quantity", "9990.00999"),)),
+        Fact("target_quantity_planned", (("quantity", "9989.011088"),)),
         Fact(
             "order_submitted",
             (
@@ -77,7 +78,7 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 ("target_id", first_target),
                 *_signals(first_signal),
                 ("side", "BUY"),
-                ("quantity", "9990.00999"),
+                ("quantity", "9989.011088"),
                 ("order_type", "MARKET"),
             ),
         ),
@@ -87,9 +88,9 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 ("client_order_id", "O-1"),
                 ("trade_id", "T-1"),
                 ("side", "BUY"),
-                ("quantity", "9990.00999"),
+                ("quantity", "9989.011088"),
                 ("price", "100"),
-                ("commission", "999.000999"),
+                ("commission", "998.901109"),
                 ("commission_currency", "USDT"),
                 ("ts_event", 1785931200000000000),
             ),
@@ -112,16 +113,16 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 *_signals(second_signal),
                 ("effective_at", "2026-08-05T12:01:00Z"),
                 ("instrument_id", "BTCUSDT.BINANCE"),
-                ("current_quantity", "9990.00999"),
+                ("current_quantity", "9989.011088"),
                 ("target_quantity", "0"),
-                ("delta", "-9990.00999"),
+                ("delta", "-9989.011088"),
                 ("side", "SELL"),
-                ("price_basis", "102"),
-                ("notional", "1018981.01898"),
+                ("price_basis", "102.01"),
+                ("notional", "1018979.02108688"),
                 ("reason", "ORDER"),
             ),
         ),
-        Fact("target_quantity_planned", (("quantity", "9990.00999"),)),
+        Fact("target_quantity_planned", (("quantity", "9989.011088"),)),
         Fact(
             "order_submitted",
             (
@@ -129,7 +130,7 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 ("target_id", second_target),
                 *_signals(second_signal),
                 ("side", "SELL"),
-                ("quantity", "9990.00999"),
+                ("quantity", "9989.011088"),
                 ("order_type", "MARKET"),
             ),
         ),
@@ -139,9 +140,9 @@ def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
                 ("client_order_id", "O-2"),
                 ("trade_id", "T-2"),
                 ("side", "SELL"),
-                ("quantity", "9990.00999"),
-                ("price", "102"),
-                ("commission", "1018.98101898"),
+                ("quantity", "9989.011088"),
+                ("price", "101"),
+                ("commission", "1008.89012"),
                 ("commission_currency", "USDT"),
                 ("ts_event", 1785931260000000000),
             ),
@@ -288,6 +289,7 @@ def _inputs(
         ("min_notional", "10"),
         ("min_quantity", "0.000001"),
         ("step_size", "0.000001"),
+        ("tick_size", "0.01"),
     )
     return RuntimeInputs(request, configuration, catalog, schedule, market_data)
 
@@ -297,9 +299,9 @@ def _run(
     facts: tuple[Fact, ...] | None = None,
     balance_facts: tuple[tuple[str, ...], ...] = (
         ("BTC", "0", "0", "0"),
-        ("USDT", "1007972.02797202", "0", "1007972.02797202"),
+        ("USDT", "1007981.219859", "0", "1007981.219859"),
     ),
-    commission_facts: tuple[tuple[str, ...], ...] = (("USDT", "2017.98201798"),),
+    commission_facts: tuple[tuple[str, ...], ...] = (("USDT", "2007.791229"),),
 ) -> SimpleNamespace:
     return SimpleNamespace(
         engine_version="1.231.0",
@@ -319,9 +321,30 @@ def _run(
         commission_facts=commission_facts,
         position_quantity="0",
         position_average_entry="0",
-        position_realized_pnl="9990.00999",
+        position_realized_pnl="9989.011088",
         position_unrealized_pnl="0",
         last_market_timestamp=1785931260000000000,
+    )
+
+
+def _partial_fill_run() -> SimpleNamespace:
+    facts = list(_facts())
+    first = facts[4]
+    first_values = dict(first.attributes)
+    first_values.update(trade_id="T-1a", quantity="2", commission="0.2")
+    second_values = dict(first.attributes)
+    second_values.update(
+        trade_id="T-1b", quantity="9987.011088", commission="998.701109"
+    )
+    facts[4] = replace(first, attributes=tuple(first_values.items()))
+    facts.insert(5, replace(first, attributes=tuple(second_values.items())))
+    run = _run(facts=tuple(facts))
+    return SimpleNamespace(
+        **{
+            **vars(run),
+            "native_fill_ids": ("T-1a", "T-1b", "T-2"),
+            "fill_count": 3,
+        }
     )
 
 
@@ -329,10 +352,10 @@ AUTHORITY = CompletionAuthority(
     target_count=2,
     order_count=2,
     fill_count=2,
-    final_cash="1007972.02797202",
+    final_cash="1007981.219859",
     final_position="0",
-    fees="2017.98201798",
-    realized_pnl="9990.00999",
+    fees="2007.791229",
+    realized_pnl="9989.011088",
     unrealized_pnl="0",
 )
 
@@ -360,6 +383,50 @@ def _attributes(envelope: dict[str, object]) -> dict[str, object]:
     attributes = payload["attributes"]
     assert type(attributes) is list
     return {str(item["name"]): item["value"] for item in attributes}
+
+
+def test_partial_fills_are_projected_once_in_observed_order() -> None:
+    run = _partial_fill_run()
+    _, executions = collect_executions(run)
+
+    assert [dict(fill)["trade_id"] for fill in executions[0].fills] == [
+        "T-1a",
+        "T-1b",
+    ]
+    completion = replace(AUTHORITY, fill_count=3)
+    stream = project_event_stream(
+        _inputs(),
+        run,
+        completion,
+        closure_digest="a" * 64,
+        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    )
+
+    assert [
+        event["native_fill_id"]
+        for event in stream.events
+        if event["event_type"] == "Fill"
+    ] == ["T-1a", "T-1b", "T-2"]
+
+
+@pytest.mark.parametrize("mutation", ("dropped", "duplicated", "under", "over"))
+def test_partial_fill_sum_and_identity_mutations_fail_closed(mutation: str) -> None:
+    run = _partial_fill_run()
+    facts = list(run.native_facts)
+    fill_indexes = [index for index, fact in enumerate(facts) if fact.kind == "order_filled"]
+    if mutation == "dropped":
+        facts.pop(fill_indexes[1])
+    elif mutation == "duplicated":
+        facts.insert(fill_indexes[1], facts[fill_indexes[0]])
+    else:
+        fact = facts[fill_indexes[1]]
+        values = dict(fact.attributes)
+        values["quantity"] = "9987.011087" if mutation == "under" else "9987.011089"
+        facts[fill_indexes[1]] = replace(fact, attributes=tuple(values.items()))
+    mutated = SimpleNamespace(**{**vars(run), "native_facts": tuple(facts)})
+
+    with pytest.raises(ValueError, match="native fact stream"):
+        collect_executions(mutated)
 
 
 def _rebuild_stream(
@@ -442,7 +509,7 @@ def test_projects_complete_request_bound_stream_without_native_objects() -> None
     assert all(line.endswith(b"\n") for line in stream.jsonl.splitlines(keepends=True))
 
     planned = [event for event in typed if event.event_type == "TargetQuantityPlanned"]
-    assert [str(event.quantity) for event in planned] == ["9990.00999", "9990.00999"]
+    assert [str(event.quantity) for event in planned] == ["9989.011088", "9989.011088"]
     submitted = [event for event in typed if event.event_type == "OrderSubmitted"]
     fills = [event for event in typed if event.event_type == "Fill"]
     assert [(event.client_order_id, event.native_order_id) for event in submitted] == [
@@ -869,7 +936,7 @@ def test_zero_order_completion_accepts_empty_commission_observation() -> None:
                 ("target_quantity", "0"),
                 ("delta", "0"),
                 ("side", None),
-                ("price_basis", "100"),
+                ("price_basis", "100.01"),
                 ("notional", "0"),
                 ("reason", "ALREADY_AT_TARGET"),
             ),

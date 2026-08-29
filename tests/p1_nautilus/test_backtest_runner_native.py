@@ -96,6 +96,7 @@ rows = [
     {"ask":"102","bid":"101","close":"102","event_time":"2026-08-05T12:01:00Z","high":"103","low":"100","open":"101","quote_time":"2026-08-05T12:01:00Z","sequence":2,"volume":"1000000"},
 ]
 raw = b"".join(canonical(row) + b"\n" for row in rows)
+low_volume_raw = open(sys.argv[6], "rb").read()
 request = RunBacktestRequest(
     message_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     correlation_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -118,8 +119,23 @@ request = RunBacktestRequest(
     end_time="2026-08-05T12:01:00Z",
 )
 inputs = RuntimeInputs(request, configuration, catalog, schedule, raw)
+low_volume_inputs = RuntimeInputs(
+    replace(
+        request,
+        market_data=ArtifactReference(
+            request.market_data.artifact_id,
+            hashlib.sha256(low_volume_raw).hexdigest(),
+            request.market_data.media_type,
+        ),
+    ),
+    configuration,
+    catalog,
+    schedule,
+    low_volume_raw,
+)
 first = run_backtest(inputs)
 second = run_backtest(inputs)
+low_volume = run_backtest(low_volume_inputs)
 long_inputs = RuntimeInputs(
     request,
     configuration,
@@ -142,6 +158,62 @@ larger_run = run_backtest(
     )
 )
 assert type(first) is BacktestRun and first == second
+assert low_volume.strategy_state == "COMPLETED"
+assert low_volume.processed_target_ids == first.processed_target_ids
+assert low_volume.order_count == 2
+assert low_volume.fill_count == 4
+assert low_volume.total_orders == 2
+assert low_volume.pending_order_ids == low_volume.rejected_order_ids == ()
+assert low_volume.position_quantity == "0"
+assert all(fact[-1] == "FILLED" for fact in low_volume.order_facts)
+low_facts = [(fact.kind, dict(fact.attributes)) for fact in low_volume.native_facts]
+low_plans = [value for kind, value in low_facts if kind == "target_planned"]
+low_submitted = [value for kind, value in low_facts if kind == "order_submitted"]
+low_fills = [value for kind, value in low_facts if kind == "order_filled"]
+assert len(low_plans) == len(low_submitted) == 2
+assert len(low_fills) == 4
+assert [value["target_id"] for value in low_submitted] == list(low_volume.processed_target_ids)
+assert {value["client_order_id"] for value in low_submitted} == {
+    value["client_order_id"] for value in low_fills
+}
+assert len(low_volume.native_fill_ids) == len(set(low_volume.native_fill_ids)) == 4
+assert [
+    (fill["side"], fill["quantity"], fill["price"], fill["commission"])
+    for fill in low_fills
+] == [
+    ("BUY", "2", "100", "0.2"),
+    ("BUY", "9987.011088", "100.01", "998.800979"),
+    ("SELL", "3", "101", "0.303"),
+    ("SELL", "9986.011088", "100.99", "1008.48726"),
+]
+with localcontext() as context:
+    context.prec = 96
+    expected_cash = Decimal("1000000")
+    expected_position = Decimal(0)
+    expected_fees = Decimal(0)
+    for fill in low_fills:
+        quantity = Decimal(fill["quantity"])
+        price = Decimal(fill["price"])
+        commission = Decimal(fill["commission"])
+        expected_fees += commission
+        if fill["side"] == "BUY":
+            expected_cash = (
+                expected_cash - quantity * price - commission
+            ).quantize(Decimal("0.000001"))
+            expected_position += quantity
+        else:
+            expected_cash = (
+                expected_cash + quantity * price - commission
+            ).quantize(Decimal("0.000001"))
+            expected_position -= quantity
+low_balances = {currency: Decimal(total) for currency, total, _, _ in low_volume.balance_facts}
+low_commissions = {currency: Decimal(total) for currency, total in low_volume.commission_facts}
+assert expected_cash >= 0
+assert expected_position == Decimal(0)
+assert expected_cash == Decimal("1007781.489627")
+assert expected_fees == Decimal("2007.791239")
+assert low_balances == {"BTC": expected_position, "USDT": expected_cash}
+assert low_commissions == {"USDT": expected_fees}
 assert first.strategy_state == "COMPLETED"
 assert first.processed_target_ids == (
     "11111111-1111-4111-8111-111111111111",
@@ -152,25 +224,25 @@ assert first.order_count == first.fill_count == 2
 assert first.pending_order_ids == first.rejected_order_ids == ()
 assert first.position_quantity == "0"
 assert first.position_average_entry == "0"
-assert first.position_realized_pnl == "9990.00999"
+assert first.position_realized_pnl == "9989.011088"
 assert first.position_unrealized_pnl == "0"
 assert first.final_market_price == "102"
 assert long_run.strategy_state == "COMPLETED"
 assert long_run.processed_target_ids == ("11111111-1111-4111-8111-111111111111",)
-assert long_run.position_quantity == "9990.00999"
+assert long_run.position_quantity == "9989.011088"
 assert long_run.position_average_entry == "100"
 assert long_run.position_realized_pnl == "0"
-assert long_run.position_unrealized_pnl == "19980.01998"
+assert long_run.position_unrealized_pnl == "19978.022176"
 assert long_run.final_market_price == "102"
 assert larger_run.strategy_state == "COMPLETED"
 assert larger_run.processed_target_ids == first.processed_target_ids
 assert larger_run.total_orders == larger_run.fill_count == 2
 with localcontext() as context:
     context.prec = 96
-    larger_quantity = Decimal("5000") + Decimal("4848.039215")
+    larger_quantity = Decimal("4999.500049") + Decimal("4847.569356")
     larger_average = (
-        Decimal("5000") * Decimal("100")
-        + Decimal("4848.039215") * Decimal("102")
+        Decimal("4999.500049") * Decimal("100")
+        + Decimal("4847.569356") * Decimal("102")
     ) / larger_quantity
     larger_unrealized = (Decimal("102") - larger_average) * larger_quantity
 assert Decimal(larger_run.position_quantity) == larger_quantity
@@ -179,10 +251,10 @@ assert larger_run.position_realized_pnl == "0"
 assert Decimal(larger_run.position_unrealized_pnl) == larger_unrealized
 assert larger_run.final_market_price == "102"
 _validate_native_unrealized(
-    Decimal("19980.01998"), Decimal("19980.01998000"), 8
+    Decimal("19978.022176"), Decimal("19978.022176"), 6
 )
 try:
-    _validate_native_unrealized(Decimal("19980.01998"), Decimal("19980"), 8)
+    _validate_native_unrealized(Decimal("19978.022176"), Decimal("19978"), 6)
 except BacktestRunError as error:
     assert "unrealized" in str(error)
 else:
@@ -325,6 +397,29 @@ for changes, expected_error in (
     else:
         raise AssertionError("invalid fill identity was accepted")
 
+class ReorderedPartialFillSession:
+    def __init__(self, actual):
+        self.engine = actual.engine
+        self.strategy = actual.strategy
+        self.batch = actual.batch
+    def run(self):
+        self.engine.run()
+        records = self.strategy.collector._records
+        indexes = [index for index, (kind, _) in enumerate(records) if kind == "order_filled"]
+        records[indexes[0]], records[indexes[1]] = records[indexes[1]], records[indexes[0]]
+    def dispose(self, primary=None):
+        dispose_session(self.engine, primary)
+
+try:
+    run_backtest(
+        low_volume_inputs,
+        lambda *args: ReorderedPartialFillSession(create_session(*args)),
+    )
+except BacktestRunError as error:
+    assert "callback/cache" in str(error)
+else:
+    raise AssertionError("reordered native fill callbacks were accepted")
+
 class FakeEngine:
     def __init__(self, failure=None):
         self.failure = failure
@@ -367,6 +462,7 @@ print(json.dumps({
                 (ROOT / "tests/fixtures/p1_nautilus/contracts/instrument-catalog.json", "/inputs/instrument-catalog.json"),
                 (ROOT / "tests/fixtures/p1_nautilus/contracts/engine-configuration.json", "/inputs/engine-configuration.json"),
                 (ROOT / "tests/fixtures/p1_nautilus/contracts/target-schedule.json", "/inputs/target-schedule.json"),
+                (ROOT / "tests/fixtures/p1_nautilus/e2e/btcusdt-1m.jsonl", "/inputs/btcusdt-1m.jsonl"),
             ),
             cwd="/",
             env={},
@@ -382,6 +478,6 @@ print(json.dumps({
     assert len(observed["orders"]) == 2
     assert observed["balances"] == [
         ["BTC", "0", "0", "0"],
-        ["USDT", "1007982.01798201", "0", "1007982.01798201"],
+        ["USDT", "1007981.219859", "0", "1007981.219859"],
     ]
-    assert observed["commissions"] == [["USDT", "2007.99200799"]]
+    assert observed["commissions"] == [["USDT", "2007.791229"]]

@@ -400,12 +400,14 @@ def _validate_business_facts(
             raise ValueError
         starting_balance = Decimal(configuration["starting_balance"])
         fee_rate = Decimal(configuration["fee_rate"])
+        tick_size = Decimal(catalog["tick_size"])
         step_size = Decimal(catalog["step_size"])
         min_quantity = Decimal(catalog["min_quantity"])
         min_notional = Decimal(catalog["min_notional"])
         canonical_numbers = (
             (configuration["starting_balance"], starting_balance),
             (configuration["fee_rate"], fee_rate),
+            (catalog["tick_size"], tick_size),
             (catalog["step_size"], step_size),
             (catalog["min_quantity"], min_quantity),
             (catalog["min_notional"], min_notional),
@@ -464,7 +466,7 @@ def _validate_business_facts(
                     account_equity=cash + position * Decimal(row["bid"]),
                     available_cash=cash,
                     current_quantity=position,
-                    ask_price=Decimal(row["ask"]),
+                    ask_price=Decimal(row["ask"]) + tick_size,
                     fee_rate=fee_rate,
                     step_size=step_size,
                     min_quantity=min_quantity,
@@ -488,8 +490,8 @@ def _validate_business_facts(
                 ):
                     raise ValueError
 
-                if execution.fill is not None:
-                    fill = _values(execution.fill)
+                for fill_fact in execution.fills:
+                    fill = _values(fill_fact)
                     quantity = Decimal(str(fill["quantity"]))
                     price = Decimal(str(fill["price"]))
                     commission = Decimal(str(fill["commission"]))
@@ -542,29 +544,31 @@ def _target_events(
     ]
     if execution.order is None:
         return tuple(events)
-    if execution.fill is None:
+    if not execution.fills:
         raise ValueError("P1 native order is missing its fill")
     order = _values(execution.order)
-    fill = _values(execution.fill)
-    events.extend(
-        (
-            _event(
-                "OrderSubmitted",
-                sequence + 2,
-                simulation_time,
-                origin="CONTROL_PLANE",
-                native_type="Order",
-                client_order_id=target_id,
-                native_order_id=str(order["client_order_id"]),
-                target_id=target_id,
-                source_signal_ids=list(signals),
-                side=str(order["side"]),
-                quantity=_decimal(order["quantity"]),
-                order_type="MARKET",
-            ),
+    events.append(
+        _event(
+            "OrderSubmitted",
+            sequence + 2,
+            simulation_time,
+            origin="CONTROL_PLANE",
+            native_type="Order",
+            client_order_id=target_id,
+            native_order_id=str(order["client_order_id"]),
+            target_id=target_id,
+            source_signal_ids=list(signals),
+            side=str(order["side"]),
+            quantity=_decimal(order["quantity"]),
+            order_type="MARKET",
+        )
+    )
+    for fill_fact in execution.fills:
+        fill = _values(fill_fact)
+        events.append(
             _event(
                 "Fill",
-                sequence + 3,
+                sequence + len(events),
                 _native_time(fill["ts_event"]),
                 origin="NAUTILUS_CALLBACK",
                 native_type="OrderFilled",
@@ -575,9 +579,8 @@ def _target_events(
                 price=_decimal(fill["price"]),
                 fee=_decimal(fill["commission"]),
                 fee_currency="USDT",
-            ),
+            )
         )
-    )
     return tuple(events)
 
 
@@ -650,7 +653,7 @@ def validate_projected_stream(
     submitted_targets: set[str] = set()
     native_orders: set[str] = set()
     fills: set[str] = set()
-    filled_orders: set[str] = set()
+    filled_quantities: dict[str, Decimal] = {}
     previous_time = ""
     if (
         type(request_authority) is not tuple
@@ -721,13 +724,18 @@ def validate_projected_stream(
             if (
                 order is None
                 or order["side"] != event["side"]
-                or order["quantity"] != event["quantity"]
-                or client_order_id in filled_orders
                 or native_fill_id in fills
             ):
                 raise ValueError("P1 fill is not order-bound")
+            quantity = Decimal(str(event["quantity"]))
+            if quantity <= 0:
+                raise ValueError("P1 fill is not order-bound")
             fills.add(native_fill_id)
-            filled_orders.add(client_order_id)
+            with localcontext() as context:
+                context.prec = 96
+                filled_quantities[client_order_id] = (
+                    filled_quantities.get(client_order_id, Decimal(0)) + quantity
+                )
     completion = events[-1]
     if (
         set(targets) != set(plans)
@@ -736,7 +744,11 @@ def validate_projected_stream(
         or completion["target_count"] != len(targets)
         or completion["order_count"] != len(orders)
         or completion["fill_count"] != len(fills)
-        or set(orders) != filled_orders
+        or set(orders) != set(filled_quantities)
+        or any(
+            filled_quantities[order_id] != Decimal(str(order["quantity"]))
+            for order_id, order in orders.items()
+        )
         or completion["upstream_commit"] != events[0]["upstream_commit"]
         or completion["closure_digest"] != events[0]["closure_digest"]
         or completion["final_position"] != events[-3]["quantity"]

@@ -137,35 +137,34 @@ def _ledger(
     with localcontext() as context:
         context.prec = 96
         for execution in executions:
-            if execution.fill is None:
-                continue
-            fill = dict(execution.fill)
-            quantity = _decimal(fill["quantity"])
-            price = _decimal(fill["price"])
-            fee = _decimal(fill["commission"])
-            currency = fill["commission_currency"]
-            if (
-                quantity <= 0
-                or price <= 0
-                or fee < 0
-                or type(currency) is not str
-                or currency != quote_currency
-            ):
-                raise FinalStateError("runtime final state is inconsistent")
-            commissions[currency] = commissions.get(currency, Decimal(0)) + fee
-            if fill["side"] == "BUY":
-                new_position = position + quantity
-                average = (position * average + quantity * price) / new_position
-                position = new_position
-                cash -= quantity * price + fee
-            elif fill["side"] == "SELL" and quantity <= position:
-                realized += (price - average) * quantity
-                position -= quantity
-                cash += quantity * price - fee
-                if position == 0:
-                    average = Decimal(0)
-            else:
-                raise FinalStateError("runtime final state is inconsistent")
+            for fill_fact in execution.fills:
+                fill = dict(fill_fact)
+                quantity = _decimal(fill["quantity"])
+                price = _decimal(fill["price"])
+                fee = _decimal(fill["commission"])
+                currency = fill["commission_currency"]
+                if (
+                    quantity <= 0
+                    or price <= 0
+                    or fee < 0
+                    or type(currency) is not str
+                    or currency != quote_currency
+                ):
+                    raise FinalStateError("runtime final state is inconsistent")
+                commissions[currency] = commissions.get(currency, Decimal(0)) + fee
+                if fill["side"] == "BUY":
+                    new_position = position + quantity
+                    average = (position * average + quantity * price) / new_position
+                    position = new_position
+                    cash -= quantity * price + fee
+                elif fill["side"] == "SELL" and quantity <= position:
+                    realized += (price - average) * quantity
+                    position -= quantity
+                    cash += quantity * price - fee
+                    if position == 0:
+                        average = Decimal(0)
+                else:
+                    raise FinalStateError("runtime final state is inconsistent")
     return cash, position, average, realized, commissions
 
 
@@ -189,11 +188,11 @@ def _validate(
             str(dict(execution.order)["client_order_id"]),
             str(dict(execution.order)["side"]),
             str(dict(execution.order)["quantity"]),
-            str(dict(execution.fill)["quantity"]),
+            str(dict(execution.order)["quantity"]),
             "FILLED",
         )
         for execution in executions
-        if execution.order is not None and execution.fill is not None
+        if execution.order is not None and execution.fills
     )
     base_currency = catalog.get("base_currency")
     quote_currency = catalog.get("quote_currency")
@@ -232,13 +231,12 @@ def _validate(
         or run.instrument_ids != (instrument_id,)
         or run.iterations != row_count * 2
         or run.iterations != _integer(summary, "iterations")
-        or run.total_events != 2 * run.order_count
+        or run.total_events != run.order_count + run.fill_count
         or run.total_events != _integer(summary, "total_events")
         or run.total_orders != run.order_count
         or run.total_orders != _integer(summary, "orders.total")
         or run.total_positions != expected_positions
         or run.total_positions != _integer(summary, "positions.total_with_snapshots")
-        or run.order_count != run.fill_count
         or run.order_count != len(run.order_facts)
         or run.order_facts != expected_order_facts
         or run.order_count != len(run.native_order_ids)

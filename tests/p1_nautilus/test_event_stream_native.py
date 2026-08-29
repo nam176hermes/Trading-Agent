@@ -139,7 +139,7 @@ long_stream = project_event_stream(
     closure_digest="a" * 64,
     upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
 )
-assert long_run.position_quantity == "9990.00999"
+assert long_run.position_quantity == "9989.011088"
 assert tuple(event["event_type"] for event in long_stream.events).count("TargetAccepted") == 1
 assert long_stream.events[-1]["final_position"] == long_run.position_quantity
 print(json.dumps({

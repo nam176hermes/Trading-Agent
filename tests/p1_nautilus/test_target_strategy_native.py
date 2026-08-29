@@ -237,13 +237,13 @@ print(json.dumps({
     assert completed.stderr == ""
     observed = json.loads(completed.stdout)
     assert observed["completed"] == {
-        "filled": ["1.000000", "1.000000"],
+        "filled": ["0.999900", "0.999900"],
         "order_count": 2,
         "position": "0.000000",
-        "planned_order_quantity": "1",
+        "planned_order_quantity": "0.9999",
         "state": "COMPLETED",
     }
-    assert observed["planned_quantities"] == ["1", "1"]
+    assert observed["planned_quantities"] == ["0.9999", "0.9999"]
     assert observed["duplicate_order_count"] == 2
     assert observed["inconsistent_state"] == "FAILED"
     assert observed["pending_state"] == "EXIT_ONLY"
@@ -267,14 +267,14 @@ print(json.dumps({
         if kind in {"order_submitted", "order_filled", "stop_pending"}
     ] == ["order_submitted", "stop_pending"]
     assert [fact[1:] for fact in observed["submitted_facts"]] == [
-        ["11111111-1111-4111-8111-111111111111", ["22222222-2222-4222-8222-222222222222"], "BUY", "1", "MARKET"],
-        ["44444444-4444-4444-8444-444444444444", ["33333333-3333-4333-8333-333333333333"], "SELL", "1", "MARKET"],
+        ["11111111-1111-4111-8111-111111111111", ["22222222-2222-4222-8222-222222222222"], "BUY", "0.9999", "MARKET"],
+        ["44444444-4444-4444-8444-444444444444", ["33333333-3333-4333-8333-333333333333"], "SELL", "0.9999", "MARKET"],
     ]
     assert [fact[0] for fact in observed["fill_facts"]] == [
         fact[0] for fact in observed["submitted_facts"]
     ]
     assert [fact[2:] for fact in observed["fill_facts"]] == [
-        ["BUY", "1", "100", "0", "USDT", 1785931200000000000],
-        ["SELL", "1", "101", "0", "USDT", 1785931260000000000],
+        ["BUY", "0.9999", "100", "0", "USDT", 1785931200000000000],
+        ["SELL", "0.9999", "101", "0", "USDT", 1785931260000000000],
     ]
     assert len({fact[1] for fact in observed["fill_facts"]}) == 2
