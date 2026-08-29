@@ -21,6 +21,15 @@ from packages.engine_contracts import (
     canonical_json_bytes,
     validate_envelope_batch,
 )
+from packages.nautilus_runtime_contracts.result import (
+    P1_EVENT_FAMILIES,
+    P1_ENGINE_VERSION,
+    P1_RESULT_VALIDATOR_ID,
+    P1_RUNTIME_FAMILY,
+    P1_UPSTREAM_COMMIT,
+    P1ValidatedResult,
+    validate_p1_result,
+)
 from packages.job_contracts import (
     EngineBacktestPayload,
     EngineBacktestSimulationPayload,
@@ -64,6 +73,7 @@ class ValidatedEngineEventBatch:
     validator_id: str
     validation_metadata: dict[str, object]
     events: tuple[EngineEventEnvelope, ...]
+    profile_result: P1ValidatedResult | None = None
 
 
 class EngineResultValidator:
@@ -74,10 +84,17 @@ class EngineResultValidator:
         artifact_root: Path,
         *,
         simulation_expected: Callable[[EngineCommandEnvelope], object] | None = None,
+        p1_product_closure_sha256: str | None = None,
     ) -> None:
+        if p1_product_closure_sha256 is not None and (
+            type(p1_product_closure_sha256) is not str
+            or _SHA256.fullmatch(p1_product_closure_sha256) is None
+        ):
+            raise ValueError("P1 product closure authority is invalid")
         self._artifact_root = Path(artifact_root).absolute()
         self._results_root = self._artifact_root / "engine-results"
         self._simulation_expected = simulation_expected
+        self._p1_product_closure_sha256 = p1_product_closure_sha256
 
     def validate(
         self,
@@ -93,6 +110,7 @@ class EngineResultValidator:
             _GENERIC_EVENT_VALIDATOR,
             _NAUTILUS_BACKTEST_VALIDATOR,
             _NAUTILUS_SIMULATION_VALIDATOR,
+            P1_RESULT_VALIDATOR_ID,
         }:
             raise EngineResultValidationError(
                 "engine result validator is not allowlisted"
@@ -142,16 +160,43 @@ class EngineResultValidator:
         check = progress or (lambda: None)
         check()
         raw = self._read_captured_stdout(job, stdout, check)
-        events = self._parse_canonical_batch(raw, request, check)
+        events = self._parse_canonical_batch(
+            raw,
+            request,
+            check,
+            p1_event_stream=validator_id == P1_RESULT_VALIDATOR_ID,
+        )
         has_nautilus_completion = any(
             event.payload.event_type
             in {"NautilusBacktestCompleted", _NAUTILUS_SIMULATION_EVENT}
             for event in events
         )
-        if validator_id == _GENERIC_EVENT_VALIDATOR and has_nautilus_completion:
+        has_p1_event = any(
+            event.payload.event_type in P1_EVENT_FAMILIES for event in events
+        )
+        if validator_id == _GENERIC_EVENT_VALIDATOR and (
+            has_nautilus_completion or has_p1_event
+        ):
             raise EngineResultValidationError(
                 "Nautilus completion requires the dedicated validator"
             )
+        profile_result = None
+        if validator_id == P1_RESULT_VALIDATOR_ID:
+            if self._p1_product_closure_sha256 is None:
+                raise EngineResultValidationError(
+                    "P1 product closure authority is required"
+                )
+            try:
+                profile_result = validate_p1_result(
+                    request,
+                    events,
+                    raw=raw,
+                    expected_closure_digest=self._p1_product_closure_sha256,
+                )
+            except (TypeError, ValueError) as exc:
+                raise EngineResultValidationError(
+                    "P1 Nautilus event stream is invalid"
+                ) from exc
         if validator_id == _NAUTILUS_BACKTEST_VALIDATOR:
             if len(events) != 1:
                 raise EngineResultValidationError(
@@ -181,7 +226,14 @@ class EngineResultValidator:
                 request, events[0], self._simulation_expected(request)
             )
         check()
-        return self._seal(job, request, raw, events, validator_id)
+        return self._seal(
+            job,
+            request,
+            raw,
+            events,
+            validator_id,
+            profile_result=profile_result,
+        )
 
     @staticmethod
     def _validate_simulation_completion(
@@ -265,6 +317,8 @@ class EngineResultValidator:
         raw: bytes,
         request: EngineCommandEnvelope,
         progress: Callable[[], None],
+        *,
+        p1_event_stream: bool = False,
     ) -> tuple[EngineEventEnvelope, ...]:
         if not raw.endswith(b"\n"):
             raise EngineResultValidationError(
@@ -297,7 +351,8 @@ class EngineResultValidator:
             if (
                 event.engine_run_id != request.engine_run_id
                 or event.correlation_id != request.correlation_id
-                or event.causation_id != request.message_id
+                or event.causation_id
+                != (request.causation_id if p1_event_stream else request.message_id)
                 or event.stream_sequence != request.stream_sequence + offset
                 or event.event_time < request.event_time
                 or event.initialization_time != request.initialization_time
@@ -318,6 +373,8 @@ class EngineResultValidator:
         raw: bytes,
         events: tuple[EngineEventEnvelope, ...],
         validator_id: str,
+        *,
+        profile_result: P1ValidatedResult | None = None,
     ) -> ValidatedEngineEventBatch:
         digest = hashlib.sha256(raw).hexdigest()
         components = (job.job_id, job.attempt_id)
@@ -431,6 +488,30 @@ class EngineResultValidator:
             "source_commit": request.source_commit,
             "validator_id": validator_id,
         }
+        if profile_result is not None:
+            if profile_result.batch_sha256 != digest:
+                raise EngineResultValidationError(
+                    "P1 result digest does not match the sealed batch"
+                )
+            metadata.update(
+                {
+                    "engine_upstream_commit": P1_UPSTREAM_COMMIT,
+                    "engine_version": P1_ENGINE_VERSION,
+                    "fees": str(profile_result.fees),
+                    "fill_count": profile_result.fill_count,
+                    "final_cash": str(profile_result.final_cash),
+                    "final_position": str(profile_result.final_position),
+                    "order_count": profile_result.order_count,
+                    "p1_product_closure_sha256": (
+                        profile_result.product_closure_sha256
+                    ),
+                    "realized_pnl": str(profile_result.realized_pnl),
+                    "runtime_family": P1_RUNTIME_FAMILY,
+                    "semantic_digest": profile_result.semantic_sha256,
+                    "target_count": profile_result.target_count,
+                    "unrealized_pnl": str(profile_result.unrealized_pnl),
+                }
+            )
         return ValidatedEngineEventBatch(
             "engine_event_batch",
             relative,
@@ -441,6 +522,7 @@ class EngineResultValidator:
             validator_id,
             metadata,
             events,
+            profile_result,
         )
 
 
