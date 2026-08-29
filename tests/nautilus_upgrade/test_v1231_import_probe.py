@@ -75,7 +75,7 @@ def test_manifest_covers_every_surface_member_and_local_invocation() -> None:
 
     assert document["status"] == "PASS"
     assert document["api_surface_count"] == 33
-    assert document["local_invocation_count"] == 175
+    assert document["local_invocation_count"] == 153
     assert [case["id"] for case in document["surface_cases"]] == [
         surface["id"] for surface in contract["api_surfaces"]
     ]

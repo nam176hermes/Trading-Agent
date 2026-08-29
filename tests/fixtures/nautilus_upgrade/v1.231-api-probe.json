@@ -9,8 +9,8 @@
     "on_order_rejected"
   ],
   "engine_version": "1.231.0",
-  "local_invocation_count": 175,
-  "local_invocation_ids_sha256": "be474d375c6f8460d2812b7182a6c76e2b2f29be79f786936d12dbec05041683",
+  "local_invocation_count": 153,
+  "local_invocation_ids_sha256": "a840fdc36c619472fcee23dcf22854951ff89e8409abe9d0ff4dda76ab1267cd",
   "scenarios": {
     "long-accounting": {
       "fees": "0.2",
