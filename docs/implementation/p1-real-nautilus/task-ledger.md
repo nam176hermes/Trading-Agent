@@ -38,7 +38,9 @@ production, network-trading, or live authority.
 | P1-18 | P1-03, P1-15, P1-16, P1-17 | ACCEPTED | Code-owned closure `75467781…`, artifact resolver, result validator and inactive worker composition passed independent spec/security review at `5c4518f`; P1 ledger acceptance remains fail-closed for P1-19. |
 | P1-19 | P1-17, P1-18 | ACCEPTED | Exact P1 batches persist atomically with durable semantic projection authority; generic/Nautilus-v1 retain a hardened legacy route; independent spec/security review passed at source tree `a5e6924…`; PostgreSQL runtime authority remains deferred. |
 | P1-20 | P1-04 | ACCEPTED | Pure engine-to-portfolio projection, exact six-decimal accounting, full instrument authority and monotonic observations passed independent spec/security review at source tree `77d26f3…`. |
-| P1-21 | P1-19, P1-20 | IN_PROGRESS | Prove exact engine/reducer parity, deterministic restart hashes and a generation-bound parity receipt before adding the separately reviewed pre-success composition seam. |
+| P1-21 | P1-19, P1-20 | ACCEPTED | Exact Decimal parity, deterministic trusted-prefix replay, durable authority binding and the post-ingest/pre-success receipt seam passed independent spec/security review at source tree `a2fa1af…`; PostgreSQL runtime authority remains deferred. |
+| P1-22A | P1-21 | IN_PROGRESS | Add isolated source authority for authenticated exact engine BACKTEST enqueue at source head 0013 without changing the SNAPSHOT-only Release Authority v2/runtime DB pin. |
+| P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | BLOCKED | Build the BTCUSDT vertical slice only after P1-22A source review and exact disposable PostgreSQL/native authority are available. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
