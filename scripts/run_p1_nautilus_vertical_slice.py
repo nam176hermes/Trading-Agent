@@ -46,12 +46,12 @@ from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
 
 SCHEMA = "trading-agent-p1-nautilus-vertical-slice/v1"
 P1_DATABASE_REVISION = "0013_engine_backtest_enqueue_authority"
-RUNTIME_AUTHORITY = Path("/etc/trading-agent-v2/release-authority-v2.json")
 OPERATION_ID = "p1-vertical-slice-v1"
 TEST_PATH = "tests/p1_nautilus/test_vertical_slice_e2e.py"
 START = "2026-08-05T12:00:00Z"
 END = "2026-08-05T12:01:00Z"
 FIXTURES = ROOT / "tests/fixtures/p1_nautilus"
+SANDBOX_POLICY = ROOT / "engines/nautilus/sealed-uv-exec-policy.json"
 CANONICAL_FIXTURES = {
     "engine_configuration": FIXTURES / "contracts/engine-configuration.json",
     "instrument_catalog": FIXTURES / "contracts/instrument-catalog.json",
@@ -65,6 +65,16 @@ EXPECTED_DIGESTS = {
     "market_data": "d390750a1d51b6f333efc7092cd99f2c6752ca6ab51daeaa800171ea92005c9c",
 }
 _COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
+_GIT_ENVIRONMENT = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "HOME": "/nonexistent",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin",
+    "XDG_CONFIG_HOME": "/nonexistent",
+}
 
 
 class VerticalSliceError(ValueError):
@@ -168,7 +178,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--p1-closure-artifacts", type=Path)
     parser.add_argument("--bubblewrap", type=Path)
     parser.add_argument("--transport-root", type=Path)
-    parser.add_argument("--runtime-authority", type=Path)
     parser.add_argument("--postgres-approval", type=Path)
     parser.add_argument("--postgres-scope")
     parser.add_argument("--pgdata", type=Path)
@@ -184,7 +193,6 @@ def _external_values(arguments: argparse.Namespace) -> tuple[object, ...]:
         arguments.p1_closure_artifacts,
         arguments.bubblewrap,
         arguments.transport_root,
-        arguments.runtime_authority,
         arguments.postgres_approval,
         arguments.postgres_scope,
         arguments.pgdata,
@@ -202,13 +210,17 @@ def _source_identity() -> tuple[str, str]:
         cwd=ROOT,
         check=True,
         capture_output=True,
+        env=_GIT_ENVIRONMENT,
         text=True,
     )
     if status.stdout:
         raise VerticalSliceError("source checkout is not committed")
     commit, tree = (
         subprocess.check_output(
-            ("/usr/bin/git", "rev-parse", value), cwd=ROOT, text=True
+            ("/usr/bin/git", "rev-parse", value),
+            cwd=ROOT,
+            env=_GIT_ENVIRONMENT,
+            text=True,
         ).strip()
         for value in ("HEAD", "HEAD^{tree}")
     )
@@ -273,6 +285,61 @@ def _validate_transport_root(path: Path) -> None:
         raise VerticalSliceError("transport authority is invalid")
 
 
+def _validate_sandbox_executable(path: Path) -> None:
+    try:
+        policy = json.loads(SANDBOX_POLICY.read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise VerticalSliceError("sandbox policy is unavailable") from exc
+    if not isinstance(policy, dict):
+        raise VerticalSliceError("sandbox policy is invalid")
+    expected_path = policy.get("sandbox_path")
+    expected_digest = policy.get("sandbox_sha256")
+    expected_mode = policy.get("sandbox_mode")
+    expected_uid = policy.get("sandbox_uid")
+    expected_gid = policy.get("sandbox_gid")
+    if (
+        not isinstance(expected_path, str)
+        or path != Path(expected_path)
+        or not isinstance(expected_digest, str)
+        or _SHA256.fullmatch(expected_digest) is None
+        or not isinstance(expected_mode, str)
+        or re.fullmatch(r"0[0-7]{3}", expected_mode, re.ASCII) is None
+        or isinstance(expected_uid, bool)
+        or not isinstance(expected_uid, int)
+        or isinstance(expected_gid, bool)
+        or not isinstance(expected_gid, int)
+    ):
+        raise VerticalSliceError("sandbox policy binding is invalid")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        while block := os.read(descriptor, 1024 * 1024):
+            digest.update(block)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise VerticalSliceError("sandbox executable is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != expected_uid
+        or before.st_gid != expected_gid
+        or stat.S_IMODE(before.st_mode) != int(expected_mode, 8)
+        or (before.st_dev, before.st_ino, before.st_size, before.st_ctime_ns, before.st_mtime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_ctime_ns, after.st_mtime_ns)
+        or digest.hexdigest() != expected_digest
+    ):
+        raise VerticalSliceError("sandbox executable does not match policy")
+
+
 def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
     commit, tree = _source_identity()
     if arguments.postgres_scope != "DISPOSABLE_PG_GREEN":
@@ -282,18 +349,7 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
     except (TypeError, ValueError) as exc:
         raise VerticalSliceError("PostgreSQL port is invalid") from exc
     _validate_external_fixtures(arguments)
-    if arguments.runtime_authority != RUNTIME_AUTHORITY:
-        raise VerticalSliceError("runtime authority path is not exact")
-    worker_authority = attest_worker_runtime_authority()
-    closure = attest_p1_nautilus_closure(
-        NautilusClosureConfig(
-            arguments.p1_closure_root,
-            arguments.p1_closure_artifacts,
-            arguments.bubblewrap,
-        )
-    )
-    if closure.closure_sha256 != P1_REAL_BACKTEST_POLICY.closure_sha256:
-        raise VerticalSliceError("P1 closure does not match the accepted policy")
+    _validate_sandbox_executable(arguments.bubblewrap)
     _validate_transport_root(arguments.transport_root)
     approval = load_protected_approval_record(arguments.postgres_approval)
     validation_now = datetime.now(UTC)
@@ -323,6 +379,16 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
     )
     validate_disposable_postgres_approval(approval, context)
     validate_source_binding_files(approval, ROOT)
+    worker_authority = attest_worker_runtime_authority()
+    closure = attest_p1_nautilus_closure(
+        NautilusClosureConfig(
+            arguments.p1_closure_root,
+            arguments.p1_closure_artifacts,
+            arguments.bubblewrap,
+        )
+    )
+    if closure.closure_sha256 != P1_REAL_BACKTEST_POLICY.closure_sha256:
+        raise VerticalSliceError("P1 closure does not match the accepted policy")
     return {
         "closure_sha256": closure.closure_sha256,
         "postgres_approval_sha256": canonical_record_sha256(approval),

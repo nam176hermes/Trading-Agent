@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +22,34 @@ EXPECTED_FIXTURES = {
 }
 
 
+def _initialize_git_repository(path: Path, marker: str) -> tuple[str, str]:
+    path.mkdir()
+    subprocess.run(["/usr/bin/git", "init", "-q", str(path)], check=True)
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(path), "config", "user.email", "p1@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(path), "config", "user.name", "P1 test"],
+        check=True,
+    )
+    (path / "marker.txt").write_text(marker, encoding="utf-8")
+    subprocess.run(["/usr/bin/git", "-C", str(path), "add", "marker.txt"], check=True)
+    subprocess.run(
+        ["/usr/bin/git", "-C", str(path), "commit", "-q", "-m", marker],
+        check=True,
+    )
+    commit = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(path), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    tree = subprocess.check_output(
+        ["/usr/bin/git", "-C", str(path), "rev-parse", "HEAD^{tree}"],
+        text=True,
+    ).strip()
+    return commit, tree
+
+
 def _complete_arguments(tmp_path: Path) -> list[str]:
     return [
         "--p1-closure-root",
@@ -30,8 +60,6 @@ def _complete_arguments(tmp_path: Path) -> list[str]:
         str(tmp_path / "bwrap"),
         "--transport-root",
         str(tmp_path / "transport"),
-        "--runtime-authority",
-        "/etc/trading-agent-v2/release-authority-v2.json",
         "--postgres-approval",
         str(tmp_path / "approval.json"),
         "--postgres-scope",
@@ -63,6 +91,20 @@ def _patch_complete_native_preflight(
         lambda: ("1" * 40, "2" * 40),
     )
     monkeypatch.setattr(vertical, "_validate_external_fixtures", lambda _args: None)
+    monkeypatch.setattr(vertical, "_validate_sandbox_executable", lambda _path: None)
+    monkeypatch.setattr(vertical, "_validate_transport_root", lambda _path: None)
+    monkeypatch.setattr(vertical, "load_protected_approval_record", lambda _path: {})
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(vertical, "validate_source_binding_files", lambda *_args: None)
     monkeypatch.setattr(
         vertical,
         "attest_worker_runtime_authority",
@@ -195,7 +237,164 @@ def test_transport_authority_rejects_checkout_and_symlink_paths(
         vertical._validate_transport_root(ROOT / "tests")
 
 
-def test_schema_valid_wrong_closure_digest_is_blocked_before_downstream_authority(
+def test_source_identity_ignores_ambient_foreign_git_repository(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    source = tmp_path / "source"
+    expected = _initialize_git_repository(source, "accepted")
+    foreign = tmp_path / "foreign"
+    _initialize_git_repository(foreign, "foreign")
+    monkeypatch.setattr(vertical, "ROOT", source)
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+
+    assert vertical._source_identity() == expected
+
+
+def test_wrong_sandbox_executable_is_blocked_before_native_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+    bad_sandbox = tmp_path / "bwrap"
+    bad_sandbox.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    bad_sandbox.chmod(0o755)
+    policy = tmp_path / "sealed-uv-exec-policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "sandbox_gid": os.getegid(),
+                "sandbox_mode": "0755",
+                "sandbox_path": str(bad_sandbox),
+                "sandbox_sha256": "0" * 64,
+                "sandbox_uid": os.geteuid(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(vertical, "SANDBOX_POLICY", policy)
+    monkeypatch.setattr(
+        vertical,
+        "_source_identity",
+        lambda: ("1" * 40, "2" * 40),
+    )
+    monkeypatch.setattr(vertical, "_validate_external_fixtures", lambda _args: None)
+    monkeypatch.setattr(vertical, "_validate_transport_root", lambda _path: None)
+    monkeypatch.setattr(vertical, "load_protected_approval_record", lambda _path: {})
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval_record",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(vertical, "validate_source_binding_files", lambda *_args: None)
+    native_calls: list[str] = []
+    monkeypatch.setattr(
+        vertical,
+        "attest_worker_runtime_authority",
+        lambda: native_calls.append("worker")
+        or SimpleNamespace(authority_document_sha256="3" * 64),
+    )
+    monkeypatch.setattr(
+        vertical,
+        "attest_p1_nautilus_closure",
+        lambda _config: native_calls.append("closure")
+        or SimpleNamespace(
+            closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
+        ),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path))
+
+    assert result == 2
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["job_mutated"] is False
+    assert native_calls == []
+
+
+def test_exact_sandbox_policy_identity_passes_without_executing_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    sandbox = tmp_path / "bwrap"
+    sandbox.write_text("must not execute\n", encoding="utf-8")
+    sandbox.chmod(0o755)
+    policy = tmp_path / "sealed-uv-exec-policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "sandbox_gid": os.getegid(),
+                "sandbox_mode": "0755",
+                "sandbox_path": str(sandbox),
+                "sandbox_sha256": hashlib.sha256(sandbox.read_bytes()).hexdigest(),
+                "sandbox_uid": os.geteuid(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(vertical, "SANDBOX_POLICY", policy)
+
+    vertical._validate_sandbox_executable(sandbox)
+
+
+def test_postgres_authority_is_validated_before_native_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    monkeypatch.setattr(
+        vertical,
+        "_source_identity",
+        lambda: ("1" * 40, "2" * 40),
+    )
+    monkeypatch.setattr(vertical, "_validate_external_fixtures", lambda _args: None)
+    monkeypatch.setattr(vertical, "_validate_sandbox_executable", lambda _path: None)
+    monkeypatch.setattr(vertical, "_validate_transport_root", lambda _path: None)
+    monkeypatch.setattr(vertical, "load_protected_approval_record", lambda _path: {})
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            vertical.VerticalSliceError("PostgreSQL authority rejected")
+        ),
+    )
+    native_calls: list[str] = []
+    monkeypatch.setattr(
+        vertical,
+        "attest_worker_runtime_authority",
+        lambda: native_calls.append("worker"),
+    )
+    monkeypatch.setattr(
+        vertical,
+        "attest_p1_nautilus_closure",
+        lambda _config: native_calls.append("closure"),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path))
+
+    assert result == 2
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["job_mutated"] is False
+    assert native_calls == []
+
+
+def test_schema_valid_wrong_closure_digest_is_blocked_before_readiness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -207,20 +406,13 @@ def test_schema_valid_wrong_closure_digest_is_blocked_before_downstream_authorit
         vertical,
         closure_sha256="a" * 64,
     )
-    downstream_calls: list[str] = []
-
-    def record_downstream(_value: object) -> None:
-        downstream_calls.append("called")
-
-    monkeypatch.setattr(vertical, "_validate_transport_root", record_downstream)
-
     result = vertical.main(_complete_arguments(tmp_path))
 
     assert result == 2
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["status"] == "BLOCKED"
     assert receipt["job_mutated"] is False
-    assert downstream_calls == []
+    assert receipt["evidence"] == {}
 
 
 def test_ambient_database_setting_is_blocked_before_downstream_authority(

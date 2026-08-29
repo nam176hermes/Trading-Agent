@@ -7,6 +7,13 @@ external authority it emits one canonical `DEFERRED` receipt and performs no
 job mutation. A partial or invalid native/PostgreSQL family is `BLOCKED`.
 Supplied paths never enter the public receipt.
 
+The effective worker authority remains the existing Package6 staging
+attestation. Complete preflight also binds the sandbox executable to the exact
+`sandbox_path` and `sandbox_sha256` in
+`engines/nautilus/sealed-uv-exec-policy.json`. Transport, disposable PostgreSQL
+approval, and its source bindings must validate before worker or closure
+attestation can execute the reviewed sandbox capability probe.
+
 ## Fixture authority
 
 | Input | SHA-256 |
