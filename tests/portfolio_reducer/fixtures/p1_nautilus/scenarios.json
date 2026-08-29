@@ -1,0 +1,40 @@
+{
+  "fee_only": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"},
+      {"fills": [{"fee": "0.2", "price": "100", "quantity": "1"}], "quantity": "1", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "999.7", "fees": "0.3", "mark": null, "position": "0", "realized": "0", "unrealized": "0"}
+  },
+  "flatten": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"},
+      {"fills": [{"fee": "0.1", "price": "102", "quantity": "1"}], "quantity": "1", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "1001.8", "fees": "0.2", "mark": null, "position": "0", "realized": "2", "unrealized": "0"}
+  },
+  "hold": {
+    "orders": [],
+    "terminal": {"average": "0", "cash": "1000", "fees": "0", "mark": null, "position": "0", "realized": "0", "unrealized": "0"}
+  },
+  "long_entry": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "100", "cash": "899.9", "fees": "0.1", "mark": "101", "position": "1", "realized": "0", "unrealized": "1"}
+  },
+  "netting_close_reopen": {
+    "orders": [
+      {"fills": [{"fee": "0.2", "price": "100", "quantity": "2"}], "quantity": "2", "side": "BUY"},
+      {"fills": [{"fee": "0.2", "price": "110", "quantity": "2"}], "quantity": "2", "side": "SELL"},
+      {"fills": [{"fee": "0.1", "price": "90", "quantity": "1"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "90", "cash": "929.5", "fees": "0.5", "mark": "95", "position": "1", "realized": "20", "unrealized": "5"}
+  },
+  "partial_fill": {
+    "orders": [
+      {"fills": [{"fee": "0.04", "price": "100", "quantity": "0.4"}, {"fee": "0.06", "price": "102", "quantity": "0.6"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "101.2", "cash": "898.7", "fees": "0.1", "mark": "102", "position": "1", "realized": "0", "unrealized": "0.8"}
+  }
+}
