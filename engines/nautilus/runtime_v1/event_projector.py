@@ -544,6 +544,7 @@ def _validate_business_facts(
                         or price % tick_size != 0
                         or commission < 0
                         or fill["side"] != expected_side
+                        or fill["ts_event"] != quote["ts_event"]
                         or quantity != expected_quantity
                         or price != expected_price
                         or commission != expected_commission

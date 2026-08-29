@@ -481,8 +481,8 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
             _run(),
             AUTHORITY,
             (
-                ("9989.011088", "100", "998.901109"),
-                ("9989.011088", "101", "1008.89012"),
+                ("9989.011088", "100", "998.901109", "2026-08-05T12:00:00Z"),
+                ("9989.011088", "101", "1008.89012", "2026-08-05T12:01:00Z"),
             ),
         ),
         (
@@ -490,10 +490,20 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
             _partial_fill_run(),
             LOW_VOLUME_AUTHORITY,
             (
-                ("2", "100", "0.2"),
-                ("9987.011088", "100.01", "998.800979"),
-                ("3", "101", "0.303"),
-                ("9986.011088", "100.99", "1008.48726"),
+                ("2", "100", "0.2", "2026-08-05T12:00:00Z"),
+                (
+                    "9987.011088",
+                    "100.01",
+                    "998.800979",
+                    "2026-08-05T12:00:00Z",
+                ),
+                ("3", "101", "0.303", "2026-08-05T12:01:00Z"),
+                (
+                    "9986.011088",
+                    "100.99",
+                    "1008.48726",
+                    "2026-08-05T12:01:00Z",
+                ),
             ),
         ),
     ),
@@ -502,7 +512,7 @@ def test_fixed_l1_fill_oracle_accepts_high_and_low_volume_fills(
     inputs: RuntimeInputs,
     run: SimpleNamespace,
     completion: CompletionAuthority,
-    expected_fills: tuple[tuple[str, str, str], ...],
+    expected_fills: tuple[tuple[str, str, str, str], ...],
 ) -> None:
     stream = project_event_stream(
         inputs,
@@ -513,10 +523,33 @@ def test_fixed_l1_fill_oracle_accepts_high_and_low_volume_fills(
     )
 
     assert tuple(
-        (str(event["quantity"]), str(event["price"]), str(event["fee"]))
+        (
+            str(event["quantity"]),
+            str(event["price"]),
+            str(event["fee"]),
+            str(event["simulation_time"]),
+        )
         for event in stream.events
         if event["event_type"] == "Fill"
     ) == expected_fills
+
+
+def test_rejects_fill_timestamp_that_differs_from_execution_quote() -> None:
+    facts = list(_facts())
+    fill = facts[4]
+    facts[4] = replace(
+        fill,
+        attributes=tuple(
+            (
+                name,
+                1785931230000000000 if name == "ts_event" else value,
+            )
+            for name, value in fill.attributes
+        ),
+    )
+
+    with pytest.raises(ValueError, match="business facts"):
+        _project(run=_run(facts=tuple(facts)))
 
 
 def test_rejects_coordinated_fill_price_shift_with_unchanged_terminal_state() -> None:
