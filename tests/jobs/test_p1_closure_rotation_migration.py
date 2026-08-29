@@ -138,6 +138,18 @@ def test_p1_closure_rotation_is_exact_forward_only_driver_sql() -> None:
     assert "FROM pg_catalog.pg_proc" in statement
     assert "pg_catalog.set_config(" in statement
     assert "pg_catalog.current_setting(" in statement
+    assert "v_function pg_catalog.regprocedure;" in statement
+    assert "v_function pg_catalog.regprocedure :=" not in statement
+    exact_lookup = (
+        "job_plane.ingest_p1_engine_event_batch_v2("
+        "pg_catalog.text,pg_catalog.uuid,pg_catalog.uuid,pg_catalog.uuid,"
+        "pg_catalog.uuid,pg_catalog.text,pg_catalog.text,pg_catalog.text,"
+        "pg_catalog.text,pg_catalog.text)"
+    )
+    assert exact_lookup in statement
+    assert statement.index("pg_catalog.current_setting(") < statement.index(
+        "v_function :="
+    )
     for builtin in (
         "acldefault",
         "aclexplode",

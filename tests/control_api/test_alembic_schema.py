@@ -177,10 +177,30 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "RAISE EXCEPTION 'hostile search path function executed'; "
                 "END$$"
             )
+            connection.exec_driver_sql(
+                "CREATE DOMAIN public.text AS pg_catalog.text"
+            )
+            connection.exec_driver_sql(
+                "CREATE DOMAIN public.uuid AS pg_catalog.uuid"
+            )
+            hostile_signature = (
+                "job_plane.ingest_p1_engine_event_batch_v2("
+                "public.text,public.uuid,public.uuid,public.uuid,public.uuid,"
+                "public.text,public.text,public.text,public.text,public.text)"
+            )
+            connection.exec_driver_sql(
+                "CREATE FUNCTION " + hostile_signature
+                + " RETURNS integer LANGUAGE sql AS $$SELECT 1$$"
+            )
             connection.exec_driver_sql("SET search_path = public, pg_catalog")
             connection.commit()
             command.upgrade(config, "head")
-            connection.exec_driver_sql("DROP FUNCTION public.length(text)")
+            connection.exec_driver_sql("DROP FUNCTION " + hostile_signature)
+            connection.exec_driver_sql(
+                "DROP FUNCTION public.length(pg_catalog.text)"
+            )
+            connection.exec_driver_sql("DROP DOMAIN public.uuid")
+            connection.exec_driver_sql("DROP DOMAIN public.text")
             connection.exec_driver_sql("RESET search_path")
             connection.commit()
             after = _p1_ingest_authority(connection)

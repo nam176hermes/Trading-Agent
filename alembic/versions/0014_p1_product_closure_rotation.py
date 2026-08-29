@@ -21,8 +21,7 @@ def upgrade() -> None:
         r"""
         DO $p1_product_closure_rotation$
         DECLARE
-          v_function pg_catalog.regprocedure :=
-            'job_plane.ingest_p1_engine_event_batch_v2(text,uuid,uuid,uuid,uuid,text,text,text,text,text)'::pg_catalog.regprocedure;
+          v_function pg_catalog.regprocedure;
           v_oid pg_catalog.oid;
           v_definition pg_catalog.text;
           v_rotated_definition pg_catalog.text;
@@ -51,6 +50,8 @@ def upgrade() -> None:
             RAISE EXCEPTION 'P1 closure rotation search path is invalid'
               USING ERRCODE = 'P2D08';
           END IF;
+          v_function :=
+            'job_plane.ingest_p1_engine_event_batch_v2(pg_catalog.text,pg_catalog.uuid,pg_catalog.uuid,pg_catalog.uuid,pg_catalog.uuid,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text,pg_catalog.text)'::pg_catalog.regprocedure;
 
           SELECT
             function_row.oid,
