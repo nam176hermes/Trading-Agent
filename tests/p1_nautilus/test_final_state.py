@@ -496,6 +496,8 @@ assert low_volume_completion.order_count == 2
 assert low_volume_completion.fill_count == 4
 assert low_volume_completion.final_cash == "1007781.489627"
 assert low_volume_completion.fees == "2007.791239"
+assert low_volume_completion.realized_pnl == "9789.280866"
+assert low_volume_completion.unrealized_pnl == "0"
 low_volume_stream = project_event_stream(
     low_volume_inputs,
     low_volume_run,

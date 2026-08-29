@@ -90,6 +90,18 @@ def _decimal(value: Fraction, *, field: str) -> Decimal:
     return Decimal((1 if numerator < 0 else 0, digits, -scale))
 
 
+def _round_half_even(value: Fraction, precision: int) -> Fraction:
+    scale = 10**precision
+    scaled = value * scale
+    quotient, remainder = divmod(abs(scaled.numerator), scaled.denominator)
+    doubled = remainder * 2
+    if doubled > scaled.denominator or (
+        doubled == scaled.denominator and quotient % 2
+    ):
+        quotient += 1
+    return Fraction((-1 if scaled < 0 else 1) * quotient, scale)
+
+
 def _business_id(stream_digest: str, kind: str, identity: object) -> UUID:
     return uuid5(NAMESPACE_URL, f"trading-agent:p1:{stream_digest}:{kind}:{identity}")
 
@@ -196,13 +208,27 @@ def project_portfolio(
             quantity = OrderQuantity(event.quantity, precision)
             price = Price(event.price, settlement)
             try:
-                constraints.validate_order(price=price, quantity=quantity)
+                constraints.validate_price(price)
+                constraints.validate_quantity(quantity)
                 commission = Money(event.fee, settlement)
             except ValueError as exc:
                 raise ProjectionError(str(exc)) from exc
             quantity_fraction = exact_fraction(event.quantity, field="fill quantity")
             price_fraction = exact_fraction(event.price, field="fill price")
             fee_fraction = exact_fraction(event.fee, field="fill fee")
+            notional = quantity_fraction * price_fraction * multiplier
+            if not (
+                exact_fraction(
+                    exact.instrument.minimum_notional.amount,
+                    field="minimum notional",
+                )
+                <= notional
+                <= exact_fraction(
+                    exact.instrument.maximum_notional.amount,
+                    field="maximum notional",
+                )
+            ):
+                raise ProjectionError("fill notional is outside instrument bounds")
             cumulative = state.cumulative
             average_notional = state.average_notional
             cumulative += quantity_fraction
@@ -246,7 +272,10 @@ def project_portfolio(
                 last_fill_price=price,
                 average_fill_price=Price(
                     _decimal(
-                        average_notional / cumulative,
+                        _round_half_even(
+                            average_notional / cumulative,
+                            exact.catalog.price_precision,
+                        ),
                         field="average fill price",
                     ),
                     settlement,
@@ -292,17 +321,21 @@ def project_portfolio(
                             "non-zero position has no average entry price"
                         )
                     average = ((position * average) + gross) / next_position
-                cash -= gross + fee_fraction
+                cash = _round_half_even(
+                    cash - gross - fee_fraction, settlement.precision
+                )
             else:
                 if average is None or quantity_fraction > position:
                     raise ProjectionError("sell fill would create an unsupported short position")
                 next_position = position - quantity_fraction
                 realized += (price_fraction - average) * quantity_fraction * multiplier
-                cash += gross - fee_fraction
+                cash = _round_half_even(
+                    cash + gross - fee_fraction, settlement.precision
+                )
                 if next_position == 0:
                     average = None
             position = next_position
-            fees += fee_fraction
+            fees = _round_half_even(fees + fee_fraction, settlement.precision)
             continue
 
         if isinstance(event, P1PositionObserved):
@@ -317,13 +350,19 @@ def project_portfolio(
             )
             if (
                 observed_quantity != position
-                or observed_average != (average or Fraction(0))
-                or observed_realized != realized
+                or observed_average
+                != _round_half_even(
+                    average or Fraction(0), settlement.precision
+                )
+                or observed_realized
+                != _round_half_even(realized, settlement.precision)
             ):
                 raise ProjectionError("position observation is not explained by fills")
             unrealized = exact_fraction(
                 event.unrealized_pnl, field="position unrealized PnL"
             )
+            if unrealized != _round_half_even(unrealized, settlement.precision):
+                raise ProjectionError("position observation exceeds currency precision")
             last_position_observation = event
             if position:
                 if average is None:
@@ -368,12 +407,14 @@ def project_portfolio(
             if last_position_observation is None:
                 raise ProjectionError("account observation has no position observation")
             if (
-                exact_fraction(event.cash_balance, field="account cash") != cash
-                or exact_fraction(event.fees, field="account fees") != fees
+                exact_fraction(event.cash_balance, field="account cash")
+                != _round_half_even(cash, settlement.precision)
+                or exact_fraction(event.fees, field="account fees")
+                != _round_half_even(fees, settlement.precision)
                 or exact_fraction(event.realized_pnl, field="account realized PnL")
-                != realized
+                != _round_half_even(realized, settlement.precision)
                 or exact_fraction(event.unrealized_pnl, field="account unrealized PnL")
-                != unrealized
+                != _round_half_even(unrealized, settlement.precision)
             ):
                 raise ProjectionError("account observation is not explained by fills")
             if event is source[-2]:
@@ -393,11 +434,21 @@ def project_portfolio(
                 entries.append(_projected_entry(exact, event, account))
 
     accounting = ProjectedAccounting(
-        cash_balance=_decimal(cash, field="final cash"),
+        cash_balance=_decimal(
+            _round_half_even(cash, settlement.precision), field="final cash"
+        ),
         position_quantity=_decimal(position, field="final position"),
-        fees=_decimal(fees, field="final fees"),
-        realized_pnl=_decimal(realized, field="final realized PnL"),
-        unrealized_pnl=_decimal(unrealized, field="final unrealized PnL"),
+        fees=_decimal(
+            _round_half_even(fees, settlement.precision), field="final fees"
+        ),
+        realized_pnl=_decimal(
+            _round_half_even(realized, settlement.precision),
+            field="final realized PnL",
+        ),
+        unrealized_pnl=_decimal(
+            _round_half_even(unrealized, settlement.precision),
+            field="final unrealized PnL",
+        ),
     )
     return PortfolioProjection(
         order_events=tuple(order_events),

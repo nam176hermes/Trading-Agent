@@ -396,6 +396,7 @@ def _partial_fill_run() -> SimpleNamespace:
             **vars(run),
             "native_fill_ids": ("T-1a", "T-1b", "T-2a", "T-2b"),
             "fill_count": 4,
+            "position_realized_pnl": "9789.280866",
         }
     )
 
@@ -416,6 +417,7 @@ LOW_VOLUME_AUTHORITY = replace(
     fill_count=4,
     final_cash="1007781.489627",
     fees="2007.791239",
+    realized_pnl="9789.280866",
 )
 
 
@@ -471,6 +473,23 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
         for event in stream.events
         if event["event_type"] == "Fill"
     ] == ["T-1a", "T-1b", "T-2a", "T-2b"]
+    assert stream.events[-3]["realized_pnl"] == "9789.280866"
+    assert stream.events[-2]["realized_pnl"] == "9789.280866"
+    assert stream.events[-1]["realized_pnl"] == "9789.280866"
+
+
+def test_partial_fill_realized_pnl_must_use_quote_currency_precision() -> None:
+    run = _partial_fill_run()
+    run.position_realized_pnl = "9789.28086624"
+
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _low_volume_inputs(),
+            run,
+            replace(LOW_VOLUME_AUTHORITY, realized_pnl="9789.28086624"),
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
 
 
 @pytest.mark.parametrize(

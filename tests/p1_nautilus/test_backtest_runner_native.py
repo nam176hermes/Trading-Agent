@@ -61,7 +61,7 @@ def test_exact_g1_runner_is_deterministic_scalar_only_and_disposes() -> None:
 import hashlib
 import json
 from dataclasses import replace
-from decimal import Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from pathlib import Path
 import sys
 import warnings
@@ -214,6 +214,9 @@ assert expected_cash == Decimal("1007781.489627")
 assert expected_fees == Decimal("2007.791239")
 assert low_balances == {"BTC": expected_position, "USDT": expected_cash}
 assert low_commissions == {"USDT": expected_fees}
+assert low_volume.position_average_entry == "0"
+assert low_volume.position_realized_pnl == "9789.280866"
+assert low_volume.position_unrealized_pnl == "0"
 assert first.strategy_state == "COMPLETED"
 assert first.processed_target_ids == (
     "11111111-1111-4111-8111-111111111111",
@@ -246,9 +249,13 @@ with localcontext() as context:
     ) / larger_quantity
     larger_unrealized = (Decimal("102") - larger_average) * larger_quantity
 assert Decimal(larger_run.position_quantity) == larger_quantity
-assert Decimal(larger_run.position_average_entry) == larger_average
+assert Decimal(larger_run.position_average_entry) == larger_average.quantize(
+    Decimal("0.000001"), rounding=ROUND_HALF_EVEN
+)
 assert larger_run.position_realized_pnl == "0"
-assert Decimal(larger_run.position_unrealized_pnl) == larger_unrealized
+assert Decimal(larger_run.position_unrealized_pnl) == larger_unrealized.quantize(
+    Decimal("0.000001"), rounding=ROUND_HALF_EVEN
+)
 assert larger_run.final_market_price == "102"
 _validate_native_unrealized(
     Decimal("19978.022176"), Decimal("19978.022176"), 6

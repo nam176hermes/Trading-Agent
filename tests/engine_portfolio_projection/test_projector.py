@@ -115,12 +115,12 @@ def _catalog_digest(catalog: P1InstrumentCatalogV1 | None = None) -> str:
     return sha256(canonical_json_bytes(catalog or _catalog()) + b"\n").hexdigest()
 
 
-def _balance() -> AccountBalanceSnapshot:
+def _balance(cash: str = "1000") -> AccountBalanceSnapshot:
     zero = _money("0")
     return AccountBalanceSnapshot(
         account_id="account-1",
         currency=Currency.USDT,
-        cash=_money("1000"),
+        cash=_money(cash),
         locked_funds=zero,
         margin_used=zero,
         realized_pnl=zero,
@@ -132,11 +132,11 @@ def _balance() -> AccountBalanceSnapshot:
     )
 
 
-def _opening() -> PortfolioOpeningEntry:
+def _opening(cash: str = "1000") -> PortfolioOpeningEntry:
     return PortfolioOpeningEntry(
         account_id="account-1",
         reporting_currency=Currency.USDT,
-        balances=(_balance(),),
+        balances=(_balance(cash),),
         source_id="p1-opening",
         source_revision="r1",
         effective_at=NOW,
@@ -381,6 +381,7 @@ def _project(
     catalog: P1InstrumentCatalogV1 | None = None,
     instrument: InstrumentDefinition | None = None,
     strategy_id: str = "strategy-1",
+    opening: PortfolioOpeningEntry | None = None,
 ):
     try:
         from packages.engine_portfolio_projection import (
@@ -395,12 +396,119 @@ def _project(
             request_message_id=request_id,
             catalog=catalog or _catalog(),
             instrument=instrument or _instrument(),
-            opening=_opening(),
+            opening=opening or _opening(),
             strategy_id=strategy_id,
             liquidity_side=LiquiditySide.TAKER,
             reconciliation_source=ReconciliationSource.VENUE,
         ),
     )
+
+
+def _partial_fill_stream() -> tuple[object, ...]:
+    source = _stream()
+    events = (
+        source[0],
+        source[1],
+        source[2].model_copy(update={"quantity": Decimal("9989.011088")}),
+        source[3].model_copy(update={"quantity": Decimal("9989.011088")}),
+        source[4].model_copy(
+            update={
+                "quantity": Decimal("2"),
+                "fee": Decimal("0.2"),
+            }
+        ),
+        source[4].model_copy(
+            update={
+                "sequence": 7,
+                "native_fill_id": "native-fill-a2",
+                "quantity": Decimal("9987.011088"),
+                "price": Decimal("100.01"),
+                "fee": Decimal("998.800979"),
+            }
+        ),
+        source[7].model_copy(update={"sequence": 8}),
+        source[8].model_copy(
+            update={"sequence": 9, "quantity": Decimal("9989.011088")}
+        ),
+        source[9].model_copy(
+            update={"sequence": 10, "quantity": Decimal("9989.011088")}
+        ),
+        source[10].model_copy(
+            update={
+                "sequence": 11,
+                "quantity": Decimal("3"),
+                "price": Decimal("101"),
+                "fee": Decimal("0.303"),
+            }
+        ),
+        source[10].model_copy(
+            update={
+                "sequence": 12,
+                "native_fill_id": "native-fill-b2",
+                "quantity": Decimal("9986.011088"),
+                "price": Decimal("100.99"),
+                "fee": Decimal("1008.48726"),
+            }
+        ),
+        source[11].model_copy(
+            update={
+                "sequence": 13,
+                "quantity": Decimal("0"),
+                "average_entry_price": Decimal("0"),
+                "realized_pnl": Decimal("9789.280866"),
+                "unrealized_pnl": Decimal("0"),
+            }
+        ),
+        source[12].model_copy(
+            update={
+                "sequence": 14,
+                "cash_balance": Decimal("1007781.489627"),
+                "fees": Decimal("2007.791239"),
+                "realized_pnl": Decimal("9789.280866"),
+                "unrealized_pnl": Decimal("0"),
+            }
+        ),
+        source[13].model_copy(
+            update={
+                "target_count": 2,
+                "order_count": 2,
+                "fill_count": 4,
+                "final_cash": Decimal("1007781.489627"),
+                "final_position": Decimal("0"),
+                "fees": Decimal("2007.791239"),
+                "realized_pnl": Decimal("9789.280866"),
+                "unrealized_pnl": Decimal("0"),
+            }
+        ),
+    )
+    return _redigest(events)
+
+
+def test_partial_fill_projection_rounds_money_at_usdt_precision() -> None:
+    projection = _project(
+        _partial_fill_stream(),
+        opening=_opening("1000000"),
+    )
+
+    assert projection.accounting.cash_balance == Decimal("1007781.489627")
+    assert projection.accounting.position_quantity == Decimal("0")
+    assert projection.accounting.fees == Decimal("2007.791239")
+    assert projection.accounting.realized_pnl == Decimal("9789.280866")
+    assert projection.accounting.unrealized_pnl == Decimal("0")
+    assert projection.entries[2].entry.fill.average_fill_price.amount == Decimal(
+        "100.01"
+    )
+
+
+def test_projection_rejects_coordinated_subquantum_realized_observation() -> None:
+    events = list(_partial_fill_stream())
+    for index in (-3, -2, -1):
+        events[index] = events[index].model_copy(
+            update={"realized_pnl": Decimal("9789.2808661")}
+        )
+
+    with pytest.raises(ValueError, match="position observation"):
+        _project(_redigest(tuple(events)), opening=_opening("1000000"))
 
 
 def _redigest(events: tuple[object, ...]) -> tuple[object, ...]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 import hashlib
 import hmac
 import json
@@ -384,6 +384,7 @@ def _market_rows(inputs: object) -> dict[str, dict[str, object]]:
 
 def _validate_business_facts(
     inputs: object,
+    run: object,
     quotes: tuple[tuple[tuple[str, str | int | None], ...], ...],
     executions: tuple[CollectedExecution, ...],
     schedule: dict[str, tuple[tuple[str, ...], str, str, str]],
@@ -425,6 +426,8 @@ def _validate_business_facts(
 
         cash = starting_balance
         position = Decimal(0)
+        average = Decimal(0)
+        realized = Decimal(0)
         commissions: dict[str, Decimal] = {}
         used_quote_times: set[str] = set()
         with localcontext() as context:
@@ -554,23 +557,43 @@ def _validate_business_facts(
                         commissions.get(commission_currency, Decimal(0)) + commission
                     )
                     if fill["side"] == "BUY":
-                        position = (position + quantity).quantize(base_quantum)
+                        new_position = (position + quantity).quantize(
+                            base_quantum, rounding=ROUND_HALF_EVEN
+                        )
+                        average = (
+                            position * average + quantity * price
+                        ) / new_position
+                        position = new_position
                         cash = (cash - quantity * price - commission).quantize(
-                            quote_quantum
+                            quote_quantum, rounding=ROUND_HALF_EVEN
                         )
                     elif fill["side"] == "SELL":
-                        position = (position - quantity).quantize(base_quantum)
-                        cash = (cash + quantity * price - commission).quantize(
-                            quote_quantum
+                        realized += (price - average) * quantity
+                        position = (position - quantity).quantize(
+                            base_quantum, rounding=ROUND_HALF_EVEN
                         )
+                        cash = (cash + quantity * price - commission).quantize(
+                            quote_quantum, rounding=ROUND_HALF_EVEN
+                        )
+                        if position == 0:
+                            average = Decimal(0)
                     else:
                         raise ValueError
                     if cash < 0 or position < 0:
                         raise ValueError
             quote_currency = catalog["quote_currency"]
+            final_row = next(reversed(rows.values()))
+            unrealized = (
+                (Decimal(final_row["close"]) - average) * position
+            ).quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
             if (
                 cash != Decimal(completion.final_cash)
                 or position != Decimal(completion.final_position)
+                or average.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
+                != Decimal(run.position_average_entry)
+                or realized.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
+                != Decimal(completion.realized_pnl)
+                or unrealized != Decimal(completion.unrealized_pnl)
                 or set(commissions) - {quote_currency}
                 or commissions.get(quote_currency, Decimal(0))
                 != Decimal(completion.fees)
@@ -876,7 +899,7 @@ def project_event_stream(
         or run.processed_target_ids != schedule_target_ids
     ):
         raise ValueError("P1 native targets do not match schedule authority")
-    _validate_business_facts(inputs, quotes, executions, schedule, completion)
+    _validate_business_facts(inputs, run, quotes, executions, schedule, completion)
     for execution in executions:
         events.extend(_target_events(execution, schedule, len(events) + 2))
     final_time = _native_time(run.last_market_timestamp)

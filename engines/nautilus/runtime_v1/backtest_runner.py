@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, DecimalException, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, DecimalException, localcontext
 from importlib.metadata import version as package_version
 
 from nautilus_trader.model.events import OrderFilled
@@ -154,7 +154,7 @@ def _native_facts(records: tuple[tuple[str, object], ...]) -> tuple[NativeFact, 
 
 def _fill_position(
     fills: tuple[FilledOrderFact, ...],
-) -> tuple[str, str, str]:
+) -> tuple[Decimal, Decimal, Decimal]:
     with localcontext() as context:
         context.prec = 96
         position = Decimal(0)
@@ -176,7 +176,7 @@ def _fill_position(
                     average = Decimal(0)
             else:
                 raise BacktestRunError("native fill ledger is invalid")
-        return _text(position), _text(average), _text(realized)
+        return position, average, realized
 
 
 def _callback_fill(value: FilledOrderFact) -> tuple[str, ...]:
@@ -221,7 +221,7 @@ def _validate_native_unrealized(
         with localcontext() as context:
             context.prec = 96
             quantum = Decimal(1).scaleb(-quote_precision)
-            expected_native = expected.quantize(quantum)
+            expected_native = expected.quantize(quantum, rounding=ROUND_HALF_EVEN)
     except DecimalException as exc:
         raise BacktestRunError("native unrealized PnL proof is invalid") from exc
     if observed != expected_native:
@@ -310,23 +310,37 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         raise BacktestRunError(
             "native terminal state is inconsistent: " + ",".join(contradictions)
         )
-    position_quantity, position_average, position_realized = _fill_position(
-        fill_facts
+    base_quantum = Decimal(1).scaleb(-instruments[0].base_currency.precision)
+    quote_quantum = Decimal(1).scaleb(-instruments[0].quote_currency.precision)
+    position, position_average, position_realized = _fill_position(fill_facts)
+    position_quantity = _text(
+        position.quantize(base_quantum, rounding=ROUND_HALF_EVEN)
+    )
+    position_average_text = _text(
+        position_average.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
+    )
+    position_realized_text = _text(
+        position_realized.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
     )
     final_market_price = batch.data[-1].close.as_decimal()
     with localcontext() as context:
         context.prec = 96
         expected_unrealized = (
-            final_market_price - Decimal(position_average)
-        ) * Decimal(position_quantity)
+            final_market_price - position_average
+        ) * position
+        expected_unrealized_text = _text(
+            expected_unrealized.quantize(
+                quote_quantum, rounding=ROUND_HALF_EVEN
+            )
+    )
     if positions:
-        position = positions[0]
-        cached_quantity = position.quantity.as_decimal()
-        if position.side.name == "SHORT":
+        native_position = positions[0]
+        cached_quantity = native_position.quantity.as_decimal()
+        if native_position.side.name == "SHORT":
             cached_quantity = -cached_quantity
-        elif position.side.name == "FLAT":
+        elif native_position.side.name == "FLAT":
             cached_quantity = Decimal(0)
-        native_unrealized = position.unrealized_pnl(
+        native_unrealized = native_position.unrealized_pnl(
             batch.data[-1].close
         ).as_decimal()
     else:
@@ -397,8 +411,6 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         }
         base = str(instruments[0].base_currency)
         quote = str(instruments[0].quote_currency)
-        base_quantum = Decimal(1).scaleb(-instruments[0].base_currency.precision)
-        quote_quantum = Decimal(1).scaleb(-instruments[0].quote_currency.precision)
         expected.setdefault(base, Decimal(0))
         expected.setdefault(quote, Decimal(0))
         for fact in fill_facts:
@@ -406,12 +418,12 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
             notional = quantity * Decimal(fact.price)
             expected[base] = (
                 expected[base] + (quantity if fact.side == "BUY" else -quantity)
-            ).quantize(base_quantum)
+            ).quantize(base_quantum, rounding=ROUND_HALF_EVEN)
             expected[quote] = (
                 expected[quote]
                 + (-notional if fact.side == "BUY" else notional)
                 - Decimal(fact.commission)
-            ).quantize(quote_quantum)
+            ).quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
         observed = {
             str(currency): money.as_decimal() for currency, money in balances.items()
         }
@@ -455,9 +467,9 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         balance_facts=balance_facts,
         commission_facts=commission_facts,
         native_facts=native_facts,
-        position_average_entry=position_average,
-        position_realized_pnl=position_realized,
-        position_unrealized_pnl=_text(expected_unrealized),
+        position_average_entry=position_average_text,
+        position_realized_pnl=position_realized_text,
+        position_unrealized_pnl=expected_unrealized_text,
         final_market_price=_text(final_market_price),
         last_market_timestamp=max(int(item.ts_event) for item in batch.data),
     )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation, localcontext
 import json
 
 from .bootstrap import RuntimeBootstrapError, require_product_lineage
@@ -158,14 +158,22 @@ def _ledger(
                     raise FinalStateError("runtime final state is inconsistent")
                 commissions[currency] = commissions.get(currency, Decimal(0)) + fee
                 if fill["side"] == "BUY":
-                    new_position = (position + quantity).quantize(base_quantum)
+                    new_position = (position + quantity).quantize(
+                        base_quantum, rounding=ROUND_HALF_EVEN
+                    )
                     average = (position * average + quantity * price) / new_position
                     position = new_position
-                    cash = (cash - quantity * price - fee).quantize(quote_quantum)
+                    cash = (cash - quantity * price - fee).quantize(
+                        quote_quantum, rounding=ROUND_HALF_EVEN
+                    )
                 elif fill["side"] == "SELL" and quantity <= position:
                     realized += (price - average) * quantity
-                    position = (position - quantity).quantize(base_quantum)
-                    cash = (cash + quantity * price - fee).quantize(quote_quantum)
+                    position = (position - quantity).quantize(
+                        base_quantum, rounding=ROUND_HALF_EVEN
+                    )
+                    cash = (cash + quantity * price - fee).quantize(
+                        quote_quantum, rounding=ROUND_HALF_EVEN
+                    )
                     if position == 0:
                         average = Decimal(0)
                 else:
@@ -274,14 +282,18 @@ def _validate(
         or balances[quote_currency] != cash
         or observed_commissions != expected_commissions
         or _decimal(run.position_quantity) != position
-        or _decimal(run.position_average_entry) != average
-        or _decimal(run.position_realized_pnl) != realized
+        or _decimal(run.position_average_entry)
+        != average.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
+        or _decimal(run.position_realized_pnl)
+        != realized.quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
         or _decimal(run.final_market_price) != final_price
         or run.last_market_timestamp != final_timestamp
         or len(quotes) != row_count
     ):
         raise FinalStateError("runtime final state is inconsistent")
-    unrealized = (final_price - average) * position
+    unrealized = ((final_price - average) * position).quantize(
+        quote_quantum, rounding=ROUND_HALF_EVEN
+    )
     if _decimal(run.position_unrealized_pnl) != unrealized:
         raise FinalStateError("runtime final state is inconsistent")
     return CompletionAuthority(
