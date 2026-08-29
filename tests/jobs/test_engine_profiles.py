@@ -53,7 +53,7 @@ def test_p1_profile_is_one_code_owned_closed_policy() -> None:
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
     )
     assert policy.runtime_inventory_sha256 == (
-        "039e9c40c15270c816382870165ade5721edb11bcb1b4b8cb2f6af11b194a8f1"
+        "566afd91823fc9c00d0c384115076b3e95a8b940fc27a8e19c1ed38682612edc"
     )
     assert "profile" not in RunBacktest.model_fields
 
@@ -129,15 +129,32 @@ def test_p1_policy_rejects_artifact_manifest_substitution(
         _load_policy()
 
 
-@pytest.mark.parametrize("mutation", ("stale-source", "missing", "digest"))
+@pytest.mark.parametrize("mutation", ("old-inventory", "missing", "digest"))
 def test_p1_policy_rejects_runtime_inventory_mutation(
     mutation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     document = json.loads(POLICY_PATH.read_bytes())
     inventory = document["runtime_inventory"]
     assert isinstance(inventory, list)
-    if mutation == "stale-source":
-        inventory[0]["sha256"] = "0" * 64
+    if mutation == "old-inventory":
+        old_hashes = {
+            "engines/nautilus/runtime_v1/backtest_runner.py": (
+                "aaa0fa4feb941f25535ed2805c700fc6ad94aad965a28ceb1103dda23c0af04c"
+            ),
+            "engines/nautilus/runtime_v1/event_projector.py": (
+                "989dff09fbe6b0fb22d23780c1b553bff17921bbe59eb4a8e9c587dcddb08ecd"
+            ),
+            "engines/nautilus/runtime_v1/final_state.py": (
+                "a4c6c8a7fa266859ff1fe97af8b1324de2b4d67359a1ccafc8fbce38c125bc8e"
+            ),
+        }
+        for record in inventory:
+            source = record["source"]
+            if source in old_hashes:
+                record["sha256"] = old_hashes[source]
+        document["runtime_inventory_sha256"] = (
+            "039e9c40c15270c816382870165ade5721edb11bcb1b4b8cb2f6af11b194a8f1"
+        )
     elif mutation == "missing":
         inventory.pop()
     else:
