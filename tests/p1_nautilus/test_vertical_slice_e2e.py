@@ -565,7 +565,12 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     import scripts.run_p1_nautilus_vertical_slice as vertical
-    from tests.jobs._postgres import disposable_database, upgrade_to_head
+    from tests.jobs._postgres import (
+        POSTGRES_BIN,
+        POSTGRES_EXECUTABLES,
+        disposable_database,
+        upgrade_to_head,
+    )
 
     supplied = {
         name: os.environ.get(name, "")
@@ -578,6 +583,11 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     assert supplied["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == (
         "DISPOSABLE_PG_GREEN"
     )
+    approval_path = Path(supplied["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"])
+    fixture_plan_path = Path(supplied["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"])
+    assert approval_path.is_file() and fixture_plan_path.is_file()
+    assert json.loads(approval_path.read_bytes())["scope"] == "DISPOSABLE_PG_GREEN"
+    assert all((POSTGRES_BIN / name).is_file() for name in POSTGRES_EXECUTABLES)
 
     fixture_root = tmp_path / "vertical-slice-inputs"
     fixture_root.mkdir(mode=0o700)
@@ -592,7 +602,7 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     with disposable_database(operation_id=operation_id, planned=True) as owner:
         upgrade_to_head(owner)
         plan = json.loads(
-            Path(supplied["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"]).read_bytes()
+            fixture_plan_path.read_bytes()
         )
         slots = [
             slot

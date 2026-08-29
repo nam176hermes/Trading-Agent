@@ -17,6 +17,7 @@ from packages.job_contracts import ActorIdentity
 from packages.engine_event_ledger import EngineEventBatchReceipt
 from packages.engine_portfolio_projection.parity import P1PortfolioParityReceipt
 from packages.job_contracts import JobState, JobType, parse_payload
+from packages.nautilus_runtime_contracts.result import P1_RESULT_VALIDATOR_ID
 from services.job_store.records import (
     ArtifactRecord,
     AttemptRecord,
@@ -198,7 +199,7 @@ def _successful_detail() -> JobDetailRecord:
                 size_bytes=1234,
                 media_type="application/x-ndjson",
                 truncated=False,
-                validator_id="nautilus-p1-result-v1",
+                validator_id=P1_RESULT_VALIDATOR_ID,
                 validation_metadata={
                     "attempt_id": ATTEMPT_ID,
                     "engine_event_receipt": engine_receipt.model_dump(mode="json"),

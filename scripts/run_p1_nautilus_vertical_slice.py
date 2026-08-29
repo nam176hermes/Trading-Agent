@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal
 import hashlib
@@ -45,10 +46,19 @@ from packages.domain import (
     ProductType,
     ReconciliationSource,
 )
-from packages.engine_contracts import ArtifactReference, EngineCommandEnvelope, RunBacktest
+from packages.engine_contracts import (
+    ArtifactReference,
+    EngineCommandEnvelope,
+    RunBacktest,
+    canonical_json_bytes,
+)
+from packages.engine_event_ledger import EngineEventBatchReceipt
+from packages.engine_event_ledger.models import FIRST_ENGINE_EVENT_SEQUENCE
 from packages.engine_portfolio_projection.models import ProjectionAuthority
+from packages.engine_portfolio_projection.parity import P1PortfolioParityReceipt
 from packages.engine_portfolio_projection.validation import canonical_authority
-from packages.job_contracts import ActorIdentity
+from packages.job_contracts import ActorIdentity, JobState
+from packages.nautilus_runtime_contracts.result import P1_RESULT_VALIDATOR_ID
 from packages.runtime_release import validate_job_plane_authority
 from scripts.validate_disposable_postgres_approval import (
     BIND_HOST,
@@ -63,6 +73,7 @@ from scripts.validate_disposable_postgres_approval import (
     validate_source_binding_files,
 )
 from services.job_store.config import JobStoreSettings
+from services.job_store.records import JobDetailRecord
 from services.job_store.repository import JobRepository
 from services.job_store.worker_repository import WorkerRepository
 from services.job_worker.command_registry import attest_worker_runtime_authority
@@ -568,6 +579,14 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
     validate_disposable_postgres_approval(approval, context)
     validate_source_binding_files(approval, ROOT)
     worker_authority = attest_worker_runtime_authority()
+    if (
+        worker_authority.application_revision != commit
+        or worker_authority.backend_revision != commit
+        or worker_authority.runtime_authority.source_tree != tree
+    ):
+        raise VerticalSliceError(
+            "worker runtime authority does not match the exact checkout"
+        )
     closure = attest_p1_nautilus_closure(
         NautilusClosureConfig(
             arguments.p1_closure_root,
@@ -598,6 +617,116 @@ def _store_settings(
     )
 
 
+def _receipt_digest(receipt: EngineEventBatchReceipt | P1PortfolioParityReceipt) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(receipt.model_dump(mode="json"))
+    ).hexdigest()
+
+
+def _durable_success_evidence(
+    detail: object, *, expected_job_id: str
+) -> dict[str, object]:
+    """Close PASS over one exact durable P1 result and parity authority."""
+
+    if type(detail) is not JobDetailRecord:
+        raise VerticalSliceExecutionError(job_mutated=True)
+    job = detail.job
+    if (
+        job.job_id != expected_job_id
+        or job.state is not JobState.SUCCEEDED
+        or job.reason_code != "RESULT_VALIDATED"
+        or job.attempt_count != 1
+        or not isinstance(job.result_hash, str)
+        or _SHA256.fullmatch(job.result_hash) is None
+        or len(detail.attempts) != 1
+    ):
+        raise VerticalSliceExecutionError(job_mutated=True)
+    attempt = detail.attempts[0]
+    if (
+        attempt.job_id != expected_job_id
+        or attempt.attempt_number != 1
+        or attempt.outcome != "SUCCEEDED"
+        or attempt.started_at is None
+        or attempt.finished_at is None
+        or attempt.exit_code != 0
+    ):
+        raise VerticalSliceExecutionError(job_mutated=True)
+    result_artifacts = tuple(
+        artifact
+        for artifact in detail.artifacts
+        if artifact.artifact_type == "engine_event_batch"
+    )
+    if len(result_artifacts) != 1:
+        raise VerticalSliceExecutionError(job_mutated=True)
+    artifact = result_artifacts[0]
+    metadata = artifact.validation_metadata
+    if (
+        artifact.job_id != expected_job_id
+        or artifact.attempt_id != attempt.attempt_id
+        or artifact.sha256 != job.result_hash
+        or artifact.media_type != "application/x-ndjson"
+        or artifact.truncated
+        or artifact.validator_id != P1_RESULT_VALIDATOR_ID
+        or not isinstance(metadata, Mapping)
+    ):
+        raise VerticalSliceExecutionError(job_mutated=True)
+    try:
+        engine_receipt = EngineEventBatchReceipt.model_validate_json(
+            json.dumps(
+                dict(metadata["engine_event_receipt"]),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        parity_receipt = P1PortfolioParityReceipt.model_validate_json(
+            json.dumps(
+                dict(metadata["p1_portfolio_parity"]),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        raise VerticalSliceExecutionError(job_mutated=True) from None
+    metadata_identity = {
+        "attempt_id": attempt.attempt_id,
+        "engine_run_id": str(engine_receipt.engine_run_id),
+        "event_count": engine_receipt.event_count,
+        "job_id": expected_job_id,
+        "last_sequence": engine_receipt.last_sequence,
+        "request_message_id": str(parity_receipt.request_message_id),
+        "semantic_digest": parity_receipt.semantic_digest,
+    }
+    if (
+        any(metadata.get(name) != value for name, value in metadata_identity.items())
+        or engine_receipt.job_id != expected_job_id
+        or engine_receipt.attempt_id != attempt.attempt_id
+        or engine_receipt.batch_sha256 != artifact.sha256
+        or engine_receipt.first_sequence != FIRST_ENGINE_EVENT_SEQUENCE
+        or engine_receipt.last_sequence
+        != engine_receipt.first_sequence + engine_receipt.event_count - 1
+        or parity_receipt.engine_run_id != engine_receipt.engine_run_id
+        or parity_receipt.batch_sha256 != engine_receipt.batch_sha256
+        or parity_receipt.engine_event_count != engine_receipt.event_count
+        or parity_receipt.engine_last_sequence != engine_receipt.last_sequence
+        or parity_receipt.engine_last_digest != engine_receipt.last_digest
+    ):
+        raise VerticalSliceExecutionError(job_mutated=True)
+    return {
+        "attempt_id": attempt.attempt_id,
+        "batch_sha256": engine_receipt.batch_sha256,
+        "engine_event_receipt_sha256": _receipt_digest(engine_receipt),
+        "engine_run_id": str(engine_receipt.engine_run_id),
+        "event_count": engine_receipt.event_count,
+        "final_portfolio_state_hash": parity_receipt.portfolio_state_hash,
+        "job_id": expected_job_id,
+        "last_digest": engine_receipt.last_digest,
+        "last_sequence": engine_receipt.last_sequence,
+        "p1_portfolio_parity_sha256": _receipt_digest(parity_receipt),
+        "result_sha256": artifact.sha256,
+        "semantic_digest": parity_receipt.semantic_digest,
+    }
+
+
 def _run_p1_disposable_once(arguments: argparse.Namespace) -> dict[str, object]:
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
@@ -618,6 +747,23 @@ def _run_p1_disposable_once(arguments: argparse.Namespace) -> dict[str, object]:
         with JobRepository(api_store) as api_repository, WorkerRepository(
             worker_store
         ) as worker_repository:
+            worker_repository.assert_p1_disposable_runtime_identity()
+            worker_authority = attest_worker_runtime_authority()
+            worker = build_p1_worker(
+                worker_repository,
+                {},
+                authority=worker_authority,
+                closure_config=NautilusClosureConfig(
+                    arguments.p1_closure_root,
+                    arguments.p1_closure_artifacts,
+                    arguments.bubblewrap,
+                ),
+                transport_root=arguments.transport_root,
+                artifact_bindings=_artifact_bindings(arguments),
+                p1_projection_authority_factory=_FixedProjectionAuthorityFactory(
+                    arguments
+                ),
+            )
             app = create_p1_disposable_app(
                 api_settings, api_repository, api_authority
             )
@@ -638,26 +784,12 @@ def _run_p1_disposable_once(arguments: argparse.Namespace) -> dict[str, object]:
                 r"job_[0-9a-f]{32}", job_id, re.ASCII
             ) is None:
                 raise VerticalSliceExecutionError(job_mutated=True)
-            worker_repository.assert_p1_disposable_runtime_identity()
-            worker_authority = attest_worker_runtime_authority()
-            worker = build_p1_worker(
-                worker_repository,
-                {},
-                authority=worker_authority,
-                closure_config=NautilusClosureConfig(
-                    arguments.p1_closure_root,
-                    arguments.p1_closure_artifacts,
-                    arguments.bubblewrap,
-                ),
-                transport_root=arguments.transport_root,
-                artifact_bindings=_artifact_bindings(arguments),
-                p1_projection_authority_factory=_FixedProjectionAuthorityFactory(
-                    arguments
-                ),
-            )
             if worker.run_once() is not True:
                 raise VerticalSliceExecutionError(job_mutated=True)
-        return {"job_id": job_id, "worker_run_count": 1}
+            evidence = _durable_success_evidence(
+                api_repository.get_job(job_id), expected_job_id=job_id
+            )
+        return {**evidence, "worker_run_count": 1}
     except VerticalSliceExecutionError:
         raise
     except Exception as exc:

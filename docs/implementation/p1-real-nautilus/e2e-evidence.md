@@ -1,6 +1,7 @@
 # P1-22 BTCUSDT vertical-slice evidence
 
-Status: `SOURCE_PREFLIGHT_READY`; native/database execution: `DEFERRED`.
+Status: `SOURCE_EXECUTION_READY`; native/database execution: `DEFERRED` until
+exact external authority is supplied.
 
 The operator lane is `make qualify-p1-nautilus-vertical-slice`. With no
 external authority it emits one canonical `DEFERRED` receipt and performs no
@@ -30,13 +31,25 @@ The fixed window is `2026-08-05T12:00:00Z` through
 
 ## Execution boundary
 
-The authenticated engine enqueue function exists only at source migration
-`0013_engine_backtest_enqueue_authority`, while the accepted runtime database
-pin remains `0011_engine_backtest_worker_authority`. Even after all supplied
-external paths validate, `--execute` therefore returns `BLOCKED` with
-`P1_RUNTIME_REVISION_AUTHORITY_UNAVAILABLE`. P1-22 does not bypass Job API
-readiness, change the runtime pin, launch PostgreSQL/Nautilus, or claim an E2E
-PASS. A separately reviewed runtime-revision authority amendment must close
-that seam before native execution evidence can be recorded.
+The generic Job API, worker service, systemd composition, and accepted runtime
+database pin remain `0011_engine_backtest_worker_authority`. P1-22 has one
+dedicated code-owned disposable composition at
+`0013_engine_backtest_enqueue_authority`; it has no environment, CLI, client,
+service, or production selector.
+
+After complete preflight, `--execute` constructs the existing P1 worker and
+checks its exact disposable database identity before authenticated enqueue. It
+then performs exactly one worker `run_once` and reloads the exact enqueued job.
+`run_once=True` is not success authority. `PASS` requires one terminal
+`SUCCEEDED` attempt, the exact result hash, and one persisted P1 result artifact
+whose closed `EngineEventBatchReceipt` and `P1PortfolioParityReceipt` agree on
+job, attempt, engine run, batch, semantic digest, event count, terminal
+sequence, and terminal event digest. The public evidence binds both receipt
+digests and the final portfolio state hash. Missing, mixed, failed, blocked,
+cancelled, retried, stale, or other-job evidence is `BLOCKED`.
+
+The default lane remains canonical `DEFERRED` and performs no job mutation.
+This source seam does not itself launch PostgreSQL or Nautilus and does not
+change generic runtime or release authority.
 
 All receipts keep live, production, and network-trading authority false.
