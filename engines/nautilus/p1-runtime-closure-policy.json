@@ -1,0 +1,186 @@
+{
+  "argv_prefix": [
+    "/usr/bin/python3.12",
+    "-I",
+    "-S",
+    "/engine/runtime_v1/main.py",
+    "--profile",
+    "p1-real-backtest"
+  ],
+  "artifact_manifest_sha256": "24f1439ad5fc4f74dd950f892d39470c8d37f1e052add2dfb52ff20904fc50d3",
+  "authority_limits": {
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "candidate_closure_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+  "candidate_generation_id": "NT1231-U04-G1",
+  "candidate_generation_sha256": "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c",
+  "command_type": "RunBacktest",
+  "dependency_import_policy": "native-guarded-stdlib-first-sealed-wheel-path-v1",
+  "engine_name": "nautilus_trader",
+  "engine_upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+  "engine_version": "1.231.0",
+  "engine_wheel": {
+    "mode": "0400",
+    "sha256": "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb",
+    "size": 183626605,
+    "target": "/engine/wheels/nautilus_trader-1.231.0-cp312-cp312-manylinux_2_39_x86_64.whl"
+  },
+  "entrypoint": "/engine/bin/nautilus-entry-guard",
+  "event_schema": "nautilus-p1-event-stream-v1",
+  "native_entry_guard": {
+    "build_environment": {
+      "NAUTILUS_GUARD_ENTRYPOINT": "/engine/bin/nautilus-entry-guard",
+      "NAUTILUS_GUARD_LAUNCHER": "/engine/runtime_v1/main.py",
+      "NAUTILUS_GUARD_PROFILE": "p1-real-backtest",
+      "NAUTILUS_GUARD_PYTHON": "/usr/bin/python3.12",
+      "NAUTILUS_GUARD_REQUEST": "/inputs/request.json",
+      "NAUTILUS_GUARD_SIDECAR": "/inputs/request.sha256"
+    },
+    "cargo_identity": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
+    "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
+    "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
+    "cargo_manifest_sha256": "85f5df996a40d673f2a86e4f1e1c0248c1627dfaca06b0979c648b1fe26961bf",
+    "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "mode": "0500",
+    "rust_toolchain_policy_sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe",
+    "rustc_identity": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "source": "engines/nautilus/native_entry_guard/src/main.rs",
+    "source_sha256": "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880",
+    "target": "/engine/bin/nautilus-entry-guard",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  },
+  "p1_baseline_receipt_sha256": "b1dfa25502c05cfa6daf529e106e24f0f5d6e25ca33af6ecaca3e1ba1528019b",
+  "p1_baseline_scope": "P1_A_AND_P1_B_ONLY",
+  "p1_baseline_status": "P1_BASELINE_APPROVED",
+  "product_lineage_target": "/engine/p1-product-lineage.json",
+  "profile": "p1-real-backtest",
+  "profile_manifest_schema_version": 8,
+  "python_identity": "CPython 3.12.3",
+  "request_protocol_version": "1.0.0",
+  "required_artifact_names": [
+    "engine_configuration",
+    "instrument_catalog",
+    "strategy_configuration",
+    "market_data"
+  ],
+  "result_validator_id": "nautilus-p1-event-stream-v1",
+  "runtime_family": "cython-v1",
+  "runtime_inventory": [
+    {
+      "mode": "0400",
+      "sha256": "58a58bb530f3ca22cd042a33e6c0107f6217ac0aef91a49aab74add78cd6428a",
+      "source": "engines/nautilus/runtime_v1/__init__.py",
+      "target": "/engine/runtime_v1/__init__.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "67d70e9107b99f365dc6dd4b4cf63d0287525a260efc15dbfb89d3ad7a79cc51",
+      "source": "engines/nautilus/runtime_v1/backtest_runner.py",
+      "target": "/engine/runtime_v1/backtest_runner.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "470cec71543363829dfeb6dacf9b920b3b2ec2d01446a30baf6e12e7288150ab",
+      "source": "engines/nautilus/runtime_v1/bootstrap.py",
+      "target": "/engine/runtime_v1/bootstrap.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "c92e196e26bd265f4c7d6c75afe25957aa9b684d30d017eb521adea12b26fdca",
+      "source": "engines/nautilus/runtime_v1/diagnostics.py",
+      "target": "/engine/runtime_v1/diagnostics.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "c0776fb03c972f812cc893931d4a1d2bb1e2b6ef9f25e02a6c722a6065e62a90",
+      "source": "engines/nautilus/runtime_v1/errors.py",
+      "target": "/engine/runtime_v1/errors.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "2c79e3fba6e3e9ed88d06e8c0f8731e3412537f9255588728ab58ab116d5482f",
+      "source": "engines/nautilus/runtime_v1/event_collector.py",
+      "target": "/engine/runtime_v1/event_collector.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "c751d312a1ef6268a304ca4dab18276fe02a1312f46b5ebaef1d493ab5bd59ae",
+      "source": "engines/nautilus/runtime_v1/event_projector.py",
+      "target": "/engine/runtime_v1/event_projector.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "7bd2dea14f916557390150400500673965c7bcb6abe335f11ffb237d85a2254d",
+      "source": "engines/nautilus/runtime_v1/final_state.py",
+      "target": "/engine/runtime_v1/final_state.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "e89404378d1c9dbadddd75a12e5f184eaf4dd347befcd5913cab61a34a17d734",
+      "source": "engines/nautilus/runtime_v1/generated_protocol.py",
+      "target": "/engine/runtime_v1/generated_protocol.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "08225f79d387225a4e15f0c7bd1ca4e46b834975a964e41c7bc32883ec2f89e7",
+      "source": "engines/nautilus/runtime_v1/input_loader.py",
+      "target": "/engine/runtime_v1/input_loader.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "cf9f82c15cb263593444a442b799be524a940c0d8bb4ad576ab5f573641cca53",
+      "source": "engines/nautilus/runtime_v1/instrument_factory.py",
+      "target": "/engine/runtime_v1/instrument_factory.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "52e4c9fdc254f07590e322bdad6fe20eecc2086f74b56dab81f70d3d8125805b",
+      "source": "engines/nautilus/runtime_v1/jsonl_writer.py",
+      "target": "/engine/runtime_v1/jsonl_writer.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "f863b8f8f9b9ceeff9abf37f7aa6c9375d07d71b03e61ec2daddf35dbfd4563e",
+      "source": "engines/nautilus/runtime_v1/main.py",
+      "target": "/engine/runtime_v1/main.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "02c0c651e34d167746a87410007213fd1cc40f43ba9948748e017f4ac7ce061a",
+      "source": "engines/nautilus/runtime_v1/market_data_loader.py",
+      "target": "/engine/runtime_v1/market_data_loader.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "d28e2d22f6d1c915fdd73329ce42e70d0db6bce9d64442f95a8c6394829d851c",
+      "source": "engines/nautilus/runtime_v1/profile.py",
+      "target": "/engine/runtime_v1/profile.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "7120f0e11c5b010efc3bd5dc787bafec2f14413bdbd483b0c57755675c140a38",
+      "source": "engines/nautilus/runtime_v1/session.py",
+      "target": "/engine/runtime_v1/session.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "2444d8c0c2feda4a226980f98286bf521e4241c46fdd0d9056bbffa77a944aa2",
+      "source": "engines/nautilus/runtime_v1/target_planner.py",
+      "target": "/engine/runtime_v1/target_planner.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "c3a38c76bfe2264f146ef90c2ed80b63d32e752a83bec946346c349c87d35861",
+      "source": "engines/nautilus/runtime_v1/target_strategy.py",
+      "target": "/engine/runtime_v1/target_strategy.py"
+    }
+  ],
+  "runtime_inventory_sha256": "a76c51713a74107d75b6383d43f6d7fa2e9d68df2650c70de100bc15fc87bcf3",
+  "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
+  "schema": "trading-agent-p1-runtime-closure-policy/v1",
+  "semantic_profile": "nautilus-p1-real-backtest-v1",
+  "timeout_seconds": 120
+}
