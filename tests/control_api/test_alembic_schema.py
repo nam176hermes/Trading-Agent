@@ -79,7 +79,9 @@ def _p1_ingest_authority(connection: Connection) -> tuple[object, ...]:
     return tuple(
         connection.exec_driver_sql(
             "SELECT pg_get_functiondef(function_row.oid), "
-            "function_row.proowner, function_row.proacl::text, "
+            "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+            "function_row.prosrc, 'UTF8')), 'hex'), "
+            "pg_get_userbyid(function_row.proowner), function_row.proacl::text, "
             "function_row.prosecdef, function_row.provolatile, "
             "function_row.proparallel, function_row.proconfig "
             "FROM pg_catalog.pg_proc AS function_row "
@@ -107,6 +109,10 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             before = _p1_ingest_authority(connection)
             before_definition = before[0]
             assert isinstance(before_definition, str)
+            assert before[1] == (
+                "2550c8513692664f383abc828f0245cc3f7554b20d6f58e0b125714626fc6cae"
+            )
+            assert before[2] == "trading_owner"
             assert before_definition.count(P1_OLD_CLOSURE_SHA256) == 2
             assert P1_NEW_CLOSURE_SHA256 not in before_definition
 
@@ -128,12 +134,52 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
 
+            drifted_body = before_definition.replace(
+                "        DECLARE\n",
+                "        DECLARE\n          -- retained-digest body drift\n",
+                1,
+            )
+            assert drifted_body != before_definition
+            assert drifted_body.count(P1_OLD_CLOSURE_SHA256) == 2
+            connection.exec_driver_sql(
+                drifted_body,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                before_definition,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+
+            connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION " + P1_INGEST_REGPROCEDURE
+                + " TO trading_job_worker"
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                "REVOKE EXECUTE ON FUNCTION " + P1_INGEST_REGPROCEDURE
+                + " FROM trading_job_worker"
+            )
+            connection.commit()
+
             command.upgrade(config, "head")
             after = _p1_ingest_authority(connection)
             assert after[0] == before_definition.replace(
                 P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
             )
-            assert after[1:] == before[1:]
+            assert after[1] == (
+                "e6617353fe79c6e6ec0f6d1ecd824c4f28c2c52278dc1fbaf6e6d259426e2599"
+            )
+            assert after[2:] == before[2:]
             command.upgrade(config, "head")
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == EXPECTED_TABLES
