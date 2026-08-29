@@ -11,10 +11,7 @@ from typing import TYPE_CHECKING, Mapping, NoReturn
 from services.job_store.config import CANONICAL_DATABASE_REVISION, JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
 from .artifacts import ArtifactWriter
-from .command_registry import (
-    P1StagingSafetyAuthorityRefresher,
-    attest_worker_runtime_authority,
-)
+from .command_registry import attest_worker_runtime_authority
 from .environment import ResearchEnvironmentSettings
 from .process_runner import ProcessRunner
 from .recovery import ProcProcessInspector
@@ -30,6 +27,7 @@ from .worker import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .command_registry import P1StagingSafetyAuthorityRefresher
     from .command_registry import WorkerRuntimeAuthority
     from .engine_artifacts import EngineArtifactBinding
     from .nautilus_closure import NautilusClosureConfig
@@ -78,10 +76,14 @@ def build_worker(
         or engine_event_ingestor is None
     ):
         raise ValueError("P1 portfolio parity requires complete engine authority")
-    if _p1_safety_authority_refresher is not None and type(
-        _p1_safety_authority_refresher
-    ) is not P1StagingSafetyAuthorityRefresher:
-        raise TypeError("exact P1 staging safety refresher is required")
+    if _p1_safety_authority_refresher is not None:
+        from .command_registry import P1StagingSafetyAuthorityRefresher
+
+        if (
+            type(_p1_safety_authority_refresher)
+            is not P1StagingSafetyAuthorityRefresher
+        ):
+            raise TypeError("exact P1 staging safety refresher is required")
     if _p1_safety_authority_refresher is not None and (
         engine_spawn_provider is None
         or engine_result_validator is None

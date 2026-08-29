@@ -122,6 +122,25 @@ def _digest_file(path: Path) -> str:
         os.close(descriptor)
 
 
+def _export_p1_safety_snapshot(
+    output_path: Path,
+    *,
+    exporter_commit: str,
+    clock: Callable[[], datetime] | None = None,
+) -> None:
+    SafetyStateExporter(
+        canonical_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
+        mounted_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
+        output_path=output_path,
+        exporter_commit=exporter_commit,
+        gate_source={
+            "LIVE_EXECUTION_ENABLED": "false",
+            "LIVE_TRADING_APPROVED": "false",
+        },
+        clock=clock,
+    ).export_once()
+
+
 def _require_digest(path: Path, expected: str) -> None:
     if _SHA256.fullmatch(expected) is None or _digest_file(path) != expected:
         raise HostAuthorityError("authority input digest does not match")
@@ -429,26 +448,20 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
     authority_root = root / "authority"
     runtime_root = root / "runtime"
     semantic_root = root / "semantic"
-    safety_source_root = root / "safety-sources"
-    for path in (authority_root, runtime_root, semantic_root, safety_source_root):
+    for path in (authority_root, runtime_root, semantic_root):
         path.mkdir(mode=0o700)
     (root / "evidence").mkdir(mode=0o700)
-    (safety_source_root / ".mode").write_text("PAPER\n", encoding="ascii")
-    (safety_source_root / ".mode").chmod(0o600)
     for name in ("artifacts", "reports", "scratch", "signals"):
         (runtime_root / name).mkdir(mode=0o700)
     (semantic_root / "input").mkdir(mode=0o711)
     generated = datetime.now(UTC).replace(microsecond=0)
     expires = generated + timedelta(minutes=30)
     safety_path = runtime_root / "safety-state.json"
-    SafetyStateExporter(
-        canonical_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
-        mounted_source_root=safety_source_root,
-        output_path=safety_path,
+    _export_p1_safety_snapshot(
+        safety_path,
         exporter_commit=commit,
-        gate_source={"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "false"},
         clock=lambda: generated,
-    ).export_once()
+    )
     safety_sha256 = _digest_file(safety_path)
     semantic_path = semantic_root / "active.json"
     application_python = stage / "application/.venv/bin/python3.11"
@@ -768,14 +781,10 @@ def _activate_and_exec(arguments: Sequence[str]) -> int:
         raise HostAuthorityError("staged application interpreter is not exact")
     operation = _validate_execution_capability(authority, arguments)
     def rotate_dynamic_evidence() -> None:
-        mounted = authority.installation_root.parent / "safety-sources"
-        SafetyStateExporter(
-            canonical_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
-            mounted_source_root=mounted,
-            output_path=authority.runtime_paths.safety_snapshot,
+        _export_p1_safety_snapshot(
+            authority.runtime_paths.safety_snapshot,
             exporter_commit=authority.source_commit,
-            gate_source={"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "false"},
-        ).export_once()
+        )
         _replace_activation(
             authority, _digest_file(authority.runtime_paths.safety_snapshot)
         )

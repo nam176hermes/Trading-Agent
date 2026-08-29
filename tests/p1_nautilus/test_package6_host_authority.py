@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 from argparse import Namespace
+from datetime import UTC, datetime, timedelta
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +28,98 @@ def test_builder_never_imports_test_helpers() -> None:
     }
 
     assert not any(name == "tests" or name.startswith("tests.") for name in imported)
+    assert "safety-sources" not in source
+
+
+def test_p1_safety_export_observes_each_canonical_state_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from packages.safety_evidence import safety_source_fingerprint
+    from services.job_worker.errors import SafetyBlockedError
+    from services.job_worker.safety_state import SafetyStateClient
+
+    canonical = tmp_path / "canonical-safety"
+    canonical.mkdir(mode=0o700)
+    mode = canonical / ".mode"
+    mode.write_text("PAPER\n", encoding="ascii")
+    mode.chmod(0o600)
+    output_root = tmp_path / "runtime"
+    output_root.mkdir(mode=0o700)
+    output = output_root / "safety-state.json"
+    now = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(builder, "CANONICAL_SAFETY_SOURCE_ROOT", canonical)
+
+    builder._export_p1_safety_snapshot(
+        output,
+        exporter_commit="1" * 40,
+        clock=lambda: now,
+    )
+    first = json.loads(output.read_bytes())
+
+    kill_switch = canonical / ".kill_switch"
+    kill_switch.write_text(
+        "2026-08-29T12:00:01Z: operator stop\n", encoding="ascii"
+    )
+    kill_switch.chmod(0o600)
+    builder._export_p1_safety_snapshot(
+        output,
+        exporter_commit="1" * 40,
+        clock=lambda: now + timedelta(seconds=7),
+    )
+    second = json.loads(output.read_bytes())
+    active_client = SafetyStateClient(
+        output,
+        expected_exporter_commit="1" * 40,
+        expected_source_fingerprint=safety_source_fingerprint(canonical),
+        clock=lambda: now + timedelta(seconds=7),
+    )
+    with pytest.raises(SafetyBlockedError) as active_error:
+        active_client.snapshot()
+    assert active_error.value.reason_code == "SAFETY_KILL_SWITCH_ACTIVE"
+
+    mode.chmod(0o644)
+    builder._export_p1_safety_snapshot(
+        output,
+        exporter_commit="1" * 40,
+        clock=lambda: now + timedelta(seconds=14),
+    )
+    unsafe = json.loads(output.read_bytes())
+    unsafe_client = SafetyStateClient(
+        output,
+        expected_exporter_commit="1" * 40,
+        expected_source_fingerprint=safety_source_fingerprint(canonical),
+        clock=lambda: now + timedelta(seconds=14),
+    )
+
+    assert first["kill_switch_state"] == "INACTIVE"
+    assert second["kill_switch_state"] == "ACTIVE"
+    assert unsafe["requested_mode"] == "UNKNOWN"
+    assert unsafe["effective_mode"] == "UNKNOWN"
+    with pytest.raises(SafetyBlockedError) as unsafe_error:
+        unsafe_client.snapshot()
+    assert unsafe_error.value.reason_code == "SAFETY_REQUESTED_MODE_UNKNOWN"
+
+    mode.unlink()
+    builder._export_p1_safety_snapshot(
+        output,
+        exporter_commit="1" * 40,
+        clock=lambda: now + timedelta(seconds=21),
+    )
+    missing_client = SafetyStateClient(
+        output,
+        expected_exporter_commit="1" * 40,
+        expected_source_fingerprint=safety_source_fingerprint(canonical),
+        clock=lambda: now + timedelta(seconds=21),
+    )
+    with pytest.raises(SafetyBlockedError) as missing_error:
+        missing_client.snapshot()
+    assert missing_error.value.reason_code == "SAFETY_REQUESTED_MODE_UNKNOWN"
+    assert all(
+        document["live_execution_enabled"] is False
+        and document["live_trading_approved"] is False
+        for document in (first, second, unsafe)
+    )
 
 
 def test_offline_stage_build_argv_is_fixed_to_production_builder() -> None:
@@ -252,7 +346,9 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
     monkeypatch.setattr(builder, "_digest_file", lambda _path: "4" * 64)
     monkeypatch.setattr(builder, "_replace_activation", lambda selected, digest: calls.append(("activation", selected, digest)))
     class Exporter:
-        def __init__(self, **_kwargs: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["canonical_source_root"] == builder.CANONICAL_SAFETY_SOURCE_ROOT
+            assert kwargs["mounted_source_root"] == builder.CANONICAL_SAFETY_SOURCE_ROOT
             calls.append("exporter")
 
         def export_once(self) -> None:

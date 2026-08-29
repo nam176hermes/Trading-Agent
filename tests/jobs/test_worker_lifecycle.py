@@ -771,7 +771,7 @@ def test_generic_worker_rejects_p1_safety_refresh_capability() -> None:
     (
         ("rotation", "RUNTIME_AUTHORITY_CHANGED"),
         ("stale", "SAFETY_STATE_STALE"),
-        ("unsafe", "SAFETY_MODE_NOT_PAPER"),
+        ("active", "SAFETY_KILL_SWITCH_ACTIVE"),
     ),
 )
 def test_p1_safety_refresh_failure_blocks_before_worker_construction(
