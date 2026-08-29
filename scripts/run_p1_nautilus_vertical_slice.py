@@ -83,6 +83,9 @@ from services.job_worker.command_registry import (
 )
 from services.job_worker.engine_artifacts import EngineArtifactBinding
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+from services.job_worker.engine_spawn_interface import EngineSpawnError
+from services.job_worker.environment import EnvironmentValidationError
+from services.job_worker.errors import SafetyBlockedError
 from services.job_worker.main import build_p1_worker
 from services.job_worker.nautilus_closure import NautilusClosureConfig
 from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
@@ -132,6 +135,12 @@ _ExecutionFailureStage = Literal[
     "WORKER",
     "DURABLE_RESULT",
 ]
+_WorkerCompositionFailureFamily = Literal[
+    "ENVIRONMENT",
+    "SAFETY",
+    "ENGINE_COMPOSITION",
+    "OTHER",
+]
 _EXECUTION_FAILURE_STAGES = (
     "JOB_AUTHORITY",
     "DATABASE",
@@ -141,6 +150,12 @@ _EXECUTION_FAILURE_STAGES = (
     "ENQUEUE",
     "WORKER",
     "DURABLE_RESULT",
+)
+_WORKER_COMPOSITION_FAILURE_FAMILIES = (
+    "ENVIRONMENT",
+    "SAFETY",
+    "ENGINE_COMPOSITION",
+    "OTHER",
 )
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
@@ -172,12 +187,31 @@ class VerticalSliceExecutionError(RuntimeError):
         *,
         job_mutated: bool,
         failure_stage: _ExecutionFailureStage = "DURABLE_RESULT",
+        failure_family: _WorkerCompositionFailureFamily | None = None,
     ) -> None:
         if failure_stage not in _EXECUTION_FAILURE_STAGES:
             raise ValueError("P1 execution failure stage is invalid")
+        if failure_family is not None and (
+            failure_stage != "WORKER_COMPOSITION"
+            or failure_family not in _WORKER_COMPOSITION_FAILURE_FAMILIES
+        ):
+            raise ValueError("P1 worker composition failure family is invalid")
         super().__init__("P1 disposable execution failed")
         self.job_mutated = job_mutated
         self.failure_stage = failure_stage
+        self.failure_family = failure_family
+
+
+def _worker_composition_failure_family(
+    error: Exception,
+) -> _WorkerCompositionFailureFamily:
+    if isinstance(error, EnvironmentValidationError):
+        return "ENVIRONMENT"
+    if isinstance(error, SafetyBlockedError):
+        return "SAFETY"
+    if isinstance(error, EngineSpawnError):
+        return "ENGINE_COMPOSITION"
+    return "OTHER"
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1028,6 +1062,11 @@ def _run_p1_disposable_once(
         raise VerticalSliceExecutionError(
             job_mutated=job_mutated,
             failure_stage=failure_stage,
+            failure_family=(
+                _worker_composition_failure_family(exc)
+                if failure_stage == "WORKER_COMPOSITION"
+                else None
+            ),
         ) from exc
 
 
@@ -1079,11 +1118,14 @@ def main(
         try:
             execution = _run_p1_disposable_once(arguments, worker_authority)
         except VerticalSliceExecutionError as error:
+            failure_evidence = {**evidence, "failure_stage": error.failure_stage}
+            if error.failure_family is not None:
+                failure_evidence["failure_family"] = error.failure_family
             return _emit(
                 "BLOCKED",
                 "P1_EXECUTION_FAILED",
                 authority={"native": "VALID", "postgres": "VALID"},
-                evidence={**evidence, "failure_stage": error.failure_stage},
+                evidence=failure_evidence,
                 job_mutated=error.job_mutated,
             )
         return _emit(

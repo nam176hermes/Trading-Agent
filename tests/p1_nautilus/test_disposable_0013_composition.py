@@ -613,6 +613,9 @@ def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
         vertical._run_p1_disposable_once(arguments, object())
 
     assert captured.value.failure_stage == expected_stage
+    assert captured.value.failure_family == (
+        "OTHER" if expected_stage == "WORKER_COMPOSITION" else None
+    )
     assert captured.value.job_mutated is job_mutated
     assert "sensitive arbitrary diagnostic text" not in str(captured.value)
 
@@ -623,6 +626,56 @@ def test_vertical_execution_failure_stage_rejects_arbitrary_codes() -> None:
     error_type = getattr(vertical, "VerticalSliceExecutionError")
     with pytest.raises(ValueError, match="failure stage is invalid"):
         error_type(job_mutated=False, failure_stage="ARBITRARY")
+    with pytest.raises(ValueError, match="failure family is invalid"):
+        error_type(
+            job_mutated=False,
+            failure_stage="WORKER",
+            failure_family="ENVIRONMENT",
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_family"),
+    (
+        pytest.param(
+            "environment",
+            "ENVIRONMENT",
+            id="validated-environment-refusal",
+        ),
+        pytest.param("safety", "SAFETY", id="validated-safety-refusal"),
+        pytest.param(
+            "engine",
+            "ENGINE_COMPOSITION",
+            id="validated-engine-refusal",
+        ),
+        pytest.param("other", "OTHER", id="unclassified-internal-refusal"),
+    ),
+)
+def test_worker_composition_failure_family_is_closed_and_non_sensitive(
+    failure: str,
+    expected_family: str,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from services.job_worker.engine_spawn_interface import EngineSpawnError
+    from services.job_worker.environment import EnvironmentValidationError
+    from services.job_worker.errors import SafetyBlockedError
+
+    failures = {
+        "environment": EnvironmentValidationError(
+            "ENVIRONMENT_ROOT_MISSING", "sensitive environment detail"
+        ),
+        "safety": SafetyBlockedError(
+            "SAFETY_STATE_STALE", "sensitive safety detail"
+        ),
+        "engine": EngineSpawnError(
+            "ENGINE_CLOSURE_INVALID", "sensitive engine detail"
+        ),
+        "other": RuntimeError("sensitive arbitrary diagnostic text"),
+    }
+    assert (
+        vertical._worker_composition_failure_family(failures[failure])
+        == expected_family
+    )
 
 
 @pytest.mark.parametrize(
@@ -763,4 +816,50 @@ def test_execution_blocked_receipt_exposes_only_closed_failure_stage(
         "postgres": "VALID",
     }
     assert receipt["evidence"] == {**evidence, "failure_stage": "WORKER"}
+    assert "sensitive arbitrary diagnostic text" not in output
+
+
+def test_worker_composition_blocked_receipt_exposes_only_closed_family(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from tests.p1_nautilus.test_vertical_slice_e2e import _complete_arguments
+
+    evidence = {
+        "closure_sha256": "7" * 64,
+        "postgres_approval_sha256": "8" * 64,
+        "runtime_authority_sha256": "9" * 64,
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+    }
+    monkeypatch.setattr(
+        vertical,
+        "_validate_complete",
+        lambda _arguments: (evidence, object()),
+    )
+
+    def fail(_arguments: object, _authority: object) -> dict[str, object]:
+        try:
+            raise RuntimeError("sensitive arbitrary diagnostic text")
+        except RuntimeError as cause:
+            raise vertical.VerticalSliceExecutionError(
+                job_mutated=False,
+                failure_stage="WORKER_COMPOSITION",
+                failure_family="OTHER",
+            ) from cause
+
+    monkeypatch.setattr(vertical, "_run_p1_disposable_once", fail)
+
+    result = vertical.main([*_complete_arguments(tmp_path), "--execute"])
+
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert result == 2
+    assert receipt["evidence"] == {
+        **evidence,
+        "failure_family": "OTHER",
+        "failure_stage": "WORKER_COMPOSITION",
+    }
     assert "sensitive arbitrary diagnostic text" not in output
