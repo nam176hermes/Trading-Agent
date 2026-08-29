@@ -2,14 +2,28 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import replace
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 
 from apps.job_api.config import JobApiSettings
 from packages.job_contracts import ActorIdentity
+from packages.engine_event_ledger import EngineEventBatchReceipt
+from packages.engine_portfolio_projection.parity import P1PortfolioParityReceipt
+from packages.job_contracts import JobState, JobType, parse_payload
+from services.job_store.records import (
+    ArtifactRecord,
+    AttemptRecord,
+    JobDetailRecord,
+    JobRecord,
+)
+from packages.domain import Currency
 from tests.jobs.test_job_api import (
     AUTH,
     PRINCIPAL,
@@ -21,6 +35,14 @@ from tests.jobs.test_job_api import (
 
 P1_REVISION = "0013_engine_backtest_enqueue_authority"
 GENERIC_REVISION = "0011_engine_backtest_worker_authority"
+JOB_ID = "job_" + "1" * 32
+ATTEMPT_ID = "attempt_" + "2" * 32
+ENGINE_RUN_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+REQUEST_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+BATCH_SHA256 = "c" * 64
+SEMANTIC_SHA256 = "d" * 64
+LAST_DIGEST = "e" * 64
+NOW = datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
 
 
 class _Result:
@@ -86,6 +108,111 @@ def _engine_payload() -> dict[str, object]:
             }
         },
         idempotency_key="p1:vertical-slice:btc-usdt:20260805",
+    )
+
+
+def _successful_detail() -> JobDetailRecord:
+    engine_receipt = EngineEventBatchReceipt(
+        batch_sha256=BATCH_SHA256,
+        ingestion_digest="f" * 64,
+        job_id=JOB_ID,
+        attempt_id=ATTEMPT_ID,
+        engine_run_id=ENGINE_RUN_ID,
+        event_count=14,
+        first_sequence=2,
+        last_sequence=15,
+        last_digest=LAST_DIGEST,
+    )
+    parity = P1PortfolioParityReceipt(
+        schema_version="nautilus-p1-portfolio-parity-v1",
+        normalization_version="nautilus-p1-portfolio-normalization-v1",
+        engine_run_id=ENGINE_RUN_ID,
+        batch_sha256=BATCH_SHA256,
+        semantic_digest=SEMANTIC_SHA256,
+        request_message_id=REQUEST_ID,
+        engine_event_count=14,
+        engine_last_sequence=15,
+        engine_last_digest=LAST_DIGEST,
+        projection_identity="1" * 64,
+        portfolio_stream_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+        portfolio_event_count=5,
+        portfolio_last_sequence=5,
+        restart_prefix_sequence=1,
+        portfolio_state_hash="2" * 64,
+        portfolio_prefix_history_hash="3" * 64,
+        account_id="p1-btcusdt-fixture-account",
+        account_currency=Currency.USDT,
+        terminal_position=Decimal("0"),
+        terminal_average_entry_price=None,
+        terminal_mark_price=None,
+        terminal_cash=Decimal("1000001"),
+        terminal_fees=Decimal("0.2"),
+        terminal_realized_pnl=Decimal("1.2"),
+        terminal_unrealized_pnl=Decimal("0"),
+        observed_at=NOW,
+    )
+    payload = parse_payload(JobType.BACKTEST, _engine_payload()["payload"])
+    return JobDetailRecord(
+        job=JobRecord(
+            job_id=JOB_ID,
+            job_type=JobType.BACKTEST,
+            state=JobState.SUCCEEDED,
+            payload=payload,
+            payload_fingerprint="4" * 64,
+            idempotency_key="p1:vertical-slice:btc-usdt:20260805",
+            actor=ActorIdentity(
+                actor_type="OPERATOR", actor_id="p1-vertical-slice"
+            ),
+            priority=0,
+            requested_at=NOW,
+            updated_at=NOW,
+            attempt_count=1,
+            max_attempts=1,
+            reason_code="RESULT_VALIDATED",
+            result_hash=BATCH_SHA256,
+            cancel_requested_at=None,
+            cancel_actor=None,
+        ),
+        attempts=(
+            AttemptRecord(
+                attempt_id=ATTEMPT_ID,
+                job_id=JOB_ID,
+                attempt_number=1,
+                worker_id="worker-p1",
+                outcome="SUCCEEDED",
+                claimed_at=NOW,
+                started_at=NOW,
+                finished_at=NOW,
+                exit_code=0,
+                termination_reason="EXITED",
+            ),
+        ),
+        artifacts=(
+            ArtifactRecord(
+                artifact_id="artifact_" + "5" * 32,
+                job_id=JOB_ID,
+                attempt_id=ATTEMPT_ID,
+                artifact_type="engine_event_batch",
+                relative_ref=f"engine-results/{JOB_ID}/{ATTEMPT_ID}/{BATCH_SHA256}.jsonl",
+                sha256=BATCH_SHA256,
+                size_bytes=1234,
+                media_type="application/x-ndjson",
+                truncated=False,
+                validator_id="nautilus-p1-result-v1",
+                validation_metadata={
+                    "attempt_id": ATTEMPT_ID,
+                    "engine_event_receipt": engine_receipt.model_dump(mode="json"),
+                    "engine_run_id": str(ENGINE_RUN_ID),
+                    "event_count": 14,
+                    "job_id": JOB_ID,
+                    "last_sequence": 15,
+                    "p1_portfolio_parity": parity.model_dump(mode="json"),
+                    "request_message_id": str(REQUEST_ID),
+                    "semantic_digest": SEMANTIC_SHA256,
+                },
+                created_at=NOW,
+            ),
+        ),
     )
 
 
@@ -196,6 +323,11 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         def __init__(self, settings: object) -> None:
             super().__init__(settings, "api")
 
+        def get_job(self, job_id: str) -> JobDetailRecord:
+            calls.append("api:get_job")
+            assert job_id == JOB_ID
+            return _successful_detail()
+
     class _WorkerRepository(_ContextRepository):
         def __init__(self, settings: object) -> None:
             super().__init__(settings, "worker")
@@ -205,7 +337,7 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 
         @staticmethod
         def json() -> dict[str, object]:
-            return {"data": {"job": {"job_id": "job_" + "1" * 32}}}
+            return {"data": {"job": {"job_id": JOB_ID}}}
 
     class _Client:
         def __init__(self, app: object) -> None:
@@ -266,22 +398,73 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 
     evidence = vertical._run_p1_disposable_once(arguments)
 
-    assert evidence == {"job_id": "job_" + "1" * 32, "worker_run_count": 1}
+    assert evidence["job_id"] == JOB_ID
+    assert evidence["attempt_id"] == ATTEMPT_ID
+    assert evidence["batch_sha256"] == BATCH_SHA256
+    assert evidence["semantic_digest"] == SEMANTIC_SHA256
+    assert evidence["final_portfolio_state_hash"] == "2" * 64
+    assert evidence["worker_run_count"] == 1
     assert calls == [
         "api:enter",
         "worker:enter",
+        "worker:identity",
+        "worker:attest",
+        "worker:build",
         "app:create",
         "client:enter",
         "client:post",
         "client:exit",
-        "worker:identity",
-        "worker:attest",
-        "worker:build",
         "worker:run_once",
+        "api:get_job",
         "worker:exit",
         "api:exit",
     ]
     assert captured["source"] == {}
+
+
+@pytest.mark.parametrize(
+    "detail",
+    (
+        replace(
+            _successful_detail(),
+            job=replace(_successful_detail().job, state=JobState.BLOCKED),
+        ),
+        replace(
+            _successful_detail(),
+            job=replace(_successful_detail().job, job_id="job_" + "9" * 32),
+        ),
+    ),
+    ids=("run-once-true-but-not-succeeded", "wrong-job"),
+)
+def test_durable_success_rejects_non_success_or_other_job(
+    detail: JobDetailRecord,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    with pytest.raises(vertical.VerticalSliceExecutionError):
+        vertical._durable_success_evidence(detail, expected_job_id=JOB_ID)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "mixed"))
+def test_durable_success_rejects_missing_or_mixed_receipts(mutation: str) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    detail = _successful_detail()
+    artifact = detail.artifacts[0]
+    metadata = dict(artifact.validation_metadata)
+    if mutation == "missing":
+        metadata.pop("p1_portfolio_parity")
+    else:
+        parity = dict(metadata["p1_portfolio_parity"])
+        parity["batch_sha256"] = "9" * 64
+        metadata["p1_portfolio_parity"] = parity
+    detail = replace(
+        detail,
+        artifacts=(replace(artifact, validation_metadata=metadata),),
+    )
+
+    with pytest.raises(vertical.VerticalSliceExecutionError):
+        vertical._durable_success_evidence(detail, expected_job_id=JOB_ID)
 
 
 def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
