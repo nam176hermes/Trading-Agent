@@ -36,8 +36,9 @@ production, network-trading, or live authority.
 | P1-16 | P1-15 | ACCEPTED | Exact-source schema-8 closure `75467781…` at `a596169`, native qualification and immutable custody passed independent spec/security review; G1 stayed unchanged and inactive. |
 | P1-17 | P1-04, P1-14, P1-15 | ACCEPTED | Dedicated bounded multi-event result validation, semantic custody and durable metadata seam passed independent spec/security review at source tree `d116945…`. |
 | P1-18 | P1-03, P1-15, P1-16, P1-17 | ACCEPTED | Code-owned closure `75467781…`, artifact resolver, result validator and inactive worker composition passed independent spec/security review at `5c4518f`; P1 ledger acceptance remains fail-closed for P1-19. |
-| P1-19 | P1-17, P1-18 | IN_PROGRESS | Extend the existing atomic ledger to accept only the exact validated P1 batch and retain durable semantic projection authority. |
+| P1-19 | P1-17, P1-18 | ACCEPTED | Exact P1 batches persist atomically with durable semantic projection authority; generic/Nautilus-v1 retain a hardened legacy route; independent spec/security review passed at source tree `a5e6924…`; PostgreSQL runtime authority remains deferred. |
 | P1-20 | P1-04 | ACCEPTED | Pure engine-to-portfolio projection, exact six-decimal accounting, full instrument authority and monotonic observations passed independent spec/security review at source tree `77d26f3…`. |
+| P1-21 | P1-19, P1-20 | IN_PROGRESS | Prove exact engine/reducer parity, deterministic restart hashes and a generation-bound parity receipt before adding the separately reviewed pre-success composition seam. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
