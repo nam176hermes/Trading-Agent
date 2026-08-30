@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
-import json
 import re
 import weakref
 from uuid import UUID
@@ -14,9 +13,7 @@ from uuid import UUID
 from engines.nautilus.runtime_v1.control_channel import iter_payloads
 from packages.engine_contracts import (
     EngineCommandEnvelope,
-    EngineEvent,
     EngineEventEnvelope,
-    EventAttribute,
     RunBacktest,
     canonical_json_bytes,
     payload_digest,
@@ -40,7 +37,6 @@ from packages.nautilus_runtime_contracts.paper import (
     parse_paper_command_frame,
 )
 from packages.nautilus_runtime_contracts.result import (
-    P1_EVENT_FAMILIES,
     P1_RESULT_VALIDATOR_ID,
     validate_p1_result,
 )
@@ -55,6 +51,11 @@ from .nautilus_checkpoint import (
     NautilusCheckpointRecord,
     NautilusCheckpointStore,
     ZERO_CHECKPOINT_SHA256,
+)
+from .nautilus_protocol import (
+    NautilusRecoveryRecorder,
+    paper_event_payload,
+    paper_response_object,
 )
 
 
@@ -185,39 +186,8 @@ class NautilusSessionResult:
     parity_receipt: P1PortfolioParityReceipt | None = None
 
 
-def _object(raw: bytes) -> dict[str, object]:
-    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
-        value: dict[str, object] = {}
-        for key, item in items:
-            if key in value:
-                raise ValueError("paper response contains a duplicate key")
-            value[key] = item
-        return value
-
-    value = json.loads(raw, object_pairs_hook=pairs)
-    if type(value) is not dict or canonical_json_bytes(value) != raw:
-        raise ValueError("paper response is not canonical JSON")
-    return value
-
-
-def _event_payload(event: P1Event) -> EngineEvent:
-    document = event.model_dump(mode="json")
-    attributes: list[EventAttribute] = []
-    for name, value in document.items():
-        if name == "event_type" or value is None:
-            continue
-        if type(value) is list:
-            value = canonical_json_bytes(value).decode("utf-8")
-        attributes.append(EventAttribute(name=name, value=value))
-    return EngineEvent(
-        event_type=event.event_type,
-        family=P1_EVENT_FAMILIES[event.event_type],
-        attributes=tuple(attributes),
-    )
-
-
 class NautilusPaperSession:
-    """One command stream, one child, one checkpoint chain, one durable result."""
+    # One command stream, one child, one checkpoint chain, one durable result.
 
     def __init__(
         self,
@@ -231,6 +201,7 @@ class NautilusPaperSession:
         event_ledger: EngineEventLedgerRepository,
         projection_authority: ProjectionAuthority,
         checkpoints: NautilusCheckpointStore | None = None,
+        recovery_recorder: NautilusRecoveryRecorder | None = None,
     ) -> None:
         if (
             type(request) is not EngineCommandEnvelope
@@ -252,6 +223,8 @@ class NautilusPaperSession:
                 not callable(getattr(event_ledger, name, None))
                 for name in ("ingest", "load_projection")
             )
+            or recovery_recorder is not None
+            and not callable(getattr(recovery_recorder, "record", None))
         ):
             raise ValueError("Nautilus paper session authority is invalid")
         self._request = request
@@ -263,6 +236,7 @@ class NautilusPaperSession:
         self._ledger = event_ledger
         self._projection_authority = projection_authority
         self._checkpoints = checkpoints if checkpoints is not None else NautilusCheckpointStore()
+        self._recovery_recorder = recovery_recorder
         self._journal = PaperSessionJournal(
             session_id=request.engine_run_id,
             owner_id=request.causation_id,
@@ -270,6 +244,7 @@ class NautilusPaperSession:
         self._events: list[P1Event] = []
         self._state = "CREATED"
         self._child_engaged = False
+        self._exit_only = False
 
     def matches_controller(
         self,
@@ -311,14 +286,19 @@ class NautilusPaperSession:
         return current
 
     def _preflight(self) -> None:
-        try:
-            validate_current_safety_evidence(
-                self._safety_preflight(), self._clock()
+        validate_current_safety_evidence(self._safety_preflight(), self._clock())
+
+    def _record_recovery(self, raw: bytes, checkpoint: NautilusCheckpointRecord) -> None:
+        recorder = self._recovery_recorder
+        if recorder is not None:
+            recorder.record(
+                raw,
+                checkpoint,
+                engine_version=self._child.engine_version,
+                closure_digest=self._child.closure_digest,
+                source_commit=self._request.source_commit,
+                config_digest=self._request.config_digest,
             )
-        except BaseException:
-            raise self._reject(
-                "paper safety evidence is not current", reconcile=self._state != "CREATED"
-            ) from None
 
     def _response(
         self,
@@ -329,7 +309,7 @@ class NautilusPaperSession:
         payloads = iter_payloads(raw)
         if len(payloads) < 2:
             raise ValueError("paper child response is incomplete")
-        documents = tuple(_object(payload) for payload in payloads)
+        documents = tuple(paper_response_object(payload) for payload in payloads)
         if (
             documents[0].get("frame_type") != "ACK"
             or documents[-1].get("frame_type") != "CHECKPOINT"
@@ -414,7 +394,7 @@ class NautilusPaperSession:
                 payload=payload,
             )
             for event in self._events
-            for payload in (_event_payload(event),)
+            for payload in (paper_event_payload(event),)
         )
         raw = b"".join(canonical_json_bytes(item) + b"\n" for item in envelopes)
         profile = validate_p1_result(
@@ -500,11 +480,28 @@ class NautilusPaperSession:
             ) from None
         try:
             current = self._current_checkpoint(expected_checkpoint_sha256)
+            if self._exit_only and command.command.command_type != "StopPaperEngine":
+                raise NautilusSessionRejected("paper session is exit-only after safety engagement")
             if command.command.command_type in {
                 "StartPaperEngine",
                 "SubmitTargetPortfolio",
             }:
-                self._preflight()
+                try:
+                    self._preflight()
+                except BaseException:
+                    if (
+                        current is not None
+                        and command.command.command_type == "SubmitTargetPortfolio"
+                    ):
+                        self._exit_only = True
+                        self._state = "EXIT_ONLY"
+                        raise NautilusSessionRejected(
+                            "paper safety engagement requires exit-only stop"
+                        ) from None
+                    raise self._reject(
+                        "paper safety evidence is not current",
+                        reconcile=current is not None,
+                    ) from None
             if (current is None) != (command.command.command_type == "StartPaperEngine"):
                 raise self._reject("paper start authority is invalid", reconcile=current is not None)
             self._journal.accept_command(raw)
@@ -513,12 +510,14 @@ class NautilusPaperSession:
             record = self._response(response, command, expected_checkpoint_sha256)
             self._state = record.checkpoint.state.value
             if command.command.command_type != "StopPaperEngine":
+                self._record_recovery(raw, record)
                 return NautilusSessionResult(self._state, record)
             if self._child.close_input() != 0:
                 raise ValueError("paper child did not stop cleanly")
             self._child_engaged = False
             self._journal.end_of_input()
             record, receipt, parity = self._durable_result(record)
+            self._record_recovery(raw, record)
             self._state = "STOPPED"
             return NautilusSessionResult(self._state, record, receipt, parity)
         except NautilusSessionRejected:

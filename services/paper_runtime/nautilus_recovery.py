@@ -2,18 +2,27 @@
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 from uuid import UUID
 
 from packages.engine_contracts import canonical_json_bytes
-from packages.nautilus_runtime_contracts.paper import PaperSessionCheckpoint
+from packages.nautilus_runtime_contracts.paper import (
+    PaperSessionCheckpoint,
+    PaperSessionState,
+    parse_paper_command_frame,
+)
+from packages.nautilus_runtime_contracts.result import P1_ENGINE_VERSION
 from packages.safety_evidence import CanonicalKillSwitchState
+from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 
 from .nautilus_checkpoint import NautilusCheckpointRecord, ZERO_CHECKPOINT_SHA256
 from .nautilus_reconciliation import (
@@ -27,6 +36,7 @@ from .nautilus_reconciliation import (
 
 NAUTILUS_RECOVERY_RECEIPT_SCHEMA = "trading-agent-nautilus-paper-recovery/v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+_COMMIT = re.compile(r"[0-9a-f]{40}\Z", re.ASCII)
 _TOP_LEVEL_KEYS = {
     "authority_limits",
     "checkpoint_sha256",
@@ -75,6 +85,20 @@ _AUTHORITY_LIMITS = {
     "network_query_allowed": False,
     "production_authorized": False,
 }
+_STEP_SCHEMA = "trading-agent-nautilus-paper-recovery-step/v1"
+_STEP_NAME = re.compile(r"step-([0-9]{8})\.json\Z", re.ASCII)
+_STEP_KEYS = {
+    "checkpoint",
+    "closure_digest",
+    "command_base64",
+    "command_sha256",
+    "config_digest",
+    "engine_version",
+    "prior_step_sha256",
+    "schema",
+    "sequence",
+    "source_commit",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +114,26 @@ class NautilusRecoveryReceipt:
     checkpoint_sha256: str
     evidence_sha256: str
     receipt_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class NautilusRecoveryStep:
+    sequence: int
+    command_raw: bytes
+    checkpoint: NautilusCheckpointRecord
+    engine_version: str
+    closure_digest: str
+    source_commit: str
+    config_digest: str
+    prior_step_sha256: str
+    step_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveredNautilusPaperSession:
+    session: object
+    checkpoint: NautilusCheckpointRecord
+    disposition: NautilusRecoveryDisposition
 
 
 def _checkpoint_document(record: NautilusCheckpointRecord | None) -> object:
@@ -183,6 +227,303 @@ def _checkpoint_from_document(value: object) -> NautilusCheckpointRecord | None:
         raise ValueError("recovery checkpoint record is invalid") from exc
 
 
+def _read_sealed(path: Path, maximum: int) -> bytes:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o400
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+            or not 0 < metadata.st_size <= maximum
+        ):
+            raise ValueError("durable recovery evidence is not sealed")
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := os.read(descriptor, 65_536):
+            total += len(chunk)
+            if total > maximum:
+                raise ValueError("durable recovery evidence is oversized")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _write_sealed(root: Path, name: str, raw: bytes) -> None:
+    directory_fd = os.open(
+        root,
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    temporary = f".{name}.{secrets.token_hex(16)}.tmp"
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+            dir_fd=directory_fd,
+        )
+        os.fchmod(descriptor, 0o400)
+        remaining = memoryview(raw)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("durable recovery write made no progress")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.link(
+            temporary,
+            name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        os.unlink(temporary, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+
+
+def _step_document(
+    command_raw: bytes,
+    checkpoint: NautilusCheckpointRecord,
+    *,
+    engine_version: str,
+    closure_digest: str,
+    source_commit: str,
+    config_digest: str,
+    prior_step_sha256: str,
+) -> dict[str, object]:
+    command = parse_paper_command_frame(command_raw)
+    if (
+        command.command_sequence != checkpoint.checkpoint.last_accepted_command
+        or hashlib.sha256(command_raw).hexdigest()
+        != checkpoint.checkpoint.last_command_frame_sha256
+        or engine_version != P1_ENGINE_VERSION
+        or closure_digest != P1_REAL_BACKTEST_POLICY.closure_sha256
+        or checkpoint.checkpoint.closure_digest != closure_digest
+        or _COMMIT.fullmatch(source_commit) is None
+        or _SHA256.fullmatch(config_digest) is None
+        or _SHA256.fullmatch(prior_step_sha256) is None
+    ):
+        raise ValueError("durable recovery step authority is invalid")
+    return {
+        "checkpoint": _checkpoint_document(checkpoint),
+        "closure_digest": closure_digest,
+        "command_base64": base64.b64encode(command_raw).decode("ascii"),
+        "command_sha256": hashlib.sha256(command_raw).hexdigest(),
+        "config_digest": config_digest,
+        "engine_version": engine_version,
+        "prior_step_sha256": prior_step_sha256,
+        "schema": _STEP_SCHEMA,
+        "sequence": command.command_sequence,
+        "source_commit": source_commit,
+    }
+
+
+def _decode_step(raw: bytes, expected_sequence: int, prior: str) -> NautilusRecoveryStep:
+    if not raw.endswith(b"\n"):
+        raise ValueError("durable recovery step is not canonical")
+    try:
+        document = json.loads(raw[:-1], object_pairs_hook=_pairs)
+        command_raw = base64.b64decode(document["command_base64"], validate=True)
+    except (KeyError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("durable recovery step is invalid") from exc
+    checkpoint = _checkpoint_from_document(document.get("checkpoint"))
+    if (
+        type(document) is not dict
+        or set(document) != _STEP_KEYS
+        or canonical_json_bytes(document) + b"\n" != raw
+        or document["schema"] != _STEP_SCHEMA
+        or document["sequence"] != expected_sequence
+        or document["prior_step_sha256"] != prior
+        or hashlib.sha256(command_raw).hexdigest() != document["command_sha256"]
+        or checkpoint is None
+    ):
+        raise ValueError("durable recovery step authority is invalid")
+    expected = _step_document(
+        command_raw,
+        checkpoint,
+        engine_version=document["engine_version"],
+        closure_digest=document["closure_digest"],
+        source_commit=document["source_commit"],
+        config_digest=document["config_digest"],
+        prior_step_sha256=prior,
+    )
+    if document != expected:
+        raise ValueError("durable recovery step evidence changed")
+    return NautilusRecoveryStep(
+        sequence=expected_sequence,
+        command_raw=command_raw,
+        checkpoint=checkpoint,
+        engine_version=document["engine_version"],
+        closure_digest=document["closure_digest"],
+        source_commit=document["source_commit"],
+        config_digest=document["config_digest"],
+        prior_step_sha256=prior,
+        step_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _normalized_step(document: dict[str, object]) -> dict[str, object]:
+    normalized = json.loads(canonical_json_bytes(document))
+    record = normalized["checkpoint"]
+    record["checkpoint_sha256"] = "0" * 64
+    record["checkpoint"]["child_identity"] = "0" * 64
+    return normalized
+
+
+class NautilusRecoveryStore:
+    """Append-only command/checkpoint chain used to rebuild a local paper child."""
+
+    def __init__(self, root: Path) -> None:
+        if not isinstance(root, Path):
+            raise TypeError("recovery store root must be a Path")
+        metadata = root.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o700
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise ValueError("durable recovery directory is not private")
+        self._root = root
+        self._replay_index: int | None = None
+        self.steps()
+
+    def steps(self) -> tuple[NautilusRecoveryStep, ...]:
+        entries = sorted(self._root.iterdir())
+        steps: list[NautilusRecoveryStep] = []
+        prior = ZERO_CHECKPOINT_SHA256
+        for sequence, path in enumerate(entries, start=1):
+            match = _STEP_NAME.fullmatch(path.name)
+            if match is None or int(match.group(1)) != sequence:
+                raise ValueError("durable recovery step inventory is invalid")
+            step = _decode_step(_read_sealed(path, 256 * 1024), sequence, prior)
+            steps.append(step)
+            prior = step.step_sha256
+        return tuple(steps)
+
+    def begin_replay(self) -> tuple[NautilusRecoveryStep, ...]:
+        steps = self.steps()
+        if self._replay_index is not None:
+            raise RuntimeError("durable recovery replay is already active")
+        self._replay_index = 0
+        return steps
+
+    def finish_replay(self) -> None:
+        if self._replay_index != len(self.steps()):
+            self._replay_index = None
+            raise ValueError("durable recovery command prefix is incomplete")
+        self._replay_index = None
+
+    def cancel_replay(self) -> None:
+        self._replay_index = None
+
+    def record(
+        self,
+        command_raw: bytes,
+        checkpoint: NautilusCheckpointRecord,
+        *,
+        engine_version: str,
+        closure_digest: str,
+        source_commit: str,
+        config_digest: str,
+    ) -> None:
+        steps = self.steps()
+        sequence = len(steps) + 1
+        prior = steps[-1].step_sha256 if steps else ZERO_CHECKPOINT_SHA256
+        replay_index = self._replay_index
+        if replay_index is not None:
+            sequence = replay_index + 1
+            prior = steps[replay_index - 1].step_sha256 if replay_index else ZERO_CHECKPOINT_SHA256
+        document = _step_document(
+            command_raw,
+            checkpoint,
+            engine_version=engine_version,
+            closure_digest=closure_digest,
+            source_commit=source_commit,
+            config_digest=config_digest,
+            prior_step_sha256=prior,
+        )
+        if replay_index is not None:
+            if replay_index >= len(steps):
+                raise ValueError("durable recovery replay exceeded command prefix")
+            expected_raw = _read_sealed(
+                self._root / f"step-{sequence:08d}.json", 256 * 1024
+            )
+            expected = json.loads(expected_raw[:-1], object_pairs_hook=_pairs)
+            if _normalized_step(document) != _normalized_step(expected):
+                raise ValueError("durable recovery replay changed semantic state")
+            self._replay_index = replay_index + 1
+            return
+        raw = canonical_json_bytes(document) + b"\n"
+        _write_sealed(self._root, f"step-{sequence:08d}.json", raw)
+
+
+def recover_nautilus_paper_session(
+    store: NautilusRecoveryStore,
+    session_factory: Callable[[NautilusRecoveryStore], object],
+) -> RecoveredNautilusPaperSession:
+    if type(store) is not NautilusRecoveryStore or not callable(session_factory):
+        raise TypeError("exact durable recovery inputs are required")
+    steps = store.begin_replay()
+    if not steps:
+        store.cancel_replay()
+        raise ValueError("durable recovery prefix is empty")
+    last = steps[-1].checkpoint
+    if (
+        last.checkpoint.state is PaperSessionState.STOPPING
+        and last.event_batch_sha256 is not None
+    ):
+        store.cancel_replay()
+        raise ValueError("durable paper session is already stopped")
+    from .nautilus_session import NautilusPaperSession
+
+    session = session_factory(store)
+    if type(session) is not NautilusPaperSession:
+        store.cancel_replay()
+        raise TypeError("recovery factory returned an invalid paper session")
+    expected = ZERO_CHECKPOINT_SHA256
+    result = None
+    try:
+        for step in steps:
+            result = session.execute(
+                step.command_raw,
+                expected_checkpoint_sha256=expected,
+            )
+            expected = result.checkpoint.checkpoint_sha256
+        store.finish_replay()
+    except BaseException:
+        store.cancel_replay()
+        raise
+    assert result is not None
+    return RecoveredNautilusPaperSession(
+        session=session,
+        checkpoint=result.checkpoint,
+        disposition=NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
+    )
+
+
 def _evidence_from_document(value: object) -> NautilusRecoveryEvidence:
     if type(value) is not dict or set(value) != _EVIDENCE_KEYS:
         raise ValueError("recovery evidence is invalid")
@@ -255,21 +596,17 @@ def _receipt(raw: bytes) -> NautilusRecoveryReceipt:
         raise ValueError("recovery receipt fields are invalid") from exc
 
 
-def load_nautilus_recovery_receipt(path: Path) -> NautilusRecoveryReceipt:
+def load_nautilus_recovery_receipt(
+    path: Path, expected_sha256: str
+) -> NautilusRecoveryReceipt:
     if not isinstance(path, Path):
         raise TypeError("recovery receipt path must be an exact Path")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 256 * 1024:
-            raise ValueError("recovery receipt is not a bounded regular file")
-        chunks: list[bytes] = []
-        while chunk := os.read(descriptor, 65_536):
-            chunks.append(chunk)
-    finally:
-        os.close(descriptor)
-    return _receipt(b"".join(chunks))
+    if type(expected_sha256) is not str or _SHA256.fullmatch(expected_sha256) is None:
+        raise ValueError("recovery receipt expected identity is invalid")
+    raw = _read_sealed(path, 256 * 1024)
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("recovery receipt identity changed")
+    return _receipt(raw)
 
 
 def write_nautilus_recovery_receipt(
@@ -279,43 +616,17 @@ def write_nautilus_recovery_receipt(
     if not isinstance(path, Path) or type(evidence) is not NautilusRecoveryEvidence:
         raise TypeError("exact recovery receipt inputs are required")
     raw = canonical_json_bytes(_build_document(evidence)) + b"\n"
-    directory_flags = (
-        os.O_RDONLY
-        | os.O_DIRECTORY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    directory_fd = os.open(path.parent, directory_flags)
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path.name,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory_fd,
-        )
-        remaining = memoryview(raw)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError("recovery receipt write made no progress")
-            remaining = remaining[written:]
-        os.fsync(descriptor)
-        os.fsync(directory_fd)
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        os.close(directory_fd)
+    _write_sealed(path.parent, path.name, raw)
     return _receipt(raw)
 
 
 __all__ = [
     "NAUTILUS_RECOVERY_RECEIPT_SCHEMA",
     "NautilusRecoveryReceipt",
+    "NautilusRecoveryStep",
+    "NautilusRecoveryStore",
+    "RecoveredNautilusPaperSession",
     "load_nautilus_recovery_receipt",
+    "recover_nautilus_paper_session",
     "write_nautilus_recovery_receipt",
 ]

@@ -20,6 +20,7 @@ from services.paper_runtime.nautilus_checkpoint import (
 from services.paper_runtime.nautilus_reconciliation import (
     NautilusChildState,
     NautilusRecoveryDisposition,
+    NautilusRecoveryDecision,
     NautilusRecoveryEvidence,
     NautilusRecoveryReason,
     reconcile_nautilus_paper,
@@ -43,20 +44,26 @@ def _checkpoint(
     state: PaperSessionState = PaperSessionState.RUNNING,
     durable: bool = False,
 ) -> NautilusCheckpointRecord:
+    command_sequence = 3 if state is PaperSessionState.STOPPING else 2
+    command_type = (
+        "StopPaperEngine"
+        if state is PaperSessionState.STOPPING
+        else "SubmitTargetPortfolio"
+    )
     checkpoint = PaperSessionCheckpoint(
         schema_version=PAPER_PROTOCOL_SCHEMA,
         session_id=SESSION_ID,
         owner_id=OWNER_ID,
         state=state,
-        last_accepted_command=2,
-        last_request_id=paper_request_id(SESSION_ID, 2),
-        last_command_type="SubmitTargetPortfolio",
+        last_accepted_command=command_sequence,
+        last_request_id=paper_request_id(SESSION_ID, command_sequence),
+        last_command_type=command_type,
         last_command_frame_sha256="9" * 64,
         last_command_digest="a" * 64,
         last_emitted_event=6,
         last_event_digest=EVENT,
         event_prefix_sha256=PREFIX,
-        last_acknowledged_command=2,
+        last_acknowledged_command=command_sequence,
         last_acknowledgement_sha256="b" * 64,
         semantic_state_hash=OBSERVATION,
         child_identity=CHILD,
@@ -128,11 +135,6 @@ def _evidence(**changes: object) -> NautilusRecoveryEvidence:
             NautilusRecoveryReason.CLEAN_STOP_DURABLE,
         ),
         (
-            _evidence(),
-            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
-            NautilusRecoveryReason.DURABLE_PREFIX_MATCH,
-        ),
-        (
             _evidence(kill_switch_state=CanonicalKillSwitchState.ACTIVE),
             NautilusRecoveryDisposition.EXIT_ONLY,
             NautilusRecoveryReason.KILL_SWITCH_ENGAGED,
@@ -154,7 +156,6 @@ def test_restart_matrix_accepts_only_proven_local_outcomes(
         in {
             NautilusRecoveryDisposition.START_NEW,
             NautilusRecoveryDisposition.KEEP_RUNNING,
-            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
         }
     )
 
@@ -212,3 +213,37 @@ def test_checkpoint_without_child_is_not_retryable_when_target_was_accepted() ->
 
     assert decision.disposition is NautilusRecoveryDisposition.RECONCILIATION_REQUIRED
     assert NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN in decision.reason_codes
+
+
+def test_caller_asserted_matching_values_never_create_resume_authority() -> None:
+    decision = reconcile_nautilus_paper(
+        _evidence(
+            target_schedule_cursor=999,
+            expected_target_schedule_cursor=999,
+            child_outcome_proven=True,
+        )
+    )
+
+    assert decision.disposition is NautilusRecoveryDisposition.RECONCILIATION_REQUIRED
+    assert decision.allows_automatic_resume is False
+
+
+def test_uncertain_non_stop_checkpoint_cannot_claim_clean_stop() -> None:
+    checkpoint = _checkpoint(state=PaperSessionState.STOPPING, durable=True)
+    decision = reconcile_nautilus_paper(
+        _evidence(checkpoint=checkpoint, child_outcome_proven=False)
+    )
+
+    assert decision.disposition is NautilusRecoveryDisposition.RECONCILIATION_REQUIRED
+
+
+def test_recovery_decision_cannot_be_freely_forged_with_open_authority() -> None:
+    with pytest.raises(ValueError, match="inconsistent"):
+        NautilusRecoveryDecision(
+            disposition=NautilusRecoveryDisposition.RECONCILIATION_REQUIRED,
+            reason_codes=(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN,),
+            allows_automatic_resume=True,
+            allows_new_opening_targets=True,
+            requires_operator_reconciliation=False,
+            network_query_allowed=True,
+        )

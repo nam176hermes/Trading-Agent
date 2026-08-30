@@ -55,7 +55,11 @@ from .nautilus_reconciliation import (
 from .nautilus_recovery import (
     NAUTILUS_RECOVERY_RECEIPT_SCHEMA,
     NautilusRecoveryReceipt,
+    NautilusRecoveryStep,
+    NautilusRecoveryStore,
+    RecoveredNautilusPaperSession,
     load_nautilus_recovery_receipt,
+    recover_nautilus_paper_session,
     write_nautilus_recovery_receipt,
 )
 from .nautilus_session import (
@@ -95,6 +99,8 @@ __all__ = [
     "NautilusRecoveryEvidence",
     "NautilusRecoveryReason",
     "NautilusRecoveryReceipt",
+    "NautilusRecoveryStep",
+    "NautilusRecoveryStore",
     "NautilusSessionRejected",
     "NautilusSessionResult",
     "OperationState",
@@ -102,6 +108,7 @@ __all__ = [
     "Package6Controller",
     "ProcessEvidence",
     "ReadinessEvidence",
+    "RecoveredNautilusPaperSession",
     "RuntimeChainEvidence",
     "RuntimeChildAuthorities",
     "SourceDrift",
@@ -119,6 +126,7 @@ __all__ = [
     "issue_runtime_child_authorities",
     "run_approved_runtime_chain",
     "reconcile_nautilus_paper",
+    "recover_nautilus_paper_session",
     "verify_runtime_evidence_bundle",
     "write_runtime_evidence_bundle",
     "write_nautilus_recovery_receipt",

@@ -149,6 +149,27 @@ class NautilusRecoveryDecision:
     requires_operator_reconciliation: bool
     network_query_allowed: bool = False
 
+    def __post_init__(self) -> None:
+        resumes = self.disposition in {
+            NautilusRecoveryDisposition.START_NEW,
+            NautilusRecoveryDisposition.KEEP_RUNNING,
+        }
+        blocked = (
+            self.disposition
+            is NautilusRecoveryDisposition.RECONCILIATION_REQUIRED
+        )
+        if (
+            type(self.disposition) is not NautilusRecoveryDisposition
+            or type(self.reason_codes) is not tuple
+            or len(self.reason_codes) != 1
+            or any(type(reason) is not NautilusRecoveryReason for reason in self.reason_codes)
+            or self.allows_automatic_resume is not resumes
+            or self.allows_new_opening_targets is not resumes
+            or self.requires_operator_reconciliation is not blocked
+            or self.network_query_allowed is not False
+        ):
+            raise ValueError("Nautilus recovery decision is inconsistent")
+
 
 def _blocked(reason: NautilusRecoveryReason) -> NautilusRecoveryDecision:
     return NautilusRecoveryDecision(
@@ -167,7 +188,6 @@ def _accepted(
     resumes = disposition in {
         NautilusRecoveryDisposition.START_NEW,
         NautilusRecoveryDisposition.KEEP_RUNNING,
-        NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
     }
     return NautilusRecoveryDecision(
         disposition=disposition,
@@ -259,7 +279,9 @@ def reconcile_nautilus_paper(
     if (
         evidence.child_state is NautilusChildState.GONE
         and checkpoint.state is PaperSessionState.STOPPING
+        and checkpoint.last_command_type == "StopPaperEngine"
         and checkpoint_record.event_batch_sha256 is not None
+        and evidence.child_outcome_proven
     ):
         return _accepted(
             NautilusRecoveryDisposition.ALREADY_STOPPED,
@@ -268,10 +290,7 @@ def reconcile_nautilus_paper(
     if not evidence.child_outcome_proven:
         return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
     if evidence.child_state is NautilusChildState.GONE:
-        return _accepted(
-            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
-            NautilusRecoveryReason.DURABLE_PREFIX_MATCH,
-        )
+        return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
     return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
 
 

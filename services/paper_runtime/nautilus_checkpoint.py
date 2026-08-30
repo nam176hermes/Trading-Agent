@@ -32,7 +32,7 @@ class NautilusCheckpointRecord:
 
 
 class NautilusCheckpointStore:
-    """Single-owner monotonic checkpoint chain; durable storage is P1-29."""
+    """Current-process view rebuilt from the durable P1-29 command chain."""
 
     def __init__(self) -> None:
         self._records: dict[UUID, NautilusCheckpointRecord] = {}

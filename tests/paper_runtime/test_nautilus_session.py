@@ -265,7 +265,7 @@ def _request() -> EngineCommandEnvelope:
     )
 
 
-def _events() -> tuple[object, ...]:
+def _events(closure: str = CLOSURE) -> tuple[object, ...]:
     values: tuple[object, ...] = (
         P1RunStarted(
             schema_version="nautilus-p1-event-stream-v1",
@@ -277,7 +277,7 @@ def _events() -> tuple[object, ...]:
             runtime_family="cython-v1",
             engine_version="1.231.0",
             upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
-            closure_digest=CLOSURE,
+            closure_digest=closure,
             config_digest="f" * 64,
             catalog_digest=catalog_digest(_catalog()),
             data_digest="1" * 64,
@@ -337,7 +337,7 @@ def _events() -> tuple[object, ...]:
             runtime_family="cython-v1",
             engine_version="1.231.0",
             upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
-            closure_digest=CLOSURE,
+            closure_digest=closure,
             target_count=1,
             order_count=0,
             fill_count=0,
@@ -403,9 +403,15 @@ def _commands(request: EngineCommandEnvelope) -> tuple[bytes, ...]:
 
 
 class _Child:
-    def __init__(self, *, closure: str = CLOSURE, identity: str = CHILD) -> None:
+    def __init__(
+        self,
+        *,
+        closure: str = CLOSURE,
+        identity: str = CHILD,
+        event_closure: str | None = None,
+    ) -> None:
         self.journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
-        self.events = _events()
+        self.events = _events(closure if event_closure is None else event_closure)
         self.closure = closure
         self.identity = identity
         self.calls = 0
@@ -578,6 +584,8 @@ def _session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     authority_closure: str = CLOSURE,
+    authority_identity: str = CHILD,
+    recovery_recorder: object | None = None,
 ) -> tuple[NautilusPaperSession, object, CustodianClient]:
     capability, client, closure = _controller_authority(
         monkeypatch, closure_digest=authority_closure
@@ -588,7 +596,7 @@ def _session(
         custodian_authority_sha256=_custodian_authority_sha256(
             client.attestation
         ),
-        process_authority_sha256=CHILD,
+        process_authority_sha256=authority_identity,
         paper_source_sha256=P1_PAPER_SOURCE_SHA256,
         session_id=SESSION,
         owner_id=OWNER,
@@ -608,6 +616,7 @@ def _session(
         clock=lambda: NOW + timedelta(seconds=1),
         event_ledger=InMemoryEngineEventLedger(),
         projection_authority=_authority(),
+        recovery_recorder=recovery_recorder,
     )
     return session, capability, client
 
@@ -690,8 +699,8 @@ def test_target_revalidates_safety_before_child_exchange(
         )
 
     assert child.calls == 1
-    assert child.aborted is True
-    assert session.state == "RECONCILIATION_REQUIRED"
+    assert child.aborted is False
+    assert session.state == "EXIT_ONLY"
 
 
 def test_kill_switch_engagement_blocks_target_before_child_exchange(
@@ -700,18 +709,32 @@ def test_kill_switch_engagement_blocks_target_before_child_exchange(
     child = _Child()
     evidence = [_safety()]
     session, _capability, _client = _session(child, evidence, monkeypatch)
-    start, target, _stop = _commands(_request())
+    start, target, stop = _commands(_request())
     first = session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
+    second = session.execute(
+        target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256
+    )
     evidence.append(_safety(kill_switch=CanonicalKillSwitchState.ACTIVE))
+    next_target = __import__("json").loads(target)
+    next_target["command_sequence"] = 3
+    next_target["request_id"] = str(paper_request_id(SESSION, 3))
 
     with pytest.raises(NautilusSessionRejected, match="safety"):
         session.execute(
-            target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256
+            canonical_json_bytes(next_target),
+            expected_checkpoint_sha256=second.checkpoint.checkpoint_sha256,
         )
 
-    assert child.calls == 1
-    assert child.aborted is True
-    assert session.state == "RECONCILIATION_REQUIRED"
+    assert child.calls == 2
+    assert child.aborted is False
+    assert session.state == "EXIT_ONLY"
+
+    completed = session.execute(
+        stop, expected_checkpoint_sha256=second.checkpoint.checkpoint_sha256
+    )
+
+    assert completed.state == "STOPPED"
+    assert child.calls == 3
 
 
 def test_target_rejects_checkpoint_drift_without_child_exchange(
@@ -749,7 +772,7 @@ def test_malformed_command_aborts_an_active_child(
 def test_child_closure_mismatch_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    child = _Child(closure="9" * 64)
+    child = _Child(closure="9" * 64, event_closure=CLOSURE)
     session, _capability, _client = _session(child, [_safety()], monkeypatch)
     start, _target, _stop = _commands(_request())
 
@@ -763,7 +786,7 @@ def test_child_closure_mismatch_fails_closed(
 def test_event_lineage_mismatch_fails_before_checkpoint_advance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    child = _Child(closure="9" * 64)
+    child = _Child(closure="9" * 64, event_closure=CLOSURE)
     session, _capability, _client = _session(
         child,
         [_safety()],
