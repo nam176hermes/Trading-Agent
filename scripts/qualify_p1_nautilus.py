@@ -223,6 +223,7 @@ def _product_metrics(path: Path, ceilings: dict[str, object]) -> dict[str, objec
         or any(type(run) is not dict or set(run) != _PRODUCT_RUN_KEYS for run in runs)
     ):
         raise QualificationError("P1 product metrics envelope is invalid")
+    metric_values: dict[str, int] = {}
     for name in (
         "closure_attestation_milliseconds",
         "native_execution_milliseconds",
@@ -232,6 +233,7 @@ def _product_metrics(path: Path, ceilings: dict[str, object]) -> dict[str, objec
         value = document.get(name)
         if type(value) is not int or value < 0:
             raise QualificationError("P1 product metric value is invalid")
+        metric_values[name] = value
     digest_fields = (
         "batch_sha256",
         "portfolio_state_sha256",
@@ -265,16 +267,20 @@ def _product_metrics(path: Path, ceilings: dict[str, object]) -> dict[str, objec
     for field in ("event_count", "output_bytes", "portfolio_state_sha256", "semantic_sha256"):
         if len({run[field] for run in runs}) != 1:
             raise QualificationError("P1 semantic or portfolio result is not deterministic")
-    if document["product_peak_memory_kib"] > ceilings["case_peak_memory_kib"]:
+    case_peak_memory_kib = ceilings["case_peak_memory_kib"]
+    case_runtime_seconds = ceilings["case_runtime_seconds"]
+    if type(case_peak_memory_kib) is not int or type(case_runtime_seconds) is not int:
+        raise QualificationError("P1 product metric ceiling is invalid")
+    if metric_values["product_peak_memory_kib"] > case_peak_memory_kib:
         raise QualificationError("P1 product memory ceiling was exceeded")
     if sum(
-        document[name]
+        metric_values[name]
         for name in (
             "closure_attestation_milliseconds",
             "native_execution_milliseconds",
             "replay_milliseconds",
         )
-    ) > ceilings["case_runtime_seconds"] * 1000:
+    ) > case_runtime_seconds * 1000:
         raise QualificationError("P1 product runtime ceiling was exceeded")
     return document
 

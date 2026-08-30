@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import NoReturn
+from typing import NoReturn, TypedDict
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,7 +47,22 @@ _SAFE = {
     "network_trading_authorized": False,
     "production_authorized": False,
 }
-_SUITES = (
+
+
+class _SuiteSpec(TypedDict):
+    id: str
+    nodeids: tuple[str, ...]
+
+
+class _SuiteResult(TypedDict):
+    suite: str
+    duration_milliseconds: int
+    evidence_sha256: str
+    source_sha256: str
+    test_counts: dict[str, int]
+
+
+_SUITES: tuple[_SuiteSpec, ...] = (
     {"id": "paper-recovery", "nodeids": ("tests/paper_runtime",)},
     {
         "id": "exact-g1-backtest-paper-parity",
@@ -69,8 +84,8 @@ def _suite_source_sha256(nodeids: tuple[str, ...]) -> str:
 
 
 def _run_suite(
-    suite: dict[str, object], environment: dict[str, str]
-) -> dict[str, object]:
+    suite: _SuiteSpec, environment: dict[str, str]
+) -> _SuiteResult:
     nodeids = suite["nodeids"]
     assert isinstance(nodeids, tuple)
     source_sha256 = _suite_source_sha256(nodeids)
@@ -118,6 +133,7 @@ def _run_suite(
             "test_counts": counts,
         }
         return {
+            "suite": suite["id"],
             "duration_milliseconds": round((time.monotonic() - started) * 1000),
             "evidence_sha256": hashlib.sha256(_canonical(evidence)).hexdigest(),
             "source_sha256": source_sha256,
@@ -134,9 +150,8 @@ def qualify(
         raise QualificationError("P1-29 acceptance authority is unavailable")
     commit, tree = source_identity or _source_identity(ROOT)
     authority = _qualification_authority()
-    results = [
-        {"suite": suite["id"], **_run_suite(suite, environment)}
-        for suite in _SUITES
+    results: list[_SuiteResult] = [
+        _run_suite(suite, environment) for suite in _SUITES
     ]
     if any(
         result["test_counts"][name]
