@@ -1541,7 +1541,7 @@ def test_semantic_digest_changes_when_validation_date_changes_governed_policy_ou
         entry["review_by"] = "2026-08-15"
     assert len(governance.validate_allowlist_document(
         policy, today=date(2026, 8, 15),
-    )) == 31
+    )) == 32
     with pytest.raises(governance.AllowlistValidationError) as caught:
         governance.validate_allowlist_document(policy, today=date(2026, 8, 16))
     assert caught.value.policy_class == "POLICY_REVIEW_DATE_EXPIRED"
