@@ -679,6 +679,7 @@ def test_worker_runtime_authority_must_bind_exact_checkout_source(
     assert receipt["job_mutated"] is False
 
 
+@pytest.mark.runtime_postgres
 def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     tmp_path: Path,
 ) -> None:

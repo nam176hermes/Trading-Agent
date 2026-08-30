@@ -86,6 +86,16 @@ def _fixture(tmp_path: Path, source: str, *, relative: str) -> tuple[Path, Path]
 
 
 def test_current_p1_boundaries_pass() -> None:
+    from tests.p1_nautilus.test_vertical_slice_e2e import (
+        test_required_runtime_vertical_slice_reaches_exact_durable_success,
+    )
+
+    markers = getattr(
+        test_required_runtime_vertical_slice_reaches_exact_durable_success,
+        "pytestmark",
+        (),
+    )
+    assert "runtime_postgres" in {marker.name for marker in markers}
     check_boundaries(ROOT, BUDGET)
 
 

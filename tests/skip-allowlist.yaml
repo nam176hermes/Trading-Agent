@@ -394,6 +394,20 @@
     },
     {
       "allowed_in_ci": true,
+      "approval_record_type": "disposable-postgres-test-approval-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "control-plane",
+      "reason": "marker expression deselected: runtime_postgres",
+      "reason_category": "DISPOSABLE_POSTGRES_REQUIRED",
+      "required_binary_or_service": "approved disposable PostgreSQL cluster and sealed P1 runtime",
+      "review_by": "2026-10-31",
+      "security_critical": true,
+      "target_phase": "P1 vertical-slice runtime validation",
+      "test_node_id": "tests/p1_nautilus/test_vertical_slice_e2e.py::test_required_runtime_vertical_slice_reaches_exact_durable_success"
+    },
+    {
+      "allowed_in_ci": true,
       "approval_record_type": "host-capability-review-v1",
       "component": "root",
       "outcome": "deselected",
