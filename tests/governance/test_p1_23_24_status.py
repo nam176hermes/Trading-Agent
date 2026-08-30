@@ -65,7 +65,8 @@ def test_p1_23_and_p1_24_acceptance_advances_local_p1_a_source() -> None:
     assert "| P1-23 | P1-22 | ACCEPTED |" in ledger
     assert "| P1-24 | P1-22 | ACCEPTED |" in ledger
     assert "| P1-25 | P1-23, P1-24 | ACCEPTED_LOCAL |" in ledger
-    assert "| P1-26 | P1-25 | READY |" in ledger
+    assert "| P1-26 | P1-25 | ACCEPTED |" in ledger
+    assert "| P1-27 | P1-26 | READY |" in ledger
 
     review = P1_A_REVIEW.read_text(encoding="utf-8")
     assert "Status: `P1_A_LOCAL_SOURCE_ACCEPTED`" in review
