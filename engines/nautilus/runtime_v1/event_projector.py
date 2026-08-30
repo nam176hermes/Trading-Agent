@@ -1,5 +1,3 @@
-"""Project scalar Nautilus evidence into the closed P1 event stream."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +16,7 @@ from .generated_protocol import (
     canonical_json_bytes,
     validate_document,
 )
+from .paper_prefix import validated_target_prefix
 from .target_planner import plan_target
 
 
@@ -731,8 +730,6 @@ def validate_projected_stream(
     request_message_id: str,
     request_authority: tuple[tuple[str, object], ...],
 ) -> None:
-    """Fail closed on an incomplete or internally inconsistent stream."""
-
     if (
         not 5 <= len(events) == len(envelopes) <= 4096
         or events[0]["event_type"] != "RunStarted"
@@ -864,9 +861,8 @@ def project_event_stream(
     *,
     closure_digest: str,
     upstream_commit: str,
+    accepted_target_prefix: tuple[str, ...] | None = None,
 ) -> ProjectedEventStream:
-    """Build and validate one complete exact-authority event stream."""
-
     if type(completion) is not CompletionAuthority or upstream_commit != _UPSTREAM:
         raise ValueError("P1 completion or engine authority is invalid")
     _validate_completion(run, completion)
@@ -889,6 +885,7 @@ def project_event_stream(
         )
     ]
     schedule = _schedule(inputs)
+    schedule = {target_id: schedule[target_id] for target_id in validated_target_prefix(tuple(schedule), accepted_target_prefix)}
     quotes, executions = collect_executions(run)
     schedule_target_ids = tuple(schedule)
     execution_target_ids = tuple(

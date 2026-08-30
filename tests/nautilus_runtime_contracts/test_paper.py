@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 import pytest
@@ -22,7 +23,9 @@ from packages.domain import ProductType
 from packages.nautilus_runtime_contracts.events import (
     P1AccountObserved,
     P1Event,
+    P1Fill,
     P1PositionObserved,
+    P1OrderSubmitted,
     P1RunCompleted,
     P1RunStarted,
     P1TargetAccepted,
@@ -320,6 +323,97 @@ def test_paper_protocol_rejects_target_during_stopping_and_after_failure() -> No
         journal.accept_command(_command_bytes(_target(), 3))
 
 
+@pytest.mark.parametrize("side", ("BUY", "SELL"))
+def test_stop_causality_rejects_an_opening_order_after_zero_target(
+    side: Literal["BUY", "SELL"],
+) -> None:
+    journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
+    start = _start()
+    stop = StopPaperEngine(command_type="StopPaperEngine", target_engine_run_id=SESSION)
+    journal.accept_command(_command_bytes(start, 1))
+    journal.record_ack(_ack_bytes(start, 1, PaperSessionState.RUNNING))
+    journal.record_event(_event_bytes(_start_event()))
+    journal.accept_command(_command_bytes(stop, 2))
+    journal.record_ack(_ack_bytes(stop, 2, PaperSessionState.STOPPING))
+    target = _zero_target_events()[1]
+    journal.record_event(_event_bytes(target, paper_request_id(SESSION, 2)))
+    plan = _zero_target_events()[2]
+    journal.record_event(_event_bytes(plan, paper_request_id(SESSION, 2)))
+    order = P1OrderSubmitted(
+        schema_version="nautilus-p1-event-stream-v1",
+        event_type="OrderSubmitted",
+        origin="CONTROL_PLANE",
+        native_type="Order",
+        sequence=5,
+        simulation_time=NOW,
+        client_order_id="target-1",
+        native_order_id="native-order-1",
+        target_id="target-1",
+        source_signal_ids=("signal-1",),
+        side=side,
+        quantity=Decimal("1"),
+        order_type="MARKET",
+    )
+    with pytest.raises(ValueError, match="causality"):
+        journal.record_event(_event_bytes(order, paper_request_id(SESSION, 2)))
+
+
+def test_stop_causality_rejects_aggregate_exit_overcommit() -> None:
+    journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
+    start, target = _start(), _target()
+    stop = StopPaperEngine(command_type="StopPaperEngine", target_engine_run_id=SESSION)
+    journal.accept_command(_command_bytes(start, 1))
+    journal.record_ack(_ack_bytes(start, 1, PaperSessionState.RUNNING))
+    journal.record_event(_event_bytes(_start_event()))
+    journal.accept_command(_command_bytes(target, 2))
+    journal.record_ack(_ack_bytes(target, 2, PaperSessionState.RUNNING))
+    long_target = _zero_target_events()[1].model_copy(update={"target_weight": Decimal("1")})
+    long_plan = _zero_target_events()[2].model_copy(update={"quantity": Decimal("1")})
+    buy = P1OrderSubmitted(
+        schema_version="nautilus-p1-event-stream-v1", event_type="OrderSubmitted", origin="CONTROL_PLANE", native_type="Order", sequence=5, simulation_time=NOW, client_order_id="entry", native_order_id="native-entry", target_id="target-1", source_signal_ids=("signal-1",), side="BUY", quantity=Decimal("1"), order_type="MARKET"
+    )
+    fill = P1Fill(
+        schema_version="nautilus-p1-event-stream-v1", event_type="Fill", origin="NAUTILUS_CALLBACK", native_type="OrderFilled", sequence=6, simulation_time=NOW, client_order_id="entry", native_fill_id="trade-entry", side="BUY", quantity=Decimal("1"), price=Decimal("100"), fee=Decimal("0"), fee_currency="USDT"
+    )
+    for event in (long_target, long_plan, buy, fill):
+        journal.record_event(_event_bytes(event, paper_request_id(SESSION, 2)))
+    journal.accept_command(_command_bytes(stop, 3))
+    journal.record_ack(_ack_bytes(stop, 3, PaperSessionState.STOPPING))
+    for index, target_id in enumerate(("exit-1", "exit-2")):
+        exit_target = long_target.model_copy(update={"sequence": 7 + index * 3, "target_id": target_id, "target_weight": Decimal("0")})
+        exit_plan = long_plan.model_copy(update={"sequence": 8 + index * 3, "target_id": target_id, "quantity": Decimal("0")})
+        exit_order = buy.model_copy(update={"sequence": 9 + index * 3, "client_order_id": target_id, "native_order_id": f"native-{target_id}", "target_id": target_id, "side": "SELL"})
+        journal.record_event(_event_bytes(exit_target, paper_request_id(SESSION, 3)))
+        journal.record_event(_event_bytes(exit_plan, paper_request_id(SESSION, 3)))
+        if index == 0:
+            journal.record_event(_event_bytes(exit_order, paper_request_id(SESSION, 3)))
+        else:
+            with pytest.raises(ValueError, match="causality"):
+                journal.record_event(_event_bytes(exit_order, paper_request_id(SESSION, 3)))
+
+
+def test_stop_causality_rejects_nonflat_terminal_observation() -> None:
+    journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
+    start, target = _start(), _target()
+    stop = StopPaperEngine(command_type="StopPaperEngine", target_engine_run_id=SESSION)
+    journal.accept_command(_command_bytes(start, 1))
+    journal.record_ack(_ack_bytes(start, 1, PaperSessionState.RUNNING))
+    journal.record_event(_event_bytes(_start_event()))
+    journal.accept_command(_command_bytes(target, 2))
+    journal.record_ack(_ack_bytes(target, 2, PaperSessionState.RUNNING))
+    long_target = _zero_target_events()[1].model_copy(update={"target_weight": Decimal("1")})
+    long_plan = _zero_target_events()[2].model_copy(update={"quantity": Decimal("1")})
+    order = P1OrderSubmitted(schema_version="nautilus-p1-event-stream-v1", event_type="OrderSubmitted", origin="CONTROL_PLANE", native_type="Order", sequence=5, simulation_time=NOW, client_order_id="entry", native_order_id="native-entry", target_id="target-1", source_signal_ids=("signal-1",), side="BUY", quantity=Decimal("1"), order_type="MARKET")
+    fill = P1Fill(schema_version="nautilus-p1-event-stream-v1", event_type="Fill", origin="NAUTILUS_CALLBACK", native_type="OrderFilled", sequence=6, simulation_time=NOW, client_order_id="entry", native_fill_id="fill-entry", side="BUY", quantity=Decimal("1"), price=Decimal("100"), fee=Decimal("0"), fee_currency="USDT")
+    for event in (long_target, long_plan, order, fill):
+        journal.record_event(_event_bytes(event, paper_request_id(SESSION, 2)))
+    journal.accept_command(_command_bytes(stop, 3))
+    journal.record_ack(_ack_bytes(stop, 3, PaperSessionState.STOPPING))
+    nonflat = _zero_target_events()[3].model_copy(update={"sequence": 7, "quantity": Decimal("1"), "average_entry_price": Decimal("100")})
+    with pytest.raises(ValueError, match="causality"):
+        journal.record_event(_event_bytes(nonflat, paper_request_id(SESSION, 3)))
+
+
 def test_paper_checkpoint_restart_requires_exact_authority() -> None:
     checkpoint = PaperSessionCheckpoint(
         schema_version=PAPER_PROTOCOL_SCHEMA,
@@ -572,6 +666,20 @@ def test_clean_eof_requires_acknowledged_stop_and_complete_p1_stream() -> None:
     clean.record_event(_event_bytes(_zero_target_events()[-1], paper_request_id(SESSION, 3)))
     clean.end_of_input()
     assert clean.state is PaperSessionState.STOPPED
+
+
+def test_start_then_stop_cannot_bypass_complete_event_stream() -> None:
+    journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
+    start = _start()
+    stop = StopPaperEngine(command_type="StopPaperEngine", target_engine_run_id=SESSION)
+    journal.accept_command(_command_bytes(start, 1))
+    journal.record_ack(_ack_bytes(start, 1, PaperSessionState.RUNNING))
+    journal.record_event(_event_bytes(_start_event()))
+    journal.accept_command(_command_bytes(stop, 2))
+    journal.record_ack(_ack_bytes(stop, 2, PaperSessionState.STOPPING))
+    with pytest.raises(ValueError, match="complete P1 event stream"):
+        journal.end_of_input()
+    assert journal.state is PaperSessionState.RECONCILIATION_REQUIRED
 
 
 def test_restore_rejects_replayed_request_with_changed_sequence() -> None:

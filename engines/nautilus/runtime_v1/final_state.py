@@ -10,6 +10,7 @@ from .bootstrap import RuntimeBootstrapError, require_product_lineage
 from .currency_metadata import currency_quanta
 from .event_collector import collect_executions
 from .event_projector import CompletionAuthority
+from .paper_prefix import validated_target_prefix
 
 
 class FinalStateError(ValueError):
@@ -182,7 +183,10 @@ def _ledger(
 
 
 def _validate(
-    inputs: object, lineage: object, run: object
+    inputs: object,
+    lineage: object,
+    run: object,
+    accepted_target_prefix: tuple[str, ...] | None,
 ) -> CompletionAuthority:
     try:
         require_product_lineage(lineage)
@@ -192,7 +196,9 @@ def _validate(
         raise FinalStateError("runtime final state lineage is inconsistent")
     configuration = _mapping(inputs.engine_configuration)
     catalog = _mapping(inputs.instrument_catalog)
-    target_ids = _target_ids(inputs)
+    target_ids = validated_target_prefix(
+        _target_ids(inputs), accepted_target_prefix
+    )
     row_count, final_price, final_timestamp = _market_facts(inputs)
     summary = _mapping(run.result_summary)
     quotes, executions = collect_executions(run)
@@ -309,10 +315,14 @@ def _validate(
 
 
 def validate_final_state(
-    inputs: object, lineage: object, run: object
+    inputs: object,
+    lineage: object,
+    run: object,
+    *,
+    accepted_target_prefix: tuple[str, ...] | None = None,
 ) -> CompletionAuthority:
     try:
-        return _validate(inputs, lineage, run)
+        return _validate(inputs, lineage, run, accepted_target_prefix)
     except FinalStateError:
         raise
     except (

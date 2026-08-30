@@ -381,6 +381,16 @@ class TargetStrategy(Strategy):
         self._filled_quantity = Decimal(0)
         self._instrument = None
 
+    def finish_exit_only(self) -> None:
+        if self._active_order is not None or not self._processed_target_ids:
+            raise ValueError("exit-only completion is invalid")
+        if self._state == StrategyState.COMPLETED:
+            return
+        if self._state != StrategyState.TARGET_REACHED:
+            raise ValueError("exit-only completion is invalid")
+        self._effective_times = self._effective_times[: self._target_index]
+        self._state = StrategyState.COMPLETED
+
     def _reach_target(self, target_id: str) -> None:
         self._processed_target_ids.append(target_id)
         self._target_index += 1

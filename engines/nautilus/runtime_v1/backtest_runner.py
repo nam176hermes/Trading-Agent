@@ -228,7 +228,7 @@ def _validate_native_unrealized(
         raise BacktestRunError("native unrealized PnL proof is inconsistent")
 
 
-def _snapshot(engine, strategy, batch) -> BacktestRun:
+def _snapshot(engine, strategy, batch, expected_target_ids=None) -> BacktestRun:
     result = engine.get_result()
     accounts = tuple(engine.cache.accounts())
     orders = tuple(engine.cache.orders())
@@ -264,7 +264,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         if kind == "order_rejected"
     )
     pending = tuple(str(order.client_order_id) for order in engine.cache.orders_open())
-    expected_targets = tuple(item[0] for item in strategy.config.target_schedule)
+    expected_targets = expected_target_ids or tuple(item[0] for item in strategy.config.target_schedule)
     order_ids = tuple(str(order.client_order_id) for order in orders)
     fill_ids = tuple(fact.trade_id for fact in fill_facts)
     contradictions = tuple(

@@ -1,5 +1,3 @@
-"""Finite engine-neutral protocol for one network-free P1 paper session."""
-
 from __future__ import annotations
 
 import hashlib
@@ -34,9 +32,10 @@ from .events import (
     P1OrderSubmitted,
 )
 from .state_machine import validate_event_stream
+from .paper_causality import stop_event_allowed
 
 
-PAPER_PROTOCOL_SCHEMA = "nautilus-paper-session-v1"
+PAPER_PROTOCOL_SCHEMA = "nautilus-paper-session-v2"
 MAX_PAPER_FRAME_BYTES = 65_536
 
 
@@ -51,8 +50,6 @@ class PaperSessionState(StrEnum):
 
 
 def paper_request_id(session_id: UUID, command_sequence: int) -> UUID:
-    """Derive replay-stable request identity without an unbounded durable registry."""
-
     if type(session_id) is not UUID or type(command_sequence) is not int or command_sequence < 1:
         raise ValueError("paper request identity inputs are invalid")
     return uuid5(session_id, f"{PAPER_PROTOCOL_SCHEMA}:command:{command_sequence}")
@@ -76,13 +73,11 @@ PaperCommandName: TypeAlias = Literal[
 
 
 class _PaperModel(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid", frozen=True, strict=True, revalidate_instances="always"
-    )
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, revalidate_instances="always")
 
 
 class PaperCommandFrame(_PaperModel):
-    schema_version: Literal["nautilus-paper-session-v1"]
+    schema_version: Literal["nautilus-paper-session-v2"]
     frame_type: Literal["COMMAND"]
     session_id: UUID
     owner_id: UUID
@@ -101,7 +96,7 @@ class PaperCommandFrame(_PaperModel):
 
 
 class PaperEventFrame(_PaperModel):
-    schema_version: Literal["nautilus-paper-session-v1"]
+    schema_version: Literal["nautilus-paper-session-v2"]
     frame_type: Literal["EVENT"]
     session_id: UUID
     owner_id: UUID
@@ -120,7 +115,7 @@ class PaperEventFrame(_PaperModel):
 
 
 class PaperCommandAcknowledgement(_PaperModel):
-    schema_version: Literal["nautilus-paper-session-v1"]
+    schema_version: Literal["nautilus-paper-session-v2"]
     frame_type: Literal["ACK"]
     session_id: UUID
     owner_id: UUID
@@ -141,7 +136,7 @@ class PaperCommandAcknowledgement(_PaperModel):
 
 
 class PaperSessionCheckpoint(_PaperModel):
-    schema_version: Literal["nautilus-paper-session-v1"]
+    schema_version: Literal["nautilus-paper-session-v2"]
     session_id: UUID
     owner_id: UUID
     state: PaperSessionState
@@ -194,17 +189,8 @@ _ALLOWED_COMMANDS = frozenset(
         "RequestExecutionReconciliation",
     }
 )
-_TERMINAL_STATES = frozenset(
-    {
-        PaperSessionState.STOPPED,
-        PaperSessionState.FAILED,
-        PaperSessionState.RECONCILIATION_REQUIRED,
-    }
-)
-_FAILURE_TRANSITIONS = {
-    PaperSessionState.FAILED,
-    PaperSessionState.RECONCILIATION_REQUIRED,
-}
+_TERMINAL_STATES = frozenset({PaperSessionState.STOPPED, PaperSessionState.FAILED, PaperSessionState.RECONCILIATION_REQUIRED})
+_FAILURE_TRANSITIONS = {PaperSessionState.FAILED, PaperSessionState.RECONCILIATION_REQUIRED}
 _TRANSITIONS = {
     PaperSessionState.CREATED: _FAILURE_TRANSITIONS | {PaperSessionState.STARTING},
     PaperSessionState.STARTING: _FAILURE_TRANSITIONS
@@ -293,8 +279,6 @@ def _validate_restored_event_prefix(
 
 
 class PaperSessionJournal:
-    """Validate one-owner command/event prefixes and produce restart authority."""
-
     def __init__(self, *, session_id: UUID, owner_id: UUID) -> None:
         self.session_id = session_id
         self.owner_id = owner_id
@@ -391,20 +375,26 @@ class PaperSessionJournal:
         if self.last_emitted_event != 0 and isinstance(frame.event, P1RunStarted):
             self.state = PaperSessionState.RECONCILIATION_REQUIRED
             raise ValueError("paper event stream contains duplicate RunStarted")
-        allowed = (
-            command_type == "StartPaperEngine"
-            if isinstance(frame.event, P1RunStarted)
-            else command_type == "StopPaperEngine"
-            if isinstance(frame.event, P1RunCompleted)
-            else command_type in {"SubmitTargetPortfolio", "StopPaperEngine"}
-            if isinstance(frame.event, (P1Fill, P1PositionObserved, P1AccountObserved))
-            else command_type == "SubmitTargetPortfolio"
-            if isinstance(
-                frame.event,
-                (P1TargetAccepted, P1TargetQuantityPlanned, P1OrderSubmitted),
+        if command_type == "StopPaperEngine":
+            allowed = stop_event_allowed(tuple(self._events), frame.event)
+        else:
+            allowed = (
+                command_type == "StartPaperEngine"
+                if isinstance(frame.event, P1RunStarted)
+                else command_type == "SubmitTargetPortfolio"
+                if isinstance(
+                    frame.event,
+                    (
+                        P1TargetAccepted,
+                        P1TargetQuantityPlanned,
+                        P1OrderSubmitted,
+                        P1Fill,
+                        P1PositionObserved,
+                        P1AccountObserved,
+                    ),
+                )
+                else False
             )
-            else False
-        )
         if not allowed:
             self.state = PaperSessionState.RECONCILIATION_REQUIRED
             raise ValueError("paper command/event causality is invalid")
@@ -444,8 +434,6 @@ class PaperSessionJournal:
         return acknowledgement
 
     def end_of_input(self) -> None:
-        """Classify control-channel EOF; only an accepted stop may close cleanly."""
-
         last_request_id = paper_request_id(self.session_id, self.last_accepted_command)
         last_command = self._requests.get(last_request_id)
         if (

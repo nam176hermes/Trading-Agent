@@ -1,13 +1,13 @@
 # ADR: P1-B finite local paper session
 
-Status: Accepted for P1-26 source qualification
+Status: Accepted with P1-27 protocol-v2 amendment
 
 ## Decision
 
 P1-B uses the existing engine-neutral `StartPaperEngine`,
 `SubmitTargetPortfolio`, `StopPaperEngine`, `InspectEngineRun`, and
 `RequestExecutionReconciliation` commands. The independently versioned
-`nautilus-paper-session-v1` protocol wraps those commands and the existing P1
+`nautilus-paper-session-v2` protocol wraps those commands and the existing P1
 event vocabulary in canonical, size-bounded frames.
 
 One fixed owner controls one session. Command request IDs are derived from the
@@ -25,6 +25,11 @@ digest, and command-derived state. The checkpoint binds the acknowledgement
 prefix. Control-channel EOF closes cleanly only after the exact stop command is
 acknowledged and the accumulated events pass the existing P1 stream validator;
 any earlier or incomplete EOF requires reconciliation.
+
+Stop before the first accepted target is rejected because the shared P1 event
+contract cannot fabricate a zero-target completion. After work is accepted,
+Stop settles the next sealed zero target, cancels later re-entry targets inside
+the child, emits the shared final observations, and then closes cleanly.
 
 The durable checkpoint binds the accepted command prefix, emitted event
 prefix, semantic state, child identity, schema-8 closure, and portfolio state.

@@ -306,6 +306,16 @@ def test_final_state_rejects_empty_market_rows_as_stable_error() -> None:
         validate_final_state(inputs, _lineage(), _run())
 
 
+def test_final_state_rejects_a_nonprefix_paper_target() -> None:
+    with pytest.raises(FinalStateError, match="final state"):
+        validate_final_state(
+            _inputs(),
+            _lineage(),
+            _run(),
+            accepted_target_prefix=("wrong-target",),
+        )
+
+
 @pytest.mark.parametrize(
     "order_facts",
     (

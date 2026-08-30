@@ -478,6 +478,28 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
     assert stream.events[-1]["realized_pnl"] == "9789.280866"
 
 
+def test_completed_native_stream_requires_terminal_fact_by_default() -> None:
+    run = _run()
+    truncated = SimpleNamespace(
+        **{**vars(run), "native_facts": run.native_facts[:-1]}
+    )
+    with pytest.raises(ValueError, match="native fact stream"):
+        collect_executions(truncated)
+    assert len(collect_executions(truncated, allow_nonterminal=True)[1]) == 2
+
+
+def test_paper_target_prefix_must_match_the_sealed_schedule() -> None:
+    with pytest.raises(ValueError, match="sealed-schedule-bound"):
+        project_event_stream(
+            _inputs(),
+            _run(),
+            AUTHORITY,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+            accepted_target_prefix=("44444444-4444-4444-8444-444444444444",),
+        )
+
+
 def test_partial_fill_realized_pnl_must_use_quote_currency_precision() -> None:
     run = _partial_fill_run()
     run.position_realized_pnl = "9789.28086624"

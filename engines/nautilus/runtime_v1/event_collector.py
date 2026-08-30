@@ -112,6 +112,8 @@ def _decimal_text(value: Decimal) -> str:
 
 def collect_executions(
     run: object,
+    *,
+    allow_nonterminal: bool = False,
 ) -> tuple[
     tuple[tuple[tuple[str, str | int | None], ...], ...],
     tuple[CollectedExecution, ...],
@@ -119,13 +121,17 @@ def collect_executions(
     """Return every scalar quote and its validated target executions."""
 
     facts = run.native_facts
+    terminal = type(facts) is tuple and bool(facts) and facts[-1].kind == "stopped"
     if (
         type(facts) is not tuple
         or not facts
         or len(facts) < 4
         or len(facts) > 4096
+        or type(allow_nonterminal) is not bool
         or run.engine_version != "1.231.0"
-        or run.strategy_state != "COMPLETED"
+        or not terminal and not allow_nonterminal
+        or terminal and run.strategy_state != "COMPLETED"
+        or not terminal and run.strategy_state not in {"TARGET_REACHED", "COMPLETED"}
         or run.pending_order_ids != ()
         or run.rejected_order_ids != ()
     ):
@@ -138,13 +144,14 @@ def collect_executions(
     native_fill_ids: list[str] = []
     base_quantum, quote_quantum = currency_quanta("BTC", "USDT")
     index = 0
-    while index < len(facts) - 1:
+    limit = len(facts) - 1 if terminal else len(facts)
+    while index < limit:
         quote = _document(facts[index], "quote", _QUOTE)
         quotes.append(quote)
         index += 1
-        if index == len(facts) - 1 or facts[index].kind == "quote":
+        if index == limit or facts[index].kind == "quote":
             continue
-        if index + 1 >= len(facts) - 1:
+        if index + 1 >= limit:
             raise ValueError("native fact stream is invalid")
         plan = _document(facts[index], "target_planned", _PLAN, signals=True)
         quantity_fact = _document(
@@ -166,7 +173,7 @@ def collect_executions(
         index += 2
         order = None
         order_fills: list[tuple[tuple[str, str | int | None], ...]] = []
-        if index < len(facts) - 1 and facts[index].kind == "order_submitted":
+        if index < limit and facts[index].kind == "order_submitted":
             order = _document(facts[index], "order_submitted", _ORDER, signals=True)
             index += 1
             if (
@@ -181,7 +188,7 @@ def collect_executions(
             with localcontext() as context:
                 context.prec = 96
                 filled = Decimal(0)
-                while index < len(facts) - 1 and facts[index].kind == "order_filled":
+                while index < limit and facts[index].kind == "order_filled":
                     fill = _document(facts[index], "order_filled", _FILL)
                     try:
                         quantity_text = _text(fill, "quantity")
@@ -225,8 +232,8 @@ def collect_executions(
             CollectedExecution(quote, plan, planned_quantity, order, tuple(order_fills))
         )
 
-    stopped = _document(facts[-1], "stopped", ("state",))
-    if dict(stopped)["state"] != "COMPLETED" or index != len(facts) - 1:
+    stopped = _document(facts[-1], "stopped", ("state",)) if terminal else None
+    if index != limit or terminal and dict(stopped or ())["state"] != "COMPLETED":
         raise ValueError("native fact stream is invalid")
     if (
         tuple(target_ids) != run.processed_target_ids
