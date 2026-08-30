@@ -25,6 +25,36 @@ report must say P1 1.231, legacy 1.227 unchanged, and all authority flags false.
 
 ## Native authority
 
+### Materialize and qualify the schema-8 product runtime
+
+This lane derives a task-owned schema-8 product runtime from the already sealed
+G1 artifacts; it does not rebuild or modify G1. Supply all exact authorities:
+
+```bash
+export P1_NAUTILUS_BASE_RUNTIME=/absolute/path/to/sealed/base-runtime
+export P1_NAUTILUS_ARTIFACT_DIRECTORY=/absolute/path/to/NT1231-U04-G1-artifacts
+export P1_NAUTILUS_RUNTIME_DESTINATION=/absolute/task-owned/new-destination
+export P1_NAUTILUS_SANDBOX=/usr/bin/bwrap
+export P1_NAUTILUS_CARGO=/absolute/path/to/accepted/cargo
+export P1_NAUTILUS_LLVM_TOOLCHAIN=/absolute/path/to/accepted/llvm
+export P1_NAUTILUS_SOURCE_COMMIT=$(git rev-parse HEAD)
+make build-p1-nautilus-runtime
+```
+
+The destination must be absent and task-owned. To revalidate existing sealed
+artifacts without materializing again:
+
+```bash
+export P1_NAUTILUS_QUALIFICATION_RECEIPT=/absolute/task-owned/qualification.json
+make qualify-p1-nautilus-runtime
+```
+
+All four qualification inputs (`BASE_RUNTIME`, `ARTIFACT_DIRECTORY`,
+`SANDBOX`, `QUALIFICATION_RECEIPT`) absent means `DEFERRED`; a partial or
+supplied-invalid set means `FAIL`.
+
+### Execute product tests
+
 Set both values from the exact policy-owned G1 cache:
 
 ```bash

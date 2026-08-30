@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -18,6 +19,23 @@ from scripts.check_p1_nautilus_boundaries import (
 
 ROOT = Path(__file__).resolve().parents[2]
 BUDGET = ROOT / "docs/implementation/p1-real-nautilus/growth-budget.json"
+_LINEAGE_FILES = (
+    "docs/implementation/p1-real-nautilus/upgrade/p1-engine-baseline-receipt.json",
+    "docs/implementation/p1-real-nautilus/upgrade/candidate-generations/NT1231-U04-G1.json",
+    "docs/implementation/p1-real-nautilus/upgrade/pin-inventory.json",
+    "engines/nautilus/p1-runtime-closure-policy.json",
+    "engines/nautilus/runtime-closure-policy.json",
+    "engines/nautilus/paper-compatibility-runtime-closure-policy.json",
+    "services/job_worker/nautilus_closure.py",
+)
+
+
+def _lineage_fixture(tmp_path: Path) -> Path:
+    for relative in _LINEAGE_FILES:
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    return tmp_path
 
 
 def _fixture(tmp_path: Path, source: str, *, relative: str) -> tuple[Path, Path]:
@@ -78,6 +96,12 @@ def test_current_p1_lineage_is_p1_1231_with_unchanged_legacy_1227() -> None:
 
     assert report["verdict"] == "PASS"
     assert report["p1_engine_version"] == "1.231.0"
+    assert report["p1_product_closure_sha256"] == (
+        "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
+    )
+    assert report["p1_product_policy_sha256"] == (
+        "03e45fbb03379da78eaae74a728c9d1d7e17d382cd76c981e6a881a3699bb15e"
+    )
     assert report["legacy_engine_version"] == "1.227.0"
     assert report["legacy_profiles_unchanged"] is True
 
@@ -86,19 +110,7 @@ def test_current_p1_lineage_is_p1_1231_with_unchanged_legacy_1227() -> None:
 def test_p1_lineage_rejects_active_version_or_moving_authority(
     tmp_path: Path, replacement: str
 ) -> None:
-    governed = (
-        "docs/implementation/p1-real-nautilus/upgrade/p1-engine-baseline-receipt.json",
-        "docs/implementation/p1-real-nautilus/upgrade/candidate-generations/NT1231-U04-G1.json",
-        "docs/implementation/p1-real-nautilus/upgrade/pin-inventory.json",
-        "engines/nautilus/p1-runtime-closure-policy.json",
-        "engines/nautilus/runtime-closure-policy.json",
-        "engines/nautilus/paper-compatibility-runtime-closure-policy.json",
-        "services/job_worker/nautilus_closure.py",
-    )
-    for relative in governed:
-        destination = tmp_path / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, destination)
+    _lineage_fixture(tmp_path)
     policy_path = tmp_path / "engines/nautilus/p1-runtime-closure-policy.json"
     policy = json.loads(policy_path.read_bytes())
     policy["engine_version"] = replacement
@@ -108,6 +120,57 @@ def test_p1_lineage_rejects_active_version_or_moving_authority(
         p1_lineage_report(
             tmp_path, source_identity=("a" * 40, "b" * 40)
         )
+
+
+def test_p1_lineage_rejects_symlinked_authority(tmp_path: Path) -> None:
+    _lineage_fixture(tmp_path)
+    policy = tmp_path / "engines/nautilus/p1-runtime-closure-policy.json"
+    moved = policy.with_name("policy-target.json")
+    policy.rename(moved)
+    policy.symlink_to(moved.name)
+
+    with pytest.raises(BoundaryError, match="lineage"):
+        p1_lineage_report(
+            tmp_path, source_identity=("a" * 40, "b" * 40)
+        )
+
+
+def _git_lineage_fixture(tmp_path: Path) -> Path:
+    _lineage_fixture(tmp_path)
+    tracked = tmp_path / "engines/nautilus/runtime_v1/main.py"
+    tracked.parent.mkdir(parents=True, exist_ok=True)
+    tracked.write_text("accepted = True\n", encoding="utf-8")
+    subprocess.run(("git", "init", "-q"), cwd=tmp_path, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "p1-test@example.invalid"),
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "P1 Test"), cwd=tmp_path, check=True
+    )
+    subprocess.run(("git", "add", "."), cwd=tmp_path, check=True)
+    subprocess.run(("git", "commit", "-q", "-m", "accepted"), cwd=tmp_path, check=True)
+    return tracked
+
+
+def test_p1_lineage_rejects_dirty_source(tmp_path: Path) -> None:
+    tracked = _git_lineage_fixture(tmp_path)
+    assert p1_lineage_report(tmp_path)["verdict"] == "PASS"
+
+    tracked.write_text("accepted = False\n", encoding="utf-8")
+    with pytest.raises(BoundaryError, match="clean"):
+        p1_lineage_report(tmp_path)
+
+
+def test_p1_lineage_ignores_hostile_git_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _git_lineage_fixture(tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "hostile"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "hostile-worktree"))
+
+    assert p1_lineage_report(tmp_path)["verdict"] == "PASS"
 
 
 @pytest.mark.parametrize(
@@ -151,6 +214,16 @@ def test_p1_source_growth_budget_fails_before_a_module_becomes_a_monolith(
         tmp_path,
         "value = 1\n" * 501,
         relative="engines/nautilus/runtime_v1/large.py",
+    )
+    with pytest.raises(BoundaryError, match="source growth"):
+        check_boundaries(root, budget)
+
+
+def test_p1_source_growth_budget_covers_nested_modules(tmp_path: Path) -> None:
+    root, budget = _fixture(
+        tmp_path,
+        "value = 1\n" * 501,
+        relative="engines/nautilus/runtime_v1/nested/large.py",
     )
     with pytest.raises(BoundaryError, match="source growth"):
         check_boundaries(root, budget)

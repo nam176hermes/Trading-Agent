@@ -8,11 +8,18 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+
 BUDGET = ROOT / "docs/implementation/p1-real-nautilus/growth-budget.json"
 _RUNTIME_ALLOWED_MODULES = {
     "__future__",
@@ -78,7 +85,13 @@ class BoundaryError(ValueError):
 
 
 def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise BoundaryError(f"P1 lineage input is not regular: {path.name}")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise BoundaryError(f"P1 lineage input is unavailable: {path.name}") from exc
 
 
 def _closed_json(path: Path) -> dict[str, object]:
@@ -100,15 +113,38 @@ def _closed_json(path: Path) -> dict[str, object]:
 
 
 def _git_identity(root: Path) -> tuple[str, str]:
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+    }
     try:
+        status = subprocess.check_output(
+            ("/usr/bin/git", "status", "--porcelain", "--untracked-files=all"),
+            cwd=root,
+            env=environment,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         values = tuple(
             subprocess.check_output(
-                ("/usr/bin/git", "rev-parse", revision), cwd=root, text=True
+                ("/usr/bin/git", "rev-parse", revision),
+                cwd=root,
+                env=environment,
+                stderr=subprocess.PIPE,
+                text=True,
             ).strip()
             for revision in ("HEAD", "HEAD^{tree}")
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise BoundaryError("P1 lineage source identity is unavailable") from exc
+    if status:
+        raise BoundaryError("P1 lineage source checkout is not clean")
     if any(
         len(value) != 40
         or any(character not in "0123456789abcdef" for character in value)
@@ -121,6 +157,7 @@ def _git_identity(root: Path) -> tuple[str, str]:
 def p1_lineage_report(
     root: Path, *, source_identity: tuple[str, str] | None = None
 ) -> dict[str, object]:
+    accepted_source = source_identity or _git_identity(root)
     baseline = _closed_json(root / _BASELINE)
     generation = _closed_json(root / _GENERATION)
     policy = _closed_json(root / _P1_POLICY)
@@ -164,6 +201,10 @@ def p1_lineage_report(
         != baseline.get("candidate_closure_sha256")
         or policy.get("p1_baseline_receipt_sha256") != _sha256(root / _BASELINE)
         or policy.get("profile_manifest_schema_version") != 8
+        or P1_REAL_BACKTEST_POLICY.manifest_schema_version != 8
+        or P1_REAL_BACKTEST_POLICY.engine_version != "1.231.0"
+        or P1_REAL_BACKTEST_POLICY.p1_baseline_receipt_sha256
+        != _sha256(root / _BASELINE)
         or policy.get("authority_limits") != safe_limits
         or generation.get("authority_limits")
         != {
@@ -190,7 +231,9 @@ def p1_lineage_report(
                 or legacy_policy.get("profile_manifest_schema_version") != 6
             ):
                 raise BoundaryError("P1 legacy runtime became active or drifted")
-    commit, tree = source_identity or _git_identity(root)
+    if source_identity is None and _git_identity(root) != accepted_source:
+        raise BoundaryError("P1 lineage source changed during inspection")
+    commit, tree = accepted_source
     return {
         "authority_limits": safe_limits,
         "candidate_generation_id": baseline["candidate_generation_id"],
@@ -198,7 +241,8 @@ def p1_lineage_report(
         "legacy_engine_version": "1.227.0",
         "legacy_profiles_unchanged": True,
         "p1_engine_version": "1.231.0",
-        "p1_product_closure_sha256": _sha256(root / _P1_POLICY),
+        "p1_product_closure_sha256": P1_REAL_BACKTEST_POLICY.closure_sha256,
+        "p1_product_policy_sha256": _sha256(root / _P1_POLICY),
         "pin_inventory_sha256": _sha256(root / _INVENTORY),
         "qualification_source_commit": commit,
         "qualification_source_tree": tree,
@@ -425,7 +469,7 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
     governed = {
         path.relative_to(root).as_posix(): path
         for relative in roots
-        for path in (root / relative).glob("*.py")
+        for path in (root / relative).rglob("*.py")
     }
     for relative in exact_files:
         governed[relative] = root / relative

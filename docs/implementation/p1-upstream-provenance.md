@@ -39,8 +39,9 @@
 - Tasks: P1-11 through P1-14
 - Public primitives: `Strategy`, `StrategyConfig`, `OrderSide`, `OrderFilled`, and `OrderRejected`.
 - Local owner: `engines/nautilus/runtime_v1/target_strategy.py`.
-- Mode: public lifecycle/callback reuse plus the already reviewed target-portfolio pattern; local event projection and deterministic accounting are not delegated upstream.
+- Mode: public lifecycle/callback reuse. The target-portfolio pattern is a local extraction from `engines/nautilus/launcher/target_portfolio_strategy.py` (source SHA-256 `6cc129ac9d0c6a09718500eb96d76398bd2925c8fa4f996ac85f37962bc38384`), not a copied upstream snippet. Local event projection and deterministic accounting are not delegated upstream.
 - Boundary: no compatibility fallback, synthesized callback, live client, leverage, shorting, or closure mutation.
+- Tests: `tests/p1_nautilus/test_p1_target_strategy_source.py`, `tests/p1_nautilus/test_target_strategy_native.py`, and `tests/p1_nautilus/test_event_stream_native.py`.
 
 All reuse is pinned by the schema-8 runtime inventory and candidate lineage
 report. Further public 1.231 primitives may be used only when they preserve the
