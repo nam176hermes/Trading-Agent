@@ -428,7 +428,7 @@ def _identity(info: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _stable_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+def _dir_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
 
 
@@ -610,7 +610,7 @@ class _RetainedLineage:
         try:
             for entry in self.entries:
                 held = os.fstat(entry.descriptor)
-                if _stable_identity(held) != entry.identity:
+                if _dir_identity(held) != entry.identity:
                     raise OSError
                 if entry.parent_descriptor is None:
                     named = os.stat(entry.name, follow_symlinks=False)
@@ -619,7 +619,7 @@ class _RetainedLineage:
                         entry.name, dir_fd=entry.parent_descriptor,
                         follow_symlinks=False,
                     )
-                if _identity(named) != _identity(held):
+                if _dir_identity(named) != _dir_identity(held):
                     raise OSError
         except OSError as exc:
             raise _reject("artifact lineage identity changed") from exc
@@ -659,7 +659,7 @@ class _Snapshot:
                     name, dir_fd=parent_descriptor, follow_symlinks=False,
                 )
                 if (
-                    _stable_identity(held) != directory.identity
+                    _dir_identity(held) != directory.identity
                     or _identity(named) != _identity(held)
                 ):
                     raise OSError
@@ -698,7 +698,7 @@ def _validate_lineage(path: Path, *, create: bool) -> _RetainedLineage:
         )
         root_info = os.fstat(root_descriptor)
         entries.append(_LineageEntry(
-            None, absolute.anchor, root_descriptor, _stable_identity(root_info),
+            None, absolute.anchor, root_descriptor, _dir_identity(root_info),
         ))
         current_descriptor = root_descriptor
         for index, name in enumerate(absolute.parts[1:], start=1):
@@ -733,11 +733,11 @@ def _validate_lineage(path: Path, *, create: bool) -> _RetainedLineage:
                     dir_fd=current_descriptor,
                 )
                 opened = os.fstat(child_descriptor)
-                if _identity(opened) != _identity(info):
+                if _dir_identity(opened) != _dir_identity(info):
                     raise _reject("artifact lineage identity changed while opening")
                 entries.append(_LineageEntry(
                     current_descriptor, name, child_descriptor,
-                    _stable_identity(opened),
+                    _dir_identity(opened),
                 ))
                 child_descriptor = -1
                 current_descriptor = entries[-1].descriptor
@@ -785,7 +785,7 @@ def _snapshot_tree(
                 root_name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW | _CLOEXEC,
                 dir_fd=root_parent_descriptor,
             )
-            if _identity(os.fstat(root_descriptor)) != _identity(named):
+            if _dir_identity(os.fstat(root_descriptor)) != _dir_identity(named):
                 raise _reject("retained artifact root identity changed while opening")
             owns_root_descriptor = True
         except BaseException:
@@ -814,7 +814,7 @@ def _snapshot_tree(
             directory_info = os.fstat(descriptor)
             directories[relative] = _Directory(
                 parent_descriptor, name, descriptor,
-                _stable_identity(directory_info),
+                _dir_identity(directory_info),
                 _identity(directory_info), entries,
             )
             for name in entries:
@@ -1996,7 +1996,7 @@ def _publish_evidence_set(
                 enter("SEALED_VALIDATION")
                 _require_tree_identity(sealed, sealed_identity)
                 complete_validator(sealed)
-                candidate_identity = _stable_identity(os.fstat(sealed.root_descriptor))
+                candidate_identity = _dir_identity(os.fstat(sealed.root_descriptor))
                 enter("ATOMIC_RENAME")
                 try:
                     _renameat2_noreplace(
@@ -2020,7 +2020,7 @@ def _publish_evidence_set(
                     if (
                         destination_info is None
                         or source_exists
-                        or _stable_identity(destination_info) != candidate_identity
+                        or _dir_identity(destination_info) != candidate_identity
                     ):
                         if exc.errno == errno.EEXIST:
                             raise _reject("destination already exists") from exc
@@ -3002,7 +3002,7 @@ def _validate_published_evidence(
     ) as snapshot:
         if (
             expected_root_identity is not None
-            and _stable_identity(os.fstat(snapshot.root_descriptor))
+            and _dir_identity(os.fstat(snapshot.root_descriptor))
             != expected_root_identity
         ):
             raise _reject("published root identity changed before validation")
