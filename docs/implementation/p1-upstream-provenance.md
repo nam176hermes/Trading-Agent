@@ -16,3 +16,33 @@
 - Schema note: catalog v1 contains no maximum fields, so a client-controlled min/max inconsistency is not representable; native maximums remain absent rather than invented.
 - Authority: P1-only, offline backtest; no network, broker, exchange, live or production authority.
 - Tests: `tests/p1_nautilus/test_instrument_factory_source.py`, `tests/p1_nautilus/test_instrument_factory_native.py`.
+
+## P1-UPSTREAM-002 — sealed backtest engine and models
+
+- Tasks: P1-09 through P1-14
+- Engine: `nautilus_trader` `v1.231.0`, upstream commit `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317`
+- Public primitives: `BacktestEngine`, `FeeModel`, `FillModel`, `LoggingConfig`, `BacktestEngineConfig`, `AccountType`, `OmsType`, `Venue`, `CurrencyPair`, and `Money`.
+- Local owners: `engines/nautilus/runtime_v1/session.py`, `backtest_runner.py`.
+- Mode: direct public API use from the sealed wheel; no upstream implementation bytes copied.
+- Boundary: deterministic offline backtest only; the closure excludes adapters, network clients, and live engines.
+
+## P1-UPSTREAM-003 — market data and identifiers
+
+- Tasks: P1-07 through P1-10
+- Public primitives: `Bar`, `BarType`, `QuoteTick`, `InstrumentId`, `CurrencyPair`, `Price`, and `Quantity`.
+- Local owners: `engines/nautilus/runtime_v1/market_data_loader.py`, `instrument_factory.py`.
+- Mode: direct public API use with schema-8 inputs validated before native construction.
+- Boundary: exact decimal strings and hash-bound artifacts remain locally authoritative.
+
+## P1-UPSTREAM-004 — target strategy lifecycle
+
+- Tasks: P1-11 through P1-14
+- Public primitives: `Strategy`, `StrategyConfig`, `OrderSide`, `OrderFilled`, and `OrderRejected`.
+- Local owner: `engines/nautilus/runtime_v1/target_strategy.py`.
+- Mode: public lifecycle/callback reuse plus the already reviewed target-portfolio pattern; local event projection and deterministic accounting are not delegated upstream.
+- Boundary: no compatibility fallback, synthesized callback, live client, leverage, shorting, or closure mutation.
+
+All reuse is pinned by the schema-8 runtime inventory and candidate lineage
+report. Further public 1.231 primitives may be used only when they preserve the
+sealed candidate, engine-neutral contracts, deterministic accounting, custody,
+recovery, and live-safety boundaries.

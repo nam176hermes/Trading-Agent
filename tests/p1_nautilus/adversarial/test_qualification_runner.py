@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -61,6 +62,13 @@ def test_matrix_is_closed_and_rejects_duplicate_or_skip_authority(
         load_matrix(matrix, root=tmp_path)
 
 
+def test_real_qualification_rejects_noncanonical_matrix(tmp_path: Path) -> None:
+    custom = tmp_path / "matrix.json"
+    custom.write_bytes(qualification.MATRIX.read_bytes())
+
+    with pytest.raises(QualificationError, match="canonical adversarial matrix"):
+        load_matrix(custom, root=qualification.ROOT)
+
 def test_runner_records_exact_pass_evidence_and_fails_on_skip(tmp_path: Path) -> None:
     test_file = tmp_path / "tests/test_case.py"
     test_file.parent.mkdir()
@@ -78,7 +86,7 @@ def test_runner_records_exact_pass_evidence_and_fails_on_skip(tmp_path: Path) ->
     assert receipt["verdict"] == "PASS"
     assert result["command"][-1] == "tests/test_case.py::test_ok"
     assert result["exit_status"] == 0
-    assert result["observed_code"] == "EXPECTED_REJECTION_ASSERTED"
+    assert result["observed_code"] == "EXPECTED_REJECTION_CONFIRMED"
     assert result["test_counts"] == {
         "errors": 0,
         "failures": 0,
@@ -86,6 +94,8 @@ def test_runner_records_exact_pass_evidence_and_fails_on_skip(tmp_path: Path) ->
         "tests": 1,
     }
     assert len(result["evidence_sha256"]) == 64
+    assert len(result["stderr_sha256"]) == 64
+    assert len(result["stdout_sha256"]) == 64
 
     test_file.write_text(
         "import pytest\n@pytest.mark.skip(reason='forbidden')\ndef test_ok():\n    pass\n",
@@ -131,6 +141,15 @@ def test_qualification_authority_binds_schema8_and_rejects_mixed_baseline(
     assert authority["p1_product_closure_sha256"] == (
         "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
     )
+    assert authority["operator_decision"] == "PROMOTE_1_231_FOR_P1"
+    assert authority["legacy_phase4_profiles_unchanged"] is True
+    assert authority["baseline_authority_limits"] == {
+        "candidate_active": False,
+        "candidate_promoted": False,
+        "live_authorized": False,
+        "network_trading_authorized": False,
+        "production_authorized": False,
+    }
 
     mixed = tmp_path / "baseline.json"
     baseline = json.loads(qualification.BASELINE.read_bytes())
@@ -139,3 +158,68 @@ def test_qualification_authority_binds_schema8_and_rejects_mixed_baseline(
     monkeypatch.setattr(qualification, "BASELINE", mixed)
     with pytest.raises(QualificationError, match="mixed"):
         qualification._qualification_authority()
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("operator_decision",), "HOLD_P1"),
+        (("authority_limits", "candidate_active"), True),
+        (("legacy_phase4_profiles_unchanged",), False),
+        (("legacy_phase4_authority", "engine_version"), "1.231.0"),
+    ),
+)
+def test_qualification_authority_rejects_promotion_or_rollback_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: tuple[str, ...],
+    value: object,
+) -> None:
+    baseline = json.loads(qualification.BASELINE.read_bytes())
+    target = baseline
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+    mixed = tmp_path / "baseline.json"
+    mixed.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(qualification, "BASELINE", mixed)
+
+    with pytest.raises(QualificationError, match="mixed"):
+        qualification._qualification_authority()
+
+
+def test_cli_defers_only_when_all_native_authority_is_absent() -> None:
+    command = (sys.executable, str(qualification.__file__))
+    absent = subprocess.run(
+        command,
+        cwd=qualification.ROOT,
+        env={"PATH": "/usr/bin:/bin"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert absent.returncode == 0
+    assert json.loads(absent.stdout) == {
+        "authority_limits": {
+            "live_authorized": False,
+            "network_trading_authorized": False,
+            "production_authorized": False,
+        },
+        "schema": "trading-agent-p1-adversarial-qualification/v1",
+        "verdict": "DEFERRED",
+    }
+
+    partial = subprocess.run(
+        command,
+        cwd=qualification.ROOT,
+        env={
+            "P1_NAUTILUS_PYTHON": "/private/missing/python",
+            "PATH": "/usr/bin:/bin",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert partial.returncode == 2
+    assert partial.stdout == ""
+    assert "partial" in partial.stderr

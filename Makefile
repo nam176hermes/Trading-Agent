@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -6,7 +6,7 @@
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
-	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice \
+	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice test-p1-nautilus-source test-p1-nautilus-native qualify-p1-nautilus test-p1-nautilus-e2e \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
@@ -53,6 +53,12 @@ check-p0-maintainability:
 check-p1-nautilus-boundaries:
 	$(PYTHON) scripts/check_p1_nautilus_boundaries.py
 
+check-p1-nautilus-lineage:
+	$(PYTHON) scripts/check_p1_nautilus_boundaries.py --lineage-report
+
+check-p1-nautilus-pin-inventory:
+	uv run pytest -q tests/governance/nautilus_pin_inventory/test_engine.py::test_engine_generates_from_the_exact_current_commit_source
+
 generate-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py
 
@@ -60,6 +66,39 @@ check-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
 
 qualify-p1-nautilus-vertical-slice:
+	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
+
+test-p1-nautilus-source:
+	uv run pytest -q tests/nautilus_runtime_contracts tests/p1_nautilus \
+		--ignore=tests/p1_nautilus/adversarial/test_three_run_determinism.py \
+		--ignore=tests/p1_nautilus/test_backtest_runner_native.py \
+		--ignore=tests/p1_nautilus/test_event_stream_native.py \
+		--ignore=tests/p1_nautilus/test_instrument_factory_native.py \
+		--ignore=tests/p1_nautilus/test_market_data_native.py \
+		--ignore=tests/p1_nautilus/test_package6_host_authority.py \
+		--ignore=tests/p1_nautilus/test_target_strategy_native.py \
+		--ignore=tests/p1_nautilus/test_vertical_slice_e2e.py
+
+test-p1-nautilus-native:
+	@set -eu; \
+		if test -z "$${P1_NAUTILUS_PYTHON:-}" && test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}"; then \
+			printf '%s\n' '{"authority_limits":{"live_authorized":false,"network_trading_authorized":false,"production_authorized":false},"verdict":"DEFERRED"}'; \
+		elif test -z "$${P1_NAUTILUS_PYTHON:-}" || test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}"; then \
+			printf '%s\n' 'P1 native authority is partial or invalid' >&2; exit 2; \
+		else \
+			uv run pytest -q \
+				tests/p1_nautilus/test_backtest_runner_native.py \
+				tests/p1_nautilus/test_event_stream_native.py \
+				tests/p1_nautilus/test_instrument_factory_native.py \
+				tests/p1_nautilus/test_market_data_native.py \
+				tests/p1_nautilus/test_target_strategy_native.py \
+				tests/p1_nautilus/adversarial/test_three_run_determinism.py; \
+		fi
+
+qualify-p1-nautilus:
+	$(PYTHON) scripts/qualify_p1_nautilus.py
+
+test-p1-nautilus-e2e:
 	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
 
 check-p0-ci-closure:
@@ -431,7 +470,7 @@ ci-portable:
 		}
 
 ci-portable-private:
-	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-p0-maintainability check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
+	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install

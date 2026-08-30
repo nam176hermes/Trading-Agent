@@ -22,11 +22,16 @@
       "nodeids": [
         "tests/p1_nautilus/test_input_loader_adversarial.py",
         "tests/p1_nautilus/test_instrument_factory_native.py::test_closure_snapshot_rejects_nonwheel_drift",
+        "tests/p1_nautilus/test_p1_closure_qualification.py",
+        "tests/p1_nautilus/test_runtime_bootstrap.py",
+        "tests/p1_nautilus/test_runtime_cli_source.py",
         "tests/p1_nautilus/test_vertical_slice_e2e.py::test_partial_external_authority_is_blocked_and_does_not_leak_paths",
         "tests/p1_nautilus/test_vertical_slice_e2e.py::test_transport_authority_rejects_checkout_and_symlink_paths",
         "tests/p1_nautilus/test_vertical_slice_e2e.py::test_wrong_sandbox_executable_is_blocked_before_native_attestation",
         "tests/p1_nautilus/test_vertical_slice_e2e.py::test_schema_valid_wrong_closure_digest_is_blocked_before_readiness",
-        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_worker_runtime_authority_must_bind_exact_checkout_source"
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_worker_runtime_authority_must_bind_exact_checkout_source",
+        "tests/jobs/test_p1_composition.py",
+        "tests/jobs/test_p1_nautilus_closure.py"
       ],
       "scenario": "closure-file-digest-mode-path-and-authority-drift"
     },

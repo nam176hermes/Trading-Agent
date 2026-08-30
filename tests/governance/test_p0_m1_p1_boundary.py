@@ -475,5 +475,10 @@ def test_portable_make_graph_is_literal_and_cannot_reach_host_authority() -> Non
 
     assert graph["ci"] == {"ci-portable"}
     assert closure._reachable(graph, "ci-portable", "check-p0-maintainability")
+    assert closure._reachable(graph, "ci-portable", "check-p1-nautilus-lineage")
+    assert closure._reachable(graph, "ci-portable", "check-p1-nautilus-pin-inventory")
+    assert not closure._reachable(graph, "ci-portable", "test-p1-nautilus-native")
+    assert not closure._reachable(graph, "ci-portable", "qualify-p1-nautilus")
+    assert not closure._reachable(graph, "ci-portable", "test-p1-nautilus-e2e")
     assert not closure._reachable(graph, "ci", "ci-host-authority")
     assert not closure._reachable(graph, "ci-portable", "ci-host-authority")

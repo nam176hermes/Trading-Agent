@@ -10,5 +10,25 @@
     }
   },
   "runtime_family": "cython-v1",
-  "schema": "trading-agent-p1-growth-budget/v1"
+  "schema": "trading-agent-p1-growth-budget/v2",
+  "source_growth": {
+    "default_max_logical_lines": 500,
+    "exact_files": [
+      "services/job_worker/engine_artifacts.py",
+      "services/job_worker/engine_profiles.py",
+      "services/job_worker/engine_results.py",
+      "services/job_worker/p1_engine_spawn.py",
+      "services/job_worker/p1_nautilus_closure.py"
+    ],
+    "overrides": {
+      "engines/nautilus/runtime_v1/event_projector.py": 917,
+      "services/job_worker/engine_results.py": 509,
+      "services/job_worker/p1_nautilus_closure.py": 642
+    },
+    "roots": [
+      "engines/nautilus/runtime_v1",
+      "packages/engine_portfolio_projection",
+      "packages/nautilus_runtime_contracts"
+    ]
+  }
 }
