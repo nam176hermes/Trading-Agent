@@ -1,0 +1,41 @@
+{
+  "authority_limits": {
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "candidate_generation_id": "NT1231-U04-G1",
+  "candidate_generation_sha256": "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c",
+  "evidence_sha256": "91c3e7ec1af8cd085e02295c72ff47661f98b0178eb5e91bfae28f4e2a0528ed",
+  "matrix_sha256": "c05d8027e1d57d381247f8e7528588976336c774a7dac96b5e30748c087af263",
+  "p1_product_closure_sha256": "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b",
+  "portfolio_state_sha256": "250d43c115b6ee86d3a0d2d39bf2deedd11d54dc777bf3e4152a918a5a6e6000",
+  "qualification_receipt_sha256": "a112571a3a2c94bf7eee250302cd668adf8ab740ee87444740a75f22a7b582da",
+  "qualification_source_commit": "b65638145babdab6b3184e06ba2ee08b567c806d",
+  "qualification_source_tree": "efab9bc500d42b219b19e8af1c1045fa6a18e12a",
+  "reviews": [
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "p1_23_rereview_spec",
+      "role": "specification_and_evidence",
+      "verdict": "PASS"
+    },
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "p1_23_rereview_security",
+      "role": "security_and_integrity",
+      "verdict": "PASS"
+    }
+  ],
+  "scenario_count": 8,
+  "schema": "trading-agent-p1-23-acceptance/v1",
+  "semantic_sha256": "bc4fdbfc9fbc5de0455a37158d243ae7026fc6cc5ff3e37a74686eee152a0f66",
+  "skipped_count": 0,
+  "status": "P1_23_ACCEPTED",
+  "test_count": 205,
+  "verdict": "PASS"
+}
