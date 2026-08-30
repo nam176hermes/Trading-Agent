@@ -188,6 +188,7 @@ def test_native_guard_execs_the_guarded_fixture_only_for_exact_os_argv(
     ]
 
 
+@pytest.mark.host_coupled
 def test_unchanged_native_guard_execs_only_the_exact_p1_handoff(
     tmp_path: Path,
 ) -> None:

@@ -142,6 +142,7 @@ def test_first_enqueue_persists_queued_job_and_event(repository_database) -> Non
     ]
 
 
+@pytest.mark.runtime_postgres
 def test_engine_backtest_enqueue_persists_and_deduplicates(
     repository_database,
 ) -> None:
@@ -168,6 +169,7 @@ def test_engine_backtest_enqueue_persists_and_deduplicates(
     ]
 
 
+@pytest.mark.runtime_postgres
 def test_engine_backtest_enqueue_preserves_conflict_and_rollback(
     repository_database,
 ) -> None:
@@ -231,6 +233,7 @@ def test_engine_backtest_enqueue_preserves_conflict_and_rollback(
         ).fetchone()[0] == 0
 
 
+@pytest.mark.runtime_postgres
 def test_engine_backtest_enqueue_denies_wrong_role_direct_dml_and_other_shapes(
     repository_database,
 ) -> None:

@@ -86,16 +86,28 @@ def _fixture(tmp_path: Path, source: str, *, relative: str) -> tuple[Path, Path]
 
 
 def test_current_p1_boundaries_pass() -> None:
+    from tests.foundation.test_nautilus_native_entry_guard import (
+        test_unchanged_native_guard_execs_only_the_exact_p1_handoff,
+    )
+    from tests.jobs.test_repository_enqueue import (
+        test_engine_backtest_enqueue_denies_wrong_role_direct_dml_and_other_shapes,
+        test_engine_backtest_enqueue_persists_and_deduplicates,
+        test_engine_backtest_enqueue_preserves_conflict_and_rollback,
+    )
     from tests.p1_nautilus.test_vertical_slice_e2e import (
         test_required_runtime_vertical_slice_reaches_exact_durable_success,
     )
 
-    markers = getattr(
-        test_required_runtime_vertical_slice_reaches_exact_durable_success,
-        "pytestmark",
-        (),
+    routed_tests = (
+        (test_unchanged_native_guard_execs_only_the_exact_p1_handoff, "host_coupled"),
+        (test_engine_backtest_enqueue_denies_wrong_role_direct_dml_and_other_shapes, "runtime_postgres"),
+        (test_engine_backtest_enqueue_persists_and_deduplicates, "runtime_postgres"),
+        (test_engine_backtest_enqueue_preserves_conflict_and_rollback, "runtime_postgres"),
+        (test_required_runtime_vertical_slice_reaches_exact_durable_success, "runtime_postgres"),
     )
-    assert "runtime_postgres" in {marker.name for marker in markers}
+    for test, expected_marker in routed_tests:
+        markers = getattr(test, "pytestmark", ())
+        assert expected_marker in {marker.name for marker in markers}
     check_boundaries(ROOT, BUDGET)
 
 
