@@ -13,6 +13,17 @@ from .nautilus_checkpoint import NautilusCheckpointRecord
 
 
 class NautilusRecoveryRecorder(Protocol):
+    def begin(
+        self,
+        command_raw: bytes,
+        *,
+        expected_checkpoint_sha256: str,
+        engine_version: str,
+        closure_digest: str,
+        source_commit: str,
+        config_digest: str,
+    ) -> None: ...
+
     def record(
         self,
         command_raw: bytes,

@@ -108,6 +108,7 @@ def issue_nautilus_paper_child(
         exchange=process.exchange,
         close_input=process.close_input,
         abort=process.abort,
+        is_running=process.is_running,
     )
 
 

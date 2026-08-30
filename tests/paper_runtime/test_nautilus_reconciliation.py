@@ -130,6 +130,11 @@ def _evidence(**changes: object) -> NautilusRecoveryEvidence:
             NautilusRecoveryReason.CHILD_RUNNING_CURRENT,
         ),
         (
+            _evidence(),
+            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
+            NautilusRecoveryReason.DURABLE_PREFIX_MATCH,
+        ),
+        (
             _evidence(checkpoint=_checkpoint(state=PaperSessionState.STOPPING, durable=True)),
             NautilusRecoveryDisposition.ALREADY_STOPPED,
             NautilusRecoveryReason.CLEAN_STOP_DURABLE,
@@ -156,6 +161,7 @@ def test_restart_matrix_accepts_only_proven_local_outcomes(
         in {
             NautilusRecoveryDisposition.START_NEW,
             NautilusRecoveryDisposition.KEEP_RUNNING,
+            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
         }
     )
 

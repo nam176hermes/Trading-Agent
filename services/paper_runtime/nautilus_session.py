@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import re
-import weakref
-from uuid import UUID
 
 from engines.nautilus.runtime_v1.control_channel import iter_payloads
 from packages.engine_contracts import (
@@ -52,6 +50,11 @@ from .nautilus_checkpoint import (
     NautilusCheckpointStore,
     ZERO_CHECKPOINT_SHA256,
 )
+from .nautilus_child import (
+    NautilusPaperChild,
+    is_issued_nautilus_paper_child as _is_issued_child,
+    issue_nautilus_paper_child as _issue_nautilus_paper_child,
+)
 from .nautilus_protocol import (
     NautilusRecoveryRecorder,
     paper_event_payload,
@@ -66,116 +69,6 @@ _ATTEMPT_ID = re.compile(r"attempt_[0-9a-f]{32}\Z", re.ASCII)
 
 class NautilusSessionRejected(RuntimeError):
     """The paper child or one of its current authorities failed closed."""
-
-
-@dataclass(
-    frozen=True,
-    slots=True,
-    init=False,
-    eq=False,
-    repr=False,
-    weakref_slot=True,
-)
-class NautilusPaperChild:
-    """Opaque interactive child issued by the attested controller boundary."""
-
-    closure_digest: str
-    authority_sha256: str
-    capability_sha256: str
-    custodian_authority_sha256: str
-    process_authority_sha256: str
-    paper_source_sha256: str
-    session_id: UUID
-    owner_id: UUID
-    runtime_family: str
-    engine_version: str
-    engine_upstream_commit: str
-    exchange: Callable[[bytes], bytes]
-    close_input: Callable[[], int]
-    abort: Callable[[], None]
-
-
-_ISSUED_CHILDREN: weakref.WeakSet[NautilusPaperChild] = weakref.WeakSet()
-
-
-def _child_authority_sha256(child: NautilusPaperChild) -> str:
-    return hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "capability_sha256": child.capability_sha256,
-                "closure_digest": child.closure_digest,
-                "custodian_authority_sha256": child.custodian_authority_sha256,
-                "engine_upstream_commit": child.engine_upstream_commit,
-                "engine_version": child.engine_version,
-                "process_authority_sha256": child.process_authority_sha256,
-                "paper_source_sha256": child.paper_source_sha256,
-                "runtime_family": child.runtime_family,
-                "owner_id": str(child.owner_id),
-                "session_id": str(child.session_id),
-            }
-        )
-    ).hexdigest()
-
-
-def _issue_nautilus_paper_child(
-    *,
-    closure_digest: str,
-    capability_sha256: str,
-    custodian_authority_sha256: str,
-    process_authority_sha256: str,
-    paper_source_sha256: str,
-    session_id: UUID,
-    owner_id: UUID,
-    runtime_family: str,
-    engine_version: str,
-    engine_upstream_commit: str,
-    exchange: Callable[[bytes], bytes],
-    close_input: Callable[[], int],
-    abort: Callable[[], None],
-) -> NautilusPaperChild:
-    digests = (closure_digest, capability_sha256, custodian_authority_sha256,
-               process_authority_sha256, paper_source_sha256)
-    if (
-        any(type(value) is not str or _SHA256.fullmatch(value) is None for value in digests)
-        or runtime_family != "cython-v1"
-        or engine_version != "1.231.0"
-        or type(engine_upstream_commit) is not str
-        or re.fullmatch(r"[0-9a-f]{40}", engine_upstream_commit) is None
-        or not all(callable(value) for value in (exchange, close_input, abort))
-        or type(session_id) is not UUID
-        or type(owner_id) is not UUID
-    ):
-        raise ValueError("Nautilus paper child authority is invalid")
-    child = object.__new__(NautilusPaperChild)
-    values: dict[str, object] = {
-        "closure_digest": closure_digest,
-        "authority_sha256": "0" * 64,
-        "capability_sha256": capability_sha256,
-        "custodian_authority_sha256": custodian_authority_sha256,
-        "process_authority_sha256": process_authority_sha256,
-        "paper_source_sha256": paper_source_sha256,
-        "session_id": session_id,
-        "owner_id": owner_id,
-        "runtime_family": runtime_family,
-        "engine_version": engine_version,
-        "engine_upstream_commit": engine_upstream_commit,
-        "exchange": exchange,
-        "close_input": close_input,
-        "abort": abort,
-    }
-    for name, value in values.items():
-        object.__setattr__(child, name, value)
-    object.__setattr__(child, "authority_sha256", _child_authority_sha256(child))
-    _ISSUED_CHILDREN.add(child)
-    return child
-
-
-def _is_issued_child(child: object) -> bool:
-    return (
-        type(child) is NautilusPaperChild
-        and child in _ISSUED_CHILDREN
-        and child.authority_sha256 == _child_authority_sha256(child)
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,9 +181,24 @@ class NautilusPaperSession:
     def _preflight(self) -> None:
         validate_current_safety_evidence(self._safety_preflight(), self._clock())
 
-    def _record_recovery(self, raw: bytes, checkpoint: NautilusCheckpointRecord) -> None:
+    def _record_recovery(
+        self,
+        raw: bytes,
+        checkpoint: NautilusCheckpointRecord | None,
+        expected_checkpoint_sha256: str = ZERO_CHECKPOINT_SHA256,
+    ) -> None:
         recorder = self._recovery_recorder
-        if recorder is not None:
+        if recorder is not None and checkpoint is None:
+            recorder.begin(
+                raw,
+                expected_checkpoint_sha256=expected_checkpoint_sha256,
+                engine_version=self._child.engine_version,
+                closure_digest=self._child.closure_digest,
+                source_commit=self._request.source_commit,
+                config_digest=self._request.config_digest,
+            )
+        elif recorder is not None:
+            assert checkpoint is not None
             recorder.record(
                 raw,
                 checkpoint,
@@ -506,6 +414,7 @@ class NautilusPaperSession:
                 raise self._reject("paper start authority is invalid", reconcile=current is not None)
             self._journal.accept_command(raw)
             self._child_engaged = True
+            self._record_recovery(raw, None, expected_checkpoint_sha256)
             response = self._child.exchange(raw)
             record = self._response(response, command, expected_checkpoint_sha256)
             self._state = record.checkpoint.state.value

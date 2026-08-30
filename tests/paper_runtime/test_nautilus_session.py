@@ -488,6 +488,9 @@ class _Child:
     def abort(self) -> None:
         self.aborted = True
 
+    def is_running(self) -> bool:
+        return not self.aborted
+
 
 def _safety(
     now: datetime = NOW,
@@ -606,6 +609,7 @@ def _session(
         exchange=child.exchange,
         close_input=child.close,
         abort=child.abort,
+        is_running=child.is_running,
     )
     session = NautilusPaperSession(
         request=_request(),

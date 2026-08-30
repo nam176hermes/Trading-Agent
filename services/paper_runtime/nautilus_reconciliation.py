@@ -153,6 +153,7 @@ class NautilusRecoveryDecision:
         resumes = self.disposition in {
             NautilusRecoveryDisposition.START_NEW,
             NautilusRecoveryDisposition.KEEP_RUNNING,
+            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
         }
         blocked = (
             self.disposition
@@ -188,6 +189,7 @@ def _accepted(
     resumes = disposition in {
         NautilusRecoveryDisposition.START_NEW,
         NautilusRecoveryDisposition.KEEP_RUNNING,
+        NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
     }
     return NautilusRecoveryDecision(
         disposition=disposition,
@@ -255,7 +257,12 @@ def reconcile_nautilus_paper(
         return _blocked(NautilusRecoveryReason.EVENT_PREFIX_DRIFT)
     if evidence.portfolio_state_hash != checkpoint.portfolio_state_hash:
         return _blocked(NautilusRecoveryReason.PORTFOLIO_DRIFT)
-    if evidence.target_schedule_cursor != evidence.expected_target_schedule_cursor:
+    terminal_offset = 2 if checkpoint.state is PaperSessionState.STOPPING else 1
+    if (
+        evidence.target_schedule_cursor != evidence.expected_target_schedule_cursor
+        or evidence.target_schedule_cursor
+        != checkpoint.last_accepted_command - terminal_offset
+    ):
         return _blocked(NautilusRecoveryReason.TARGET_CURSOR_DRIFT)
     if evidence.final_engine_observation_sha256 != checkpoint.semantic_state_hash:
         return _blocked(NautilusRecoveryReason.FINAL_OBSERVATION_DRIFT)
@@ -290,7 +297,10 @@ def reconcile_nautilus_paper(
     if not evidence.child_outcome_proven:
         return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
     if evidence.child_state is NautilusChildState.GONE:
-        return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
+        return _accepted(
+            NautilusRecoveryDisposition.RESUME_EXACT_PREFIX,
+            NautilusRecoveryReason.DURABLE_PREFIX_MATCH,
+        )
     return _blocked(NautilusRecoveryReason.CHILD_OUTCOME_UNCERTAIN)
 
 
