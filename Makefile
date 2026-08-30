@@ -147,6 +147,7 @@ generate-contracts:
 check-contracts:
 	uv run python scripts/generate_contracts.py --check
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+	$(MAKE) check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
@@ -470,7 +471,7 @@ ci-portable:
 		}
 
 ci-portable-private:
-	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
+	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-p0-maintainability check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install

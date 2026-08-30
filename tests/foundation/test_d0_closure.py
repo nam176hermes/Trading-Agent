@@ -188,8 +188,6 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     assert portable_private_recipe == (
             "\t$(MAKE) ci-common-private ci-portable-topology "
             "check-portable-defect-closure check-p0-baseline check-p0-maintainability "
-            "check-p1-nautilus-boundaries check-p1-nautilus-lineage "
-            "check-p1-nautilus-pin-inventory "
             "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract"
     )

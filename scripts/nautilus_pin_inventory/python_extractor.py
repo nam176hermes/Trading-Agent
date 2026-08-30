@@ -58,6 +58,34 @@ class _Endpoint:
 _ENDPOINTS = (
     _Endpoint(
         "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@721",
+        "manifest",
+        "base_runtime_manifest_json_object",
+        "nautilus_base_runtime_manifest",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@721",
+        "policy",
+        "base_runtime_policy_parameter",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@577",
+        "policy",
+        "runtime_policy_json_object",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@577",
+        "specification",
+        "profile_specification_lookup",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
         "_validate_base_runtime_bytes@566",
         "manifest",
         "base_runtime_manifest_json_object",
@@ -163,6 +191,7 @@ _GOVERNED_MODULE_HASHES = {
             "2ec3a73f40d21d32e190b9be7ac36d5d99457803a17c02000f8a3ee96b06fa1e",
             "74e4ef873aff1fdde088736bfef4b6017b5ae7c53ab0337f6b80b6231b743702",
             "1f19da20f06fb4b61152c99d6455a60de6d9346acd54cd197f565a4b1ee694b0",
+            "7097965c71db8a069c5e37863737cafd5a6befbc7b87b653a29ce8fef79c8b7b",
         }
     ),
     "services/job_worker/nautilus_closure.py": (
