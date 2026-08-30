@@ -16,12 +16,15 @@ paper protocol `nautilus-paper-session-v2`.
   `9304ece63679d9546dd7570acd93aaf4008e93fc9d65141de21e266a5c63ab06`.
 - Qualification receipt digest:
   `eb65e9631fa0cd04a1e10fcc16af2532dd55f3de3759ecae548ef9490349adc3`.
-- Exact G1 adversarial qualification: 205 tests passed, zero skipped; native
-  paper qualification: 12 tests passed.
+- Exact G1 adversarial qualification: 205 tests passed, zero skipped; the
+  native qualification target passed 12 tests, including five exact G1
+  backtest/paper parity cases.
 - Standalone portable root suite: 8,949 passed, 255 environment-scoped skipped,
   and 31 deselected. Backend, dashboard typecheck, lint, and production build
   passed after the generated exception inventory was refreshed.
 - Legacy Phase4 profiles remain Nautilus `1.227.0` / schema 6 and unchanged.
+- Independent specification and security/integrity reviews passed with zero
+  Critical and zero Important findings.
 
 ## Authority boundary
 
@@ -31,9 +34,9 @@ paper protocol `nautilus-paper-session-v2`.
 - `PRODUCTION_NOT_AUTHORIZED`
 
 This certification does not authorize activation, deployment, broker or
-exchange access, database mutation, or any production action. `P1_COMPLETE`
-remains pending separately authorized remote integration and a passing
-protected Foundation workflow on the exact integrated SHA.
+exchange access, database mutation, or any production action.
+`P1_COMPLETE` remains pending separately authorized remote integration and a
+passing protected Foundation workflow on the exact integrated SHA.
 
 Release Authority v2 and production cutover remain separate future work and
 are not P1 blockers.
