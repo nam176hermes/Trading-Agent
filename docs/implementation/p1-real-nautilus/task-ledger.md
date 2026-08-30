@@ -40,9 +40,9 @@ production, network-trading, or live authority.
 | P1-20 | P1-04 | ACCEPTED | Pure engine-to-portfolio projection, exact six-decimal accounting, full instrument authority and monotonic observations passed independent spec/security review; raw canonical catalog-artifact digest semantics were requalified at source tree `dd140a4…`. |
 | P1-21 | P1-19, P1-20 | ACCEPTED | Exact Decimal parity, deterministic trusted-prefix replay, durable authority binding and the post-ingest/pre-success receipt seam passed independent spec/security review; raw canonical catalog-artifact digest semantics were requalified at source tree `dd140a4…`; PostgreSQL runtime authority remains deferred. |
 | P1-22A | P1-21 | ACCEPTED | Authenticated exact engine BACKTEST enqueue source authority, forward-only head 0013, unchanged runtime DB pin 0011 and raw catalog-digest seam passed independent spec/security review at source tree `dd140a4…`; PostgreSQL runtime authority remains deferred. |
-| P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | IN_PROGRESS | Independent review of the provisional `e2193146…` flat run required request-digest evidence and exact aggregate realized/marked-open accounting amendments; source and fresh host qualification are pending. |
-| P1-23 | P1-22 | BLOCKED | Requires accepted P1-22 exact source and closure. |
-| P1-24 | P1-22 | BLOCKED | Requires accepted P1-22 exact source and closure. |
+| P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | ACCEPTED | Exact request lineage, rational aggregate accounting, migrations through 0017, one-worker durable success/parity, complete captured PASS receipt and unchanged schema-8 closure passed fresh native qualification plus independent spec/security review at `021ea4b6…/375cfc0a…`. |
+| P1-23 | P1-22 | IN_PROGRESS | Run the closed determinism, restart and adversarial qualification matrix against the accepted P1-22 source/closure. |
+| P1-24 | P1-22 | NOT_STARTED | Dependency is accepted; CI/maintainability/runbook/provenance work may proceed without changing runtime authority. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work

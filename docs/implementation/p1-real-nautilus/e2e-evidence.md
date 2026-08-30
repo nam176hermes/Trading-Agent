@@ -1,10 +1,10 @@
 # P1-22 BTCUSDT vertical-slice evidence
 
-Status: `AMENDMENT_QUALIFICATION_PENDING`. The prior `e2193146…` flat-scenario
-run exposed one complete native path, but independent review found missing
-request-digest evidence plus marked-open and split-fill accounting cases. A
-fresh exact-source qualification supersedes that provisional run. Remote
-canonical status is unchanged.
+Status: `ACCEPTED` on source commit
+`021ea4b6a4d438863ada926f8585fbdb15111877`, tree
+`375cfc0a3c56f97ef060b1c24c98e1fad30863b2`. Fresh exact-source host
+qualification and two independent reviews supersede the provisional
+`e2193146…` run. Remote canonical status is unchanged.
 
 The operator lane is `make qualify-p1-nautilus-vertical-slice`. With no
 external authority it emits one canonical `DEFERRED` receipt and performs no
@@ -55,7 +55,7 @@ The fixed window is `2026-08-05T12:00:00Z` through
 The generic Job API, worker service, systemd composition, and accepted runtime
 database pin remain `0011_engine_backtest_worker_authority`. P1-22 has one
 dedicated code-owned disposable composition at
-`0014_p1_product_closure_rotation`; it has no environment, CLI, client,
+`0017_p1_request_digest_authority`; it has no environment, CLI, client,
 service, or production selector.
 
 After complete preflight, `--execute` constructs the existing P1 worker and
@@ -74,6 +74,42 @@ This source seam does not itself launch PostgreSQL or Nautilus and does not
 change generic runtime or release authority.
 
 All receipts keep live, production, and network-trading authority false.
+
+## Accepted qualification
+
+The exact host test passed with migrations `0001`→`0017` and `1 passed in
+94.82s`. A second fresh single-use Package6 stage captured the complete
+canonical PASS receipt. Both runs used the unchanged sealed schema-8 closure
+`b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b`.
+
+| Evidence | Value |
+|---|---|
+| qualification source commit / tree | `021ea4b6a4d438863ada926f8585fbdb15111877` / `375cfc0a3c56f97ef060b1c24c98e1fad30863b2` |
+| captured PASS receipt SHA-256 | `82a00fc3f067912d78b272175a19e9c038e5c9f90ac95365d88bad6b67da4c85` |
+| Package6 approval raw SHA-256 | `d2931996c7750662a0c385d4d87645b8cbde16ea2bc02c548ab76ff0ba4d26b8` |
+| runtime authority SHA-256 | `991040f06992e590bcbfff5a377d643efbea11f5d9fde1e69316f12822551251` |
+| disposable PostgreSQL approval raw / canonical SHA-256 | `e76042f84efda9ba10c6e1bc87fc3a538ad9f3410d95ca3f9978f8de7bf2459b` / `02592ad264b0e1f38fe7cfdba4681b450f79ae2553ccb802c6a8397c40bdb99e` |
+| job / attempt | `job_2ba8c3579432445fa9d701fe5f1e5bd1` / `attempt_54f2dbc94c644eb68c0abc05511f5ab1` |
+| engine request SHA-256 | `70274f3dc7bcf4c590d7510ca50c6395b5de18d954691ebf4221d5e3d98643b6` |
+| engine result / batch SHA-256 | `aa443a45dd3a4a8be5ca7775cf359fffaf25c507bde20e2810b4d51023fffe2a` |
+| event receipt SHA-256 | `f1da38b9544735f1f731ba152c08e70e345f89c957ead28b3819406d69af228f` |
+| parity receipt SHA-256 | `ddeb334fb8e2412541c891c9bb94e14023175023b15b844c16da357d62ea90f6` |
+| semantic / final portfolio state SHA-256 | `bc4fdbfc9fbc5de0455a37158d243ae7026fc6cc5ff3e37a74686eee152a0f66` / `be64143deaa281250a8d5bd25c0d6e8e6fa0aff44819367766152e0ccfcbcbec` |
+| event sequence / count / last digest | `2..15` / `14` / `a0ac18af49841a6b88cfd2ec06166c54c3def171252a7e51008e645433f8f7b6` |
+| final job state / worker runs | `SUCCEEDED` / `1` |
+
+The receipt reports one authenticated mutation, exact durable result/parity,
+and `live_authorized=false`, `network_trading_authorized=false`, and
+`production_authorized=false`. Disposable PostgreSQL was stopped and removed
+after each fixture lifecycle.
+
+Independent spec review returned PASS with `0 Critical`, `0 Important` after
+`233 passed, 1 skipped`, static, contracts, maintainability, and P1 boundary
+checks. Independent quality/security review returned PASS with `0 Critical`,
+`0 Important`, `212 passed, 4 expected authority skips`, an additional
+55-test authority/package subset, and zero security-scan findings. The review
+confirmed exact rational split-fill and repeating-basis accounting, restart and
+correction parity, closed request lineage, and unchanged custody/live safety.
 
 ## Superseded qualification
 
