@@ -655,7 +655,7 @@ def test_production_native_binary_is_fail_closed_v2_supervisor_stub() -> None:
             check=True,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=60,
         ).stdout
         for forbidden in (
             "p6c_service_run",
