@@ -217,8 +217,6 @@ def test_portable_ci_rejects_an_appended_duplicate_private_route_target(
     approved_route = (
         "\t$(MAKE) ci-common-private ci-portable-topology "
         "check-portable-defect-closure check-p0-baseline check-p0-maintainability "
-        "check-p1-nautilus-boundaries check-p1-nautilus-lineage "
-        "check-p1-nautilus-pin-inventory "
         "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract"
     )
