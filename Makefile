@@ -144,12 +144,9 @@ audit-dependencies: audit-dependencies-production audit-dependencies-dev
 generate-contracts:
 	uv run python scripts/generate_contracts.py
 
-check-contracts:
+check-contracts: check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory
 	uv run python scripts/generate_contracts.py --check
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
-	$(PYTHON) scripts/check_p1_nautilus_boundaries.py
-	$(PYTHON) scripts/check_p1_nautilus_boundaries.py --lineage-report
-	uv run pytest -q tests/governance/nautilus_pin_inventory/test_engine.py::test_engine_generates_from_the_exact_current_commit_source
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
