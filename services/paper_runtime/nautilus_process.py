@@ -186,7 +186,11 @@ class NautilusPaperProcess:
         raise RuntimeError("paper child response exceeds maximum frames")
 
     def is_running(self) -> bool:
-        return self.matches_authority(self._closure, self._request)
+        if self._process.poll() is not None:
+            return False
+        if not self.matches_authority(self._closure, self._request):
+            raise ValueError("paper child liveness cannot be proven")
+        return True
 
     def close_input(self) -> int:
         if self._process.stdin is not None and not self._process.stdin.closed:

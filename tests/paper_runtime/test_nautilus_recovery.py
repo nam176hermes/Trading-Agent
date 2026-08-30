@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from packages.engine_contracts import canonical_json_bytes
+from packages.nautilus_runtime_contracts.paper import parse_paper_command_frame
 from packages.safety_evidence import CanonicalKillSwitchState
 from services.paper_runtime.nautilus_reconciliation import (
     NautilusChildState,
@@ -21,6 +22,7 @@ from services.paper_runtime.nautilus_recovery import (
     write_nautilus_recovery_receipt,
 )
 from services.paper_runtime.nautilus_checkpoint import ZERO_CHECKPOINT_SHA256
+from services.paper_runtime.nautilus_session import NautilusSessionRejected
 
 from test_nautilus_reconciliation import _evidence
 
@@ -211,6 +213,29 @@ def test_durable_store_replays_exact_command_prefix_into_a_fresh_session(
         target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256
     )
     first_child.abort()
+    stale_path = tmp_path / "stale-recovery.json"
+    stale_receipt = write_nautilus_recovery_receipt(
+        stale_path,
+        _runtime_evidence(first.checkpoint, child_running=False),
+        command_chain_sha256=store.chain_sha256,
+    )
+    stale_child = _Child(closure=closure, identity="e" * 64)
+    with pytest.raises(ValueError, match="does not match prior session"):
+        recover_nautilus_paper_session(
+            store,
+            lambda recorder: _session(
+                stale_child,
+                [_safety()],
+                monkeypatch,
+                authority_closure=closure,
+                authority_identity="e" * 64,
+                recovery_recorder=recorder,
+            )[0],
+            prior_session=session,
+            receipt_path=stale_path,
+            expected_receipt_sha256=stale_receipt.receipt_sha256,
+        )
+    assert stale_child.calls == 0
     receipt_path = tmp_path / "recovery.json"
     receipt = write_nautilus_recovery_receipt(
         receipt_path,
@@ -450,6 +475,118 @@ def test_in_flight_command_blocks_replay_after_outcome_write_failure(
     with pytest.raises(ValueError, match="outcome is uncertain"):
         store.begin_replay()
     assert child.calls == 2
+    assert child.aborted is True
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    (
+        "target_acceptance",
+        "order_submit",
+        "fill",
+        "checkpoint_persist",
+        "event_persist",
+        "stop",
+    ),
+)
+def test_every_execution_crash_boundary_blocks_duplicate_exposure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    from test_nautilus_session import _Child, _commands, _request, _safety, _session
+
+    root = tmp_path / "store"
+    root.mkdir(mode=0o700)
+    store = NautilusRecoveryStore(root)
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+    closure = P1_REAL_BACKTEST_POLICY.closure_sha256
+    child = _Child(closure=closure)
+    counts = {"targets": 0, "orders": 0, "fills": 0}
+    exchange = child.exchange
+
+    def fail_at_boundary(raw: bytes) -> bytes:
+        command = parse_paper_command_frame(raw).command.command_type
+        if command == "SubmitTargetPortfolio":
+            counts["targets"] += 1
+            if boundary == "target_acceptance":
+                raise RuntimeError("crash after target acceptance")
+            counts["orders"] += 1
+            if boundary == "order_submit":
+                raise RuntimeError("crash after order submit")
+            counts["fills"] += 1
+            if boundary == "fill":
+                raise RuntimeError("crash after fill")
+        return exchange(raw)
+
+    child.exchange = fail_at_boundary  # type: ignore[method-assign]
+    if boundary == "stop":
+        child.close = lambda: 1  # type: ignore[method-assign]
+    session, _capability, _client = _session(
+        child,
+        [_safety()],
+        monkeypatch,
+        authority_closure=closure,
+        recovery_recorder=store,
+    )
+    start, target, stop = _commands(_request())
+    first = session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
+    command = target
+    prior_sha256 = first.checkpoint.checkpoint_sha256
+    if boundary == "checkpoint_persist":
+        advance = session._checkpoints.advance
+
+        def fail_checkpoint(*args: object, **kwargs: object) -> object:
+            raise OSError("crash before checkpoint persist")
+
+        monkeypatch.setattr(session._checkpoints, "advance", fail_checkpoint)
+    elif boundary in {"event_persist", "stop"}:
+        second = session.execute(target, expected_checkpoint_sha256=prior_sha256)
+        command = stop
+        prior_sha256 = second.checkpoint.checkpoint_sha256
+        if boundary == "event_persist":
+            monkeypatch.setattr(
+                session._ledger,
+                "ingest",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    OSError("crash before event persist")
+                ),
+            )
+    with pytest.raises(NautilusSessionRejected, match="authority is inconsistent"):
+        session.execute(command, expected_checkpoint_sha256=prior_sha256)
+    if boundary == "event_persist":
+        child.abort()
+    if boundary == "checkpoint_persist":
+        monkeypatch.setattr(session._checkpoints, "advance", advance)
+
+    terminal = store.steps()[-1]
+    receipt_path = tmp_path / "recovery.json"
+    receipt = write_nautilus_recovery_receipt(
+        receipt_path,
+        _runtime_evidence(terminal.checkpoint, child_running=False),
+        command_chain_sha256=terminal.step_sha256,
+    )
+    fresh = _Child(closure=closure, identity="f" * 64)
+    before = dict(counts)
+    with pytest.raises(ValueError, match="outcome is uncertain"):
+        recover_nautilus_paper_session(
+            store,
+            lambda recorder: _session(
+                fresh,
+                [_safety()],
+                monkeypatch,
+                authority_closure=closure,
+                authority_identity="f" * 64,
+                recovery_recorder=recorder,
+            )[0],
+            prior_session=session,
+            receipt_path=receipt_path,
+            expected_receipt_sha256=receipt.receipt_sha256,
+        )
+
+    assert counts == before
+    assert fresh.calls == 0
     assert child.aborted is True
 
 

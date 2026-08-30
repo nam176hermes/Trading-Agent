@@ -141,6 +141,23 @@ def test_process_binding_uses_the_executable_identity_observed_in_namespace(
     assert process.executable_sha256 == executable_sha256
 
 
+def test_live_process_with_unreadable_authority_is_not_reported_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = object.__new__(process_module.NautilusPaperProcess)
+    object.__setattr__(process, "_process", SimpleNamespace(poll=lambda: None))
+    object.__setattr__(process, "_closure", object())
+    object.__setattr__(process, "_request", _request())
+    monkeypatch.setattr(
+        process_module.NautilusPaperProcess,
+        "matches_authority",
+        lambda *_args: False,
+    )
+
+    with pytest.raises(ValueError, match="liveness cannot be proven"):
+        process.is_running()
+
+
 def _money(value: str) -> Money:
     return Money(Decimal(value), Currency.USDT)
 

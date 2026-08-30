@@ -745,11 +745,14 @@ def recover_nautilus_paper_session(
     if prior_child.is_running():
         raise ValueError("prior child is still running")
     decision = reconcile_nautilus_paper(evidence)
+    terminal_steps = store.steps()
     if (
         decision.disposition is not NautilusRecoveryDisposition.RESUME_EXACT_PREFIX
         or receipt.verdict is not decision.disposition
         or receipt.command_chain_sha256 != store.chain_sha256
         or evidence.checkpoint is None
+        or not terminal_steps
+        or evidence.checkpoint != terminal_steps[-1].checkpoint
         or evidence.checkpoint.checkpoint.child_identity
         != prior_child.process_authority_sha256
         or evidence.session_id != prior_session._request.engine_run_id
