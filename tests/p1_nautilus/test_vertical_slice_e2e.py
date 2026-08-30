@@ -791,7 +791,12 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     }
     evidence = receipt["evidence"]
     assert evidence["worker_run_count"] == 1
+    assert evidence["final_job_state"] == "SUCCEEDED"
     assert evidence["result_sha256"] == evidence["batch_sha256"]
+    assert len(evidence["engine_request_sha256"]) == 64
+    assert evidence["engine_request_sha256"] == evidence[
+        "engine_request_sha256"
+    ].lower()
     assert len(evidence["engine_event_receipt_sha256"]) == 64
     assert len(evidence["p1_portfolio_parity_sha256"]) == 64
     assert len(evidence["final_portfolio_state_hash"]) == 64

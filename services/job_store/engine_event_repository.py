@@ -269,6 +269,12 @@ def _validated_records(
         projection_authority = None
         if batch.validator_id == _P1_VALIDATOR:
             assert profile is not None
+            engine_request_sha256 = metadata.get("engine_request_sha256")
+            if (
+                not isinstance(engine_request_sha256, str)
+                or _SHA256.fullmatch(engine_request_sha256) is None
+            ):
+                raise ValueError
             request_message_id = UUID(str(metadata.get("request_message_id")))
             for envelope, typed_event in zip(batch.events, typed, strict=True):
                 document = typed_event.model_dump(mode="json")
@@ -301,6 +307,7 @@ def _validated_records(
                     raise ValueError
             expected_metadata.update(
                 {
+                    "engine_request_sha256": engine_request_sha256,
                     "engine_upstream_commit": P1_UPSTREAM_COMMIT,
                     "engine_version": P1_ENGINE_VERSION,
                     "fees": str(profile.fees),
@@ -330,6 +337,8 @@ def _validated_records(
         if batch.relative_ref != expected_ref:
             raise ValueError
 
+        receipt_metadata = dict(metadata)
+        receipt_metadata.pop("engine_request_sha256", None)
         identity_bytes = canonical_json_bytes(
             {
                 "artifact_type": batch.artifact_type,
@@ -338,7 +347,7 @@ def _validated_records(
                 "sha256": batch.sha256,
                 "size_bytes": batch.size_bytes,
                 "truncated": batch.truncated,
-                "validation_metadata": metadata,
+                "validation_metadata": receipt_metadata,
                 "validator_id": batch.validator_id,
             }
         )

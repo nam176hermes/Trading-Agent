@@ -495,6 +495,9 @@ class EngineResultValidator:
                 )
             metadata.update(
                 {
+                    "engine_request_sha256": hashlib.sha256(
+                        canonical_json_bytes(request)
+                    ).hexdigest(),
                     "engine_upstream_commit": P1_UPSTREAM_COMMIT,
                     "engine_version": P1_ENGINE_VERSION,
                     "fees": str(profile_result.fees),

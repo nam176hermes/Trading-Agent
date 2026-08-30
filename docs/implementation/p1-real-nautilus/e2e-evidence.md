@@ -1,7 +1,10 @@
 # P1-22 BTCUSDT vertical-slice evidence
 
-Status: `SOURCE_EXECUTION_READY`; native/database execution: `DEFERRED` until
-exact external authority is supplied.
+Status: `AMENDMENT_QUALIFICATION_PENDING`. The prior `e2193146…` flat-scenario
+run exposed one complete native path, but independent review found missing
+request-digest evidence plus marked-open and split-fill accounting cases. A
+fresh exact-source qualification supersedes that provisional run. Remote
+canonical status is unchanged.
 
 The operator lane is `make qualify-p1-nautilus-vertical-slice`. With no
 external authority it emits one canonical `DEFERRED` receipt and performs no
@@ -71,3 +74,26 @@ This source seam does not itself launch PostgreSQL or Nautilus and does not
 change generic runtime or release authority.
 
 All receipts keep live, production, and network-trading authority false.
+
+## Superseded qualification
+
+The disposable host lane passed on 2026-08-30 with the schema-8 P1
+closure
+`b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b`.
+The focused operator test completed in `93.87s` with `1 passed` and produced:
+
+| Evidence | Value |
+|---|---|
+| Package6 approval SHA-256 | `3bd2abec4afbc934d6dfa41c39c998095c16145c97881179bf0df007ba1bd7d7` |
+| disposable PostgreSQL approval SHA-256 | `110509bb38e3c9cc58ed3eae2662909659dd55164f8ea8c96f95d740b781b735` |
+| engine-result/batch SHA-256 | `aec38fb18251791b509623eac726448b4f838b4f80a84185ce914850595ddde0` |
+| semantic digest | `bc4fdbfc9fbc5de0455a37158d243ae7026fc6cc5ff3e37a74686eee152a0f66` |
+| event sequences | `2..15` (`14` events) |
+| final cash / position | `1007781.489627 USDT` / `0` |
+| fees / realized / unrealized PnL | `2007.791239` / `9789.280866` / `0` |
+
+The path used one authenticated enqueue, one worker run and one durable flat
+result. It is retained as historical evidence only and does not close P1-22.
+Disposable PostgreSQL was stopped and removed by the fixture lifecycle. No
+production, network, or live authority was granted; absent host inputs still
+produce the canonical `DEFERRED` receipt.

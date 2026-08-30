@@ -452,6 +452,11 @@ class JobWorker:
                 if (
                     type(result) is not ValidatedEngineEventBatch
                     or type(result.validation_metadata) is not dict
+                    or (
+                        "engine_request_sha256" in result.validation_metadata
+                        and result.validation_metadata["engine_request_sha256"]
+                        != outcome.lineage.command.get("engine_request_sha256")
+                    )
                 ):
                     raise _EngineEventIngestionBlocked(
                         "ENGINE_EVENT_BATCH_INVALID",
@@ -635,6 +640,8 @@ class JobWorker:
         try:
             first = result.events[0]
             last = result.events[-1]
+            receipt_metadata = dict(result.validation_metadata)
+            receipt_metadata.pop("engine_request_sha256", None)
             identity_bytes = canonical_json_bytes(
                 {
                     "artifact_type": result.artifact_type,
@@ -643,7 +650,7 @@ class JobWorker:
                     "sha256": result.sha256,
                     "size_bytes": result.size_bytes,
                     "truncated": result.truncated,
-                    "validation_metadata": result.validation_metadata,
+                    "validation_metadata": receipt_metadata,
                     "validator_id": result.validator_id,
                 }
             )

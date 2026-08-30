@@ -42,6 +42,9 @@ def test_worker_validates_and_seals_exact_p1_stdout_bytes(tmp_path: Path) -> Non
     assert result.validation_metadata == {
         "attempt_id": "attempt_fedcba9876543210fedcba9876543210",
         "config_digest": _p1_request().config_digest,
+        "engine_request_sha256": sha256(
+            canonical_json_bytes(_p1_request())
+        ).hexdigest(),
         "engine_run_id": str(_p1_request().engine_run_id),
         "engine_upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
         "engine_version": "1.231.0",

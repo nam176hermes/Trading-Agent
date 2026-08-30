@@ -919,6 +919,12 @@ def _durable_success_evidence(
         or not isinstance(metadata, Mapping)
     ):
         raise VerticalSliceExecutionError(job_mutated=True)
+    engine_request_sha256 = metadata.get("engine_request_sha256")
+    if (
+        not isinstance(engine_request_sha256, str)
+        or _SHA256.fullmatch(engine_request_sha256) is None
+    ):
+        raise VerticalSliceExecutionError(job_mutated=True)
     try:
         engine_receipt = EngineEventBatchReceipt.model_validate_json(
             json.dumps(
@@ -964,8 +970,10 @@ def _durable_success_evidence(
         "attempt_id": attempt.attempt_id,
         "batch_sha256": engine_receipt.batch_sha256,
         "engine_event_receipt_sha256": _receipt_digest(engine_receipt),
+        "engine_request_sha256": engine_request_sha256,
         "engine_run_id": str(engine_receipt.engine_run_id),
         "event_count": engine_receipt.event_count,
+        "final_job_state": job.state.value,
         "final_portfolio_state_hash": parity_receipt.portfolio_state_hash,
         "job_id": expected_job_id,
         "last_digest": engine_receipt.last_digest,

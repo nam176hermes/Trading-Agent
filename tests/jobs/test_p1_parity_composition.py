@@ -134,6 +134,20 @@ def _worker(
     parity_verifier: object | None,
     safety=None,
 ) -> JobWorker:
+    process_outcome = _outcome()
+    if isinstance(validator, _P1Validator):
+        process_outcome = replace(
+            process_outcome,
+            lineage=replace(
+                process_outcome.lineage,
+                command={
+                    **process_outcome.lineage.command,
+                    "engine_request_sha256": validator.result.validation_metadata[
+                        "engine_request_sha256"
+                    ],
+                },
+            ),
+        )
     parity_dependencies = (
         {}
         if authority_factory is None and parity_verifier is None
@@ -144,7 +158,7 @@ def _worker(
     )
     return JobWorker(
         repository,
-        Runner(_outcome()),
+        Runner(process_outcome),
         object(),
         worker_id="worker-authority-1",
         code_commit=CODE_COMMIT,
@@ -225,6 +239,39 @@ def test_exact_p1_reloads_durable_state_and_proves_parity_before_success(
         for event in _validated.events
     )
     assert ingestor.repository.load_events(expected[0].engine_run_id) == expected
+
+
+def test_exact_p1_request_digest_mismatch_blocks_before_ingest(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    repository = Repository(_p1_claim())
+    worker = _worker(
+        repository,
+        _P1Validator(_validated_p1_batch(tmp_path)),
+        _LoggedIngestor(calls),
+        authority_factory=_AuthorityFactory(calls),
+        parity_verifier=lambda *_args, **_kwargs: pytest.fail(
+            "mismatched request authority reached parity"
+        ),
+    )
+    worker._runner.result = replace(
+        worker._runner.result,
+        lineage=replace(
+            worker._runner.result.lineage,
+            command={
+                **worker._runner.result.lineage.command,
+                "engine_request_sha256": "0" * 64,
+            },
+        ),
+    )
+
+    assert worker.run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_BATCH_INVALID"
+    assert calls == []
 
 
 @pytest.mark.parametrize("invalid_receipt", (False, True))

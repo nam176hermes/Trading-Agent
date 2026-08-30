@@ -45,6 +45,7 @@ REQUEST_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 BATCH_SHA256 = "c" * 64
 SEMANTIC_SHA256 = "d" * 64
 LAST_DIGEST = "e" * 64
+ENGINE_REQUEST_SHA256 = "f" * 64
 NOW = datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
 
 
@@ -204,6 +205,7 @@ def _successful_detail() -> JobDetailRecord:
                 validator_id=P1_RESULT_VALIDATOR_ID,
                 validation_metadata={
                     "attempt_id": ATTEMPT_ID,
+                    "engine_request_sha256": ENGINE_REQUEST_SHA256,
                     "engine_event_receipt": engine_receipt.model_dump(mode="json"),
                     "engine_run_id": str(ENGINE_RUN_ID),
                     "event_count": 14,
@@ -512,6 +514,8 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
     assert evidence["job_id"] == JOB_ID
     assert evidence["attempt_id"] == ATTEMPT_ID
     assert evidence["batch_sha256"] == BATCH_SHA256
+    assert evidence["engine_request_sha256"] == ENGINE_REQUEST_SHA256
+    assert evidence["final_job_state"] == "SUCCEEDED"
     assert evidence["semantic_digest"] == SEMANTIC_SHA256
     assert evidence["final_portfolio_state_hash"] == "2" * 64
     assert evidence["worker_run_count"] == 1
@@ -727,6 +731,30 @@ def test_durable_success_rejects_missing_or_mixed_receipts(mutation: str) -> Non
 
     with pytest.raises(vertical.VerticalSliceExecutionError):
         vertical._durable_success_evidence(detail, expected_job_id=JOB_ID)
+
+
+@pytest.mark.parametrize("request_sha256", (None, "F" * 64, "f" * 63))
+def test_durable_success_rejects_invalid_engine_request_digest(
+    request_sha256: str | None,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    detail = _successful_detail()
+    artifact = detail.artifacts[0]
+    metadata = dict(artifact.validation_metadata)
+    if request_sha256 is None:
+        metadata.pop("engine_request_sha256")
+    else:
+        metadata["engine_request_sha256"] = request_sha256
+
+    with pytest.raises(vertical.VerticalSliceExecutionError):
+        vertical._durable_success_evidence(
+            replace(
+                detail,
+                artifacts=(replace(artifact, validation_metadata=metadata),),
+            ),
+            expected_job_id=JOB_ID,
+        )
 
 
 def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
