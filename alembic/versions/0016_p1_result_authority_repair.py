@@ -43,14 +43,56 @@ def upgrade() -> None:
             E'          v_legacy_document := public.canonical_domain_json(\n' ||
             E'            v_document - ''validation_metadata'' - ''validator_id''\n' ||
             E'          );';
+          v_old_wrapper_binding constant pg_catalog.text := $old_wrapper_binding$          v_legacy_document := public.canonical_domain_json_string(
+            (v_document - 'validation_metadata' - 'validator_id')::text
+          );
+          SELECT * INTO bound
+          FROM job_plane.ingest_engine_job_result(
+            p_job_id, p_attempt_id, p_worker_id, p_lease_token,
+            v_legacy_document
+          );
+          IF NOT FOUND
+             OR bound.batch_sha256 IS DISTINCT FROM accepted.batch_sha256
+             OR bound.ingestion_digest IS DISTINCT FROM accepted.ingestion_digest
+             OR bound.job_id IS DISTINCT FROM accepted.job_id
+             OR bound.attempt_id IS DISTINCT FROM accepted.attempt_id
+             OR bound.engine_run_id IS DISTINCT FROM accepted.engine_run_id THEN
+            RAISE EXCEPTION 'P1 job result differs from durable projection authority'
+              USING ERRCODE = 'P2D01';
+          END IF;
+          RETURN QUERY SELECT
+            bound.batch_sha256, bound.ingestion_digest,
+            bound.job_id, bound.attempt_id, bound.engine_run_id,
+            bound.event_count, bound.first_sequence,
+            bound.last_sequence, bound.last_digest;$old_wrapper_binding$;
+          v_new_wrapper_binding constant pg_catalog.text := $new_wrapper_binding$          INSERT INTO public.engine_job_results (
+            job_id, batch_sha256, attempt_id
+          ) VALUES (
+            accepted.job_id, accepted.batch_sha256, accepted.attempt_id
+          ) ON CONFLICT ON CONSTRAINT engine_job_results_pkey DO NOTHING;
+          SELECT result.* INTO bound
+          FROM public.engine_job_results AS result
+          WHERE result.job_id = accepted.job_id
+          FOR SHARE;
+          IF NOT FOUND
+             OR bound.batch_sha256 IS DISTINCT FROM accepted.batch_sha256
+             OR bound.attempt_id IS DISTINCT FROM accepted.attempt_id THEN
+            RAISE EXCEPTION 'P1 job result differs from durable projection authority'
+              USING ERRCODE = 'P2D01';
+          END IF;
+          RETURN QUERY SELECT
+            accepted.batch_sha256, accepted.ingestion_digest,
+            accepted.job_id, accepted.attempt_id, accepted.engine_run_id,
+            accepted.event_count, accepted.first_sequence,
+            accepted.last_sequence, accepted.last_digest;$new_wrapper_binding$;
           v_prior_source_sha256 constant pg_catalog.text :=
             '6e8cae1e8f9f120fbf79fc0a9eb444ce0c1163b708e35ec71ec813561c20f445';
           v_repaired_source_sha256 constant pg_catalog.text :=
-            'f7e70b8bc22d44600da7357657c8a7016035e5d2e6d71caaf5ea87351e33c230';
+            'a9d2bcca28d01e3c03c1d953e48ef50925059fe7148da6715fb777ea78e03369';
           v_prior_definition_sha256 constant pg_catalog.text :=
             'aea1129235f91d7645741c04912590a31cc3e667df43867c8b3a7cecfec9b743';
           v_repaired_definition_sha256 constant pg_catalog.text :=
-            'ec8e58681820e129ca4febf16ea3ab20751856d9d9cb710604fb2c80d5a9569f';
+            'c07827a548d5e87df02b302d11819a641e4322a7df243be301585cab38800b3b';
           v_prior_p1_source_sha256 constant pg_catalog.text :=
             '8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089';
           v_repaired_p1_source_sha256 constant pg_catalog.text :=
@@ -79,6 +121,8 @@ def upgrade() -> None:
           v_new_count pg_catalog.int4;
           v_old_canonical_count pg_catalog.int4;
           v_new_canonical_count pg_catalog.int4;
+          v_old_wrapper_count pg_catalog.int4;
+          v_new_wrapper_count pg_catalog.int4;
         BEGIN
           v_prior_search_path := pg_catalog.current_setting('search_path', false);
           PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
@@ -152,24 +196,24 @@ def upgrade() -> None:
             RAISE EXCEPTION 'P1 result-authority UUID variant count is invalid'
               USING ERRCODE = 'P2D08';
           END IF;
-          v_old_canonical_count := (
+          v_old_wrapper_count := (
             pg_catalog.length(v_definition) - pg_catalog.length(
-              pg_catalog.replace(v_definition, v_old_canonical, '')
+              pg_catalog.replace(v_definition, v_old_wrapper_binding, '')
             )
-          ) / pg_catalog.length(v_old_canonical);
-          v_new_canonical_count := (
+          ) / pg_catalog.length(v_old_wrapper_binding);
+          v_new_wrapper_count := (
             pg_catalog.length(v_definition) - pg_catalog.length(
-              pg_catalog.replace(v_definition, v_new_canonical, '')
+              pg_catalog.replace(v_definition, v_new_wrapper_binding, '')
             )
-          ) / pg_catalog.length(v_new_canonical);
-          IF v_old_canonical_count <> 1 OR v_new_canonical_count <> 0 THEN
-            RAISE EXCEPTION 'P1 result-authority canonical projection is invalid'
+          ) / pg_catalog.length(v_new_wrapper_binding);
+          IF v_old_wrapper_count <> 1 OR v_new_wrapper_count <> 0 THEN
+            RAISE EXCEPTION 'P1 result-authority binding path is invalid'
               USING ERRCODE = 'P2D08';
           END IF;
           v_repaired_definition := pg_catalog.replace(
             pg_catalog.replace(v_definition, v_old, v_new),
-            v_old_canonical,
-            v_new_canonical
+            v_old_wrapper_binding,
+            v_new_wrapper_binding
           );
           EXECUTE v_repaired_definition;
 

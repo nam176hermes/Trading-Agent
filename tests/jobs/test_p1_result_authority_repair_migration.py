@@ -36,9 +36,9 @@ def test_p1_result_authority_repair_is_exact_forward_only_driver_sql() -> None:
     assert statement.count("88889999aaaabbbb") == 1
     assert statement.count("89ab89ab89ab89ab") == 1
     assert "6e8cae1e8f9f120fbf79fc0a9eb444ce0c1163b708e35ec71ec813561c20f445" in statement
-    assert "f7e70b8bc22d44600da7357657c8a7016035e5d2e6d71caaf5ea87351e33c230" in statement
+    assert "a9d2bcca28d01e3c03c1d953e48ef50925059fe7148da6715fb777ea78e03369" in statement
     assert "aea1129235f91d7645741c04912590a31cc3e667df43867c8b3a7cecfec9b743" in statement
-    assert "ec8e58681820e129ca4febf16ea3ab20751856d9d9cb710604fb2c80d5a9569f" in statement
+    assert "c07827a548d5e87df02b302d11819a641e4322a7df243be301585cab38800b3b" in statement
     assert "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089" in statement
     assert "4a04f41c0ac9dcb45ae09aa02b245cd07f4ea5f287c6956011d1c63d7c8c5eb4" in statement
     assert "04ec80653561e0c40cd57d1920642dd6e1e878d0e11f4729cd4b97273e06dd5b" in statement
@@ -53,6 +53,9 @@ def test_p1_result_authority_repair_is_exact_forward_only_driver_sql() -> None:
     assert "002fd4c9ccc597c2016b7ae1ec32be78138d0e05448ca24a1d6051a0a84b6141" in statement
     assert "v_legacy_document := public.canonical_domain_json(" in statement
     assert "ON CONFLICT ON CONSTRAINT engine_job_results_pkey DO NOTHING" in statement
+    assert "accepted.job_id, accepted.batch_sha256, accepted.attempt_id" in statement
+    assert "v_old_wrapper_binding" in statement
+    assert "v_new_wrapper_binding" in statement
     assert "job_plane.paper_worker_job_id_allowed(" in statement
     assert "job_artifacts.job_id" in statement
     assert "GRANT EXECUTE ON FUNCTION job_plane.paper_worker_job_allowed(" not in statement
