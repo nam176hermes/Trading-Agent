@@ -36,7 +36,7 @@ from tests.jobs.test_job_api import (
 )
 
 
-P1_REVISION = "0016_p1_result_authority_repair"
+P1_REVISION = "0017_p1_request_digest_authority"
 GENERIC_REVISION = "0011_engine_backtest_worker_authority"
 JOB_ID = "job_" + "1" * 32
 ATTEMPT_ID = "attempt_" + "2" * 32

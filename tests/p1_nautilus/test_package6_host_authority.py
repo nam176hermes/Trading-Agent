@@ -163,7 +163,7 @@ def test_p1_semantic_operation_is_exact_backtest_0013(
     operation = document["p1_operation"]
     assert isinstance(operation, dict)
     assert operation["job_type"] == "BACKTEST"
-    assert operation["database_revision"] == "0016_p1_result_authority_repair"
+    assert operation["database_revision"] == "0017_p1_request_digest_authority"
     assert operation["operation_id"] == "p1-vertical-slice.execute-once"
     assert operation["execution_steps"] == [
         "AUTHENTICATED_JOB_API_ENQUEUE",

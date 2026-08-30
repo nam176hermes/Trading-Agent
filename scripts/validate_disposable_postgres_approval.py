@@ -43,6 +43,7 @@ APPROVAL_SOURCE_BINDING_PATHS = (
     "alembic/versions/0014_p1_product_closure_rotation.py",
     "alembic/versions/0015_p1_accounting_closure_rotation.py",
     "alembic/versions/0016_p1_result_authority_repair.py",
+    "alembic/versions/0017_p1_request_digest_authority.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-roles.sql",
 )
