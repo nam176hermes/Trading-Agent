@@ -365,12 +365,25 @@ def _p1_closure(tmp_path: Path) -> P1EngineClosureAttestation:
     lineage_path.chmod(0o400)
     assert closure.closure_manifest is not None
     assert closure.native_entry_guard is not None
+    runtime_root = tmp_path / "p1-runtime-v1"
+    runtime_root.mkdir(mode=0o700)
+    runtime_mounts = []
+    for source in sorted(
+        (Path(__file__).parents[2] / "engines/nautilus/runtime_v1").glob("*.py")
+    ):
+        destination = runtime_root / source.name
+        shutil.copyfile(source, destination)
+        destination.chmod(0o400)
+        runtime_mounts.append(
+            _closure_file(destination, f"/engine/runtime_v1/{source.name}")
+        )
+    runtime_root.chmod(0o500)
     return P1EngineClosureAttestation(
         manifest_schema_version=8,
         profile=P1_REAL_BACKTEST_POLICY.profile,
         source_commit=closure.source_commit,
         closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
-        mounts=closure.mounts,
+        mounts=(*closure.mounts, *runtime_mounts),
         entrypoint=closure.entrypoint,
         semantic_profile=P1_REAL_BACKTEST_POLICY.semantic_profile,
         argv_prefix=P1_REAL_BACKTEST_POLICY.argv_prefix,
@@ -560,6 +573,8 @@ def test_p1_paper_launch_is_derived_only_from_the_exact_prepared_spawn(
         )
         assert len(authority.argv_sha256) == 64
         assert len(authority.paper_source_sha256) == 64
+        assert len(authority.python_executable_identity) == 2
+        assert len(authority.python_executable_sha256) == 64
     finally:
         _close_spawn_fds(authority.built)
 
@@ -579,7 +594,7 @@ def test_p1_paper_launch_rejects_one_byte_source_drift(
     monkeypatch.setattr(p1_engine_spawn_module, "_PAPER_SOURCE_ROOT", source)
 
     with pytest.raises(EngineSpawnError, match="paper source authority changed"):
-        p1_engine_spawn_module._paper_source_snapshots()
+        p1_engine_spawn_module._paper_source_inventory()
 
 
 @pytest.mark.parametrize(
