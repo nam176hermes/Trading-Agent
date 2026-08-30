@@ -6,7 +6,7 @@
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
-	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice test-p1-nautilus-source test-p1-nautilus-native qualify-p1-nautilus test-p1-nautilus-e2e \
+	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice test-p1-nautilus-source test-p1-nautilus-native qualify-p1-nautilus test-p1-nautilus-e2e test-p1-nautilus-paper qualify-p1-nautilus-paper \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
@@ -100,6 +100,20 @@ qualify-p1-nautilus:
 
 test-p1-nautilus-e2e:
 	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
+
+test-p1-nautilus-paper:
+	uv run pytest -q tests/paper_runtime
+	@set -eu; \
+		if test -z "$${P1_NAUTILUS_PYTHON:-}" && test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}" && test -z "$${P1_NAUTILUS_PRODUCT_LINEAGE:-}"; then \
+			printf '%s\n' '{"authority_limits":{"live_authorized":false,"network_trading_authorized":false,"production_authorized":false},"verdict":"DEFERRED"}'; \
+		elif test -z "$${P1_NAUTILUS_PYTHON:-}" || test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}" || test -z "$${P1_NAUTILUS_PRODUCT_LINEAGE:-}"; then \
+			printf '%s\n' 'P1 paper native authority is partial or invalid' >&2; exit 2; \
+		else \
+			uv run pytest -q tests/p1_nautilus/test_paper_runtime_native.py; \
+		fi
+
+qualify-p1-nautilus-paper:
+	$(PYTHON) scripts/qualify_p1_nautilus_paper.py
 
 check-p0-ci-closure:
 	$(PYTHON) scripts/check_p0_ci_closure.py \
