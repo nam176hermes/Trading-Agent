@@ -1,0 +1,74 @@
+{
+  "authority_limits": {
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "baseline_authority_limits": {
+    "candidate_active": false,
+    "candidate_promoted": false,
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "candidate_closure_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+  "candidate_generation_id": "NT1231-U04-G1",
+  "candidate_generation_sha256": "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c",
+  "engine_version": "1.231.0",
+  "evidence_sha256": "9304ece63679d9546dd7570acd93aaf4008e93fc9d65141de21e266a5c63ab06",
+  "legacy_phase4_authority": {
+    "active_policy_changes": 0,
+    "engine_version": "1.227.0",
+    "execution_simulation_policy_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+    "job_worker_loader_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+    "paper_compatibility_policy_sha256": "ab04b77042fb351a541764054e2bac7259097c749f6ff930c3fc68ef631d592c",
+    "schema_version": 6
+  },
+  "legacy_phase4_profiles_unchanged": true,
+  "operator_decision": "PROMOTE_1_231_FOR_P1",
+  "p1_22_evidence_sha256": "734754222f617bd17a318becd0b4eb78314f91866ae02035fd68a26046aeb44e",
+  "p1_23_acceptance_sha256": "490fbc1ad97c6627dc0a4711b2aef3919dcc1ab247c5ad6845bd0a964a25324d",
+  "p1_24_acceptance_sha256": "44edacfe07f4fcdaf3418a69bcd80bde9792138897176cd3c949e4916db4208e",
+  "p1_29_ledger_sha256": "769a708fc5b8b59623aa31f4852d93cae54273d8ee6457ea145d6c05292d0746",
+  "p1_29_source_commit": "e7e125ba5b77433c68ae103c5b19cc995dbc58f7",
+  "p1_29_source_tree": "140fa5f21dd9501ea1c6cd055f9df807ab601772",
+  "p1_a_final_review_sha256": "2b0cc1a6a963a5541a6539ef6f109bebeae2b6504fc8c71a8b71ceb0f46b01bf",
+  "p1_baseline_receipt_sha256": "b1dfa25502c05cfa6daf529e106e24f0f5d6e25ca33af6ecaca3e1ba1528019b",
+  "p1_product_closure_schema": 8,
+  "p1_product_closure_sha256": "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80",
+  "p1_product_policy_sha256": "3a7c9d9d46b36eb50ec5db87eb13718ec7202957d4f2eadda2ef6aae8b61a1e8",
+  "paper_protocol": "nautilus-paper-session-v2",
+  "qualification_source_commit": "fc34bc52d5af5312303abac417502d7419247ba7",
+  "qualification_source_tree": "cc4f3a628b4e7b0faacac47b6ea41ef3065192b3",
+  "schema": "trading-agent-p1-paper-qualification/v1",
+  "skipped_count": 0,
+  "status": "P1_LOCAL_SOURCE_CERTIFIED",
+  "suites": [
+    {
+      "duration_milliseconds": 1702,
+      "evidence_sha256": "41b40879f9df2efeee952012b9dd79101e8801c043a7bd6612b9bac9be3f70ae",
+      "source_sha256": "e71a886b167bac6dd9a573761b213d681c9f618126fa95ca93af54fe763f4760",
+      "suite": "paper-recovery",
+      "test_counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 64
+      }
+    },
+    {
+      "duration_milliseconds": 28989,
+      "evidence_sha256": "512dcf9ce9aeeba1684d1b5132c48419fdfb5f654f39a1d60ad0dc4a90650f3e",
+      "source_sha256": "9f8416c47e31bcd68a72624f129eaca77a7c12ad64022191ac5b409c602639d5",
+      "suite": "exact-g1-backtest-paper-parity",
+      "test_counts": {
+        "errors": 0,
+        "failures": 0,
+        "skipped": 0,
+        "tests": 5
+      }
+    }
+  ],
+  "test_count": 69,
+  "verdict": "PASS"
+}
