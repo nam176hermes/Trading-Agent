@@ -78,6 +78,20 @@ def _decimal(value: Fraction, *, field: str) -> Decimal:
     return Decimal((sign, digits, -scale))
 
 
+def _rounded_decimal(value: Fraction, precision: int, *, field: str) -> Decimal:
+    scale = 10**precision
+    scaled = value * scale
+    quotient, remainder = divmod(abs(scaled.numerator), scaled.denominator)
+    doubled = remainder * 2
+    if doubled > scaled.denominator or (
+        doubled == scaled.denominator and quotient % 2
+    ):
+        quotient += 1
+    return _decimal(
+        Fraction((-1 if scaled < 0 else 1) * quotient, scale), field=field
+    )
+
+
 def _sum(*values: Decimal, field: str) -> Decimal:
     return _decimal(sum((_fraction(value) for value in values), Fraction(0)), field=field)
 
@@ -328,23 +342,77 @@ def _new_position(entry: PortfolioFillEntry, fill: FillEvent) -> PortfolioPositi
 
 def _cash_deltas(fill: FillEvent) -> tuple[Money, ...]:
     definition = fill.instrument_definition
-    gross = _money(
-        _product(fill.quantity.value, fill.last_fill_price.amount, definition.multiplier, field="fill notional"),
-        definition.settlement_currency,
-        field="fill notional",
+    gross = (
+        _fraction(fill.quantity.value)
+        * _fraction(fill.last_fill_price.amount)
+        * _fraction(definition.multiplier)
     )
-    trade_delta = -gross.amount if fill.side is OrderSide.BUY else gross.amount
+    trade_delta = -gross if fill.side is OrderSide.BUY else gross
     by_currency = {definition.settlement_currency: trade_delta}
-    by_currency[fill.commission.currency] = _sum(
-        by_currency.get(fill.commission.currency, Decimal(0)),
-        -fill.commission.amount,
-        field="cash delta",
-    )
+    by_currency[fill.commission.currency] = by_currency.get(
+        fill.commission.currency, Fraction(0)
+    ) - _fraction(fill.commission.amount)
     return tuple(
-        _money(amount, currency, field="cash delta")
+        _money(
+            _rounded_decimal(amount, currency.precision, field="cash delta"),
+            currency,
+            field="cash delta",
+        )
         for currency, amount in sorted(by_currency.items(), key=lambda item: item[0].code)
         if amount != 0
     )
+
+
+def _advanced_cost_basis(
+    current: Fraction, basis: Fraction, fill: FillEvent
+) -> tuple[Fraction, Fraction]:
+    signed_fill = _fraction(fill.quantity.value)
+    if fill.side is OrderSide.SELL:
+        signed_fill = -signed_fill
+    residual = current + signed_fill
+    fill_basis = abs(signed_fill) * _fraction(fill.last_fill_price.amount)
+    if residual == 0:
+        return residual, Fraction(0)
+    if current == 0 or current * residual < 0:
+        return residual, abs(residual) * _fraction(fill.last_fill_price.amount)
+    if current * signed_fill > 0:
+        return residual, basis + fill_basis
+    return residual, basis * abs(residual) / abs(current)
+
+
+def _cost_basis_before(
+    active_effects: tuple[PortfolioExecutionEffect, ...],
+    position_key: tuple[str, str],
+    *,
+    current: Decimal,
+    average_before: Price | None,
+) -> Fraction:
+    effects = sorted(
+        (
+            effect
+            for effect in active_effects
+            if effect.position_key == position_key
+        ),
+        key=lambda effect: effect.logical_sequence,
+    )
+    if effects:
+        quantity = _fraction(effects[0].quantity_before.value)
+        opening_average = effects[0].average_before
+    else:
+        quantity = _fraction(current)
+        opening_average = average_before
+    if quantity != 0 and opening_average is None:
+        raise PortfolioReplayError("non-zero position requires an average entry price")
+    basis = (
+        abs(quantity) * _fraction(opening_average.amount)
+        if opening_average is not None
+        else Fraction(0)
+    )
+    for effect in effects:
+        quantity, basis = _advanced_cost_basis(quantity, basis, effect.fill)
+    if quantity != _fraction(current):
+        raise PortfolioReplayError("active execution cost basis does not match position")
+    return basis
 
 
 def _fill_accounting(
@@ -352,48 +420,47 @@ def _fill_accounting(
     *,
     current: Decimal,
     average_before: Price | None,
+    basis_before: Fraction,
 ) -> tuple[Decimal, Decimal, Price | None, Decimal, Decimal]:
     definition = fill.instrument_definition
     signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
     residual = _sum(current, signed_fill, field="position quantity")
-    closed = min(abs(current), abs(signed_fill))
-    realized_delta = Decimal(0)
+    current_fraction = _fraction(current)
+    signed_fraction = _fraction(signed_fill)
+    residual_fraction = current_fraction + signed_fraction
+    closed = min(abs(current_fraction), abs(signed_fraction))
+    realized = Fraction(0)
     if current > 0 and signed_fill < 0:
         if average_before is None:
             raise PortfolioReplayError("long position requires an average entry price")
-        realized_delta = _product(
-            _sum(fill.last_fill_price.amount, -average_before.amount, field="realized PnL"),
-            closed,
-            definition.multiplier,
-            field="realized PnL",
-        )
+        realized = (
+            _fraction(fill.last_fill_price.amount)
+            - (basis_before / abs(current_fraction))
+        ) * closed * _fraction(definition.multiplier)
     elif current < 0 and signed_fill > 0:
         if average_before is None:
             raise PortfolioReplayError("short position requires an average entry price")
-        realized_delta = _product(
-            _sum(average_before.amount, -fill.last_fill_price.amount, field="realized PnL"),
-            closed,
-            definition.multiplier,
-            field="realized PnL",
-        )
-    if residual == 0:
+        realized = (
+            (basis_before / abs(current_fraction))
+            - _fraction(fill.last_fill_price.amount)
+        ) * closed * _fraction(definition.multiplier)
+    realized_delta = _rounded_decimal(
+        realized, definition.settlement_currency.precision, field="realized PnL"
+    )
+    _, basis_after = _advanced_cost_basis(
+        current_fraction, basis_before, fill
+    )
+    if residual_fraction == 0:
         next_average = None
-    elif current == 0 or current * residual < 0:
-        next_average = fill.last_fill_price
-    elif current * signed_fill > 0:
-        if average_before is None:
-            raise PortfolioReplayError("open position requires an average entry price")
-        numerator = _sum(
-            _product(abs(current), average_before.amount, field="weighted average"),
-            _product(abs(signed_fill), fill.last_fill_price.amount, field="weighted average"),
-            field="weighted average",
-        )
+    else:
         next_average = Price(
-            _decimal(_fraction(numerator) / _fraction(abs(residual)), field="weighted average"),
+            _rounded_decimal(
+                basis_after / abs(residual_fraction),
+                definition.settlement_currency.precision,
+                field="weighted average",
+            ),
             definition.settlement_currency,
         )
-    else:
-        next_average = average_before
     fee_delta = (
         fill.commission.amount
         if fill.commission.currency is definition.settlement_currency
@@ -450,10 +517,18 @@ def _fill_effect(
     if position.instrument_definition is not None and position.instrument_definition != definition:
         raise PortfolioReplayError("fill instrument definition conflicts with active position")
     current = position.quantity.value
+    position_key = (entry.strategy_id, position.instrument.canonical)
+    basis_before = _cost_basis_before(
+        state.active_effects,
+        position_key,
+        current=current,
+        average_before=position.average_entry_price,
+    )
     signed_fill, residual, next_average, realized_delta, fee_delta = _fill_accounting(
         fill,
         current=current,
         average_before=position.average_entry_price,
+        basis_before=basis_before,
     )
     next_quantity = _quantity(residual, fill.quantity.precision)
     next_mark, next_unrealized = _mark_and_unrealized(
@@ -502,7 +577,11 @@ def _fill_effect(
     return effect, next_position
 
 
-def validate_execution_effect(effect: PortfolioExecutionEffect) -> None:
+def validate_execution_effect(
+    effect: PortfolioExecutionEffect,
+    *,
+    prior_effects: tuple[PortfolioExecutionEffect, ...] = (),
+) -> None:
     """Reject any retained effect that is not the exact result of its source fill."""
 
     fill = effect.fill
@@ -512,10 +591,17 @@ def validate_execution_effect(effect: PortfolioExecutionEffect) -> None:
         FillReportStatus.CORRECTION,
     ):
         raise PortfolioReplayError("snapshot effect source is not an active execution")
+    basis_before = _cost_basis_before(
+        prior_effects,
+        effect.position_key,
+        current=effect.quantity_before.value,
+        average_before=effect.average_before,
+    )
     signed_fill, _residual, average_after, realized_delta, fee_delta = _fill_accounting(
         fill,
         current=effect.quantity_before.value,
         average_before=effect.average_before,
+        basis_before=basis_before,
     )
     settlement = fill.instrument_definition.settlement_currency
     expected_realized = (

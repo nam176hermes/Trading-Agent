@@ -297,7 +297,6 @@ def _validated_state(state: object) -> PortfolioReplayState:
             and effect.logical_sequence >= source.sequence
         ):
             raise PortfolioReplayError("snapshot correction effect lineage is invalid")
-        validate_execution_effect(effect)
     effects_by_position: dict[tuple[str, str], list] = {}
     for effect in state.active_effects:
         effects_by_position.setdefault(effect.position_key, []).append(effect)
@@ -305,7 +304,9 @@ def _validated_state(state: object) -> PortfolioReplayState:
         ordered = sorted(effects, key=lambda item: item.logical_sequence)
         expected_quantity = ordered[0].quantity_before.value
         expected_average = ordered[0].average_before
+        prior_effects = []
         for effect in ordered:
+            validate_execution_effect(effect, prior_effects=tuple(prior_effects))
             if (
                 effect.quantity_before.value != expected_quantity
                 or effect.average_before != expected_average
@@ -317,6 +318,7 @@ def _validated_state(state: object) -> PortfolioReplayState:
                 field="snapshot effect lineage quantity",
             )
             expected_average = effect.average_after
+            prior_effects.append(effect)
         position = next(
             (
                 item
