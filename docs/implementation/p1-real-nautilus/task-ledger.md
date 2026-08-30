@@ -47,8 +47,8 @@ production, network-trading, or live authority.
 | P1-26 | P1-25 | AMENDED_BY_P1_27 | Engine-neutral v1 remains immutable at `12243c45…/55701417…`; P1-27 introduces `nautilus-paper-session-v2` for explicit exit-only Stop causality before integration. Network/live/production authority remains false. |
 | P1-27 | P1-26 | ACCEPTED | Exact isolated Nautilus 1.231 paper runtime, protocol-v2 exit-only Stop causality, checkpoint/reconciliation custody, reset/re-registration, deterministic prefix projection and independent spec/security review passed at `4042be62…/90629801…`; network/live/production authority remains false. |
 | P1-28 | P1-26, P1-27 | ACCEPTED | Exact `362e9275…/180a50f2…` controller/custodian integration, schema-8 closure `97185d4c…`, durable event/checkpoint custody and real `Start → ACK/EVENT/CHECKPOINT` public path passed independent spec/security review; disposable PostgreSQL migration runtime authority remains deferred and network/live/production authority remains false. |
-| P1-29 | P1-27, P1-28 | READY | Implement and qualify crash/restart, reconciliation and kill-switch recovery without duplicate exposure. |
-| P1-30 | P1-29 | BLOCKED | Wait for the complete local paper-parity evidence chain. |
+| P1-29 | P1-27, P1-28 | ACCEPTED | Exact `e7e125ba…/140fa5f2…` durable intent/outcome chain, no-clobber recovery receipt, exact-prefix resume, six-boundary crash campaign, exit-only kill switch and fail-closed child liveness passed independent spec/security review with zero Critical/Important findings; network/live/production authority remains false. |
+| P1-30 | P1-29 | READY | Certify backtest/local-paper semantic parity and the complete local P1 source evidence chain. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
