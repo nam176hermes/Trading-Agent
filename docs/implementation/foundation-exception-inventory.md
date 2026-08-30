@@ -10,23 +10,23 @@ parses each file with Python `ast`. A broad handler catches bare `except`,
 `builtins.BaseException`, including those names inside nested tuples. Tests and
 tooling are classified explicitly rather than excluded.
 
-Track B P9 current measurement, refreshed on 2026-08-02 after the bounded
-`execute_live.py` remediation:
+Track B P9 current measurement, refreshed on 2026-08-30 after the P1 source
+qualification inventory refresh:
 
 | Metric | Count |
 |---|---:|
-| Tracked Python files | 413 |
-| Broad handlers | 418 |
-| Files containing broad handlers | 117 |
+| Tracked Python files | 761 |
+| Broad handlers | 669 |
+| Files containing broad handlers | 148 |
 | Parse errors | 0 |
-| `Exception` handlers, including tuples | 346 |
-| `BaseException` handlers, including tuples | 72 |
+| `Exception` handlers, including tuples | 405 |
+| `BaseException` handlers, including tuples | 264 |
 | Bare handlers | 0 |
-| First control-flow marker: re-raise | 116 |
-| First control-flow marker: return | 114 |
-| First control-flow marker: pass | 36 |
+| First control-flow marker: re-raise | 236 |
+| First control-flow marker: return | 124 |
+| First control-flow marker: pass | 29 |
 | First control-flow marker: continue | 15 |
-| Other or log-only handler | 137 |
+| Other or log-only handler | 265 |
 
 The control-flow marker is an inventory aid, not a semantic verdict. Package 05 does not require zero broad handlers. It requires every safety or correctness handler to be remediated or assigned a boundary, owner, and closure condition.
 
@@ -176,23 +176,24 @@ apps/control_api/control_api/repositories/status.py|41|Exception|PRODUCTION_CRIT
 apps/control_api/trading_control/phase3b_writer.py|424|Exception|PRODUCTION_CRITICAL|RAISE
 apps/control_api/trading_control/real_import.py|938|Exception|PRODUCTION_CRITICAL|RAISE
 apps/control_api/trading_control/writer.py|425|Exception|PRODUCTION_CRITICAL|RAISE
-apps/job_api/app.py|173|Exception|PRODUCTION_CRITICAL|OTHER
-apps/job_api/app.py|267|Exception|PRODUCTION_CRITICAL|RETURN
-apps/job_api/app.py|274|Exception|PRODUCTION_CRITICAL|RETURN
-apps/job_api/app.py|405|Exception|PRODUCTION_CRITICAL|RAISE
-apps/job_api/app.py|418|Exception|PRODUCTION_CRITICAL|RAISE
-apps/job_api/app.py|439|Exception|PRODUCTION_CRITICAL|RETURN
-apps/job_api/app.py|452|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|174|Exception|PRODUCTION_CRITICAL|OTHER
+apps/job_api/app.py|268|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|275|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|406|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|419|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|440|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|455|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_backtest.py|513|BaseException|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_v1231_probe.py|226|Exception|PRODUCTION_CRITICAL|RAISE
-engines/nautilus/runtime_v1/backtest_runner.py|471|BaseException|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/runtime_v1/backtest_runner.py|490|BaseException|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/runtime_v1/errors.py|39|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/runtime_v1/main.py|49|Exception|PRODUCTION_CRITICAL|RETURN
-engines/nautilus/runtime_v1/main.py|54|Exception|PRODUCTION_CRITICAL|RETURN
+engines/nautilus/runtime_v1/main.py|57|Exception|PRODUCTION_CRITICAL|RETURN
+engines/nautilus/runtime_v1/main.py|92|Exception|PRODUCTION_CRITICAL|RETURN
 engines/nautilus/runtime_v1/session.py|105|BaseException|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/runtime_v1/session.py|236|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
@@ -459,11 +460,12 @@ packages/research_validation/producers.py|891|BaseException|PRODUCTION_CRITICAL|
 packages/research_validation/producers.py|970|Exception|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|1424|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
-packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/config.py|366|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/config.py|456|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/config.py|488|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|242|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|257|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|372|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|387|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|477|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|509|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/job_plane.py|31|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/job_plane.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/job_plane.py|54|Exception|PRODUCTION_CRITICAL|RAISE
@@ -486,10 +488,11 @@ packages/runtime_release/provisioning.py|87|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|128|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|141|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|207|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/staging_v2.py|837|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/staging_v2.py|868|Exception|PRODUCTION_CRITICAL|RETURN
-packages/runtime_release/staging_v2.py|947|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/staging_v2.py|1010|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|807|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|925|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|956|Exception|PRODUCTION_CRITICAL|RETURN
+packages/runtime_release/staging_v2.py|1035|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|1098|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|357|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|396|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|422|Exception|PRODUCTION_CRITICAL|RAISE
@@ -527,6 +530,8 @@ scripts/build_nautilus_engine.py|3649|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|3829|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|4712|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_nautilus_engine.py|4750|Exception|TOOLING_MIGRATION|RETURN
+scripts/build_p1_package6_host_authority.py|693|Exception|TOOLING_MIGRATION|RAISE
+scripts/build_p1_package6_host_authority.py|829|Exception|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
@@ -656,8 +661,11 @@ scripts/prepare_nautilus_input_cache.py|463|BaseException|TOOLING_MIGRATION|RAIS
 scripts/prepare_nautilus_llvm_toolchain.py|458|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_llvm_toolchain.py|642|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
+scripts/qualify_nautilus_sealed_imports.py|921|Exception|TOOLING_MIGRATION|RAISE
 scripts/qualify_nautilus_v1231_regressions.py|206|Exception|TOOLING_MIGRATION|RAISE
 scripts/qualify_nautilus_v1231_regressions.py|240|Exception|TOOLING_MIGRATION|RAISE
+scripts/run_p1_nautilus_vertical_slice.py|1071|Exception|TOOLING_MIGRATION|RAISE
+scripts/run_p1_nautilus_vertical_slice.py|1134|Exception|TOOLING_MIGRATION|RETURN
 scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1066|BaseException|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1091|BaseException|TOOLING_MIGRATION|RAISE
@@ -681,7 +689,7 @@ scripts/t_g03_capability_topology.py|7182|Exception|TOOLING_MIGRATION|RETURN
 scripts/t_g03_capability_topology.py|7206|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|7571|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|7640|Exception|TOOLING_MIGRATION|RAISE
-scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
+scripts/validate_package6_runtime_approval.py|1072|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
 scripts/verify_nautilus_release_provenance.py|687|BaseException|TOOLING_MIGRATION|RAISE
@@ -698,27 +706,28 @@ scripts/verify_nautilus_v12_r3_parity.py|1841|BaseException|TOOLING_MIGRATION|OT
 scripts/verify_nautilus_v12_r3_parity.py|2126|BaseException|TOOLING_MIGRATION|OTHER
 services/job_scheduler/main.py|48|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_scheduler/scheduler.py|92|Exception|PRODUCTION_CRITICAL|RETURN
-services/job_store/config.py|55|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_store/config.py|113|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_store/config.py|199|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_store/worker_repository.py|139|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/config.py|56|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/config.py|114|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/config.py|200|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/worker_repository.py|155|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|66|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|87|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|118|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|143|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|238|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|253|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|271|Exception|PRODUCTION_CRITICAL|OTHER
-services/job_worker/command_registry.py|284|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
-services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|304|BaseException|PRODUCTION_CRITICAL|PASS
-services/job_worker/engine_spawn.py|1039|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1059|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1149|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1258|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|240|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|255|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|273|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/command_registry.py|286|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|310|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|363|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|376|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/command_registry.py|409|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|533|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|294|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/engine_spawn.py|953|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|972|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1062|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -735,15 +744,18 @@ services/job_worker/process_runner.py|870|BaseException|PRODUCTION_CRITICAL|OTHE
 services/job_worker/process_runner.py|911|BaseException|PRODUCTION_CRITICAL|OTHER
 services/job_worker/process_runner.py|929|BaseException|PRODUCTION_CRITICAL|RETURN
 services/job_worker/process_runner.py|943|BaseException|PRODUCTION_CRITICAL|OTHER
-services/job_worker/results.py|113|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/results.py|122|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/results.py|423|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|123|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|132|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|433|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/safety_state.py|151|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/safety_state.py|351|Exception|PRODUCTION_CRITICAL|OTHER
-services/job_worker/worker.py|267|Exception|PRODUCTION_CRITICAL|OTHER
-services/job_worker/worker.py|447|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|457|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|488|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|301|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/worker.py|486|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|496|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|538|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|735|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|758|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|783|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE
@@ -826,8 +838,8 @@ tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
-tests/nautilus_upgrade/test_v1231_candidate_closure.py|5194|BaseException|TESTS|OTHER
-tests/nautilus_upgrade/test_v1231_candidate_closure.py|5624|BaseException|TESTS|OTHER
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|5251|BaseException|TESTS|OTHER
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|5681|BaseException|TESTS|OTHER
 tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->
