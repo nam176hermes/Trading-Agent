@@ -43,7 +43,12 @@ production, network-trading, or live authority.
 | P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | ACCEPTED | Exact request lineage, rational aggregate accounting, migrations through 0017, one-worker durable success/parity, complete captured PASS receipt and unchanged schema-8 closure passed fresh native qualification plus independent spec/security review at `021ea4b6…/375cfc0a…`. |
 | P1-23 | P1-22 | ACCEPTED | Exact schema-8/G1 adversarial campaign passed 8 scenarios and 205 tests with zero skip; three durable jobs preserved semantic/accounting parity under distinct custody, and independent spec/security reviews passed at `b6563814…/efab9bc5…`. |
 | P1-24 | P1-22 | ACCEPTED | Portable CI isolation, recursive growth budgets, pin inventory, clean candidate lineage, runbook and public-primitive provenance passed independent spec/security review at `b6563814…/efab9bc5…`. |
-| P1-25 | P1-23, P1-24 | READY | Perform fresh whole-slice P1-A review and certification without changing runtime authority. |
+| P1-25 | P1-23, P1-24 | ACCEPTED_LOCAL | Exact `080a0786…/81ebb5c1…` schema-8 E2E, adversarial and portable gates plus independent spec/security reviews passed; remote `P1_A_COMPLETE` still requires an authorized PR, merge and protected-main proof. |
+| P1-26 | P1-25 | READY | Define the finite engine-neutral local paper-session protocol from the accepted local P1-A source. |
+| P1-27 | P1-26 | BLOCKED | Wait for the accepted paper-session contract. |
+| P1-28 | P1-26, P1-27 | BLOCKED | Wait for protocol and runtime-loop acceptance. |
+| P1-29 | P1-27, P1-28 | BLOCKED | Wait for durability and restart/reconciliation acceptance. |
+| P1-30 | P1-29 | BLOCKED | Wait for the complete local paper-parity evidence chain. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work

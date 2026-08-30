@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 P1_23 = ROOT / "docs/implementation/p1-real-nautilus/p1-23-adversarial-qualification-receipt.json"
 P1_24 = ROOT / "docs/implementation/p1-real-nautilus/p1-24-release-readiness-receipt.json"
 LEDGER = ROOT / "docs/implementation/p1-real-nautilus/task-ledger.md"
+P1_A_REVIEW = ROOT / "docs/implementation/p1-real-nautilus/P1-A-FINAL-REVIEW.md"
 _SAFE = {
     "live_authorized": False,
     "network_trading_authorized": False,
@@ -31,7 +32,7 @@ def _load(path: Path) -> dict[str, object]:
     return value
 
 
-def test_p1_23_and_p1_24_are_accepted_on_one_exact_source() -> None:
+def test_p1_23_and_p1_24_acceptance_advances_local_p1_a_source() -> None:
     adversarial = _load(P1_23)
     release = _load(P1_24)
 
@@ -63,4 +64,11 @@ def test_p1_23_and_p1_24_are_accepted_on_one_exact_source() -> None:
     ledger = LEDGER.read_text(encoding="utf-8")
     assert "| P1-23 | P1-22 | ACCEPTED |" in ledger
     assert "| P1-24 | P1-22 | ACCEPTED |" in ledger
-    assert "| P1-25 | P1-23, P1-24 | READY |" in ledger
+    assert "| P1-25 | P1-23, P1-24 | ACCEPTED_LOCAL |" in ledger
+    assert "| P1-26 | P1-25 | READY |" in ledger
+
+    review = P1_A_REVIEW.read_text(encoding="utf-8")
+    assert "Status: `P1_A_LOCAL_SOURCE_ACCEPTED`" in review
+    assert "080a0786c4e661bd23c48bbbaa5ec3758c23940c" in review
+    assert "81ebb5c1551b5a1f2d2bcc5a4b5f33baa9849bdf" in review
+    assert "`P1_A_COMPLETE` remains pending" in review
