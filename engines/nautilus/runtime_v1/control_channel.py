@@ -12,6 +12,15 @@ from .generated_protocol import canonical_json_bytes, validate_document
 
 
 PAPER_PROTOCOL_SCHEMA = "nautilus-paper-session-v2"
+PAPER_SOURCE_NAMES = (
+    "__init__.py", "backtest_runner.py", "bootstrap.py", "control_channel.py",
+    "currency_metadata.py", "dependency_scope.py", "diagnostics.py", "errors.py",
+    "event_collector.py", "event_projector.py", "final_state.py",
+    "generated_protocol.py", "input_loader.py", "instrument_factory.py",
+    "jsonl_writer.py", "main.py", "market_data_loader.py", "paper_main.py",
+    "paper_prefix.py", "paper_runner.py", "paper_session.py", "profile.py",
+    "session.py", "target_planner.py", "target_strategy.py",
+)
 MAX_FRAME_BYTES = 65_536
 MAX_FRAMES = 4_096
 _HEADER_BYTES = 4
@@ -74,6 +83,46 @@ def _uuid(value: object, label: str) -> str:
 
 def request_id(session_id: str, sequence: int) -> str:
     return str(uuid5(UUID(session_id), f"{PAPER_PROTOCOL_SCHEMA}:command:{sequence}"))
+
+
+def paper_child_identity(
+    *,
+    closure_digest: str,
+    owner_id: str,
+    paper_source_sha256: str,
+    process_id: int,
+    process_start_ticks: int,
+    session_id: str,
+) -> str:
+    """Bind one paper child to its PID-namespace process generation."""
+
+    if (
+        type(closure_digest) is not str
+        or len(closure_digest) != 64
+        or any(character not in "0123456789abcdef" for character in closure_digest)
+        or type(process_id) is not int
+        or process_id < 1
+        or type(process_start_ticks) is not int
+        or process_start_ticks < 1
+        or type(paper_source_sha256) is not str
+        or len(paper_source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in paper_source_sha256)
+    ):
+        raise ValueError("paper child process authority is invalid")
+    _uuid(owner_id, "owner ID")
+    _uuid(session_id, "session ID")
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "closure_digest": closure_digest,
+                "owner_id": owner_id,
+                "paper_source_sha256": paper_source_sha256,
+                "process_id": process_id,
+                "process_start_ticks": process_start_ticks,
+                "session_id": session_id,
+            }
+        )
+    ).hexdigest()
 
 
 def _reference(value: object) -> None:

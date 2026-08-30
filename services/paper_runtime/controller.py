@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 import os
@@ -14,11 +14,20 @@ from urllib.error import HTTPError
 from urllib.request import urlopen
 import weakref
 
+from packages.engine_contracts import (
+    EngineCommandEnvelope,
+    RunBacktest,
+    canonical_json_bytes,
+)
 from scripts.validate_package6_runtime_approval import (
     PACKAGE6_JOB_API_ENVIRONMENT_KEYS,
     PACKAGE6_WORKER_ENVIRONMENT_KEYS,
     ValidatedPackage6Capability,
     is_issued_capability,
+)
+from services.job_worker.p1_engine_spawn import (
+    P1EngineClosureAttestation,
+    validate_p1_engine_closure_attestation,
 )
 
 from .custodian_client import (
@@ -29,6 +38,16 @@ from .custodian_client import (
     NativeOperationStatus,
     OperationState,
     TranscriptStream,
+)
+from .nautilus_session import (
+    NautilusPaperChild,
+    NautilusPaperSession,
+    NautilusSessionResult,
+    _issue_nautilus_paper_child,
+)
+from .nautilus_process import (
+    NautilusPaperProcess,
+    is_attested_nautilus_paper_process,
 )
 
 
@@ -43,6 +62,53 @@ _NATIVE_OPERATION_AUTHORITY = (
     "ACK",
 )
 _UNKNOWN_EXIT_STATUS = -(2**31)
+
+
+def _custodian_authority_sha256(attestation: CustodianAttestation) -> str:
+    return hashlib.sha256(canonical_json_bytes(asdict(attestation))).hexdigest()
+
+
+def issue_nautilus_paper_child(
+    capability: ValidatedPackage6Capability,
+    *,
+    custodian_client: CustodianClient,
+    closure_attestation: P1EngineClosureAttestation,
+    request: EngineCommandEnvelope,
+    process: NautilusPaperProcess,
+) -> NautilusPaperChild:
+    """Issue one closure- and custody-bound interactive P1 child handle."""
+
+    if (
+        not is_issued_capability(capability)
+        or type(custodian_client) is not CustodianClient
+        or not Package6Controller._attestation_matches(
+            capability, custodian_client.attestation
+        )
+        or type(request) is not EngineCommandEnvelope
+        or type(request.payload) is not RunBacktest
+        or not is_attested_nautilus_paper_process(process)
+    ):
+        raise TypeError("attested paper custody authority is required")
+    closure = validate_p1_engine_closure_attestation(closure_attestation)
+    if not process.matches_authority(closure, request):
+        raise TypeError("exact P1 paper process authority is required")
+    return _issue_nautilus_paper_child(
+        closure_digest=closure.closure_sha256,
+        capability_sha256=capability.approval_sha256,
+        custodian_authority_sha256=_custodian_authority_sha256(
+            custodian_client.attestation
+        ),
+        process_authority_sha256=process.child_identity_sha256,
+        paper_source_sha256=process.paper_source_sha256,
+        session_id=request.engine_run_id,
+        owner_id=request.causation_id,
+        runtime_family=closure.runtime_family,
+        engine_version=closure.engine_version,
+        engine_upstream_commit=closure.engine_upstream_commit,
+        exchange=process.exchange,
+        close_input=process.close_input,
+        abort=process.abort,
+    )
 
 
 class SourceDrift(RuntimeError):
@@ -535,6 +601,7 @@ class Package6Controller:
         *,
         custodian_client: CustodianClient | None = None,
         child_authorities: RuntimeChildAuthorities | None = None,
+        nautilus_session: NautilusPaperSession | None = None,
         monotonic=time.monotonic,
     ) -> None:
         if not is_issued_capability(capability):
@@ -552,6 +619,14 @@ class Package6Controller:
             != capability.approval_sha256
         ):
             raise TypeError("issued runtime child authorities are required")
+        if nautilus_session is not None and (
+            type(nautilus_session) is not NautilusPaperSession
+            or not nautilus_session.matches_controller(
+                capability.approval_sha256,
+                _custodian_authority_sha256(custodian_client.attestation),
+            )
+        ):
+            raise TypeError("custody-bound Nautilus paper session is required")
         self._capability = capability
         self._client = custodian_client
         self._child_authorities = child_authorities
@@ -561,6 +636,21 @@ class Package6Controller:
         self._completed: dict[str, StopEvidence] = {}
         self._receipts: dict[str, NativeBundleReceipt] = {}
         self._acknowledged: set[str] = set()
+        self._nautilus_session = nautilus_session
+
+    def execute_nautilus(
+        self,
+        raw: bytes,
+        *,
+        expected_checkpoint_sha256: str,
+    ) -> NautilusSessionResult:
+        """Dispatch one P1 command through the controller's sole paper session."""
+
+        if self._nautilus_session is None:
+            raise RuntimeError("Nautilus paper session authority is unavailable")
+        return self._nautilus_session.execute(
+            raw, expected_checkpoint_sha256=expected_checkpoint_sha256
+        )
 
     @staticmethod
     def _attestation_matches(
@@ -1445,5 +1535,6 @@ __all__ = [
     "StopEvidence",
     "TrackedProcessIdentity",
     "TranscriptMetadata",
+    "issue_nautilus_paper_child",
     "issue_runtime_child_authorities",
 ]

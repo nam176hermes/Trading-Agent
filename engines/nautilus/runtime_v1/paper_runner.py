@@ -5,15 +5,17 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import os
-import time
+from pathlib import Path
 
 from .backtest_runner import BacktestRun
 from .bootstrap import require_product_lineage
 from .control_channel import (
     PAPER_PROTOCOL_SCHEMA,
+    PAPER_SOURCE_NAMES,
     PaperCommand,
     framed_document,
     iter_payloads,
+    paper_child_identity,
     parse_command,
 )
 from .event_collector import CollectedExecution
@@ -229,6 +231,14 @@ class PaperCommandLoop:
         self._event_prefix_sha256 = _ZERO_DIGEST
         self._child_identity = _ZERO_DIGEST
         self._events: tuple[dict[str, object], ...] = ()
+        root = Path(__file__).parent
+        records = tuple(
+            (name, hashlib.sha256((root / name).read_bytes()).hexdigest())
+            for name in PAPER_SOURCE_NAMES
+        )
+        self._paper_source_sha256 = hashlib.sha256(
+            canonical_json_bytes(records)
+        ).hexdigest()
 
     def _identity(self, command: PaperCommand) -> None:
         if (
@@ -236,6 +246,16 @@ class PaperCommandLoop:
             or command.owner_id != self._inputs.request.causation_id
         ):
             raise ValueError("paper command identity is not input-bound")
+
+    @staticmethod
+    def _process_start_ticks() -> int:
+        with open("/proc/self/stat", "rb", buffering=0) as stream:
+            raw = stream.read(4096)
+        end = raw.rfind(b")")
+        fields = raw[end + 2 :].split() if end > 0 else []
+        if len(fields) < 20:
+            raise ValueError("paper child process authority is unavailable")
+        return int(fields[19])
 
     def _active_session(self) -> PaperEngineSession:
         if self._session is None:
@@ -336,17 +356,14 @@ class PaperCommandLoop:
                     raise AssertionError("unreachable")
                 self._session = session
                 self._start = command
-                self._child_identity = hashlib.sha256(
-                    canonical_json_bytes(
-                        {
-                            "closure_digest": self._closure,
-                            "monotonic_generation": time.monotonic_ns(),
-                            "owner_id": command.owner_id,
-                            "process_id": os.getpid(),
-                            "session_id": command.session_id,
-                        }
-                    )
-                ).hexdigest()
+                self._child_identity = paper_child_identity(
+                    closure_digest=self._closure,
+                    owner_id=command.owner_id,
+                    paper_source_sha256=self._paper_source_sha256,
+                    process_id=os.getpid(),
+                    process_start_ticks=self._process_start_ticks(),
+                    session_id=command.session_id,
+                )
                 state, acknowledgement, run, projected = (
                     "RUNNING",
                     _ack(command, "RUNNING"),

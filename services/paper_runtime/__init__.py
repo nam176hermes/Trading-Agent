@@ -10,6 +10,7 @@ from .controller import (
     SourceDrift,
     StopEvidence,
     TrackedProcessIdentity,
+    issue_nautilus_paper_child,
     issue_runtime_child_authorities,
 )
 from .custodian_client import (
@@ -38,6 +39,21 @@ from .evidence import (
     write_runtime_evidence_bundle,
 )
 from .integration import RuntimeChainEvidence, run_approved_runtime_chain
+from .nautilus_checkpoint import (
+    NautilusCheckpointRecord,
+    NautilusCheckpointStore,
+    ZERO_CHECKPOINT_SHA256,
+)
+from .nautilus_session import (
+    NautilusPaperChild,
+    NautilusPaperSession,
+    NautilusSessionRejected,
+    NautilusSessionResult,
+)
+from .nautilus_process import (
+    NautilusPaperProcess,
+    launch_nautilus_paper_process,
+)
 
 __all__ = [
     "EvidenceBundle",
@@ -54,6 +70,13 @@ __all__ = [
     "NativeOperationRequest",
     "NativeOperationStatus",
     "NativeTranscriptChunk",
+    "NautilusCheckpointRecord",
+    "NautilusCheckpointStore",
+    "NautilusPaperChild",
+    "NautilusPaperProcess",
+    "NautilusPaperSession",
+    "NautilusSessionRejected",
+    "NautilusSessionResult",
     "OperationState",
     "Package6Controller",
     "ProcessEvidence",
@@ -68,9 +91,12 @@ __all__ = [
     "TranscriptStream",
     "PostgresCleanupEvidence",
     "issue_postgres_cleanup_evidence",
+    "launch_nautilus_paper_process",
+    "issue_nautilus_paper_child",
     "request_and_wait_for_postgres_cleanup",
     "issue_runtime_child_authorities",
     "run_approved_runtime_chain",
     "verify_runtime_evidence_bundle",
     "write_runtime_evidence_bundle",
+    "ZERO_CHECKPOINT_SHA256",
 ]

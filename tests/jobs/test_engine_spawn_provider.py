@@ -21,6 +21,7 @@ from uuid import UUID
 import pytest
 
 import services.job_worker.engine_spawn as engine_spawn_module
+import services.job_worker.p1_engine_spawn as p1_engine_spawn_module
 from packages.engine_contracts import (
     ArtifactReference,
     CURRENT_SCHEMA_VERSION,
@@ -45,6 +46,7 @@ from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 from services.job_worker.p1_engine_spawn import (
     P1EngineClosureAttestation,
     P1EngineSpawnProvider,
+    consume_prepared_p1_paper_launch,
 )
 
 
@@ -526,6 +528,58 @@ def test_p1_provider_uses_only_the_code_owned_schema8_profile(
         )
     finally:
         _close_spawn_fds(spawn)
+
+
+def test_p1_paper_launch_is_derived_only_from_the_exact_prepared_spawn(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _p1_closure(secure_tmp_path)
+    request = _envelope()
+    provider = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        expected_manifest_schema_version=8,
+        profile_policy=P1_REAL_BACKTEST_POLICY,
+    )
+    authority = consume_prepared_p1_paper_launch(
+        provider.prepare(request), closure, request
+    )
+    try:
+        argv = authority.built.argv
+        assert "--bind" not in argv
+        assert "--setenv" not in argv
+        assert "--share-net" not in argv
+        assert argv.count("--ro-bind-data") == len(authority.built.pass_fds) - 1
+        assert argv[-6:] == (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/runtime_v1/paper_main.py",
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        )
+        assert len(authority.argv_sha256) == 64
+        assert len(authority.paper_source_sha256) == 64
+    finally:
+        _close_spawn_fds(authority.built)
+
+
+def test_p1_paper_launch_rejects_one_byte_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "runtime_v1"
+    shutil.copytree(
+        Path(__file__).parents[2] / "engines/nautilus/runtime_v1",
+        source,
+    )
+    changed = source / "errors.py"
+    changed.write_bytes(changed.read_bytes() + b"\n")
+    changed.chmod(0o644)
+    monkeypatch.setattr(p1_engine_spawn_module, "_PAPER_SOURCE_ROOT", source)
+
+    with pytest.raises(EngineSpawnError, match="paper source authority changed"):
+        p1_engine_spawn_module._paper_source_snapshots()
 
 
 @pytest.mark.parametrize(

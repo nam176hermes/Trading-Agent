@@ -18,7 +18,10 @@
       "services/job_worker/engine_profiles.py",
       "services/job_worker/engine_results.py",
       "services/job_worker/p1_engine_spawn.py",
-      "services/job_worker/p1_nautilus_closure.py"
+      "services/job_worker/p1_nautilus_closure.py",
+      "services/paper_runtime/nautilus_checkpoint.py",
+      "services/paper_runtime/nautilus_process.py",
+      "services/paper_runtime/nautilus_session.py"
     ],
     "overrides": {
       "engines/nautilus/runtime_v1/event_projector.py": 917,
