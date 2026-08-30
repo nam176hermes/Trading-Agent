@@ -33,7 +33,7 @@ from tests.nautilus_runtime_contracts.test_result import CODE_COMMIT, _p1_claim
 
 OPERATION_ID = "engine-event-ingestion-concurrency-runtime-green-v1"
 P1_PRODUCT_CLOSURE_SHA256 = (
-    "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
+    "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
 )
 RECEIPT_FIELDS = (
     "batch_sha256",

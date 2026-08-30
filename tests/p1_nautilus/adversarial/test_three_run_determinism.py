@@ -164,7 +164,7 @@ for record in records:
             realized_pnl=run.position_realized_pnl,
             unrealized_pnl=run.position_unrealized_pnl,
         ),
-        closure_digest="b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b",
+        closure_digest="97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80",
         upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
     )
     streams.append(stream.jsonl.decode("ascii"))
@@ -308,7 +308,7 @@ def test_three_distinct_jobs_preserve_native_semantics_and_durable_portfolio(
     assert len({result["request_sha256"] for result in results}) == 3
     assert len({result["batch_sha256"] for result in results}) == 3
     assert {result["semantic_sha256"] for result in results} == {
-        "bc4fdbfc9fbc5de0455a37158d243ae7026fc6cc5ff3e37a74686eee152a0f66"
+            "728d439596c540683afa524fc8090cb8de4878878e96e1d21283f222318681b9"
     }
     assert len({result["portfolio_state_sha256"] for result in results}) == 1
     evidence_path = os.environ.get("P1_QUALIFICATION_METRICS_PATH")

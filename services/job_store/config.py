@@ -9,7 +9,7 @@ from psycopg.conninfo import make_conninfo
 
 
 CANONICAL_DATABASE_REVISION = "0011_engine_backtest_worker_authority"
-P1_DISPOSABLE_DATABASE_REVISION = "0017_p1_request_digest_authority"
+P1_DISPOSABLE_DATABASE_REVISION = "0018_p1_paper_closure_rotation"
 JOB_PLANE_DATABASE_USERS = frozenset(
     {
         "trading_job_api",

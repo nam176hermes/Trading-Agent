@@ -61,13 +61,13 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0017_p1_request_digest_authority"
+EXACT_HEAD = "0018_p1_paper_closure_rotation"
 P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
 P1_OLD_CLOSURE_SHA256 = (
     "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
 )
 P1_NEW_CLOSURE_SHA256 = (
-    "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
+    "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
 )
 P1_INGEST_REGPROCEDURE = (
     "job_plane.ingest_p1_engine_event_batch_v2("

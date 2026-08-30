@@ -79,9 +79,15 @@
     },
     {
       "mode": "0400",
-      "sha256": "5416bf27624a39e4283b5a296054b0901cc58c2fb075b0bb3dd31486cd818899",
+      "sha256": "584d2192a66ac8f77c533a93e42ff4cac9f577afa1c05cb02804bd32228b8817",
       "source": "engines/nautilus/runtime_v1/backtest_runner.py",
       "target": "/engine/runtime_v1/backtest_runner.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "2df4a676e6a24c81aa622af1542bbf01a32894b07679bc33a4aa761fd8d9b26b",
+      "source": "engines/nautilus/runtime_v1/control_channel.py",
+      "target": "/engine/runtime_v1/control_channel.py"
     },
     {
       "mode": "0400",
@@ -115,21 +121,45 @@
     },
     {
       "mode": "0400",
-      "sha256": "607545a2b6983131ab2526c4f2b450365dc6fe11ac2a051eb61074619aff505e",
+      "sha256": "d8edfbcc69550a3af598bd2e60e36a6bf4624d733a7df9e340ebc2a6467d25b0",
       "source": "engines/nautilus/runtime_v1/event_collector.py",
       "target": "/engine/runtime_v1/event_collector.py"
     },
     {
       "mode": "0400",
-      "sha256": "9075b2f2c67a8455f74ac6712e5277f5c48898c4383f521305d822d396828313",
+      "sha256": "1f4b2065ff6e9a438de60dac2216b1205a38fe82c26e73e7da0129bef7bf54aa",
       "source": "engines/nautilus/runtime_v1/event_projector.py",
       "target": "/engine/runtime_v1/event_projector.py"
     },
     {
       "mode": "0400",
-      "sha256": "316d417c81a96e96a19159b7384101f76822cde8503f8b19294281c131b0fb85",
+      "sha256": "022e716c3e2b2fa5bdbace08772c8e2db24b943035aac6b873f943ab09a1aa82",
       "source": "engines/nautilus/runtime_v1/final_state.py",
       "target": "/engine/runtime_v1/final_state.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "28c7e7c960584fa285393ef45301e52f7f73dc378cb305db9f36de244baf2c8c",
+      "source": "engines/nautilus/runtime_v1/paper_main.py",
+      "target": "/engine/runtime_v1/paper_main.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "cb4e3eaec8915bea5041505e685883daaed71b7226841c4d0d7339a355ad81fb",
+      "source": "engines/nautilus/runtime_v1/paper_prefix.py",
+      "target": "/engine/runtime_v1/paper_prefix.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "53f0354e999ea49b12b5c994e2013c240bbc4bdc92bc73b920042698bf77910e",
+      "source": "engines/nautilus/runtime_v1/paper_runner.py",
+      "target": "/engine/runtime_v1/paper_runner.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "72e016587b19a5942671ddbac4d4ecdbc67d4e5433797a29bf500da857403195",
+      "source": "engines/nautilus/runtime_v1/paper_session.py",
+      "target": "/engine/runtime_v1/paper_session.py"
     },
     {
       "mode": "0400",
@@ -187,12 +217,12 @@
     },
     {
       "mode": "0400",
-      "sha256": "cd4d6224486452a79ef2ea818e245fcf7ad7431f009a91dde4d5238b60eea9f8",
+      "sha256": "57eccf4a1f9e496f900865aa09f72dc0230aba0cb9fb21792c8069b0963b8942",
       "source": "engines/nautilus/runtime_v1/target_strategy.py",
       "target": "/engine/runtime_v1/target_strategy.py"
     }
   ],
-  "runtime_inventory_sha256": "566afd91823fc9c00d0c384115076b3e95a8b940fc27a8e19c1ed38682612edc",
+  "runtime_inventory_sha256": "1078d6bc593ef4b2037985bd458aa51c04ce9a315977098e9ce1270c0e350e62",
   "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
   "schema": "trading-agent-p1-runtime-closure-policy/v1",
   "semantic_profile": "nautilus-p1-real-backtest-v1",

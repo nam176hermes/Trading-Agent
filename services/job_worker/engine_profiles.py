@@ -38,7 +38,7 @@ class EngineProfilePolicy:
 P1_REAL_BACKTEST_POLICY = EngineProfilePolicy(
     profile=P1_REAL_BACKTEST_PROFILE,
     closure_sha256=(
-        "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
+        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
     ),
     semantic_profile=P1_REAL_BACKTEST_SEMANTIC_PROFILE,
     command_type="RunBacktest",
@@ -67,7 +67,7 @@ P1_REAL_BACKTEST_POLICY = EngineProfilePolicy(
     event_schema="nautilus-p1-event-stream-v1",
     dependency_import_policy="native-guarded-stdlib-first-sealed-wheel-path-v1",
     runtime_inventory_sha256=(
-        "566afd91823fc9c00d0c384115076b3e95a8b940fc27a8e19c1ed38682612edc"
+        "1078d6bc593ef4b2037985bd458aa51c04ce9a315977098e9ce1270c0e350e62"
     ),
     sandbox_profile_sha256=(
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"

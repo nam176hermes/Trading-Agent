@@ -108,19 +108,21 @@ class P1PaperLaunchAuthority:
     request_sha256: str
     paper_source_sha256: str
     argv_sha256: str
+    python_executable_identity: tuple[int, int]
+    python_executable_sha256: str
 
 
 _ISSUED_PAPER_LAUNCHES: weakref.WeakSet[P1PaperLaunchAuthority] = weakref.WeakSet()
 
 
-def _paper_source_snapshots() -> tuple[tuple[str, str, int], ...]:
+def _paper_source_inventory() -> tuple[tuple[str, str], ...]:
     names = tuple(sorted(PAPER_SOURCE_NAMES))
     if tuple(sorted(_PAPER_SOURCE_SHA256S)) != names:
         _blocked("P1 paper source policy is invalid")
     observed = tuple(sorted(path.name for path in _PAPER_SOURCE_ROOT.glob("*.py")))
     if observed != names:
         _blocked("P1 paper source inventory is invalid")
-    snapshots: list[tuple[str, str, int]] = []
+    inventory: list[tuple[str, str]] = []
     try:
         for name in names:
             path = _PAPER_SOURCE_ROOT / name
@@ -139,18 +141,12 @@ def _paper_source_snapshots() -> tuple[tuple[str, str, int], ...]:
             digest = hashlib.sha256(raw).hexdigest()
             if digest != _PAPER_SOURCE_SHA256S[name]:
                 raise ValueError
-            descriptor = _legacy._sealed_memfd(f"p1-paper-{name}", raw, mode=0o400)
-            snapshots.append((name, digest, descriptor))
+            inventory.append((name, digest))
     except (OSError, ValueError) as exc:
-        for _name, _digest, descriptor in snapshots:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
         raise EngineSpawnError(
             "ENGINE_INPUT_STALE", "P1 paper source authority changed"
         ) from exc
-    return tuple(snapshots)
+    return tuple(inventory)
 
 
 def _validate_native_entry_guard(
@@ -209,6 +205,24 @@ def _validate_native_entry_guard(
         or guard.guarded_executable == guard.target
     ):
         _blocked("P1 native entry guard executable binding is invalid")
+
+
+def _sealed_mount_identity(
+    built: _legacy.EngineBuiltSpawn, target: PurePosixPath
+) -> tuple[int, int]:
+    descriptors = [
+        int(built.argv[index - 1])
+        for index, argument in enumerate(built.argv)
+        if argument == str(target)
+        and index >= 2
+        and built.argv[index - 2] == "--ro-bind-data"
+    ]
+    if len(descriptors) != 1 or descriptors[0] not in built.pass_fds:
+        _blocked("P1 sealed executable mount is invalid")
+    observed = os.fstat(descriptors[0])
+    if not stat.S_ISREG(observed.st_mode) or not observed.st_mode & stat.S_IXUSR:
+        _blocked("P1 sealed executable identity is invalid")
+    return observed.st_dev, observed.st_ino
 
 
 def _adapt_p1_closure(value: object) -> _legacy.CompleteEngineClosureAttestation:
@@ -357,7 +371,6 @@ def consume_prepared_p1_paper_launch(
             "ENGINE_REQUEST_INVALID", "exact P1 paper request is required"
         )
     built = _legacy.consume_prepared_engine_spawn(prepared)
-    snapshots: tuple[tuple[str, str, int], ...] = ()
     try:
         request_sha256 = hashlib.sha256(canonical_json_bytes(request)).hexdigest()
         if (
@@ -369,25 +382,23 @@ def consume_prepared_p1_paper_launch(
             or built.argv.count("--chdir") != 1
         ):
             _blocked("P1 paper prepared spawn authority is invalid")
-        snapshots = _paper_source_snapshots()
+        inventory = _paper_source_inventory()
+        mounted_sources = tuple(
+            sorted(
+                (mount.target.name, mount.sha256)
+                for mount in exact.mounts
+                if mount.target.parent == PurePosixPath("/engine/runtime_v1")
+                and mount.mode == 0o400
+            )
+        )
+        if mounted_sources != inventory:
+            _blocked("P1 paper closure source inventory is invalid")
         proc_index = built.argv.index("--proc")
         chdir_index = built.argv.index("--chdir")
         if proc_index >= chdir_index or built.argv[chdir_index + 1] != "/":
             _blocked("P1 paper prepared spawn layout is invalid")
-        paper_mounts = tuple(
-            argument
-            for name, _digest, descriptor in snapshots
-            for argument in (
-                "--perms",
-                "0400",
-                "--ro-bind-data",
-                str(descriptor),
-                f"/engine/runtime_v1/{name}",
-            )
-        )
         argv = (
             *built.argv[:proc_index],
-            *paper_mounts,
             *built.argv[proc_index : chdir_index + 2],
             "/usr/bin/python3.12",
             "-I",
@@ -396,23 +407,25 @@ def consume_prepared_p1_paper_launch(
             "/inputs/request.json",
             "/inputs/request.sha256",
         )
-        paper_fds = tuple(item[2] for item in snapshots)
         source_sha256 = hashlib.sha256(
-            canonical_json_bytes(
-                tuple((name, digest) for name, digest, _descriptor in snapshots)
-            )
+            canonical_json_bytes(inventory)
         ).hexdigest()
         if source_sha256 != P1_PAPER_SOURCE_SHA256:
             _blocked("P1 paper source inventory digest is invalid")
         paper_built = replace(
             built,
             argv=argv,
-            pass_fds=(*built.pass_fds, *paper_fds),
-            close_after_spawn_fds=(
-                *built.close_after_spawn_fds,
-                *paper_fds,
-            ),
         )
+        python_executable_identity = _sealed_mount_identity(
+            built, PurePosixPath("/usr/bin/python3.12")
+        )
+        python_digests = [
+            mount.sha256
+            for mount in exact.mounts
+            if mount.target == PurePosixPath("/usr/bin/python3.12")
+        ]
+        if len(python_digests) != 1:
+            _blocked("P1 sealed Python digest is invalid")
         authority = object.__new__(P1PaperLaunchAuthority)
         for name, value in (
             ("built", paper_built),
@@ -420,15 +433,14 @@ def consume_prepared_p1_paper_launch(
             ("request_sha256", request_sha256),
             ("paper_source_sha256", source_sha256),
             ("argv_sha256", hashlib.sha256(canonical_json_bytes(argv)).hexdigest()),
+            ("python_executable_identity", python_executable_identity),
+            ("python_executable_sha256", python_digests[0]),
         ):
             object.__setattr__(authority, name, value)
         _ISSUED_PAPER_LAUNCHES.add(authority)
         return authority
     except BaseException:
-        for descriptor in (
-            *built.close_after_spawn_fds,
-            *(item[2] for item in snapshots),
-        ):
+        for descriptor in built.close_after_spawn_fds:
             try:
                 os.close(descriptor)
             except OSError:
@@ -446,6 +458,13 @@ def claim_p1_paper_launch(
     if not is_issued_p1_paper_launch(value):
         raise EngineSpawnError(
             "ENGINE_PREPARED_SPAWN_INVALID", "P1 paper launch is unavailable"
+        )
+    if value.python_executable_identity != _sealed_mount_identity(
+        value.built, PurePosixPath("/usr/bin/python3.12")
+    ):
+        raise EngineSpawnError(
+            "ENGINE_PREPARED_SPAWN_INVALID",
+            "P1 sealed executable identity changed",
         )
     _ISSUED_PAPER_LAUNCHES.discard(value)
     return value.built

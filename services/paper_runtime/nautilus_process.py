@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import subprocess
 import time
 import weakref
@@ -77,15 +77,18 @@ def _process_facts(pid: int) -> tuple[int, int, tuple[int, int]]:
     )
 
 
-def _python_identity(closure: P1EngineClosureAttestation) -> tuple[int, int]:
-    matches = [
-        mount.identity
-        for mount in closure.mounts
-        if mount.target == PurePosixPath("/usr/bin/python3.12")
-    ]
-    if len(matches) != 1:
-        raise ValueError("paper child Python authority is unavailable")
-    return matches[0]
+def _process_cmdline_sha256(pid: int) -> str:
+    raw = _read(Path(f"/proc/{pid}/cmdline"), 16 * 1024)
+    values = tuple(item.decode("utf-8") for item in raw.rstrip(b"\0").split(b"\0"))
+    return hashlib.sha256(canonical_json_bytes(values)).hexdigest()
+
+
+def _process_executable_sha256(pid: int) -> str:
+    digest = hashlib.sha256()
+    with Path(f"/proc/{pid}/exe").open("rb", buffering=0) as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(
@@ -107,6 +110,8 @@ class NautilusPaperProcess:
     namespace_pid: int
     process_start_ticks: int
     executable_identity: tuple[int, int]
+    executable_sha256: str
+    child_argv_sha256: str
     argv_sha256: str
     paper_source_sha256: str
     _process: subprocess.Popen[bytes]
@@ -120,7 +125,13 @@ class NautilusPaperProcess:
     ) -> bool:
         try:
             current = _process_facts(self.host_pid)
-        except (FileNotFoundError, ProcessLookupError, ValueError):
+            child_argv_sha256 = _process_cmdline_sha256(self.host_pid)
+        except (
+            FileNotFoundError,
+            ProcessLookupError,
+            UnicodeDecodeError,
+            ValueError,
+        ):
             return False
         return (
             self in _ISSUED
@@ -131,6 +142,7 @@ class NautilusPaperProcess:
             and current[0] == self.namespace_pid
             and current[1] == self.process_start_ticks
             and current[2] == self.executable_identity
+            and child_argv_sha256 == self.child_argv_sha256
             and type(self._process.args) is tuple
             and hashlib.sha256(canonical_json_bytes(self._process.args)).hexdigest()
             == self.argv_sha256
@@ -193,8 +205,9 @@ def _bind_process(
     request: EngineCommandEnvelope,
     argv_sha256: str,
     paper_source_sha256: str,
+    python_executable_sha256: str,
+    child_argv: tuple[str, ...],
 ) -> NautilusPaperProcess:
-    python_identity = _python_identity(closure)
     deadline = time.monotonic() + 5
     matches: list[tuple[int, tuple[int, int, tuple[int, int]]]] = []
     while not matches and process.poll() is None and time.monotonic() < deadline:
@@ -203,7 +216,16 @@ def _bind_process(
                 facts = _process_facts(pid)
             except (FileNotFoundError, ProcessLookupError, ValueError):
                 continue
-            if facts[2] == python_identity:
+            try:
+                executable_sha256 = _process_executable_sha256(pid)
+                cmdline_sha256 = _process_cmdline_sha256(pid)
+            except (FileNotFoundError, ProcessLookupError, UnicodeDecodeError, ValueError):
+                continue
+            if (
+                executable_sha256 == python_executable_sha256
+                and cmdline_sha256
+                == hashlib.sha256(canonical_json_bytes(child_argv)).hexdigest()
+            ):
                 matches.append((pid, facts))
         if not matches:
             time.sleep(0.005)
@@ -228,6 +250,11 @@ def _bind_process(
         ("namespace_pid", namespace_pid),
         ("process_start_ticks", start_ticks),
         ("executable_identity", executable),
+        ("executable_sha256", python_executable_sha256),
+        (
+            "child_argv_sha256",
+            hashlib.sha256(canonical_json_bytes(child_argv)).hexdigest(),
+        ),
         ("argv_sha256", argv_sha256),
         ("paper_source_sha256", paper_source_sha256),
         ("_process", process),
@@ -295,6 +322,8 @@ def launch_nautilus_paper_process(
             request,
             authority.argv_sha256,
             authority.paper_source_sha256,
+            authority.python_executable_sha256,
+            tuple(authority.built.argv[-6:]),
         )
     except BaseException:
         if process.poll() is None:

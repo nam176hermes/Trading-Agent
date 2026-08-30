@@ -6,7 +6,9 @@ from decimal import Decimal
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -62,7 +64,10 @@ from packages.safety_evidence import CanonicalKillSwitchState
 from services.job_store.engine_event_repository import InMemoryEngineEventLedger
 from services.job_worker.safety import SafetyMode
 from services.job_worker.safety_state import SafetyEvidence
-from services.job_worker.p1_engine_spawn import P1_PAPER_SOURCE_SHA256
+from services.job_worker.p1_engine_spawn import (
+    P1EngineClosureAttestation,
+    P1_PAPER_SOURCE_SHA256,
+)
 from services.paper_runtime import controller as controller_module
 from services.paper_runtime.controller import (
     Package6Controller,
@@ -77,6 +82,7 @@ from services.paper_runtime.nautilus_session import (
     NautilusSessionRejected,
     _issue_nautilus_paper_child,
 )
+from services.paper_runtime import nautilus_process as process_module
 
 
 NOW = datetime(2026, 8, 30, 12, tzinfo=UTC)
@@ -87,6 +93,52 @@ TARGET = UUID("40000000-0000-4000-8000-000000000001")
 SIGNAL = UUID("50000000-0000-4000-8000-000000000001")
 CLOSURE = "b" * 64
 CHILD = "c" * 64
+
+
+def test_process_binding_uses_the_executable_identity_observed_in_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child_argv = (
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "/engine/runtime_v1/paper_main.py",
+        "/inputs/request.json",
+        "/inputs/request.sha256",
+    )
+    executable_sha256 = "e" * 64
+    monkeypatch.setattr(process_module, "_descendants", lambda _pid: (101,))
+    monkeypatch.setattr(
+        process_module,
+        "_process_facts",
+        lambda _pid: (2, 1234, (83, 146)),
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_process_executable_sha256",
+        lambda _pid: executable_sha256,
+    )
+    monkeypatch.setattr(
+        process_module,
+        "_process_cmdline_sha256",
+        lambda _pid: hashlib.sha256(canonical_json_bytes(child_argv)).hexdigest(),
+    )
+    process = process_module._bind_process(
+        cast(
+            subprocess.Popen[bytes],
+            SimpleNamespace(pid=100, poll=lambda: None),
+        ),
+        cast(P1EngineClosureAttestation, SimpleNamespace(closure_sha256=CLOSURE)),
+        _request(),
+        "f" * 64,
+        P1_PAPER_SOURCE_SHA256,
+        executable_sha256,
+        child_argv,
+    )
+
+    assert process.host_pid == 101
+    assert process.executable_identity == (83, 146)
+    assert process.executable_sha256 == executable_sha256
 
 
 def _money(value: str) -> Money:

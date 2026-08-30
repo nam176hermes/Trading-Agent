@@ -97,10 +97,10 @@ def test_current_p1_lineage_is_p1_1231_with_unchanged_legacy_1227() -> None:
     assert report["verdict"] == "PASS"
     assert report["p1_engine_version"] == "1.231.0"
     assert report["p1_product_closure_sha256"] == (
-        "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
+        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
     )
     assert report["p1_product_policy_sha256"] == (
-        "03e45fbb03379da78eaae74a728c9d1d7e17d382cd76c981e6a881a3699bb15e"
+        "3a7c9d9d46b36eb50ec5db87eb13718ec7202957d4f2eadda2ef6aae8b61a1e8"
     )
     assert report["legacy_engine_version"] == "1.227.0"
     assert report["legacy_profiles_unchanged"] is True
