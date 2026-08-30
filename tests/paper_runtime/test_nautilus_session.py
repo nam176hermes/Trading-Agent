@@ -483,13 +483,17 @@ class _Child:
         self.aborted = True
 
 
-def _safety(now: datetime = NOW) -> SafetyEvidence:
+def _safety(
+    now: datetime = NOW,
+    *,
+    kill_switch: CanonicalKillSwitchState = CanonicalKillSwitchState.INACTIVE,
+) -> SafetyEvidence:
     return SafetyEvidence(
         requested_mode=SafetyMode.PAPER,
         effective_mode=SafetyMode.PAPER,
         live_execution_enabled=False,
         live_trading_approved=False,
-        kill_switch_state=CanonicalKillSwitchState.INACTIVE,
+        kill_switch_state=kill_switch,
         snapshot_sha256="a" * 64,
         generated_at=now,
         expires_at=now + timedelta(seconds=6),
@@ -679,6 +683,26 @@ def test_target_revalidates_safety_before_child_exchange(
     start, target, _stop = _commands(_request())
     first = session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
     evidence.append(_safety(NOW - timedelta(minutes=1)))
+
+    with pytest.raises(NautilusSessionRejected, match="safety"):
+        session.execute(
+            target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256
+        )
+
+    assert child.calls == 1
+    assert child.aborted is True
+    assert session.state == "RECONCILIATION_REQUIRED"
+
+
+def test_kill_switch_engagement_blocks_target_before_child_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = _Child()
+    evidence = [_safety()]
+    session, _capability, _client = _session(child, evidence, monkeypatch)
+    start, target, _stop = _commands(_request())
+    first = session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
+    evidence.append(_safety(kill_switch=CanonicalKillSwitchState.ACTIVE))
 
     with pytest.raises(NautilusSessionRejected, match="safety"):
         session.execute(
