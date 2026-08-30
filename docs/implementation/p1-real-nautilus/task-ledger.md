@@ -44,9 +44,9 @@ production, network-trading, or live authority.
 | P1-23 | P1-22 | ACCEPTED | Exact schema-8/G1 adversarial campaign passed 8 scenarios and 205 tests with zero skip; three durable jobs preserved semantic/accounting parity under distinct custody, and independent spec/security reviews passed at `b6563814…/efab9bc5…`. |
 | P1-24 | P1-22 | ACCEPTED | Portable CI isolation, recursive growth budgets, pin inventory, clean candidate lineage, runbook and public-primitive provenance passed independent spec/security review at `b6563814…/efab9bc5…`. |
 | P1-25 | P1-23, P1-24 | ACCEPTED_LOCAL | Exact `080a0786…/81ebb5c1…` schema-8 E2E, adversarial and portable gates plus independent spec/security reviews passed; remote `P1_A_COMPLETE` still requires an authorized PR, merge and protected-main proof. |
-| P1-26 | P1-25 | ACCEPTED | Engine-neutral `nautilus-paper-session-v1`, deterministic request/ACK/event prefixes, exact checkpoint recovery and fail-closed EOF passed independent spec/security review at `12243c45…/55701417…`; network/live/production authority remains false. |
-| P1-27 | P1-26 | READY | Implement and qualify the long-lived isolated local Nautilus 1.231 paper runtime against the accepted protocol. |
-| P1-28 | P1-26, P1-27 | BLOCKED | Wait for protocol and runtime-loop acceptance. |
+| P1-26 | P1-25 | AMENDED_BY_P1_27 | Engine-neutral v1 remains immutable at `12243c45…/55701417…`; P1-27 introduces `nautilus-paper-session-v2` for explicit exit-only Stop causality before integration. Network/live/production authority remains false. |
+| P1-27 | P1-26 | ACCEPTED | Exact isolated Nautilus 1.231 paper runtime, protocol-v2 exit-only Stop causality, checkpoint/reconciliation custody, reset/re-registration, deterministic prefix projection and independent spec/security review passed at `4042be62…/90629801…`; network/live/production authority remains false. |
+| P1-28 | P1-26, P1-27 | READY | Integrate the accepted paper runtime with the existing controller and custodian while preserving durable event and checkpoint authority. |
 | P1-29 | P1-27, P1-28 | BLOCKED | Wait for durability and restart/reconciliation acceptance. |
 | P1-30 | P1-29 | BLOCKED | Wait for the complete local paper-parity evidence chain. |
 
