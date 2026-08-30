@@ -31,7 +31,7 @@ safety freshness drift is `BLOCKED` before authenticated enqueue.
 The generic Package6 SNAPSHOT/0011 capability is validated only as platform
 authority and is never treated as P1 execution approval. The same reviewed
 record binds a closed semantic policy containing the exact
-`p1-vertical-slice.execute-once` BACKTEST/0014 operation. `activate-and-exec`
+`p1-vertical-slice.execute-once` BACKTEST/0017 operation. `activate-and-exec`
 consumes that exact operation capability, with the same static authority,
 semantic digest, and arguments, immediately after the final stage recheck and
 six-second safety refresh.
