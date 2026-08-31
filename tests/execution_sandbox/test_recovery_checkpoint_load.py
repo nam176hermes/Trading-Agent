@@ -325,6 +325,22 @@ def test_duplicate_event_id_anywhere_in_session_fails_closed(
         _load(repository=StaticStreamRepository(events))
 
 
+def test_recovery_stream_sequence_gap_fails_closed(prepared_case: Any) -> None:
+    _, first = _checkpoint_event(
+        prepared_case,
+        checkpoint_id=uid(200),
+        sequence=1,
+    )
+    _, third = _checkpoint_event(
+        prepared_case,
+        checkpoint_id=uid(201),
+        sequence=3,
+    )
+
+    with pytest.raises(SandboxRecoveryPersistenceError, match="sequence"):
+        _load(repository=StaticStreamRepository((first, third)))
+
+
 @pytest.mark.parametrize("corrupt_position", ("prefix", "suffix"))
 def test_requested_checkpoint_never_bypasses_corruption_elsewhere_in_stream(
     corrupt_position: str,

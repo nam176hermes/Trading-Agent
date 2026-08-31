@@ -1,0 +1,302 @@
+{
+  "candidate_generation_id": "NT1231-U04-G1",
+  "direct_api_contract_sha256": "7b52b4af4cfe6f313b686ed931f3e0c2458f236bb89f3a065c69f80f831025eb",
+  "items": [
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 has no venue-adapter import, endpoint, or network authority.",
+      "release_id": "REL-1228-ADAPTER-ITEMS",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Cash entry and deterministic stop flatten prove no unplanned liquidation.",
+      "release_id": "REL-1228-BACKTEST-LIQUIDATION",
+      "scenarios": [
+        "long-accounting",
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U03 sealed build authority and U05 candidate import evidence own this build-only item.",
+      "release_id": "REL-1228-BUILD-TOOLCHAIN",
+      "scenarios": []
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 lifecycle evidence records exact reset retention; U06 uses a fresh process per case.",
+      "release_id": "REL-1228-CACHE-RESET-RETENTION",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Long and short cash outcomes expose calculated balances and commissions.",
+      "release_id": "REL-1228-CALCULATED-ACCOUNT-STATE",
+      "scenarios": [
+        "long-accounting",
+        "short-accounting"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 directly verifies all four explicit engine configuration fields.",
+      "release_id": "REL-1228-CONFIG-DEFAULT-DOC-CORRECTION",
+      "scenarios": []
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 verifies the fixture-owned CurrencyPair surface; U06 does not construct a second instrument path.",
+      "release_id": "REL-1228-CURRENCY-PAIR-ASSET-CLASS",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Long and short cash cases exercise quote and base currency balance invariants.",
+      "release_id": "REL-1228-MULTI-CURRENCY-BALANCE",
+      "scenarios": [
+        "long-accounting",
+        "short-accounting"
+      ]
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "NETTING open and flatten outcomes bind position cardinality with no phantom position.",
+      "release_id": "REL-1228-NETTING-RECONCILIATION",
+      "scenarios": [
+        "short-accounting",
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "No P1 source imports or invokes the Python-v1 throttler.",
+      "release_id": "REL-1228-PYTHON-V1-THROTTLER",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Fresh long and short processes require one exact account observation each.",
+      "release_id": "REL-1228-RESET-ACCOUNT-STATE",
+      "scenarios": [
+        "long-accounting",
+        "short-accounting"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "Rust-v2 changes cannot satisfy the fixed Cython-v1 contract.",
+      "release_id": "REL-1228-RUST-V2-ITEMS",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Partial fill and terminal event cases prove pending fills complete before process stop.",
+      "release_id": "REL-1228-SHUTDOWN-PENDING-FILLS",
+      "scenarios": [
+        "partial-fill",
+        "event-digest"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 uses no venue adapter or remote endpoint.",
+      "release_id": "REL-1229-ADAPTER-ITEMS",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "The NETTING flatten case requires one exact realized-PnL fact.",
+      "release_id": "REL-1229-NETTING-REALIZED-PNL",
+      "scenarios": [
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "ProbabilityPriceFeeModel is absent from the direct API contract and product path.",
+      "release_id": "REL-1229-PROBABILITY-PRICE-FEE-MODEL",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "Rust commission and portfolio changes are outside Cython-v1.",
+      "release_id": "REL-1229-RUST-COMMISSION-PORTFOLIO",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 has no adapter, broker, exchange, or network authority.",
+      "release_id": "REL-1230-ADAPTER-ITEMS",
+      "scenarios": []
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U03 owns the Cython build closure and U05 proves its sealed import identity.",
+      "release_id": "REL-1230-CYTHON-BUILD",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "The flatten case requires exactly one realized-PnL value and one terminal position close.",
+      "release_id": "REL-1230-DUPLICATE-REALIZED-PNL",
+      "scenarios": [
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 uses its engine-event contract, not the Nautilus event store.",
+      "release_id": "REL-1230-EVENT-STORE-FORMAT",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "All v1.231 adapter changes remain outside P1 authority.",
+      "release_id": "REL-1231-ADAPTER-ITEMS",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Fresh session, open position, and flatten cases combine with U05 reset-retention evidence.",
+      "release_id": "REL-1231-BACKTEST-RESET-ORDER",
+      "scenarios": [
+        "long-accounting",
+        "same-bar-stop-take-profit",
+        "session-boundary"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 verifies the result summary as diagnostic-only evidence.",
+      "release_id": "REL-1231-BACKTEST-RESULT-SUMMARY",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Closed-session, stale-quote, and zero-liquidity cases exercise fail-closed validation.",
+      "release_id": "REL-1231-BACKTEST-VALIDATION",
+      "scenarios": [
+        "session-boundary",
+        "stale-quote",
+        "zero-liquidity"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U03 exact dependency closure and U05 version/import evidence own this build item.",
+      "release_id": "REL-1231-BUILD-DEPENDENCIES",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Partial-fill and event-digest cases bind one stable order identity per fill.",
+      "release_id": "REL-1231-CACHE-ORDER-ID-COLLISION",
+      "scenarios": [
+        "partial-fill",
+        "event-digest"
+      ]
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Partial-fill and flatten terminal counts expose stale order-index entries.",
+      "release_id": "REL-1231-CACHE-PURGE-INDEX",
+      "scenarios": [
+        "partial-fill",
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 sealed lifecycle and deterministic callback evidence exercise the Cython clock boundary.",
+      "release_id": "REL-1231-CVEC-FFI-OWNERSHIP",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 imports neither the DeFi pool engine nor its publisher.",
+      "release_id": "REL-1231-DEFI-POOL-CURRENCY-PAIR",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Event-digest and flatten cases bind exact callback and event sequence digests.",
+      "release_id": "REL-1231-EVENT-ORDERING",
+      "scenarios": [
+        "event-digest",
+        "same-bar-stop-take-profit"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U05 proves exact 1.231.0 Cython-v1 import identity; no v2 runtime enters P1.",
+      "release_id": "REL-1231-FINAL-CYTHON-V1-POSTURE",
+      "scenarios": []
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "P1 is fixed UTC and single-currency for U06; session-boundary behavior is still covered without FX authority.",
+      "release_id": "REL-1231-FX-SESSION-DST",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "Generated-ID collision change is Rust-v2-only.",
+      "release_id": "REL-1231-GENERATED-ID-COLLISION-RUST",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "P1 supplies L1 QuoteTick and Bar only, never L3 order-book data.",
+      "release_id": "REL-1231-L3-ZERO-ORDER-ID",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Partial-fill and event-digest cases require deterministic non-panicking fill accounting.",
+      "release_id": "REL-1231-OUT-OF-ORDER-FILL",
+      "scenarios": [
+        "partial-fill",
+        "event-digest"
+      ]
+    },
+    {
+      "disposition": "UPSTREAM_ONLY",
+      "proof": "U06 single-currency scenarios contain no reverse exchange-rate route and grant no FX provider authority.",
+      "release_id": "REL-1231-REVERSE-XRATE",
+      "scenarios": []
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "Simulated status query change is Rust-v2-only.",
+      "release_id": "REL-1231-SIMULATED-STATUS-RUST",
+      "scenarios": []
+    },
+    {
+      "disposition": "SCENARIO",
+      "proof": "Short multi-currency and session-boundary cases run in fresh isolated processes.",
+      "release_id": "REL-1231-SIMULATED-VENUE-RESET-FX",
+      "scenarios": [
+        "short-accounting",
+        "session-boundary"
+      ]
+    },
+    {
+      "disposition": "NOT_USED",
+      "proof": "Venue leverage rollback belongs to Rust-v2 and cannot satisfy Cython-v1 acceptance.",
+      "release_id": "REL-1231-VENUE-LEVERAGE-RUST",
+      "scenarios": []
+    }
+  ],
+  "scenario_ids": [
+    "event-digest",
+    "long-accounting",
+    "partial-fill",
+    "same-bar-stop-take-profit",
+    "session-boundary",
+    "short-accounting",
+    "stale-quote",
+    "zero-liquidity"
+  ],
+  "schema": "trading-agent-nautilus-release-regression-catalog/v1"
+}

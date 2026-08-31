@@ -18,7 +18,7 @@ Package: Test skip governance and critical coverage
 - Collection-integrity detection for individual tests removed by repository hooks.
 - Fail-closed session status for any collected test that never executes.
 - Shared recursive Dashboard inventory consumed by `npm test` and governance, with file-qualified TAP and shell integration observations plus per-file zero-observation rejection.
-- Committed 31-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
+- Committed 38-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
 - Strict approved-category, field, ownership, expiry and approval validation.
 - New skip, stale allowlist, outcome drift and runtime-reason drift rejection.
 - Security-critical approval-metadata enforcement based on canonical component, path and category rules.

@@ -787,6 +787,7 @@
         "event_type": {
           "enum": [
             "PortfolioOpeningEntry",
+            "PortfolioAccountObservationEntry",
             "PortfolioFillEntry",
             "PortfolioMarkEntry",
             "PortfolioFundingEntry",

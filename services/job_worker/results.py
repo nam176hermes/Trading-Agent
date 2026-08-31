@@ -13,11 +13,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator, Mapping
 
-from control_api.normalization import parse_datetime
 from packages.job_contracts import ReplayPayload
 
 MAX_RESULT_CANDIDATES = 64
 MAX_RESULT_ENTRIES = 10_000
+
+
+def parse_datetime(value: object) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("timestamp must be a non-empty string")
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 MAX_RESULT_BYTES = 4 * 1024 * 1024
 MAX_REPLAY_EVENTS = 10_000
 MAX_REPORT_ASSETS = 1_000

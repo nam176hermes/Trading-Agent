@@ -25,9 +25,28 @@ from packages.engine_event_ledger import (
 )
 from packages.engine_event_ledger.models import FIRST_ENGINE_EVENT_SEQUENCE
 from packages.engine_contracts import (
+    EngineEvent,
     EngineEventEnvelope,
+    EventAttribute,
     EventFamily,
     canonical_json_bytes,
+    payload_digest,
+)
+from packages.nautilus_runtime_contracts import (
+    P1Event,
+    P1_EVENT_SCHEMA,
+    event_message_id,
+    validate_event_stream,
+)
+from packages.nautilus_runtime_contracts.events import P1RunCompleted, P1RunStarted
+from packages.nautilus_runtime_contracts.result import (
+    P1_EVENT_FAMILIES,
+    P1_ENGINE_VERSION,
+    P1_RESULT_VALIDATOR_ID,
+    P1_RUNTIME_FAMILY,
+    P1_UPSTREAM_COMMIT,
+    P1ValidatedResult,
+    _decode_event,
 )
 from services.job_worker.engine_results import ValidatedEngineEventBatch
 
@@ -43,9 +62,11 @@ __all__ = [
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _GENERIC_ENGINE_EVENT_VALIDATOR = "engine-event-v1"
 _NAUTILUS_BACKTEST_VALIDATOR = "nautilus-backtest-result-v1"
+_P1_VALIDATOR = P1_RESULT_VALIDATOR_ID
 _ALLOWED_VALIDATORS = {
     _GENERIC_ENGINE_EVENT_VALIDATOR,
     _NAUTILUS_BACKTEST_VALIDATOR,
+    _P1_VALIDATOR,
 }
 _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$", re.ASCII)
 _ATTEMPT_ID = re.compile(r"^attempt_[0-9a-f]{32}$", re.ASCII)
@@ -99,6 +120,15 @@ def _validate_batch_envelopes(
     return first, events[-1]
 
 
+def _has_p1_event_marker(events: tuple[EngineEventEnvelope, ...]) -> bool:
+    return any(
+        attribute.name == "schema_version"
+        and attribute.value == P1_EVENT_SCHEMA
+        for event in events
+        for attribute in event.payload.attributes
+    )
+
+
 def _validate_job_attempt_identity(
     job_id: object,
     attempt_id: object,
@@ -137,7 +167,7 @@ def _validate_contiguous_records(
 
 def _validated_records(
     batch: ValidatedEngineEventBatch,
-) -> tuple[tuple[StoredEngineEvent, ...], str]:
+) -> tuple[tuple[StoredEngineEvent, ...], str, tuple[str, str, UUID] | None]:
     if type(batch) is not ValidatedEngineEventBatch:
         raise InvalidEngineEventBatchError(
             "ingest requires an exact ValidatedEngineEventBatch"
@@ -160,6 +190,7 @@ def _validated_records(
             event.payload.event_type == "NautilusBacktestCompleted"
             for event in batch.events
         )
+        has_p1_event = _has_p1_event_marker(batch.events)
         if (
             batch.validator_id == _GENERIC_ENGINE_EVENT_VALIDATOR
             and has_nautilus_completion
@@ -168,6 +199,47 @@ def _validated_records(
         if batch.validator_id == _NAUTILUS_BACKTEST_VALIDATOR and (
             len(batch.events) != 1 or not has_nautilus_completion
         ):
+            raise ValueError
+        if batch.validator_id != _P1_VALIDATOR and has_p1_event:
+            raise ValueError
+        profile: P1ValidatedResult | None = None
+        typed: tuple[P1Event, ...] = ()
+        if batch.validator_id == _P1_VALIDATOR:
+            candidate_profile = batch.profile_result
+            if (
+                type(candidate_profile) is not P1ValidatedResult
+                or type(candidate_profile.events) is not tuple
+            ):
+                raise ValueError
+            assert isinstance(candidate_profile, P1ValidatedResult)
+            profile = candidate_profile
+            typed = validate_event_stream(profile.events)
+            start, completion = typed[0], typed[-1]
+            if (
+                type(start) is not P1RunStarted
+                or type(completion) is not P1RunCompleted
+                or start.runtime_family != P1_RUNTIME_FAMILY
+                or start.engine_version != P1_ENGINE_VERSION
+                or start.upstream_commit != P1_UPSTREAM_COMMIT
+                or completion.runtime_family != P1_RUNTIME_FAMILY
+                or completion.engine_version != P1_ENGINE_VERSION
+                or completion.upstream_commit != P1_UPSTREAM_COMMIT
+                or start.closure_digest != profile.product_closure_sha256
+                or completion.closure_digest != profile.product_closure_sha256
+                or completion.semantic_digest != profile.semantic_sha256
+                or profile.batch_sha256 != batch.sha256
+                or profile.event_count != len(batch.events)
+                or profile.target_count != completion.target_count
+                or profile.order_count != completion.order_count
+                or profile.fill_count != completion.fill_count
+                or profile.final_cash != completion.final_cash
+                or profile.final_position != completion.final_position
+                or profile.fees != completion.fees
+                or profile.realized_pnl != completion.realized_pnl
+                or profile.unrealized_pnl != completion.unrealized_pnl
+            ):
+                raise ValueError
+        elif batch.profile_result is not None:
             raise ValueError
         raw = b"".join(
             canonical_json_bytes(event) + b"\n" for event in batch.events
@@ -182,7 +254,7 @@ def _validated_records(
             metadata.get("job_id"),
             metadata.get("attempt_id"),
         )
-        expected_metadata = {
+        expected_metadata: dict[str, object] = {
             "attempt_id": attempt_id,
             "config_digest": first.config_digest,
             "engine_run_id": str(first.engine_run_id),
@@ -194,6 +266,69 @@ def _validated_records(
             "source_commit": first.source_commit,
             "validator_id": batch.validator_id,
         }
+        projection_authority = None
+        if batch.validator_id == _P1_VALIDATOR:
+            assert profile is not None
+            engine_request_sha256 = metadata.get("engine_request_sha256")
+            if (
+                not isinstance(engine_request_sha256, str)
+                or _SHA256.fullmatch(engine_request_sha256) is None
+            ):
+                raise ValueError
+            request_message_id = UUID(str(metadata.get("request_message_id")))
+            for envelope, typed_event in zip(batch.events, typed, strict=True):
+                document = typed_event.model_dump(mode="json")
+                expected_payload = EngineEvent(
+                    event_type=typed_event.event_type,
+                    family=P1_EVENT_FAMILIES[typed_event.event_type],
+                    attributes=tuple(
+                        EventAttribute(
+                            name=name,
+                            value=(
+                                canonical_json_bytes(value).decode("utf-8")
+                                if type(value) is list
+                                else value
+                            ),
+                        )
+                        for name, value in document.items()
+                        if name != "event_type" and value is not None
+                    ),
+                )
+                if (
+                    envelope.payload != expected_payload
+                    or payload_digest(envelope.payload)
+                    != envelope.payload_digest
+                    or envelope.message_id
+                    != event_message_id(request_message_id, typed_event)
+                    or envelope.stream_sequence != typed_event.sequence
+                    or envelope.event_time != first.event_time
+                    or first.event_time != first.initialization_time
+                ):
+                    raise ValueError
+            expected_metadata.update(
+                {
+                    "engine_request_sha256": engine_request_sha256,
+                    "engine_upstream_commit": P1_UPSTREAM_COMMIT,
+                    "engine_version": P1_ENGINE_VERSION,
+                    "fees": str(profile.fees),
+                    "fill_count": profile.fill_count,
+                    "final_cash": str(profile.final_cash),
+                    "final_position": str(profile.final_position),
+                    "order_count": profile.order_count,
+                    "p1_product_closure_sha256": profile.product_closure_sha256,
+                    "realized_pnl": str(profile.realized_pnl),
+                    "request_message_id": str(request_message_id),
+                    "runtime_family": P1_RUNTIME_FAMILY,
+                    "semantic_digest": profile.semantic_sha256,
+                    "target_count": profile.target_count,
+                    "unrealized_pnl": str(profile.unrealized_pnl),
+                }
+            )
+            projection_authority = (
+                batch.sha256,
+                profile.semantic_sha256,
+                request_message_id,
+            )
         if metadata != expected_metadata:
             raise ValueError
         expected_ref = (
@@ -202,6 +337,8 @@ def _validated_records(
         if batch.relative_ref != expected_ref:
             raise ValueError
 
+        receipt_metadata = dict(metadata)
+        receipt_metadata.pop("engine_request_sha256", None)
         identity_bytes = canonical_json_bytes(
             {
                 "artifact_type": batch.artifact_type,
@@ -210,7 +347,7 @@ def _validated_records(
                 "sha256": batch.sha256,
                 "size_bytes": batch.size_bytes,
                 "truncated": batch.truncated,
-                "validation_metadata": metadata,
+                "validation_metadata": receipt_metadata,
                 "validator_id": batch.validator_id,
             }
         )
@@ -223,7 +360,7 @@ def _validated_records(
         raise InvalidEngineEventBatchError(
             "validated engine event batch seal or authority is invalid"
         ) from exc
-    return records, ingestion_digest
+    return records, ingestion_digest, projection_authority
 
 
 def _receipt_for(
@@ -298,12 +435,22 @@ class InMemoryEngineEventLedger:
             self._job_results = {
                 binding.job_id: binding for binding in normalized.job_results
             }
+            if len(
+                {projection.engine_run_id for projection in normalized.projections}
+            ) != len(normalized.projections):
+                raise EngineEventConflictError(
+                    "restart state contains duplicate engine run projections"
+                )
+            self._projections = {
+                projection.engine_run_id: projection
+                for projection in normalized.projections
+            }
             self.recover_projections()
             self._validate_recovered_receipts()
             self._validate_recovered_job_results()
 
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt:
-        records, ingestion_digest = _validated_records(batch)
+        records, ingestion_digest, projection_authority = _validated_records(batch)
         prior = self._receipts.get(batch.sha256)
         if prior is not None:
             if prior.ingestion_digest != ingestion_digest:
@@ -319,6 +466,13 @@ class InMemoryEngineEventLedger:
                 )
         run_id = records[0].engine_run_id
         prior_projection = self._projections.get(run_id)
+        if (
+            prior_projection is not None
+            and prior_projection.semantic_digest is not None
+        ):
+            raise EngineEventConflictError(
+                f"completed P1 engine run cannot advance: {run_id}"
+            )
         expected_sequence = (
             FIRST_ENGINE_EVENT_SEQUENCE
             if prior_projection is None
@@ -329,7 +483,13 @@ class InMemoryEngineEventLedger:
             expected_sequence=expected_sequence,
         )
         combined = self.load_events(run_id) + records
-        projection = project_engine_run(combined)
+        durable_authority = projection_authority or (None, None, None)
+        projection = project_engine_run(
+            combined,
+            batch_sha256=durable_authority[0],
+            semantic_digest=durable_authority[1],
+            request_message_id=durable_authority[2],
+        )
         receipt = _receipt_for(batch, records, ingestion_digest)
         for record in records:
             self._events[record.message_id] = record
@@ -340,7 +500,7 @@ class InMemoryEngineEventLedger:
     def ingest_for_job(
         self, batch: ValidatedEngineEventBatch, *, claimed: object
     ) -> EngineEventBatchReceipt:
-        records, _ingestion_digest = _validated_records(batch)
+        records, _ingestion_digest, _projection_authority = _validated_records(batch)
         job_id = batch.validation_metadata["job_id"]
         attempt_id = batch.validation_metadata["attempt_id"]
         if (
@@ -419,7 +579,19 @@ class InMemoryEngineEventLedger:
 
     def replay_projection(self, engine_run_id: UUID) -> EngineRunProjection | None:
         events = self.load_events(engine_run_id)
-        return project_engine_run(events) if events else None
+        authority = self._projections.get(engine_run_id)
+        return (
+            project_engine_run(
+                events,
+                batch_sha256=(authority.batch_sha256 if authority else None),
+                semantic_digest=(authority.semantic_digest if authority else None),
+                request_message_id=(
+                    authority.request_message_id if authority else None
+                ),
+            )
+            if events
+            else None
+        )
 
     def recover_projections(self) -> tuple[EngineRunProjection, ...]:
         run_ids = sorted(
@@ -481,7 +653,23 @@ class InMemoryEngineEventLedger:
                 raise EngineEventConflictError(
                     f"restart batch authority is inconsistent for {batch_sha256}"
                 ) from exc
+            authority = self._projections.get(receipt.engine_run_id)
+            p1_projection = (
+                authority
+                if authority is not None
+                and authority.batch_sha256 == batch_sha256
+                and authority.semantic_digest is not None
+                else None
+            )
+            has_p1_event = _has_p1_event_marker(envelopes)
+            if has_p1_event and p1_projection is None:
+                raise EngineEventConflictError(
+                    f"restart P1 projection is missing for {batch_sha256}"
+                )
             validator_id = (
+                _P1_VALIDATOR
+                if p1_projection is not None
+                else
                 _NAUTILUS_BACKTEST_VALIDATOR
                 if len(envelopes) == 1
                 and envelopes[0].payload.event_type == "NautilusBacktestCompleted"
@@ -503,22 +691,109 @@ class InMemoryEngineEventLedger:
                 f"engine-results/{receipt.job_id}/{receipt.attempt_id}/"
                 f"{batch_sha256}.jsonl"
             )
-            identity_bytes = canonical_json_bytes(
-                {
-                    "artifact_type": "engine_event_batch",
-                    "media_type": "application/x-ndjson",
-                    "relative_ref": relative_ref,
-                    "sha256": batch_sha256,
-                    "size_bytes": len(raw),
-                    "truncated": False,
-                    "validation_metadata": metadata,
-                    "validator_id": validator_id,
-                }
-            )
+            if p1_projection is not None:
+                try:
+                    typed = validate_event_stream(
+                        tuple(_decode_event(envelope) for envelope in envelopes)
+                    )
+                    start, completion = typed[0], typed[-1]
+                    request_message_id = p1_projection.request_message_id
+                    run_records = tuple(
+                        event
+                        for event in self._events.values()
+                        if event.engine_run_id == receipt.engine_run_id
+                    )
+                    if (
+                        type(start) is not P1RunStarted
+                        or type(completion) is not P1RunCompleted
+                        or request_message_id is None
+                        or any(
+                            envelope.message_id
+                            != event_message_id(request_message_id, typed_event)
+                            or payload_digest(envelope.payload)
+                            != envelope.payload_digest
+                            or envelope.stream_sequence != typed_event.sequence
+                            or envelope.event_time != envelopes[0].event_time
+                            for envelope, typed_event in zip(
+                                envelopes, typed, strict=True
+                            )
+                        )
+                        or envelopes[0].event_time
+                        != envelopes[0].initialization_time
+                        or start.runtime_family != P1_RUNTIME_FAMILY
+                        or start.engine_version != P1_ENGINE_VERSION
+                        or start.upstream_commit != P1_UPSTREAM_COMMIT
+                        or start.config_digest != envelopes[0].config_digest
+                        or completion.runtime_family != P1_RUNTIME_FAMILY
+                        or completion.engine_version != P1_ENGINE_VERSION
+                        or completion.upstream_commit != P1_UPSTREAM_COMMIT
+                        or completion.closure_digest != start.closure_digest
+                        or completion.semantic_digest
+                        != p1_projection.semantic_digest
+                        or any(
+                            record.batch_sha256 != batch_sha256
+                            for record in run_records
+                        )
+                        or max(
+                            run_records,
+                            key=lambda record: record.stream_sequence,
+                        ).message_id
+                        != envelopes[-1].message_id
+                    ):
+                        raise ValueError
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise EngineEventConflictError(
+                        f"restart P1 projection is inconsistent for {batch_sha256}"
+                    ) from exc
+                metadata.update(
+                    {
+                        "engine_upstream_commit": P1_UPSTREAM_COMMIT,
+                        "engine_version": P1_ENGINE_VERSION,
+                        "fees": str(completion.fees),
+                        "fill_count": completion.fill_count,
+                        "final_cash": str(completion.final_cash),
+                        "final_position": str(completion.final_position),
+                        "order_count": completion.order_count,
+                        "p1_product_closure_sha256": start.closure_digest,
+                        "realized_pnl": str(completion.realized_pnl),
+                        "request_message_id": str(request_message_id),
+                        "runtime_family": P1_RUNTIME_FAMILY,
+                        "semantic_digest": completion.semantic_digest,
+                        "target_count": completion.target_count,
+                        "unrealized_pnl": str(completion.unrealized_pnl),
+                    }
+                )
+                identity_bytes = canonical_json_bytes(
+                    {
+                        "artifact_type": "engine_event_batch",
+                        "media_type": "application/x-ndjson",
+                        "relative_ref": relative_ref,
+                        "sha256": batch_sha256,
+                        "size_bytes": len(raw),
+                        "truncated": False,
+                        "validation_metadata": metadata,
+                        "validator_id": validator_id,
+                    }
+                )
+                expected_ingestion_digest = hashlib.sha256(identity_bytes).hexdigest()
+            else:
+                identity_bytes = canonical_json_bytes(
+                    {
+                        "artifact_type": "engine_event_batch",
+                        "media_type": "application/x-ndjson",
+                        "relative_ref": relative_ref,
+                        "sha256": batch_sha256,
+                        "size_bytes": len(raw),
+                        "truncated": False,
+                        "validation_metadata": metadata,
+                        "validator_id": validator_id,
+                    }
+                )
+                expected_ingestion_digest = hashlib.sha256(identity_bytes).hexdigest()
             if (
                 hashlib.sha256(raw).hexdigest() != batch_sha256
                 or receipt.ingestion_digest
-                != hashlib.sha256(identity_bytes).hexdigest()
+                != expected_ingestion_digest
                 or receipt.engine_run_id != first.engine_run_id
                 or receipt.event_count != len(records)
                 or receipt.first_sequence != first.stream_sequence
@@ -547,6 +822,14 @@ class InMemoryEngineEventLedger:
             job_results=tuple(
                 self._job_results[job_id] for job_id in sorted(self._job_results)
             ),
+            projections=tuple(
+                projection
+                for projection in sorted(
+                    self._projections.values(),
+                    key=lambda value: value.engine_run_id.bytes,
+                )
+                if projection.semantic_digest is not None
+            ),
         )
 
 
@@ -574,7 +857,13 @@ class PostgresEngineEventLedgerSql:
 FROM public.ingest_engine_event_batch(%(batch_document)s);"""
     INGEST_JOB_RESULT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
-FROM job_plane.ingest_engine_job_result(
+FROM job_plane.ingest_engine_job_result_v2(
+  %(job_id)s, %(attempt_id)s, %(worker_id)s, %(lease_token)s,
+  %(batch_document)s
+);"""
+    INGEST_LEGACY_JOB_RESULT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
+       engine_run_id, event_count, first_sequence, last_sequence, last_digest
+FROM job_plane.ingest_legacy_engine_job_result_v2(
   %(job_id)s, %(attempt_id)s, %(worker_id)s, %(lease_token)s,
   %(batch_document)s
 );"""
@@ -596,13 +885,21 @@ FROM public.engine_events
 WHERE engine_run_id = %(engine_run_id)s
 ORDER BY stream_sequence, message_id;"""
     LOAD_PROJECTION = """SELECT engine_run_id, event_count, event_type_counts,
-       last_sequence, last_digest
+       last_sequence, last_digest, batch_sha256, semantic_digest,
+       request_message_id
 FROM public.engine_run_projections
 WHERE engine_run_id = %(engine_run_id)s;"""
-    RECOVER_PROJECTIONS = """SELECT engine_run_id, event_count, event_type_counts,
-       last_sequence, last_digest
-FROM public.recover_engine_run_projections()
-ORDER BY engine_run_id;"""
+    RECOVER_PROJECTIONS = """WITH recovered AS MATERIALIZED (
+  SELECT * FROM public.recover_engine_run_projections()
+)
+SELECT recovered.engine_run_id, recovered.event_count,
+       recovered.event_type_counts, recovered.last_sequence,
+       recovered.last_digest, projection.batch_sha256,
+       projection.semantic_digest, projection.request_message_id
+FROM recovered
+JOIN public.engine_run_projections AS projection
+  ON projection.engine_run_id = recovered.engine_run_id
+ORDER BY recovered.engine_run_id;"""
 
 
 class PostgresEngineEventLedger:
@@ -659,8 +956,46 @@ class PostgresEngineEventLedger:
     @classmethod
     def _projection_from_row(cls, row: object) -> EngineRunProjection:
         try:
+            expected_fields = {
+                "engine_run_id",
+                "event_count",
+                "event_type_counts",
+                "last_sequence",
+                "last_digest",
+                "batch_sha256",
+                "semantic_digest",
+                "request_message_id",
+            }
+            if (
+                isinstance(row, Mapping)
+                and set(row) != expected_fields
+                or isinstance(row, tuple)
+                and len(row) != len(expected_fields)
+            ):
+                raise TypeError
             type_counts = cls._row_value(row, "event_type_counts", 2)
             if type(type_counts) is not list:
+                raise TypeError
+            batch_sha256 = cls._row_value(row, "batch_sha256", 5)
+            semantic_digest = cls._row_value(row, "semantic_digest", 6)
+            request_message_id = cls._row_value(row, "request_message_id", 7)
+            if (
+                batch_sha256 is not None
+                and (
+                    not isinstance(batch_sha256, str)
+                    or _SHA256.fullmatch(batch_sha256) is None
+                )
+            ) or (
+                semantic_digest is not None
+                and (
+                    not isinstance(semantic_digest, str)
+                    or _SHA256.fullmatch(semantic_digest) is None
+                )
+            ):
+                raise TypeError
+            if request_message_id is not None and not isinstance(
+                request_message_id, UUID
+            ):
                 raise TypeError
             return EngineRunProjection(
                 engine_run_id=cls._row_value(row, "engine_run_id", 0),
@@ -668,6 +1003,9 @@ class PostgresEngineEventLedger:
                 event_type_counts=tuple(type_counts),
                 last_sequence=cls._row_value(row, "last_sequence", 3),
                 last_digest=cls._row_value(row, "last_digest", 4),
+                batch_sha256=batch_sha256,
+                semantic_digest=semantic_digest,
+                request_message_id=request_message_id,
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise EngineEventConflictError(
@@ -714,7 +1052,7 @@ class PostgresEngineEventLedger:
         ingestion_digest: str,
     ) -> str:
         receipt = _receipt_for(batch, records, ingestion_digest)
-        document = {
+        document: dict[str, object] = {
             "attempt_id": receipt.attempt_id,
             "batch_sha256": receipt.batch_sha256,
             "engine_run_id": str(receipt.engine_run_id),
@@ -738,6 +1076,13 @@ class PostgresEngineEventLedger:
             "last_digest": receipt.last_digest,
             "last_sequence": receipt.last_sequence,
         }
+        if batch.validator_id == _P1_VALIDATOR:
+            document.update(
+                {
+                    "validation_metadata": batch.validation_metadata,
+                    "validator_id": batch.validator_id,
+                }
+            )
         return json.dumps(
             document,
             ensure_ascii=False,
@@ -746,6 +1091,14 @@ class PostgresEngineEventLedger:
         )
 
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt:
+        if (
+            type(batch) is ValidatedEngineEventBatch
+            and batch.validator_id == _P1_VALIDATOR
+        ):
+            _validated_records(batch)
+            raise InvalidEngineEventBatchError(
+                "durable P1 ingestion requires the job-bound ingest_for_job authority"
+            )
         return self._ingest_with_statement(
             batch, PostgresEngineEventLedgerSql.INGEST_BATCH
         )
@@ -762,9 +1115,20 @@ class PostgresEngineEventLedger:
             raise EngineEventConflictError(
                 "engine job result differs from the current claim"
             )
+        if batch.validator_id == _P1_VALIDATOR:
+            statement = PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+        elif batch.validator_id in {
+            _GENERIC_ENGINE_EVENT_VALIDATOR,
+            _NAUTILUS_BACKTEST_VALIDATOR,
+        }:
+            statement = PostgresEngineEventLedgerSql.INGEST_LEGACY_JOB_RESULT
+        else:
+            raise InvalidEngineEventBatchError(
+                "engine job result validator is not authorized"
+            )
         return self._ingest_with_statement(
             batch,
-            PostgresEngineEventLedgerSql.INGEST_JOB_RESULT,
+            statement,
             extra_params={
                 "job_id": claimed.job_id,
                 "attempt_id": claimed.attempt_id,
@@ -779,7 +1143,7 @@ class PostgresEngineEventLedger:
         statement: str,
         extra_params: Mapping[str, object] | None = None,
     ) -> EngineEventBatchReceipt:
-        records, ingestion_digest = _validated_records(batch)
+        records, ingestion_digest, projection_authority = _validated_records(batch)
         expected = _receipt_for(batch, records, ingestion_digest)
         try:
             with self._pool.connection() as connection:
@@ -864,7 +1228,19 @@ class PostgresEngineEventLedger:
 
     def replay_projection(self, engine_run_id: UUID) -> EngineRunProjection | None:
         events = self.load_events(engine_run_id)
-        return project_engine_run(events) if events else None
+        authority = self.load_projection(engine_run_id) if events else None
+        return (
+            project_engine_run(
+                events,
+                batch_sha256=(authority.batch_sha256 if authority else None),
+                semantic_digest=(authority.semantic_digest if authority else None),
+                request_message_id=(
+                    authority.request_message_id if authority else None
+                ),
+            )
+            if events
+            else None
+        )
 
     def recover_projections(self) -> tuple[EngineRunProjection, ...]:
         try:

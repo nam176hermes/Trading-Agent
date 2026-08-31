@@ -68,7 +68,7 @@ The plan starts from these facts and requires P1-U00 to re-prove repository-loca
 - the repository already has real `BacktestEngine` execution, worker custody, Bubblewrap/native guard, event validation/ingestion, an engine-event ledger and an independent portfolio reducer;
 - `1.231.0` is the candidate final-v1 baseline, not a v2 migration;
 - the `1.227.0` closure remains immutable rollback until at least P1-A final certification;
-- the active baseline changes only in P1-U08 after provenance, build, API, regression and dual-run gates.
+- P1-U08 approves only the P1-A/B baseline receipt; separate schema-8 product profiles are derived later in P1-15/P1-16, while legacy Phase4 authority remains unchanged.
 
 The detailed decision evidence is in `trading-agent-nautilus-v1.227-to-v1.231-upgrade-assessment-2026-08-16.md`.
 
@@ -78,7 +78,7 @@ The detailed decision evidence is in `trading-agent-nautilus-v1.227-to-v1.231-up
 
 ### AD-0 — Upgrade before productization, but never by in-place hot swap
 
-Build a side-by-side `1.231.0` candidate, qualify it, then atomically promote code-owned policy. A failed gate produces `HOLD_1_227`, not a compatibility shim or weakened test.
+Build a side-by-side `1.231.0` candidate, qualify it, then approve an immutable P1-A/B baseline receipt. A failed gate produces `HOLD_1_227` or `HOLD_P1`, not a compatibility shim, policy switch or weakened test.
 
 ### AD-1 — Treat 1.231.0 as the final Cython-v1 bridge
 
@@ -113,7 +113,7 @@ No provider credentials, venue adapters, DNS, HTTP, WebSocket, broker/account/or
 ## 4. Global invariants
 
 1. **Paper-only authority:** live and production approvals stay false.
-2. **Promotion gate:** active v1.231 use requires accepted P1-U08 evidence on the exact closure digest.
+2. **P1 baseline gate:** any P1 v1.231 product profile requires accepted P1-U08 evidence on the exact closure digest and a later schema-8 derivation; U08 does not alter legacy active profiles.
 3. **Rollback isolation:** v1.227 remains immutable, explicit and non-default; no mixed closure or shared writable state.
 4. **Exact engine identity:** version 1.231.0, runtime family `cython-v1`, upstream commit `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317`, promoted baseline schema 7, P1 product schema 8 and exact dependency policy.
 5. **No moving authority:** no `latest`, branch, version range, ambient compiler/package/cache or client-selected runtime.
@@ -509,7 +509,7 @@ Produce an externally stored, schema-7, no-network CPython 3.12 closure for v1.2
 - Build the v1.231 wheel from the approved source inside Bubblewrap with network namespace disabled, host filesystem read-only and only candidate staging writable.
 - Build twice from fresh staging. Compare wheel contents, native-library inventory, normalized metadata and closure manifest. Document any non-deterministic wheel bytes and require a stable normalized authority digest rather than ignoring the difference.
 - Materialize the exact CPython interpreter, stdlib, built wheel, runtime dependencies, launchers and native guard into an external private closure. Bind every file, target, size, mode and SHA-256.
-- Add schema-7 verification while preserving schema-6 rollback support. The active worker profile must still point to 1.227 until P1-U08.
+- Add schema-7 candidate verification while preserving schema-6 rollback support. Legacy active worker profiles remain on 1.227 through and after P1-U08; P1-15/P1-16 later derive separate schema-8 product profiles.
 - Run the official cp312 wheel only in a separate disposable oracle environment to compare imports/version/native inventory. It is not runtime authority unless the ADR explicitly changes that decision.
 
 ### TDD and verification
@@ -706,21 +706,20 @@ Compare known-good rollback and candidate using the same hash-bound inputs and d
 **Primary implementer subagent:** Engine Baseline Promotion Lead — `gpt-5.6-sol`, reasoning `xhigh`  
 **Spec-compliance reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
 **Code-quality/security reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
-**Owned files:** `engines/nautilus/README.md; engines/nautilus/engine-build-policy.json; engines/nautilus/input-cache-policy.json; engines/nautilus/toolchain-inputs.json; engines/nautilus/wheel-cache-policy.json; engines/nautilus/runtime-closure-policy.json; engines/nautilus/paper-compatibility-runtime-closure-policy.json; services/job_worker/nautilus_closure.py; services/job_worker/engine_spawn.py only as required by schema 7; tests/nautilus_upgrade/test_v1231_promotion.py; docs/implementation/p1-real-nautilus/upgrade/P1-U-FINAL-REVIEW.md; Makefile; CI workflow only for the reviewed candidate lane`  
-**Commit:** `build(p1u): promote Nautilus 1.231 P1 baseline`
+**Owned files:** `docs/implementation/p1-real-nautilus/upgrade/p1-engine-baseline-receipt.json; tests/nautilus_upgrade/test_v1231_promotion.py; docs/implementation/p1-real-nautilus/task-ledger.md; docs/implementation/p1-real-nautilus/agent-task-matrix.csv`
+**Commit:** `docs(p1u): approve Nautilus 1.231 P1 baseline`
 
 ### Objective
 
-Atomically switch the code-owned P1 baseline to the fully qualified candidate while retaining a verifiable, non-default 1.227 rollback path.
+Approve the fully qualified candidate as the baseline for P1-A/B only. Do not switch global or legacy Phase4 runtime authority; the existing 1.227 schema-6 profiles remain unchanged.
 
 ### Implementation steps
 
-- Require signed-off P1-U02 provenance, P1-U05 API probe, P1-U06 regression campaign and P1-U07 drift ledger on the exact candidate closure digest.
-- Replace active version/source/toolchain/dependency policy pins with the reviewed v1.231 values. Do not hand-edit derived hashes; regenerate through approved scripts and verify `--check`.
-- Set the active expected closure manifest to schema 7 and runtime family `cython-v1`. Preserve explicit schema-6 verification only for the named rollback closure; it must never satisfy the active default profile.
-- Update README, build/verify targets and CI so `latest` is never accepted and candidate/rollback are named by exact version and digest.
-- Run the full existing Nautilus source/native qualification suites plus P0/P0-M1 gates. Record exact base/head/tree/closure digests.
-- Create a rollback runbook that restores the old active policy commit without rebuilding or modifying external artifacts.
+- Require P1-U04C, P1-U05, P1-U06 and P1-U07 receipts to bind the same generation ID, generation digest and candidate closure digest.
+- Record `p1-engine-baseline-receipt.json` with status `P1_BASELINE_APPROVED`, scope `P1_A_AND_P1_B_ONLY`, decision `PROMOTE_1_231_FOR_P1`, and target `p1_product_closure_schema: 8`.
+- Hash-bind the existing job-worker loader and both active schema-6 Phase4 policies, and prove they remain byte-identical to the accepted 1.227 baseline.
+- Keep candidate activation, global promotion, production, network-trading and live authority false. U08 changes no runtime policy, loader, engine artifact or external closure.
+- Advance only P1-00 to `READY`; P1-15/P1-16 later derive the schema-8 P1 product closure from the approved schema-7 baseline.
 
 ### TDD and verification
 
@@ -728,8 +727,8 @@ Atomically switch the code-owned P1 baseline to the fully qualified candidate wh
 - [ ] Run the focused test and confirm it fails for the intended missing behavior, not for an environment/setup error.
 - [ ] Implement the minimum coherent change inside the owned files.
 - [ ] Run the focused tests until green.
-- A stale 1.227 closure presented to the active v1.231 profile fails with a stable version/provenance reason.
-- The explicit rollback verifier still accepts only the exact retained 1.227 closure.
+- Mixed G1/U04C/U05/U06/U07 receipts fail closed.
+- Any change to the retained 1.227 loader or schema-6 policies fails closed.
 - No version range, branch name, moving tag or ambient path can select the engine.
 - [ ] Run `make check-p0-maintainability` and the relevant Nautilus source/closure boundary checks.
 - [ ] Run the existing regression suite for every modified shared file.
@@ -737,7 +736,9 @@ Atomically switch the code-owned P1 baseline to the fully qualified candidate wh
 
 ### Acceptance checklist
 
-- [ ] Program verdict is `PROMOTE_1_231` with no unresolved blocker.
+- [ ] Program decision is `PROMOTE_1_231_FOR_P1` with status `P1_BASELINE_APPROVED` and scope `P1_A_AND_P1_B_ONLY`.
+- [ ] Legacy Phase4 profiles remain on exact Nautilus 1.227/schema 6, byte-identical to the accepted baseline.
+- [ ] P1 product closure target is schema 8; U08 creates no schema-7 adapter or global runtime switch.
 - [ ] All existing engine qualification tests remain green or have separately approved evidence-based updates.
 - [ ] P1 implementation tasks now depend on this accepted promotion SHA.
 - [ ] Spec reviewer returns `PASS` with no missing requirement.
@@ -758,7 +759,7 @@ Atomically switch the code-owned P1 baseline to the fully qualified candidate wh
 **Primary implementer subagent:** Integration Lead — `gpt-5.6-sol`, reasoning `xhigh`  
 **Spec-compliance reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `high`  
 **Code-quality/security reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
-**Owned files:** `docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231-engine-vertical-slice.md; docs/implementation/p1-real-nautilus/baseline.md; .gitignore only if worktree directory policy requires it`  
+**Owned files:** `docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231.md; docs/implementation/p1-real-nautilus/baseline.md; .gitignore only if worktree directory policy requires it`
 **Commit:** `docs(p1): pin real Nautilus program baseline`
 
 ### Objective
@@ -1339,7 +1340,7 @@ Translate an upstream risk-approved target weight into an exact executable quant
 **Primary implementer subagent:** Nautilus Strategy Engineer — `gpt-5.6-sol`, reasoning `xhigh`  
 **Spec-compliance reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
 **Code-quality/security reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
-**Owned files:** `engines/nautilus/runtime_v1/target_strategy.py; tests/p1_nautilus/test_target_strategy_source.py; tests/p1_nautilus/test_target_strategy_native.py`  
+**Owned files:** `engines/nautilus/runtime_v1/target_strategy.py; tests/p1_nautilus/test_p1_target_strategy_source.py; tests/p1_nautilus/test_target_strategy_native.py`
 **Commit:** `feat(p1): execute canonical targets in Nautilus`
 
 ### Objective
@@ -2375,7 +2376,7 @@ Prove the same target/execution/event/accounting semantics across backtest and l
 
 # Upgrade-aware program gates
 
-Before any P1 product task, P1-U08 must record `PROMOTE_1_231` on exact commit `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317` and exact schema-7 baseline closure digest. Before P1-A completion, the accepted v1.227 schema-6 rollback remains verifiable but non-default, and the real-backtest profile must use an exact schema-8 product closure. Before P1 final completion, all backtest and paper evidence must name `1.231.0` and the schema-8 product closure derived from the promoted baseline.
+Before any P1 product task, P1-U08 must record `PROMOTE_1_231_FOR_P1` with status `P1_BASELINE_APPROVED`, scope `P1_A_AND_P1_B_ONLY`, exact G1/schema-7 baseline digest, and target schema-8 product lineage. The accepted legacy Phase4 1.227/schema-6 loader and policies remain unchanged. Before P1-A completion, the real-backtest profile must use an exact schema-8 product closure. Before P1 final completion, all backtest and paper evidence must name `1.231.0` and the schema-8 product closure derived from the approved P1 baseline.
 
 A future v2 migration is deliberately not a P1 completion gate. It is opened as a separate discovery/architecture item only after P1 final certification.
 
@@ -2509,7 +2510,7 @@ Any missing field prevents a completion claim.
 Save this plan in the repository as:
 
 ```text
-docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231-engine-vertical-slice.md
+docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231.md
 ```
 
 The design companion belongs at:

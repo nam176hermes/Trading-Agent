@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Exact account facts observed after projected portfolio effects.",
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "cash_balance": {
+      "$ref": "#/$defs/Money"
+    },
+    "currency": {
+      "$ref": "#/$defs/Currency"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "fees": {
+      "$ref": "#/$defs/Money"
+    },
+    "realized_pnl": {
+      "$ref": "#/$defs/Money"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "unrealized_pnl": {
+      "$ref": "#/$defs/Money"
+    }
+  },
+  "required": [
+    "account_id",
+    "effective_at",
+    "schema_version",
+    "currency",
+    "cash_balance",
+    "fees",
+    "realized_pnl",
+    "unrealized_pnl"
+  ],
+  "title": "PortfolioAccountObservationEntry",
+  "type": "object"
+}

@@ -1,0 +1,49 @@
+{
+  "authority_limits": {
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "gates": {
+    "boundary_and_lineage": "PASS",
+    "pin_inventory_tests": 1,
+    "source_tests": 267,
+    "static_errors": 0
+  },
+  "growth_budget_sha256": "d7f998bc2ae7d7b5463a368ac003bbf50578cee42ff132535896a56f7b939ffe",
+  "lineage": {
+    "candidate_generation_id": "NT1231-U04-G1",
+    "legacy_engine_version": "1.227.0",
+    "legacy_profiles_unchanged": true,
+    "p1_engine_version": "1.231.0",
+    "p1_product_closure_sha256": "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b",
+    "p1_product_policy_sha256": "03e45fbb03379da78eaae74a728c9d1d7e17d382cd76c981e6a881a3699bb15e",
+    "pin_inventory_sha256": "b9960c1153bfb89b10a0f3783d0afa5eb67af3fea2f805d8d37702b41bd4a0f9"
+  },
+  "p1_23_acceptance_sha256": "490fbc1ad97c6627dc0a4711b2aef3919dcc1ab247c5ad6845bd0a964a25324d",
+  "qualification_source_commit": "b65638145babdab6b3184e06ba2ee08b567c806d",
+  "qualification_source_tree": "efab9bc500d42b219b19e8af1c1045fa6a18e12a",
+  "reviews": [
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "p1_23_rereview_spec",
+      "role": "release_specification",
+      "verdict": "PASS"
+    },
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "p1_23_rereview_security",
+      "role": "release_security_and_integrity",
+      "verdict": "PASS"
+    }
+  ],
+  "runbook_sha256": "cf21968fc9b42b5ae9273b540e19bccbeb12ef9c7b206c09cb82cf82f0ff7429",
+  "schema": "trading-agent-p1-24-acceptance/v1",
+  "status": "P1_24_ACCEPTED",
+  "upstream_provenance_sha256": "efbfd0aa0208fcbb4e6481cb1fe9083ccc86b6f2af4dcf8b3bc917868ae822c4",
+  "verdict": "PASS"
+}

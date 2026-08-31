@@ -1,0 +1,109 @@
+{
+  "authority_limits": {
+    "candidate_active": false,
+    "candidate_promoted": false,
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "candidate_boundary": {
+    "delta": "ZERO",
+    "evidence_commit": "199d5ae65a2d1798f1c3aee9761ff763237fe910",
+    "evidence_tree": "a093d41727b60b99cb57608a43854f87f69ac769",
+    "pathspecs": [
+      "engines/nautilus/candidates/v1.231",
+      "engines/nautilus/v1.231-provenance-policy.json",
+      "native/package6_custodian/Makefile",
+      "scripts/build_nautilus_engine.py",
+      "scripts/materialize_nautilus_native_authority.py",
+      "scripts/materialize_nautilus_runtime_closure.py",
+      "scripts/nautilus_pin_inventory",
+      "scripts/verify_nautilus_release_provenance.py",
+      "scripts/write_nautilus_toolchain_inputs.py"
+    ]
+  },
+  "dependency_boundary": {
+    "sealed_engine_receives_sentry": false,
+    "sentry_scope": "ROOT_API_RUNTIMES_ONLY"
+  },
+  "p1_source_baseline": {
+    "commit": "3f62908385be289999ccd14eed2e4007efdbf9e2",
+    "operator_decision": "ACCEPT_EXACT_P1_SOURCE_BASELINE",
+    "relationship_to_remote": "DESCENDANT",
+    "tree": "8b3e147d5c8b27fba989183fb0a8822ec40b97a1"
+  },
+  "previous_remote_canonical": {
+    "commit": "52c8748b452076c75b2d3bcf7a5fc5af26d1e068",
+    "tree": "9cdac99246a3c40b057d358de9f84f775135a86d"
+  },
+  "reconciled_commits": [
+    {
+      "classification": "ROOT_API_SENTRY_ONLY",
+      "commit": "893e536b2c56f59c8620a96f0415e65c02baec16",
+      "tree": "fa603c99335c203ecf1dd159e1faacd9d9b65f61"
+    },
+    {
+      "classification": "CODEX_WORKFLOW_DESIGN_DOC",
+      "commit": "3c5ac6996f22a6329be4315d3d7613667b683d74",
+      "tree": "f34497720a03013363165196f93c23f4527b6473"
+    },
+    {
+      "classification": "CODEX_WORKFLOW_PLAN_DOC",
+      "commit": "27972a8173b0f42d48a87e87938fcb088b80c55e",
+      "tree": "2bc83474e1a75e899f710cf019bb56ef5dee27eb"
+    },
+    {
+      "classification": "CODEX_WORKFLOW_ROUTING_DOC",
+      "commit": "39fa2d94e3a2fd328a4dd43887c65c9c0a597eff",
+      "tree": "993defd4de182dc42ce59f77e7afca69306f584d"
+    },
+    {
+      "classification": "CODEX_DEFAULT_WORKFLOW_DOC",
+      "commit": "ea394d776c04a93c904ffef5f75bacb0ec2f63d7",
+      "tree": "eb0b454d5fa01bdb609bfd5a9ecf4b1afb7a875f"
+    },
+    {
+      "classification": "SENTRY_DEPENDENCY_GOVERNANCE_TEST",
+      "commit": "30b6017b07f1533d8d55abfbebec735c7f03f9e5",
+      "tree": "fa6c3caa15d44d59b5ff08b10c1e6a0a4a20633a"
+    },
+    {
+      "classification": "HOST_AUTHORITY_LEGACY_CLOSURE_PROVISIONING",
+      "commit": "81096a1afcd8ffcf7fd2c0b8c5ebc02b7bc3acbc",
+      "tree": "56b028960db0b0314fd323bc006a7569ca0b36db"
+    },
+    {
+      "classification": "HOST_AUTHORITY_EVIDENCE_ISOLATION_INITIAL",
+      "commit": "3486df502a94724817e990cd9e2e6877bb79792b",
+      "tree": "f14a819f5d9173301abe56085301e919901de45f"
+    },
+    {
+      "classification": "HOST_AUTHORITY_EVIDENCE_ISOLATION_RUNTIME_FIX",
+      "commit": "0e5ae5b1bb3fe875dc4ae8ca4cc0d236f8ca80ef",
+      "tree": "a7f01f6f381e26b1d23dd1cd1223d01d25f004d8"
+    },
+    {
+      "classification": "HOST_AUTHORITY_TRUSTED_ANCESTRY_FIX",
+      "commit": "2ff95963a8f6336b62f035c8c449f02be7701e58",
+      "tree": "082e157aed51f215238a631f003cd575cf5307fb"
+    },
+    {
+      "classification": "P1_U04_HOST_SCOPE_VALIDATOR",
+      "commit": "b12cf94a32839e159ec14b1bf087c59afd68827a",
+      "tree": "c7b005234ca52a6c4bfe1f165dd7e68f48344531"
+    },
+    {
+      "classification": "HOST_RUNTIME_RELEASE_XATTR_COVERAGE_FIX",
+      "commit": "3f62908385be289999ccd14eed2e4007efdbf9e2",
+      "tree": "8b3e147d5c8b27fba989183fb0a8822ec40b97a1"
+    }
+  ],
+  "recorded_at": "2026-08-28",
+  "remote_canonical": {
+    "commit": "30b6017b07f1533d8d55abfbebec735c7f03f9e5",
+    "foundation_conclusion": "success",
+    "foundation_run_id": 33152028092,
+    "tree": "fa6c3caa15d44d59b5ff08b10c1e6a0a4a20633a"
+  },
+  "schema": "trading-agent-p1-current-source-baseline/v1"
+}

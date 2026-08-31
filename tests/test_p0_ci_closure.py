@@ -457,6 +457,7 @@ def test_make_execution_semantic_mutations_fail_closed(
         ("foundation.yml", b"    timeout-minutes: 45", b"    timeout-minutes: 45\n    permissions:\n      contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"  pull_request:\n", b"  schedule:\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"include-hidden-files: true", b"include-hidden-files: false", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b'git archive "$base_sha"', b'git archive "$GITHUB_SHA"', "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         (
             "foundation.yml",
             b"path: ${{ runner.temp }}/trading-agent-ci-portable-publication.${{ github.run_id }}.${{ github.run_attempt }}/artifact/**",
@@ -467,7 +468,7 @@ def test_make_execution_semantic_mutations_fail_closed(
         ("host-authority.yml", b"runs-on: [self-hosted, linux, x64, trading-authority]", b"runs-on: ubuntu-24.04", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"make ci-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
     ],
-    ids=["live-true", "portable-runner", "permission", "job-permission", "trigger", "hidden", "upload-path", "host-trigger", "host-runner", "host-route"],
+    ids=["live-true", "portable-runner", "permission", "job-permission", "trigger", "hidden", "classifier-base", "upload-path", "host-trigger", "host-runner", "host-route"],
 )
 def test_structural_workflow_contract_attacks_fail_closed(context: closure._ValidationContext, workflow: str, old: bytes, new: bytes, code: str) -> None:
     """Break caught: workflow authority, route, runner or artifact custody drifts."""
@@ -822,7 +823,8 @@ def test_public_completion_cli_uses_canonical_temp_repository(
             MATRIX_RELATIVE, "scripts/check_p0_ci_closure.py", "tests/test_p0_ci_closure.py",
             "scripts/check_artifact_firewall.py", "scripts/t_g03_capability_topology.py",
         "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
-        "docs/implementation/p0-ci-closure.md", "Makefile", ".github/workflows/foundation.yml",
+        "docs/implementation/p0-ci-closure.md", "Makefile",
+        ".github/workflows/foundation.yml", ".github/workflows/host-authority.yml",
     ):
         shutil.copy2(ROOT / relative, clone / relative)
     _git(clone, "add", "--", ".")

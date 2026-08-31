@@ -436,10 +436,11 @@ def load_recovery_checkpoint(
 
     seen_event_ids: set[UUID] = set()
     validated_evidence: list[tuple[UUID, SandboxRecoveryCheckpoint]] = []
-    for event in tuple.__iter__(events):
+    for expected_sequence, event in enumerate(tuple.__iter__(events), start=1):
         checkpoint = validate_recovery_checkpoint_event(event)
         record = object.__getattribute__(event, "payload")
         event_id = object.__getattribute__(event, "event_id")
+        event_sequence = object.__getattribute__(event, "sequence")
         stream_id = object.__getattribute__(event, "stream_id")
         record_session_id = object.__getattribute__(record, "recovery_session_id")
         record_checkpoint_id = object.__getattribute__(record, "checkpoint_id")
@@ -452,6 +453,10 @@ def load_recovery_checkpoint(
                 "recovery checkpoint stream contains a duplicate event_id"
             )
         seen_event_ids.add(event_id)
+        if event_sequence != expected_sequence:
+            raise SandboxRecoveryPersistenceError(
+                "recovery checkpoint stream sequence is not contiguous"
+            )
         if (
             event_id != record_checkpoint_id
             or record_checkpoint_id != checkpoint.checkpoint_id

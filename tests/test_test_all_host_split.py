@@ -185,4 +185,10 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert re.search(r"^permissions:\n  contents: read$", host, re.MULTILINE)
     assert "environment: trading-authority" in host
     assert "runs-on: [self-hosted, linux, x64, trading-authority]" in host
-    assert "run: make ci-host-authority NONINTERACTIVE=1" in host
+    assert "run: uv sync --frozen --extra test --directory legacy/research-backend" in host
+    assert (
+        'run: TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.'
+        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" '
+        "make ci-host-authority NONINTERACTIVE=1"
+    ) in host
+    assert "$RUNNER_TEMP/trading-agent-host-authority" not in host

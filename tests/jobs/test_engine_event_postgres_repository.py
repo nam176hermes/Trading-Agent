@@ -18,6 +18,7 @@ from services.job_store.engine_event_repository import (
     PostgresEngineEventLedgerSql,
 )
 from services.job_store.worker_repository import WorkerRepository
+from tests.engine_event_ledger.test_p1_stream_ingestion import _validated_p1_batch
 from tests.jobs.test_engine_event_ledger import RUN_ID, _batch, _claim_for, _event
 
 
@@ -123,7 +124,7 @@ def test_postgres_ingest_uses_one_transaction_and_one_function_statement() -> No
     assert tuple(event["stream_sequence"] for event in document["events"]) == (2, 3)
 
 
-def test_postgres_job_result_uses_only_protected_binding_function() -> None:
+def test_postgres_generic_job_result_uses_hardened_legacy_binding_function() -> None:
     batch = _batch(_event(2, "BacktestStarted"))
     claim = _claim_for(batch)
     expected = InMemoryEngineEventLedger().ingest_for_job(batch, claimed=claim)
@@ -135,14 +136,50 @@ def test_postgres_job_result_uses_only_protected_binding_function() -> None:
 
     assert receipt == expected
     assert connection.executions[0][0] == (
-        PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+        PostgresEngineEventLedgerSql.INGEST_LEGACY_JOB_RESULT
     )
-    assert "job_plane.ingest_engine_job_result" in connection.executions[0][0]
+    assert "job_plane.ingest_legacy_engine_job_result_v2" in (
+        connection.executions[0][0]
+    )
     assert connection.executions[0][1]["job_id"] == claim.job_id
     assert connection.executions[0][1]["attempt_id"] == claim.attempt_id
     assert connection.executions[0][1]["worker_id"] == claim.worker_id
     assert connection.executions[0][1]["lease_token"] == claim.lease_token
     assert connection.commit_count == 1
+
+
+def test_postgres_nautilus_v1_job_result_uses_hardened_legacy_binding() -> None:
+    batch = _batch(
+        _event(2, "NautilusBacktestCompleted"),
+        validator_id="nautilus-backtest-result-v1",
+    )
+    claim = _claim_for(batch)
+    expected = InMemoryEngineEventLedger().ingest_for_job(batch, claimed=claim)
+    connection = Connection([[_receipt_row(expected)]])
+
+    receipt = PostgresEngineEventLedger(Pool(connection)).ingest_for_job(
+        batch, claimed=claim
+    )
+
+    assert receipt == expected
+    assert connection.executions[0][0] == (
+        PostgresEngineEventLedgerSql.INGEST_LEGACY_JOB_RESULT
+    )
+
+
+def test_postgres_p1_job_result_uses_only_p1_v2_binding_function(tmp_path) -> None:
+    batch = _validated_p1_batch(tmp_path)
+    claim = _claim_for(batch)
+    expected = InMemoryEngineEventLedger().ingest_for_job(batch, claimed=claim)
+    connection = Connection([[_receipt_row(expected)]])
+
+    receipt = PostgresEngineEventLedger(Pool(connection)).ingest_for_job(
+        batch, claimed=claim
+    )
+
+    assert receipt == expected
+    assert connection.executions[0][0] == PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+    assert "job_plane.ingest_engine_job_result_v2" in connection.executions[0][0]
 
 
 def test_postgres_load_job_receipt_uses_binding_not_unbound_receipt_scan() -> None:
@@ -269,6 +306,11 @@ def test_postgres_reads_strict_receipt_events_and_projection_rows() -> None:
     projection_row["event_type_counts"] = [
         count.model_dump(mode="python") for count in projection.event_type_counts
     ]
+    projection_row.update(
+        batch_sha256=None,
+        semantic_digest=None,
+        request_message_id=None,
+    )
     connection = Connection(
         [[_receipt_row(receipt)], event_rows, [projection_row], [projection_row]]
     )
@@ -292,6 +334,9 @@ def test_projection_recovery_rolls_back_if_rows_are_not_strict_and_unique() -> N
         ],
         "last_sequence": 2,
         "last_digest": "a" * 64,
+        "batch_sha256": None,
+        "semantic_digest": None,
+        "request_message_id": None,
     }
     connection = Connection([[projection_row, projection_row]])
 
@@ -300,6 +345,31 @@ def test_projection_recovery_rolls_back_if_rows_are_not_strict_and_unique() -> N
 
     assert connection.commit_count == 0
     assert connection.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ("batch_sha256", "semantic_digest", "request_message_id"),
+)
+def test_projection_read_rejects_absent_authority_columns(missing: str) -> None:
+    projection_row = {
+        "engine_run_id": RUN_ID,
+        "event_count": 1,
+        "event_type_counts": [
+            {"event_type": "BacktestStarted", "count": 1}
+        ],
+        "last_sequence": 2,
+        "last_digest": "a" * 64,
+        "batch_sha256": None,
+        "semantic_digest": None,
+        "request_message_id": None,
+    }
+    del projection_row[missing]
+
+    with pytest.raises(EngineEventConflictError, match="invalid engine-run"):
+        PostgresEngineEventLedger(Pool(Connection([[projection_row]]))).load_projection(
+            RUN_ID
+        )
 
 
 def test_postgres_replay_is_derived_from_immutable_event_rows() -> None:

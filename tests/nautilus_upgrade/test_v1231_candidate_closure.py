@@ -60,7 +60,7 @@ def x4_posix_tmp_path() -> Iterator[Path]:
 
 
 def _portable_u04_test_modules() -> tuple[Path, ...]:
-    return tuple(sorted(U04_TEST_ROOT.glob("test_*.py")))
+    return tuple(sorted(U04_TEST_ROOT.rglob("test_*.py")))
 
 
 def _collect_u04_nodes(path: Path) -> subprocess.CompletedProcess[str]:
@@ -4521,6 +4521,28 @@ def test_candidate_artifact_validator_rejects_minimal_build_receipt(
         materializer._validate_candidate_artifact(builder, engine, inputs, roots)
 
 
+def test_p1_derivation_uses_accepted_manifest_not_mutable_build_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, inputs, roots, document = _write_candidate_artifact(
+        tmp_path, monkeypatch
+    )
+
+    def unexpected_build_replay(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("P1 derivation replayed mutable build workspace")
+
+    monkeypatch.setattr(builder, "_load_candidate_build_result", unexpected_build_replay)
+    _wheel, observed, _raw = materializer._validate_candidate_artifact(
+        builder,
+        engine,
+        inputs,
+        roots,
+        revalidate_build_results=False,
+    )
+
+    assert observed == document
+
+
 def test_candidate_artifact_validator_rejects_shared_forged_authority_identities(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4788,6 +4810,41 @@ def test_candidate_closure_attestation_cross_binds_exact_authorities(
                 base_runtime=base_runtime,
                 base_policy=base_policy,
             )
+
+
+def test_p1_derivation_attests_exact_generation_not_ambient_source_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base_runtime, base_policy, artifact, inputs, artifact_sha256 = (
+        _write_candidate_closure_fixture(tmp_path, monkeypatch)
+    )
+    inputs["policy_hashes"] = {"ambient": "0" * 64}
+
+    with pytest.raises(
+        materializer.RuntimeClosureMaterializationError,
+        match="candidate closure authority",
+    ):
+        materializer._attest_candidate_closure(
+            root,
+            artifact=artifact,
+            artifact_sha256=artifact_sha256,
+            inputs=inputs,
+            base_runtime=base_runtime,
+            base_policy=base_policy,
+        )
+
+    raw = (root / "closure-manifest.json").read_bytes()
+    observed = materializer._attest_candidate_closure(
+        root,
+        artifact=artifact,
+        artifact_sha256=artifact_sha256,
+        inputs=inputs,
+        base_runtime=base_runtime,
+        base_policy=base_policy,
+        accepted_manifest_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+    assert observed["activation_status"] == "CANDIDATE_ONLY_NOT_ACTIVATED"
 
 
 def test_candidate_base_binding_requires_physical_selected_schema6_attestation() -> None:

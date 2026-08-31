@@ -55,6 +55,7 @@ from .portfolio import (
     VenueExposureSnapshot,
 )
 from .portfolio_events import (
+    PortfolioAccountObservationEntry,
     PortfolioConversionEntry,
     PortfolioFillEntry,
     PortfolioFundingEntry,
@@ -164,6 +165,7 @@ __all__ = [
     "PortfolioSnapshot",
     "PortfolioConversionEntry",
     "PortfolioFillEntry",
+    "PortfolioAccountObservationEntry",
     "PortfolioFundingEntry",
     "PortfolioMarkEntry",
     "PortfolioOpeningEntry",

@@ -1,0 +1,61 @@
+{
+  "fee_only": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"},
+      {"fills": [{"fee": "0.2", "price": "100", "quantity": "1"}], "quantity": "1", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "999.7", "fees": "0.3", "mark": null, "position": "0", "realized": "0", "unrealized": "0"}
+  },
+  "flatten": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"},
+      {"fills": [{"fee": "0.1", "price": "102", "quantity": "1"}], "quantity": "1", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "1001.8", "fees": "0.2", "mark": null, "position": "0", "realized": "2", "unrealized": "0"}
+  },
+  "hold": {
+    "orders": [],
+    "terminal": {"average": "0", "cash": "1000", "fees": "0", "mark": null, "position": "0", "realized": "0", "unrealized": "0"}
+  },
+  "long_entry": {
+    "orders": [
+      {"fills": [{"fee": "0.1", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "100", "cash": "899.9", "fees": "0.1", "mark": "101", "position": "1", "realized": "0", "unrealized": "1"}
+  },
+  "netting_close_reopen": {
+    "orders": [
+      {"fills": [{"fee": "0.2", "price": "100", "quantity": "2"}], "quantity": "2", "side": "BUY"},
+      {"fills": [{"fee": "0.2", "price": "110", "quantity": "2"}], "quantity": "2", "side": "SELL"},
+      {"fills": [{"fee": "0.1", "price": "90", "quantity": "1"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "90", "cash": "929.5", "fees": "0.5", "mark": "95", "position": "1", "realized": "20", "unrealized": "5"}
+  },
+  "partial_fill": {
+    "orders": [
+      {"fills": [{"fee": "0.04", "price": "100", "quantity": "0.4"}, {"fee": "0.06", "price": "102", "quantity": "0.6"}], "quantity": "1", "side": "BUY"}
+    ],
+    "terminal": {"average": "101.2", "cash": "898.7", "fees": "0.1", "mark": "102", "position": "1", "realized": "0", "unrealized": "0.8"}
+  },
+  "repeating_marked_open": {
+    "orders": [
+      {"fills": [{"fee": "0", "price": "100", "quantity": "1"}], "quantity": "1", "side": "BUY"},
+      {"fills": [{"fee": "0", "price": "101", "quantity": "2"}], "quantity": "2", "side": "BUY"}
+    ],
+    "terminal": {"average": "100.666667", "cash": "698", "fees": "0", "mark": "102", "position": "3", "realized": "0", "unrealized": "4"}
+  },
+  "repeating_weighted_basis": {
+    "orders": [
+      {"fills": [{"fee": "0.2", "price": "100", "quantity": "2"}, {"fee": "998.800979", "price": "100.01", "quantity": "9987.011088"}], "quantity": "9989.011088", "side": "BUY"},
+      {"fills": [{"fee": "0.303", "price": "101", "quantity": "3"}, {"fee": "1008.48726", "price": "100.99", "quantity": "9986.011088"}], "quantity": "9989.011088", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "8781.489627", "fees": "2007.791239", "mark": null, "position": "0", "realized": "9789.280866", "unrealized": "0"}
+  },
+  "split_fill_realized": {
+    "orders": [
+      {"fills": [{"fee": "0", "price": "1000", "quantity": "0.000100"}], "quantity": "0.000100", "side": "BUY"},
+      {"fills": [{"fee": "0", "price": "1000.01", "quantity": "0.000050"}, {"fee": "0", "price": "1000.01", "quantity": "0.000050"}], "quantity": "0.000100", "side": "SELL"}
+    ],
+    "terminal": {"average": "0", "cash": "1000", "fees": "0", "mark": null, "position": "0", "realized": "0.000001", "unrealized": "0"}
+  }
+}

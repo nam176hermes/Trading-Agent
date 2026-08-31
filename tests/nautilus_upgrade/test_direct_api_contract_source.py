@@ -88,9 +88,12 @@ def _source_text(
 
 def _nautilus_imports(
     source_overrides: dict[str, str] | None = None,
+    *,
+    relative_paths: tuple[str, ...] | None = None,
 ) -> list[dict[str, object]]:
     imports: list[dict[str, object]] = []
-    for relative_path in _tracked_python_paths():
+    paths = _tracked_python_paths() if relative_paths is None else relative_paths
+    for relative_path in paths:
         tree = ast.parse(
             _source_text(relative_path, source_overrides),
             filename=relative_path,
@@ -480,7 +483,12 @@ def _discover_import_alias_invocations(
 
     rows: list[dict[str, object]] = []
     import_paths = sorted(
-        {item["path"] for item in _nautilus_imports(source_overrides)}
+        {
+            item["path"]
+            for item in _nautilus_imports(
+                source_overrides, relative_paths=SOURCE_PATHS
+            )
+        }
     )
     for path_value in import_paths:
         path = str(path_value)
@@ -1039,7 +1047,7 @@ def test_direct_api_contract_covers_existing_source_imports() -> None:
         "source_binding_receipt",
     }
     assert contract["schema_version"] == "p1-nautilus-direct-api-contract/v2"
-    discovered_imports = _nautilus_imports()
+    discovered_imports = _nautilus_imports(relative_paths=SOURCE_PATHS)
     assert len(discovered_imports) == EXPECTED_IMPORT_COUNT
     assert contract["local_imports"] == discovered_imports
     assert contract["local_sources"] == sorted(
@@ -1222,6 +1230,15 @@ def test_direct_api_contract_covers_existing_source_imports() -> None:
         if item["kind"] == "ImportFrom"
     }
     assert direct_imports <= imports
+    qualified_imports = {
+        (surface["import_module"], surface["import_symbol"])
+        for surface in surfaces
+    }
+    product_imports = _nautilus_imports()
+    assert {item["kind"] for item in product_imports} == {"ImportFrom"}
+    assert {
+        (item["module"], item["symbol"]) for item in product_imports
+    } <= qualified_imports
 
     local_invocations = contract["local_invocations"]
     discovered_invocations = _assert_invocation_contract(contract)

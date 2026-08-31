@@ -1,0 +1,78 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "catalog_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Catalog Sha256",
+      "type": "string"
+    },
+    "data_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Data Sha256",
+      "type": "string"
+    },
+    "first_timestamp": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "First Timestamp",
+      "type": "string"
+    },
+    "last_timestamp": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Last Timestamp",
+      "type": "string"
+    },
+    "media_type": {
+      "const": "application/jsonl",
+      "title": "Media Type",
+      "type": "string"
+    },
+    "normalization_version": {
+      "const": "market-normalization-v1",
+      "title": "Normalization Version",
+      "type": "string"
+    },
+    "quote_bar_pair_policy": {
+      "const": "quote-then-bar",
+      "title": "Quote Bar Pair Policy",
+      "type": "string"
+    },
+    "row_count": {
+      "exclusiveMinimum": 0,
+      "maximum": 10000000,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "nautilus-p1-market-data-manifest-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "timeframe": {
+      "const": "1m",
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "timestamp_policy": {
+      "const": "close",
+      "title": "Timestamp Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "media_type",
+    "row_count",
+    "first_timestamp",
+    "last_timestamp",
+    "quote_bar_pair_policy",
+    "timeframe",
+    "timestamp_policy",
+    "data_sha256",
+    "catalog_sha256",
+    "normalization_version"
+  ],
+  "title": "P1MarketDataManifestV1",
+  "type": "object"
+}

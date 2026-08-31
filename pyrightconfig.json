@@ -3,7 +3,9 @@
     "apps/control_api",
     "apps/job_api",
     "packages",
-    "services"
+    "services",
+    "scripts/qualify_p1_nautilus.py",
+    "scripts/qualify_p1_nautilus_paper.py"
   ],
   "exclude": [
     "**/__pycache__",

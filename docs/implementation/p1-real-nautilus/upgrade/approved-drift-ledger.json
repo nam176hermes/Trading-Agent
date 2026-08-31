@@ -1,0 +1,11 @@
+{
+  "candidate_generation_id": "NT1231-U04-G1",
+  "entries": [],
+  "normalized_fields": [
+    "attempt_id",
+    "custody_timestamp",
+    "run_uuid",
+    "staging_token"
+  ],
+  "schema": "trading-agent-nautilus-approved-drift-ledger/v1"
+}

@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
+      "minItems": 20,
+      "maxItems": 20,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -95,6 +95,13 @@
         {"$ref": "#/$defs/sourceBinding0009"},
         {"$ref": "#/$defs/sourceBinding0010"},
         {"$ref": "#/$defs/sourceBinding0011"},
+        {"$ref": "#/$defs/sourceBinding0012"},
+        {"$ref": "#/$defs/sourceBinding0013"},
+        {"$ref": "#/$defs/sourceBinding0014"},
+        {"$ref": "#/$defs/sourceBinding0015"},
+        {"$ref": "#/$defs/sourceBinding0016"},
+        {"$ref": "#/$defs/sourceBinding0017"},
+        {"$ref": "#/$defs/sourceBinding0018"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
@@ -260,6 +267,48 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0011_engine_backtest_worker_authority.py"}}}
+      ]
+    },
+    "sourceBinding0012": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0012_p1_engine_projection_authority.py"}}}
+      ]
+    },
+    "sourceBinding0013": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0013_engine_backtest_enqueue_authority.py"}}}
+      ]
+    },
+    "sourceBinding0014": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0014_p1_product_closure_rotation.py"}}}
+      ]
+    },
+    "sourceBinding0015": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0015_p1_accounting_closure_rotation.py"}}}
+      ]
+    },
+    "sourceBinding0016": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0016_p1_result_authority_repair.py"}}}
+      ]
+    },
+    "sourceBinding0017": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0017_p1_request_digest_authority.py"}}}
+      ]
+    },
+    "sourceBinding0018": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0018_p1_paper_closure_rotation.py"}}}
       ]
     },
     "sourceBindingJobRoles": {

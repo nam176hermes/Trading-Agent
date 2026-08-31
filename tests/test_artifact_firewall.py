@@ -1541,7 +1541,7 @@ def test_semantic_digest_changes_when_validation_date_changes_governed_policy_ou
         entry["review_by"] = "2026-08-15"
     assert len(governance.validate_allowlist_document(
         policy, today=date(2026, 8, 15),
-    )) == 31
+    )) == 38
     with pytest.raises(governance.AllowlistValidationError) as caught:
         governance.validate_allowlist_document(policy, today=date(2026, 8, 16))
     assert caught.value.policy_class == "POLICY_REVIEW_DATE_EXPIRED"
@@ -2152,6 +2152,31 @@ def test_publisher_rejects_staging_ancestor_replacement_after_lineage_validation
     with pytest.raises(firewall.FirewallError, match="identity|changed|lineage"):
         _publish(staging, destination)
     assert not destination.exists()
+
+
+def test_lineage_allows_same_inode_ancestor_metadata_churn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "artifact"
+    artifact.mkdir(mode=0o700)
+    original_open = firewall.os.open
+    churned = False
+
+    def open_after_churn(
+        path: str | bytes, flags: int, mode: int = 0o777, *, dir_fd: int | None = None,
+    ) -> int:
+        nonlocal churned
+        if not churned and path == tmp_path.name:
+            churned = True
+            (tmp_path / "concurrent-sibling").mkdir(mode=0o700)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(firewall.os, "open", open_after_churn)
+
+    with firewall._validate_lineage(artifact, create=False):
+        pass
+
+    assert churned
 
 
 def test_publisher_rejects_named_child_directory_replacement_after_snapshot(

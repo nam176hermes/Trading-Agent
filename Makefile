@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -6,6 +6,7 @@
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
+	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice test-p1-nautilus-source test-p1-nautilus-native qualify-p1-nautilus test-p1-nautilus-e2e test-p1-nautilus-paper qualify-p1-nautilus-paper \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
@@ -26,6 +27,14 @@ NAUTILUS_IMPORT_BASE_RUNTIME ?=
 NAUTILUS_IMPORT_ARTIFACT_DIRECTORY ?=
 NAUTILUS_IMPORT_SANDBOX ?= $(NAUTILUS_ENGINE_SANDBOX)
 NAUTILUS_IMPORT_RECEIPT ?=
+P1_NAUTILUS_BASE_RUNTIME ?=
+P1_NAUTILUS_ARTIFACT_DIRECTORY ?=
+P1_NAUTILUS_RUNTIME_DESTINATION ?=
+P1_NAUTILUS_SANDBOX ?=
+P1_NAUTILUS_CARGO ?=
+P1_NAUTILUS_LLVM_TOOLCHAIN ?=
+P1_NAUTILUS_SOURCE_COMMIT ?=
+P1_NAUTILUS_QUALIFICATION_RECEIPT ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -40,6 +49,71 @@ check-p0-maintainability:
 	$(PYTHON) scripts/check_p0_maintainability.py \
 		--manifest docs/implementation/p0-maintainability-hotspots.json \
 		--root "$(CURDIR)"
+
+check-p1-nautilus-boundaries:
+	$(PYTHON) scripts/check_p1_nautilus_boundaries.py
+
+check-p1-nautilus-lineage:
+	$(PYTHON) scripts/check_p1_nautilus_boundaries.py --lineage-report
+
+check-p1-nautilus-pin-inventory:
+	uv run pytest -q tests/governance/nautilus_pin_inventory/test_engine.py::test_engine_generates_from_the_exact_current_commit_source
+
+generate-p1-nautilus-contracts:
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py
+
+check-p1-nautilus-contracts:
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+
+qualify-p1-nautilus-vertical-slice:
+	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
+
+test-p1-nautilus-source:
+	uv run pytest -q tests/nautilus_runtime_contracts tests/p1_nautilus \
+		--ignore=tests/p1_nautilus/adversarial/test_three_run_determinism.py \
+		--ignore=tests/p1_nautilus/test_backtest_runner_native.py \
+		--ignore=tests/p1_nautilus/test_event_stream_native.py \
+		--ignore=tests/p1_nautilus/test_instrument_factory_native.py \
+		--ignore=tests/p1_nautilus/test_market_data_native.py \
+		--ignore=tests/p1_nautilus/test_package6_host_authority.py \
+		--ignore=tests/p1_nautilus/test_target_strategy_native.py \
+		--ignore=tests/p1_nautilus/test_vertical_slice_e2e.py
+
+test-p1-nautilus-native:
+	@set -eu; \
+		if test -z "$${P1_NAUTILUS_PYTHON:-}" && test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}"; then \
+			printf '%s\n' '{"authority_limits":{"live_authorized":false,"network_trading_authorized":false,"production_authorized":false},"verdict":"DEFERRED"}'; \
+		elif test -z "$${P1_NAUTILUS_PYTHON:-}" || test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}"; then \
+			printf '%s\n' 'P1 native authority is partial or invalid' >&2; exit 2; \
+		else \
+			uv run pytest -q \
+				tests/p1_nautilus/test_backtest_runner_native.py \
+				tests/p1_nautilus/test_event_stream_native.py \
+				tests/p1_nautilus/test_instrument_factory_native.py \
+				tests/p1_nautilus/test_market_data_native.py \
+				tests/p1_nautilus/test_target_strategy_native.py \
+				tests/p1_nautilus/adversarial/test_three_run_determinism.py; \
+		fi
+
+qualify-p1-nautilus:
+	$(PYTHON) scripts/qualify_p1_nautilus.py
+
+test-p1-nautilus-e2e:
+	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
+
+test-p1-nautilus-paper:
+	uv run pytest -q tests/paper_runtime
+	@set -eu; \
+		if test -z "$${P1_NAUTILUS_PYTHON:-}" && test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}" && test -z "$${P1_NAUTILUS_PRODUCT_LINEAGE:-}"; then \
+			printf '%s\n' '{"authority_limits":{"live_authorized":false,"network_trading_authorized":false,"production_authorized":false},"verdict":"DEFERRED"}'; \
+		elif test -z "$${P1_NAUTILUS_PYTHON:-}" || test -z "$${P1_NAUTILUS_CLOSURE_MANIFEST:-}" || test -z "$${P1_NAUTILUS_PRODUCT_LINEAGE:-}"; then \
+			printf '%s\n' 'P1 paper native authority is partial or invalid' >&2; exit 2; \
+		else \
+			uv run pytest -q tests/p1_nautilus/test_paper_runtime_native.py; \
+		fi
+
+qualify-p1-nautilus-paper:
+	$(PYTHON) scripts/qualify_p1_nautilus_paper.py
 
 check-p0-ci-closure:
 	$(PYTHON) scripts/check_p0_ci_closure.py \
@@ -84,8 +158,9 @@ audit-dependencies: audit-dependencies-production audit-dependencies-dev
 generate-contracts:
 	uv run python scripts/generate_contracts.py
 
-check-contracts:
+check-contracts: check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory
 	uv run python scripts/generate_contracts.py --check
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
@@ -263,6 +338,38 @@ qualify-nautilus-sealed-imports:
 			--artifact-directory "$(NAUTILUS_IMPORT_ARTIFACT_DIRECTORY)" \
 			--sandbox "$(NAUTILUS_IMPORT_SANDBOX)" \
 			--receipt "$(NAUTILUS_IMPORT_RECEIPT)"
+
+build-p1-nautilus-runtime:
+	@set -eu; \
+		test -n "$(P1_NAUTILUS_BASE_RUNTIME)"; \
+		test -n "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)"; \
+		test -n "$(P1_NAUTILUS_RUNTIME_DESTINATION)"; \
+		test -n "$(P1_NAUTILUS_SANDBOX)"; \
+		test -n "$(P1_NAUTILUS_CARGO)"; \
+		test -n "$(P1_NAUTILUS_LLVM_TOOLCHAIN)"; \
+		test -n "$(P1_NAUTILUS_SOURCE_COMMIT)"; \
+		$(PYTHON) scripts/materialize_nautilus_runtime_closure.py \
+			--materialize-p1 \
+			--base-runtime "$(P1_NAUTILUS_BASE_RUNTIME)" \
+			--artifact-directory "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)" \
+			--destination "$(P1_NAUTILUS_RUNTIME_DESTINATION)" \
+			--sandbox "$(P1_NAUTILUS_SANDBOX)" \
+			--cargo "$(P1_NAUTILUS_CARGO)" \
+			--llvm-toolchain "$(P1_NAUTILUS_LLVM_TOOLCHAIN)" \
+			--source-commit "$(P1_NAUTILUS_SOURCE_COMMIT)"
+
+qualify-p1-nautilus-runtime:
+	@set -eu; \
+		if test -z "$(P1_NAUTILUS_BASE_RUNTIME)$(P1_NAUTILUS_ARTIFACT_DIRECTORY)$(P1_NAUTILUS_SANDBOX)$(P1_NAUTILUS_QUALIFICATION_RECEIPT)"; then \
+			$(PYTHON) scripts/qualify_nautilus_sealed_imports.py --p1; \
+		else \
+			$(PYTHON) scripts/qualify_nautilus_sealed_imports.py \
+				--p1 \
+				--base-runtime "$(P1_NAUTILUS_BASE_RUNTIME)" \
+				--artifact-directory "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)" \
+				--sandbox "$(P1_NAUTILUS_SANDBOX)" \
+				--receipt "$(P1_NAUTILUS_QUALIFICATION_RECEIPT)"; \
+		fi
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \

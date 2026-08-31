@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import gc
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -20,6 +21,7 @@ from uuid import UUID
 import pytest
 
 import services.job_worker.engine_spawn as engine_spawn_module
+import services.job_worker.p1_engine_spawn as p1_engine_spawn_module
 from packages.engine_contracts import (
     ArtifactReference,
     CURRENT_SCHEMA_VERSION,
@@ -39,6 +41,12 @@ from services.job_worker.engine_spawn import (
     OsSandboxProof,
     ReadOnlyClosureMount,
     consume_prepared_engine_spawn,
+)
+from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+from services.job_worker.p1_engine_spawn import (
+    P1EngineClosureAttestation,
+    P1EngineSpawnProvider,
+    consume_prepared_p1_paper_launch,
 )
 
 
@@ -304,15 +312,95 @@ def _provider(
     *,
     attest_inputs=None,
     expected_manifest_schema_version: int = 1,
-) -> EngineSpawnProvider:
+    profile_policy=None,
+) -> EngineSpawnProvider | P1EngineSpawnProvider:
     transport = tmp_path / "transport"
     transport.mkdir(mode=0o700, exist_ok=True)
+    if profile_policy is not None:
+        return P1EngineSpawnProvider(
+            transport_root=transport,
+            attest_closure=attestor,
+            attest_inputs=attest_inputs,
+            expected_manifest_schema_version=expected_manifest_schema_version,
+            profile_policy=profile_policy,
+            monotonic_ns=lambda: 1_000_000_000,
+        )
     return EngineSpawnProvider(
         transport_root=transport,
         attest_closure=attestor,
         attest_inputs=attest_inputs,
         expected_manifest_schema_version=expected_manifest_schema_version,
         monotonic_ns=lambda: 1_000_000_000,
+    )
+
+
+def _p1_closure(tmp_path: Path) -> P1EngineClosureAttestation:
+    closure = _closure(
+        tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+        manifest_schema_version=8,
+        dependency_import_policy=DEPENDENCY_IMPORT_POLICY,
+    )
+    lineage_path = tmp_path / "p1-product-lineage.json"
+    lineage_path.write_bytes(
+        (
+            json.dumps(
+                {
+                    "closure_sha256": P1_REAL_BACKTEST_POLICY.closure_sha256,
+                    "engine_version": P1_REAL_BACKTEST_POLICY.engine_version,
+                    "event_schema": P1_REAL_BACKTEST_POLICY.event_schema,
+                    "profile": P1_REAL_BACKTEST_POLICY.profile,
+                    "profile_manifest_schema_version": 8,
+                    "runtime_family": P1_REAL_BACKTEST_POLICY.runtime_family,
+                    "runtime_inventory_sha256": P1_REAL_BACKTEST_POLICY.runtime_inventory_sha256,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+    )
+    lineage_path.chmod(0o400)
+    assert closure.closure_manifest is not None
+    assert closure.native_entry_guard is not None
+    runtime_root = tmp_path / "p1-runtime-v1"
+    runtime_root.mkdir(mode=0o700)
+    runtime_mounts = []
+    for source in sorted(
+        (Path(__file__).parents[2] / "engines/nautilus/runtime_v1").glob("*.py")
+    ):
+        destination = runtime_root / source.name
+        shutil.copyfile(source, destination)
+        destination.chmod(0o400)
+        runtime_mounts.append(
+            _closure_file(destination, f"/engine/runtime_v1/{source.name}")
+        )
+    runtime_root.chmod(0o500)
+    return P1EngineClosureAttestation(
+        manifest_schema_version=8,
+        profile=P1_REAL_BACKTEST_POLICY.profile,
+        source_commit=closure.source_commit,
+        closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
+        mounts=(*closure.mounts, *runtime_mounts),
+        entrypoint=closure.entrypoint,
+        semantic_profile=P1_REAL_BACKTEST_POLICY.semantic_profile,
+        argv_prefix=P1_REAL_BACKTEST_POLICY.argv_prefix,
+        timeout_seconds=P1_REAL_BACKTEST_POLICY.timeout_seconds,
+        result_validator_id=P1_REAL_BACKTEST_POLICY.result_validator_id,
+        sandbox=closure.sandbox,
+        closure_manifest=closure.closure_manifest,
+        native_entry_guard=closure.native_entry_guard,
+        runtime_family=P1_REAL_BACKTEST_POLICY.runtime_family,
+        engine_version=P1_REAL_BACKTEST_POLICY.engine_version,
+        engine_upstream_commit=P1_REAL_BACKTEST_POLICY.engine_upstream_commit,
+        event_schema=P1_REAL_BACKTEST_POLICY.event_schema,
+        runtime_inventory_sha256=P1_REAL_BACKTEST_POLICY.runtime_inventory_sha256,
+        dependency_import_policy=P1_REAL_BACKTEST_POLICY.dependency_import_policy,
+        product_lineage=_closure_file(
+            lineage_path, "/engine/p1-product-lineage.json"
+        ),
     )
 
 
@@ -423,6 +511,171 @@ def _real_bwrap_closure(
         ),
     )
     return closure, roots["bin"] / "dash", script
+
+
+def test_p1_provider_uses_only_the_code_owned_schema8_profile(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _p1_closure(secure_tmp_path)
+    provider = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        expected_manifest_schema_version=8,
+        profile_policy=P1_REAL_BACKTEST_POLICY,
+    )
+    spawn = consume_prepared_engine_spawn(provider.prepare(_envelope()))
+    try:
+        assert spawn.argv[-9:] == (
+            "/engine/bin/nautilus-entry-guard",
+            *P1_REAL_BACKTEST_POLICY.argv_prefix,
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        )
+        assert spawn.result_validator_id == P1_REAL_BACKTEST_POLICY.result_validator_id
+        assert "/engine/p1-product-lineage.json" in spawn.argv
+        assert spawn.source_revision == closure.source_commit
+        assert spawn.lineage.closure_sha256 == closure.closure_sha256
+        assert (
+            spawn.lineage.sandbox_profile_sha256
+            == closure.sandbox.profile_sha256
+        )
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_p1_paper_launch_is_derived_only_from_the_exact_prepared_spawn(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _p1_closure(secure_tmp_path)
+    request = _envelope()
+    provider = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        expected_manifest_schema_version=8,
+        profile_policy=P1_REAL_BACKTEST_POLICY,
+    )
+    authority = consume_prepared_p1_paper_launch(
+        provider.prepare(request), closure, request
+    )
+    try:
+        argv = authority.built.argv
+        assert "--bind" not in argv
+        assert "--setenv" not in argv
+        assert "--share-net" not in argv
+        assert argv.count("--ro-bind-data") == len(authority.built.pass_fds) - 1
+        assert argv[-6:] == (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/runtime_v1/paper_main.py",
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        )
+        assert len(authority.argv_sha256) == 64
+        assert len(authority.paper_source_sha256) == 64
+        assert len(authority.python_executable_identity) == 2
+        assert len(authority.python_executable_sha256) == 64
+    finally:
+        _close_spawn_fds(authority.built)
+
+
+def test_p1_paper_launch_rejects_one_byte_source_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "runtime_v1"
+    shutil.copytree(
+        Path(__file__).parents[2] / "engines/nautilus/runtime_v1",
+        source,
+    )
+    changed = source / "errors.py"
+    changed.write_bytes(changed.read_bytes() + b"\n")
+    changed.chmod(0o644)
+    monkeypatch.setattr(p1_engine_spawn_module, "_PAPER_SOURCE_ROOT", source)
+
+    with pytest.raises(EngineSpawnError, match="paper source authority changed"):
+        p1_engine_spawn_module._paper_source_inventory()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"manifest_schema_version": 7},
+        {"profile": "execution-simulation"},
+        {"argv_prefix": P1_REAL_BACKTEST_POLICY.argv_prefix + ("--extra",)},
+        {"result_validator_id": "nautilus-backtest-result-v1"},
+        {"runtime_family": "cython-v2"},
+        {"closure_sha256": "0" * 64},
+    ),
+)
+def test_p1_provider_rejects_generation_profile_or_protocol_substitution(
+    secure_tmp_path: Path,
+    mutation: dict[str, object],
+) -> None:
+    closure = replace(_p1_closure(secure_tmp_path), **mutation)
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=8,
+            profile_policy=P1_REAL_BACKTEST_POLICY,
+        ).prepare(_envelope())
+
+
+def test_p1_provider_rejects_tampered_derived_lineage(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _p1_closure(secure_tmp_path)
+    assert closure.product_lineage is not None
+    source = closure.product_lineage.source
+    source.chmod(0o600)
+    document = json.loads(source.read_bytes())
+    document["closure_sha256"] = "0" * 64
+    source.write_bytes((json.dumps(document, separators=(",", ":"), sort_keys=True) + "\n").encode())
+    source.chmod(0o400)
+    tampered = replace(
+        closure,
+        product_lineage=_closure_file(source, "/engine/p1-product-lineage.json"),
+    )
+    with pytest.raises(EngineSpawnError, match="lineage"):
+        _provider(
+            secure_tmp_path,
+            lambda: tampered,
+            expected_manifest_schema_version=8,
+            profile_policy=P1_REAL_BACKTEST_POLICY,
+        ).prepare(_envelope())
+
+
+def test_schema7_remains_unavailable_to_the_product_worker(
+    secure_tmp_path: Path,
+) -> None:
+    closure = replace(_p1_closure(secure_tmp_path), manifest_schema_version=7)
+    with pytest.raises(ValueError, match="schema"):
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=7,
+            profile_policy=P1_REAL_BACKTEST_POLICY,
+        )
+    with pytest.raises(ValueError, match="schema"):
+        _provider(
+            secure_tmp_path,
+            lambda: _p1_closure(secure_tmp_path),
+            expected_manifest_schema_version=8,
+        )
+
+
+def test_p1_provider_rejects_a_copied_schema8_profile_policy(
+    secure_tmp_path: Path,
+) -> None:
+    copied_policy = replace(P1_REAL_BACKTEST_POLICY)
+    with pytest.raises(ValueError, match="code-owned P1 engine profile policy"):
+        _provider(
+            secure_tmp_path,
+            lambda: _p1_closure(secure_tmp_path),
+            expected_manifest_schema_version=8,
+            profile_policy=copied_policy,
+        )
 
 
 def _close_spawn_fds(spawn) -> None:

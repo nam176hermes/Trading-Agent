@@ -1,0 +1,22 @@
+{
+  "candidate_generation_id": "NT1231-U04-G1",
+  "catalog_path": "tests/nautilus_upgrade/regressions/v1.228-v1.231.json",
+  "catalog_sha256": "e88b5964269bc4753a634f81098c0811cf636b2d1e048b936e7a505addfefe3c",
+  "disposition_counts": {
+    "NOT_USED": 14,
+    "SCENARIO": 15,
+    "UPSTREAM_ONLY": 11
+  },
+  "release_item_count": 40,
+  "scenario_ids": [
+    "event-digest",
+    "long-accounting",
+    "partial-fill",
+    "same-bar-stop-take-profit",
+    "session-boundary",
+    "short-accounting",
+    "stale-quote",
+    "zero-liquidity"
+  ],
+  "schema": "trading-agent-nautilus-release-regression-matrix/v1"
+}

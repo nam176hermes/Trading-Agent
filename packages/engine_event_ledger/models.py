@@ -6,7 +6,7 @@ import hashlib
 from typing import Annotated, Final
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.engine_contracts import EngineEventEnvelope, EventFamily, canonical_json
 
@@ -73,6 +73,26 @@ class EngineRunProjection(EngineEventLedgerModel):
     event_type_counts: tuple[EngineEventTypeCount, ...]
     last_sequence: PositiveSequence
     last_digest: Sha256Hex
+    batch_sha256: Sha256Hex | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    semantic_digest: Sha256Hex | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    request_message_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def _complete_result_authority(self) -> "EngineRunProjection":
+        present = (
+            self.batch_sha256 is not None,
+            self.semantic_digest is not None,
+            self.request_message_id is not None,
+        )
+        if any(present) and not all(present):
+            raise ValueError("engine run result authority must be complete")
+        return self
 
 
 class EngineEventBatchReceipt(EngineEventLedgerModel):
@@ -99,3 +119,6 @@ class EngineEventLedgerState(EngineEventLedgerModel):
     events: tuple[StoredEngineEvent, ...]
     receipts: tuple[EngineEventBatchReceipt, ...]
     job_results: tuple[EngineJobResultBinding, ...] = ()
+    projections: tuple[EngineRunProjection, ...] = Field(
+        default=(), exclude_if=lambda value: not value
+    )

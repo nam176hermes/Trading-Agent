@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 
 from apps.job_api.app import create_app
 from apps.job_api.config import JobApiSettings
-from packages.job_contracts import ActorIdentity, SnapshotPayload
+from packages.job_contracts import (
+    ActorIdentity,
+    EngineBacktestPayload,
+    SnapshotPayload,
+)
 from packages.job_contracts.transitions import InvalidTransition
 from packages.runtime_release import (
     RuntimeAuthority,
@@ -202,6 +206,51 @@ def test_create_returns_canonical_job_and_reports_deduplication() -> None:
     assert repository.last_enqueue[0].actor == PRINCIPAL
     assert repository.last_enqueue[1].startswith("trace_")
     assert "idempotency_key" not in created.text
+
+
+def test_authenticated_engine_backtest_uses_server_principal() -> None:
+    api, repository = client()
+    payload = {
+        "engine_backtest": {
+            "engine_configuration": {
+                "artifact_id": "11111111-1111-4111-8111-111111111111",
+                "sha256": "1" * 64,
+                "media_type": "application/json",
+            },
+            "instrument_catalog": {
+                "artifact_id": "22222222-2222-4222-8222-222222222222",
+                "sha256": "2" * 64,
+                "media_type": "application/json",
+            },
+            "strategy_configuration": {
+                "artifact_id": "33333333-3333-4333-8333-333333333333",
+                "sha256": "3" * 64,
+                "media_type": "application/json",
+            },
+            "market_data": {
+                "artifact_id": "44444444-4444-4444-8444-444444444444",
+                "sha256": "4" * 64,
+                "media_type": "application/jsonl",
+            },
+            "start_time": "2026-07-01T00:00:00Z",
+            "end_time": "2026-08-01T00:00:00Z",
+        }
+    }
+
+    response = api.post(
+        "/v1/jobs",
+        json=enqueue_payload(
+            job_type="BACKTEST",
+            payload=payload,
+            idempotency_key="manual:engine-backtest:api",
+        ),
+        headers=AUTH,
+    )
+
+    assert response.status_code == 201
+    request, _trace_id = repository.last_enqueue
+    assert request.actor == PRINCIPAL
+    assert type(request.payload) is EngineBacktestPayload
 
 
 def test_create_maps_idempotency_conflict_to_typed_409() -> None:

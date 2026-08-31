@@ -19,7 +19,11 @@ from psycopg_pool import ConnectionPool
 from packages.job_contracts import JobPayload, JobState, JobType, parse_payload, validate_transition
 from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 
-from .config import CANONICAL_DATABASE_REVISION, JobStoreSettings
+from .config import (
+    CANONICAL_DATABASE_REVISION,
+    P1_DISPOSABLE_DATABASE_REVISION,
+    JobStoreSettings,
+)
 from .errors import InvalidTraceId
 
 
@@ -120,6 +124,18 @@ class WorkerRepository:
             raise ValueError("worker database role authority is invalid")
         if expected_revision != CANONICAL_DATABASE_REVISION:
             raise ValueError("worker database revision authority is invalid")
+        self._assert_database_identity(expected_user, expected_revision)
+
+    def assert_p1_disposable_runtime_identity(self) -> None:
+        """Require the code-owned disposable P1 worker role and 0013 head."""
+
+        self._assert_database_identity(
+            "trading_job_worker", P1_DISPOSABLE_DATABASE_REVISION
+        )
+
+    def _assert_database_identity(
+        self, expected_user: str, expected_revision: str
+    ) -> None:
         try:
             with self._pool.connection() as connection:
                 row = connection.execute(
@@ -400,37 +416,8 @@ class WorkerRepository:
         )
         with self._pool.connection() as connection:
             with connection.transaction():
-                authority = connection.execute(
-                    """
-                    SELECT job_plane.worker_finalize_paper(
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
-                    ) AS finalized
-                    """,
-                    (
-                        job_id,
-                        attempt_id,
-                        worker_id,
-                        lease_token,
-                        source.value,
-                        attempt_outcome,
-                        target.value,
-                        reason_code,
-                        trace_id,
-                        self._new_id("event"),
-                        exit_code,
-                        termination_reason,
-                        result_hash,
-                        metadata_json,
-                        error_code,
-                        error_message,
-                        retry,
-                        self._new_id("event") if retry else None,
-                        event_metadata_json,
-                    ),
-                ).fetchone()
-                if authority is None or not authority["finalized"]:
-                    raise _FinalizeFenceLost
+                terminal_event_id = self._new_id("event")
+                retry_event_id = self._new_id("event") if retry else None
                 for artifact in artifacts:
                     validation_metadata = json.dumps(
                         getattr(artifact, "validation_metadata", {}),
@@ -452,6 +439,37 @@ class WorkerRepository:
                             validation_metadata,
                         ),
                     )
+                authority = connection.execute(
+                    """
+                    SELECT job_plane.worker_finalize_paper(
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
+                    ) AS finalized
+                    """,
+                    (
+                        job_id,
+                        attempt_id,
+                        worker_id,
+                        lease_token,
+                        source.value,
+                        attempt_outcome,
+                        target.value,
+                        reason_code,
+                        trace_id,
+                        terminal_event_id,
+                        exit_code,
+                        termination_reason,
+                        result_hash,
+                        metadata_json,
+                        error_code,
+                        error_message,
+                        retry,
+                        retry_event_id,
+                        event_metadata_json,
+                    ),
+                ).fetchone()
+                if authority is None or not authority["finalized"]:
+                    raise _FinalizeFenceLost
                 return True
 
     @staticmethod
@@ -520,6 +538,29 @@ class WorkerRepository:
         if outcome is not None:
             result_metadata["command_capability_fingerprint"] = outcome.capability_fingerprint
             result_metadata["lineage"] = outcome.lineage.as_metadata()
+        profile_result = getattr(result, "profile_result", None)
+        if profile_result is not None:
+            from packages.engine_event_ledger import EngineEventBatchReceipt
+            from packages.engine_portfolio_projection.parity import (
+                P1PortfolioParityReceipt,
+            )
+            from packages.nautilus_runtime_contracts.result import P1ValidatedResult
+
+            validation_metadata = getattr(result, "validation_metadata", None)
+            if (
+                type(profile_result) is P1ValidatedResult
+                and type(validation_metadata) is dict
+            ):
+                engine_receipt = EngineEventBatchReceipt.model_validate_json(
+                    json.dumps(validation_metadata.get("engine_event_receipt"))
+                )
+                parity_receipt = P1PortfolioParityReceipt.model_validate_json(
+                    json.dumps(validation_metadata.get("p1_portfolio_parity"))
+                )
+                result_metadata.update(
+                    engine_event_receipt=engine_receipt.model_dump(mode="json"),
+                    p1_portfolio_parity=parity_receipt.model_dump(mode="json"),
+                )
         return self.finalize(
             claimed.job_id, claimed.attempt_id, claimed.worker_id,
             claimed.lease_token, expected_state=expected_state,

@@ -983,6 +983,33 @@ def test_post_mark_close_correction_and_bust_match_full_and_tail_snapshots(
     )
 
 
+def test_repeating_basis_mark_and_correction_keep_exact_checkpoint_parity() -> None:
+    first = fill(number=2, execution=2_000, quantity="1", price="100")
+    second = fill(number=3, execution=3_000, quantity="2", price="101")
+    marked = mark(number=4, price="102")
+    prefix = (opening(), first, second, marked)
+
+    prefix_result = replay_portfolio(prefix)
+    assert prefix_result.canonical_snapshot.positions[0].unrealized_pnl.amount == (
+        Decimal("4.00")
+    )
+
+    correction = fill(
+        number=5,
+        execution=5_000,
+        quantity="2",
+        price="100",
+        status=FillReportStatus.CORRECTION,
+        correction_of=second.payload.fill.execution_id,
+    )
+    full = replay_portfolio((*prefix, correction))
+    record, authority = checkpoint(prefix)
+    tail = replay_portfolio((correction,), snapshot=record, authority=authority)
+
+    assert tail == full
+    assert full.canonical_snapshot.positions[0].unrealized_pnl.amount == Decimal("6.00")
+
+
 def test_canonical_snapshot_retains_closed_position_accounting_without_exposure() -> None:
     result = replay_portfolio(
         (

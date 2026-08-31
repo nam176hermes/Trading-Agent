@@ -1,0 +1,38 @@
+{
+  "api_surface_count": 33,
+  "callbacks_observed": [
+    "on_bar",
+    "on_order_filled",
+    "on_start"
+  ],
+  "callbacks_unobserved": [
+    "on_order_rejected"
+  ],
+  "engine_version": "1.231.0",
+  "local_invocation_count": 153,
+  "local_invocation_ids_sha256": "a840fdc36c619472fcee23dcf22854951ff89e8409abe9d0ff4dda76ab1267cd",
+  "scenarios": {
+    "long-accounting": {
+      "fees": "0.2",
+      "filled_quantity": "2",
+      "iterations": 1,
+      "position_quantity": "2",
+      "remaining_quantity": "0",
+      "scenario_id": "long-accounting",
+      "total_fills": 1,
+      "total_orders": 1,
+      "total_positions": 1,
+      "unrealized_pnl": "2"
+    },
+    "same-bar-stop-take-profit": {
+      "position_quantity": "0",
+      "realized_pnl": "-2",
+      "scenario_id": "same-bar-stop-take-profit",
+      "stop_take_profit_precedence": "stop-first",
+      "total_fills": 2,
+      "total_orders": 2
+    }
+  },
+  "schema": "trading-agent-nautilus-v1231-api-probe-golden/v1",
+  "surface_ids_sha256": "edf17eb79a2aa3a5430ce038ad94c0521fc498c36cafcbe1345a30b867dd3dc5"
+}

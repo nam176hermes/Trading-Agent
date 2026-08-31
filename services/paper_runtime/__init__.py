@@ -10,6 +10,7 @@ from .controller import (
     SourceDrift,
     StopEvidence,
     TrackedProcessIdentity,
+    issue_nautilus_paper_child,
     issue_runtime_child_authorities,
 )
 from .custodian_client import (
@@ -38,6 +39,39 @@ from .evidence import (
     write_runtime_evidence_bundle,
 )
 from .integration import RuntimeChainEvidence, run_approved_runtime_chain
+from .nautilus_checkpoint import (
+    NautilusCheckpointRecord,
+    NautilusCheckpointStore,
+    ZERO_CHECKPOINT_SHA256,
+)
+from .nautilus_reconciliation import (
+    NautilusChildState,
+    NautilusRecoveryDecision,
+    NautilusRecoveryDisposition,
+    NautilusRecoveryEvidence,
+    NautilusRecoveryReason,
+    reconcile_nautilus_paper,
+)
+from .nautilus_recovery import (
+    NAUTILUS_RECOVERY_RECEIPT_SCHEMA,
+    NautilusRecoveryReceipt,
+    NautilusRecoveryStep,
+    NautilusRecoveryStore,
+    RecoveredNautilusPaperSession,
+    load_nautilus_recovery_receipt,
+    recover_nautilus_paper_session,
+    write_nautilus_recovery_receipt,
+)
+from .nautilus_session import (
+    NautilusPaperChild,
+    NautilusPaperSession,
+    NautilusSessionRejected,
+    NautilusSessionResult,
+)
+from .nautilus_process import (
+    NautilusPaperProcess,
+    launch_nautilus_paper_process,
+)
 
 __all__ = [
     "EvidenceBundle",
@@ -54,10 +88,27 @@ __all__ = [
     "NativeOperationRequest",
     "NativeOperationStatus",
     "NativeTranscriptChunk",
+    "NautilusCheckpointRecord",
+    "NautilusCheckpointStore",
+    "NautilusChildState",
+    "NautilusPaperChild",
+    "NautilusPaperProcess",
+    "NautilusPaperSession",
+    "NautilusRecoveryDecision",
+    "NautilusRecoveryDisposition",
+    "NautilusRecoveryEvidence",
+    "NautilusRecoveryReason",
+    "NautilusRecoveryReceipt",
+    "NautilusRecoveryStep",
+    "NautilusRecoveryStore",
+    "NautilusSessionRejected",
+    "NautilusSessionResult",
     "OperationState",
+    "NAUTILUS_RECOVERY_RECEIPT_SCHEMA",
     "Package6Controller",
     "ProcessEvidence",
     "ReadinessEvidence",
+    "RecoveredNautilusPaperSession",
     "RuntimeChainEvidence",
     "RuntimeChildAuthorities",
     "SourceDrift",
@@ -68,9 +119,16 @@ __all__ = [
     "TranscriptStream",
     "PostgresCleanupEvidence",
     "issue_postgres_cleanup_evidence",
+    "launch_nautilus_paper_process",
+    "load_nautilus_recovery_receipt",
+    "issue_nautilus_paper_child",
     "request_and_wait_for_postgres_cleanup",
     "issue_runtime_child_authorities",
     "run_approved_runtime_chain",
+    "reconcile_nautilus_paper",
+    "recover_nautilus_paper_session",
     "verify_runtime_evidence_bundle",
     "write_runtime_evidence_bundle",
+    "write_nautilus_recovery_receipt",
+    "ZERO_CHECKPOINT_SHA256",
 ]
