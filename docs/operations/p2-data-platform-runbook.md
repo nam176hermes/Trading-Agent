@@ -14,7 +14,8 @@ From the canonical repository root or a clean external worktree:
 ```bash
 uv sync --frozen
 make check-contracts
-make certify-p2-data-platform
+uv run pytest -q tests/data_platform tests/security_master
+uv run python scripts/certify_p2_data_platform.py
 ```
 
 The certification command runs the P2 and security-master suites, then executes

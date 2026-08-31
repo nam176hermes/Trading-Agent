@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts test-p2-data-platform certify-p2-data-platform audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -64,12 +64,6 @@ generate-p1-nautilus-contracts:
 
 check-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
-
-test-p2-data-platform:
-	uv run pytest -q tests/data_platform tests/security_master
-
-certify-p2-data-platform: test-p2-data-platform
-	$(PYTHON) scripts/certify_p2_data_platform.py
 
 qualify-p1-nautilus-vertical-slice:
 	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py

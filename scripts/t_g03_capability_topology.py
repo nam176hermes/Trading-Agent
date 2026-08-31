@@ -4132,16 +4132,6 @@ def _validate_external_outcome(
                 raise TopologyError("external Nautilus PASS authority facts drift")
             return
         if code in DISPOSABLE_PG_CODES:
-            try:
-                from scripts.validate_disposable_postgres_approval import (
-                    APPROVAL_SOURCE_BINDING_PATHS,
-                )
-            except ModuleNotFoundError as exc:
-                if exc.name != "scripts":
-                    raise
-                from validate_disposable_postgres_approval import (  # type: ignore[no-redef]
-                    APPROVAL_SOURCE_BINDING_PATHS,
-                )
             green = code == "EXT-DISPOSABLE-PG-GREEN"
             expected_kind = {
                 "EXT-DISPOSABLE-PG-GREEN": (
@@ -4163,8 +4153,7 @@ def _validate_external_outcome(
                 or authority["approval_record_sha256"] == EMPTY_SHA256
                 or authority["approved_operation_count"]
                 != len(_disposable_pg_operations(code))
-                or authority["source_binding_count"]
-                != len(APPROVAL_SOURCE_BINDING_PATHS)
+                or authority["source_binding_count"] != 21
                 or authority["fixture_plan_status"]
                 != (
                     "PRIVATE_RETAINED_FIXTURE_PLAN"
