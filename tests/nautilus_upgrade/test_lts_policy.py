@@ -244,15 +244,9 @@ def test_policy_rejects_noncanonical_duplicate_float_and_unknown_key(tmp_path: P
         load_p1_lts_policy(float_value)
 
 
-def test_make_lts_target_runs_the_bounded_executable_local_gates() -> None:
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+def test_qualifier_owns_only_the_bounded_source_gate_set() -> None:
+    from scripts.qualify_p1_engine_lts import _LOCAL_GATES
 
-    assert "test-p1-h-source:" in makefile
-    assert (
-        "qualify-p1-h-source: test-p1-h-source\n"
-        "\t$(PYTHON) scripts/qualify_p1_engine_lts.py --mode local"
-    ) in makefile
-    target = makefile.split("qualify-p1-h-source:", 1)[1].split("\n\n", 1)[0]
-    assert "test-p1-nautilus-native" not in target
-    assert "qualify-p1-nautilus" not in target
-    assert "test-p1-nautilus-e2e" not in target
+    assert set(_LOCAL_GATES) == {"P1S_SOURCE", "P1S_RECOVERY", "P1S_GOLDEN"}
+    assert all(path.startswith("tests/") for paths in _LOCAL_GATES.values() for path in paths)
+    assert not any("native" in path or "e2e" in path for paths in _LOCAL_GATES.values() for path in paths)
