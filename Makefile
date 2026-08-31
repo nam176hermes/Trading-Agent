@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts test-p1-h-source qualify-p1-h-source audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -64,14 +64,6 @@ generate-p1-nautilus-contracts:
 
 check-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
-
-test-p1-h-source:
-	uv run pytest -q -W error tests/nautilus_upgrade/test_lts_policy.py \
-		tests/nautilus_upgrade/test_p1_h_lifecycle.py \
-		tests/nautilus_upgrade/test_qualify_p1_engine_lts.py
-
-qualify-p1-h-source: test-p1-h-source
-	$(PYTHON) scripts/qualify_p1_engine_lts.py --mode local
 
 qualify-p1-nautilus-vertical-slice:
 	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
