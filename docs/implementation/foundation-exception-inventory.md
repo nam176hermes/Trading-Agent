@@ -452,12 +452,20 @@ ops/phase4b/verify-release.py|91|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1271|Exception|PRODUCTION_CRITICAL|RETURN
+packages/data_catalog/artifact_store.py|41|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/artifact_store.py|102|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|244|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|395|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|418|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|431|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|466|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/security_master.py|259|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/security_master.py|396|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/security_master.py|426|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/security_master.py|444|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/security_master.py|489|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_normalization.py|79|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -524,6 +532,13 @@ packages/runtime_release/v2.py|2593|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2631|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2667|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2756|Exception|PRODUCTION_CRITICAL|RETURN
+packages/security_master/postgres_repository.py|169|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/postgres_repository.py|288|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/postgres_repository.py|314|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/postgres_repository.py|329|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/postgres_repository.py|449|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/postgres_repository.py|501|Exception|PRODUCTION_CRITICAL|RAISE
+packages/security_master/resolver.py|70|Exception|PRODUCTION_CRITICAL|RAISE
 scripts/audit_canonical_repo.py|579|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_nautilus_engine.py|859|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|1264|Exception|TOOLING_MIGRATION|RAISE
@@ -853,5 +868,6 @@ tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5251|BaseException|TESTS|OTHER
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5681|BaseException|TESTS|OTHER
 tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
+tests/security_master/test_postgres_repository.py|50|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->

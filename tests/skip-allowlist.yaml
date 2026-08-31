@@ -348,7 +348,7 @@
       "review_by": "2026-10-31",
       "security_critical": true,
       "target_phase": "Track C canonical market-data persistence runtime validation",
-      "test_node_id": "tests/market_data/test_postgres_runtime.py::test_runtime_postgres_upgrades_empty_database_to_0009_head"
+      "test_node_id": "tests/market_data/test_postgres_runtime.py::test_runtime_postgres_upgrades_empty_database_to_current_head"
     },
     {
       "allowed_in_ci": true,

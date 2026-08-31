@@ -60,8 +60,10 @@ EXPECTED_TABLES = {
     "engine_events",
     "engine_run_projections",
     "engine_job_results",
+    "security_master_identities",
+    "security_master_revisions",
 }
-EXACT_HEAD = "0018_p1_paper_closure_rotation"
+EXACT_HEAD = "0019_p2_security_master"
 P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
 P1_OLD_CLOSURE_SHA256 = (
     "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
@@ -249,6 +251,10 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "engine_event_receipts_run_sequence_idx",
                 "engine_events_run_sequence_idx",
                 "engine_events_batch_idx",
+                "security_master_revisions_subject_pit_idx",
+                "security_master_revisions_symbol_pit_idx",
+                "security_master_revisions_action_pit_idx",
+                "security_master_revisions_export_idx",
             }
             actual_indexes = {
                 index["name"]

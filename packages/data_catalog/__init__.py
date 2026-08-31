@@ -12,6 +12,13 @@ from .parquet import (
     materialize_fixture_catalog,
     verify_materialized_catalog,
 )
+from .security_master import (
+    MaterializedSecurityMasterSnapshotV1,
+    SecurityMasterSnapshotCursorV1,
+    SecurityMasterSnapshotManifestV1,
+    materialize_security_master_snapshot,
+    verify_security_master_snapshot,
+)
 
 __all__ = [
     "CatalogManifestError",
@@ -20,6 +27,11 @@ __all__ = [
     "MarketDatasetContinuityV1",
     "MarketDatasetManifestV1",
     "MaterializedMarketDatasetV1",
+    "MaterializedSecurityMasterSnapshotV1",
+    "SecurityMasterSnapshotCursorV1",
+    "SecurityMasterSnapshotManifestV1",
     "materialize_fixture_catalog",
+    "materialize_security_master_snapshot",
     "verify_materialized_catalog",
+    "verify_security_master_snapshot",
 ]
