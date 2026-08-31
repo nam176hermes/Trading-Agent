@@ -29,6 +29,7 @@ pytestmark = pytest.mark.runtime_postgres
 
 EXACT_0008_HEAD = "0008_trading_domain_ledger"
 EXACT_0009_HEAD = "0009_canonical_market_data"
+EXACT_CURRENT_HEAD = "0019_p2_security_master"
 EMPTY_HEAD_OPERATION_ID = "market-data-empty-head-runtime-green-v1"
 PERSISTENCE_OPERATION_ID = "market-data-canonical-persistence-runtime-green-v1"
 
@@ -70,9 +71,9 @@ def empty_head_database():
         yield owner
 
 
-def test_runtime_postgres_upgrades_empty_database_to_0009_head(empty_head_database) -> None:
+def test_runtime_postgres_upgrades_empty_database_to_current_head(empty_head_database) -> None:
     with psycopg.connect(empty_head_database.conninfo()) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == EXACT_0009_HEAD
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == EXACT_CURRENT_HEAD
         assert connection.execute("SELECT to_regclass('public.market_data_snapshots')").fetchone()[0] == "market_data_snapshots"
 
 

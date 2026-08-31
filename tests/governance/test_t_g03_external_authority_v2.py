@@ -495,7 +495,9 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
                     topology.canonical_json_bytes(approval_document),
                 ).hexdigest(),
                 "approved_operation_count": 26 if green else (2 if evidence else 3),
-                "source_binding_count": 13,
+                "source_binding_count": len(
+                    pg_approval.APPROVAL_SOURCE_BINDING_PATHS
+                ),
                 "fixture_plan_status": (
                     "PRIVATE_RETAINED_FIXTURE_PLAN" if green else "NOT_REQUIRED"
                 ),
@@ -719,7 +721,9 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
                 "approval_record_status": "PRIVATE_RETAINED_APPROVAL_RECORD",
                 "approval_record_sha256": "d" * 64,
                 "approved_operation_count": 26 if green else (2 if evidence else 3),
-                "source_binding_count": 13,
+                "source_binding_count": len(
+                    pg_approval.APPROVAL_SOURCE_BINDING_PATHS
+                ),
                 "fixture_plan_status": (
                     "PRIVATE_RETAINED_FIXTURE_PLAN" if green else "NOT_REQUIRED"
                 ),

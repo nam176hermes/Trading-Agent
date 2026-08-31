@@ -4153,7 +4153,7 @@ def _validate_external_outcome(
                 or authority["approval_record_sha256"] == EMPTY_SHA256
                 or authority["approved_operation_count"]
                 != len(_disposable_pg_operations(code))
-                or authority["source_binding_count"] != 13
+                or authority["source_binding_count"] != 21
                 or authority["fixture_plan_status"]
                 != (
                     "PRIVATE_RETAINED_FIXTURE_PLAN"
