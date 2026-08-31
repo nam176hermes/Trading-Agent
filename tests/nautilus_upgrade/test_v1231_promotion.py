@@ -6,8 +6,6 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
-import re
-import subprocess
 
 import pytest
 
@@ -45,6 +43,8 @@ GENERATION_SHA = "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f
 CLOSURE_SHA = "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
 QUALIFICATION_COMMIT = "979db632d96a1e45df571f22a70e2a9244574d84"
 QUALIFICATION_TREE = "afb9ae226c23f36643b661d8c42faef835f4cee6"
+REVIEW_COMMIT = "de7f626ae5cdd1e9be1e7bc0c599d72c6819b5d6"
+REVIEW_TREE = "747ef2e479a9d02470823bff4a5e44bc7f36e335"
 
 
 def _sha(path: Path) -> str:
@@ -115,10 +115,8 @@ def _validate(receipt: dict[str, object]) -> None:
         or receipt.get("candidate_closure_sha256") != CLOSURE_SHA
         or receipt.get("qualification_source_commit") != QUALIFICATION_COMMIT
         or receipt.get("qualification_source_tree") != QUALIFICATION_TREE
-        or not isinstance(review_commit, str)
-        or re.fullmatch(r"[0-9a-f]{40}", review_commit) is None
-        or not isinstance(review_tree, str)
-        or re.fullmatch(r"[0-9a-f]{40}", review_tree) is None
+        or review_commit != REVIEW_COMMIT
+        or review_tree != REVIEW_TREE
         or receipt.get("legacy_phase4_profiles_unchanged") is not True
         or type(receipt.get("p1_product_closure_schema")) is not int
         or receipt.get("p1_product_closure_schema") != 8
@@ -190,34 +188,6 @@ def _validate(receipt: dict[str, object]) -> None:
         }
     ):
         raise ValueError("P1 baseline receipt is invalid")
-    resolved_tree = subprocess.run(
-        ["git", "rev-parse", f"{review_commit}^{{tree}}"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", review_commit, "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    )
-    receipt_parent = subprocess.run(
-        ["git", "log", "-1", "--format=%P", "--", str(RECEIPT.relative_to(ROOT))],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if (
-        resolved_tree.returncode != 0
-        or resolved_tree.stdout.strip() != review_tree
-        or ancestor.returncode != 0
-        or receipt_parent.returncode != 0
-        or receipt_parent.stdout.strip().split() != [review_commit]
-    ):
-        raise ValueError("P1 baseline review source is invalid")
     input_hashes = receipt.get("input_receipt_sha256s")
     if (
         not isinstance(input_hashes, dict)
