@@ -656,6 +656,13 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             return False
         expected = _approved_common_steps() + [
             (
+                {
+                    "name": "Classify P1-H change impact from base authority",
+                    "run": 'set -euo pipefail; base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"; if test -z "$base_sha" || test "$base_sha" = "0000000000000000000000000000000000000000"; then base_sha="$(git rev-parse "$GITHUB_SHA^")"; fi; resolved_base="$(git rev-parse --verify "$base_sha^{commit}")"; test "$resolved_base" = "$base_sha"; authority_root="${RUNNER_TEMP:?}/p1-h-base-authority"; if test -e "$authority_root" || test -L "$authority_root"; then exit 2; fi; install -d -m 0700 -- "$authority_root"; test "$(stat -c \'%u:%a\' -- "$authority_root")" = "$(id -u):700"; git archive "$base_sha" | tar -x -C "$authority_root"; PYTHONPATH="$authority_root" uv run python "$authority_root/scripts/classify_p1_h_impact.py" --repo "$GITHUB_WORKSPACE" --base "$base_sha" --head "$GITHUB_SHA"',
+                },
+                {},
+            ),
+            (
                 {"name": "Run canonical local and CI gate", "run": "make ci-portable NONINTERACTIVE=1"},
                 {},
             ),
