@@ -48,6 +48,18 @@ from services.job_worker.nautilus_closure import (
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
+_SYSTEM_GIT = Path("/usr/bin/git")
+_SYSTEM_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "HOME": "/nonexistent",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/usr/bin:/bin",
+}
 _INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
 _RUST_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_toolchain.py"
 _RUST_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/toolchain-inputs.json"
@@ -308,7 +320,9 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
+def _read_file_with_mode(
+    path: Path, *, label: str, sealed: bool
+) -> tuple[bytes, int]:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -331,7 +345,7 @@ def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
         chunks: list[bytes] = []
         while block := os.read(descriptor, 1024 * 1024):
             chunks.append(block)
-        return b"".join(chunks)
+        return b"".join(chunks), mode
     except RuntimeClosureMaterializationError:
         raise
     except OSError as exc:
@@ -339,6 +353,10 @@ def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
+    return _read_file_with_mode(path, label=label, sealed=sealed)[0]
 
 
 def _read_private_build_output(path: Path) -> bytes:
@@ -1081,6 +1099,50 @@ def _copy_file(source: Path, destination: Path, *, mode: int) -> dict[str, objec
     return {"sha256": _sha256_bytes(raw), "size": len(raw), "mode": f"{mode:04o}"}
 
 
+def _copy_p1_inherited_file(
+    base_runtime: Path,
+    staging: Path,
+    record: dict[str, object],
+) -> dict[str, object]:
+    if set(record) != _FILE_FIELDS:
+        raise RuntimeClosureMaterializationError("G1 runtime file record is invalid")
+    relative = _safe_relative(record["path"], label="G1 runtime file")
+    target = _safe_target(record["target"], label="G1 runtime target").as_posix()
+    expected = {**record, "path": relative.as_posix(), "target": target}
+    raw, opened_mode = _read_file_with_mode(
+        base_runtime.joinpath(*relative.parts),
+        label="G1 runtime file",
+        sealed=True,
+    )
+    observed = {
+        "mode": f"{opened_mode:04o}",
+        "path": relative.as_posix(),
+        "sha256": _sha256_bytes(raw),
+        "size": len(raw),
+        "target": target,
+    }
+    if observed != expected:
+        raise RuntimeClosureMaterializationError(
+            "G1 runtime file authority drifted during copy"
+        )
+
+    destination = staging.joinpath(*relative.parts)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.write_bytes(raw)
+    destination.chmod(opened_mode)
+    copied_raw, copied_mode = _read_file_with_mode(
+        destination,
+        label="copied G1 runtime file",
+        sealed=True,
+    )
+    copied = {**observed, "mode": f"{copied_mode:04o}"}
+    if copied != expected or copied_raw != raw:
+        raise RuntimeClosureMaterializationError(
+            "G1 runtime file authority drifted during copy"
+        )
+    return copied
+
+
 def _seal_tree(root: Path) -> None:
     for directory, child_directories, _files in os.walk(root, topdown=False):
         current = Path(directory)
@@ -1512,6 +1574,8 @@ def _validate_candidate_artifact(
     engine: dict[str, object],
     inputs: dict[str, object],
     roots: dict[str, Path],
+    *,
+    revalidate_build_results: bool = True,
 ) -> tuple[Path, dict[str, object], bytes]:
     directory = roots["candidate_build_root"] / "artifacts"
     manifest_path = directory / _ARTIFACT_MANIFEST
@@ -1696,44 +1760,47 @@ def _validate_candidate_artifact(
         raise RuntimeClosureMaterializationError(
             "candidate artifact reproducibility authority drifted"
         )
-    try:
-        authority_identities = builder._candidate_external_identities(engine, inputs)
-        build_a = builder._load_candidate_build_result(roots, label="A")
-        build_b = builder._load_candidate_build_result(roots, label="B")
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeClosureMaterializationError(
-            "candidate artifact reproducibility authority drifted"
-        ) from exc
-    a_payload, a_core, a_receipt, a_digest = build_a
-    b_payload, b_core, b_receipt, b_digest = build_b
-    final_core = {
-        key: value for key, value in document.items() if key != "reproducible_build"
-    }
-    if not (
-        a_digest == receipt["build_a_receipt_sha256"]
-        and b_digest == receipt["build_b_receipt_sha256"]
-        and a_receipt["x4_authority_receipt_sha256"]
-        == receipt["x4_authority_receipt_sha256"]
-        and b_receipt["x4_authority_receipt_sha256"]
-        == receipt["x4_authority_receipt_sha256"]
-        and a_payload == b_payload == wheel.read_bytes()
-        and a_core == b_core
-        and a_receipt["process_identity"] == process_identities[0]
-        and b_receipt["process_identity"] == process_identities[1]
-        and a_receipt["source_identity"] == identities[0]
-        and b_receipt["source_identity"] == identities[1]
-        and a_receipt["candidate"] == b_receipt["candidate"]
-        and a_receipt["policy_sha256"] == b_receipt["policy_sha256"]
-        and a_receipt["authority_identities"]
-        == b_receipt["authority_identities"]
-        == authority_identities
-        and a_receipt["sanitized_environment_sha256"]
-        == b_receipt["sanitized_environment_sha256"]
-        and a_core == b_core == final_core
-    ):
-        raise RuntimeClosureMaterializationError(
-            "candidate artifact reproducibility authority drifted"
-        )
+    if revalidate_build_results:
+        try:
+            authority_identities = builder._candidate_external_identities(engine, inputs)
+            build_a = builder._load_candidate_build_result(roots, label="A")
+            build_b = builder._load_candidate_build_result(roots, label="B")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeClosureMaterializationError(
+                "candidate artifact reproducibility authority drifted"
+            ) from exc
+        a_payload, a_core, a_receipt, a_digest = build_a
+        b_payload, b_core, b_receipt, b_digest = build_b
+        final_core = {
+            key: value
+            for key, value in document.items()
+            if key != "reproducible_build"
+        }
+        if not (
+            a_digest == receipt["build_a_receipt_sha256"]
+            and b_digest == receipt["build_b_receipt_sha256"]
+            and a_receipt["x4_authority_receipt_sha256"]
+            == receipt["x4_authority_receipt_sha256"]
+            and b_receipt["x4_authority_receipt_sha256"]
+            == receipt["x4_authority_receipt_sha256"]
+            and a_payload == b_payload == wheel.read_bytes()
+            and a_core == b_core
+            and a_receipt["process_identity"] == process_identities[0]
+            and b_receipt["process_identity"] == process_identities[1]
+            and a_receipt["source_identity"] == identities[0]
+            and b_receipt["source_identity"] == identities[1]
+            and a_receipt["candidate"] == b_receipt["candidate"]
+            and a_receipt["policy_sha256"] == b_receipt["policy_sha256"]
+            and a_receipt["authority_identities"]
+            == b_receipt["authority_identities"]
+            == authority_identities
+            and a_receipt["sanitized_environment_sha256"]
+            == b_receipt["sanitized_environment_sha256"]
+            and a_core == b_core == final_core
+        ):
+            raise RuntimeClosureMaterializationError(
+                "candidate artifact reproducibility authority drifted"
+            )
     return wheel, document, raw
 
 
@@ -2342,6 +2409,7 @@ def _attest_candidate_closure(
     inputs: dict[str, object],
     base_runtime: Path,
     base_policy: dict[str, object],
+    accepted_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     _sealed_directory(root, label="candidate runtime closure")
     raw = _read_file(root / _CLOSURE_MANIFEST, label="candidate closure manifest", sealed=True)
@@ -2358,44 +2426,66 @@ def _attest_candidate_closure(
     input_python = inputs.get("python")
     input_source = inputs.get("source")
     source_artifact = input_source.get("artifact") if isinstance(input_source, dict) else None
-    runtime_wheels = inputs.get("runtime_wheels")
+    runtime_wheels = (
+        manifest.get("runtime_wheels")
+        if accepted_manifest_sha256 is not None
+        else inputs.get("runtime_wheels")
+    )
     artifact_source = artifact.get("source")
     artifact_python = artifact.get("python")
+    if accepted_manifest_sha256 is not None and (
+        _SHA256.fullmatch(accepted_manifest_sha256) is None
+        or _sha256_bytes(raw) != accepted_manifest_sha256
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate closure does not match the accepted generation"
+        )
     if (
         set(manifest) != _CANDIDATE_CLOSURE_FIELDS
         or manifest.get("schema_version") != 7
         or manifest.get("manifest_kind") != "NAUTILUS_V1_231_CANDIDATE_RUNTIME_CLOSURE"
         or manifest.get("activation_status") != "CANDIDATE_ONLY_NOT_ACTIVATED"
-        or manifest.get("engine") != artifact.get("engine")
-        or manifest.get("source") != artifact_source
-        or manifest.get("python") != artifact_python
-        or manifest.get("policy_hashes") != artifact.get("policy_hashes")
-        or manifest.get("toolchain") != artifact.get("toolchain")
-        or manifest.get("network") != artifact.get("network")
-        or manifest.get("runtime_wheels") != artifact.get("runtime_wheels")
-        or manifest.get("artifact_manifest_sha256") != artifact_sha256
-        or manifest.get("base_runtime")
-        != _candidate_base_binding(
-            base_runtime, base_policy, base_manifest, base_records
+        or (
+            accepted_manifest_sha256 is None
+            and (
+                manifest.get("engine") != artifact.get("engine")
+                or manifest.get("source") != artifact_source
+                or manifest.get("python") != artifact_python
+                or manifest.get("policy_hashes") != artifact.get("policy_hashes")
+                or manifest.get("toolchain") != artifact.get("toolchain")
+                or manifest.get("network") != artifact.get("network")
+                or manifest.get("runtime_wheels") != artifact.get("runtime_wheels")
+                or manifest.get("artifact_manifest_sha256") != artifact_sha256
+                or manifest.get("base_runtime")
+                != _candidate_base_binding(
+                    base_runtime, base_policy, base_manifest, base_records
+                )
+                or manifest.get("qualification")
+                != {
+                    "argv": ["/usr/bin/python3.12", "-I", "-S"],
+                    "script_sha256": _sha256_bytes(
+                        _CANDIDATE_IMPORT_SCRIPT.encode("ascii")
+                    ),
+                    "status": "PASS",
+                }
+                or artifact.get("policy_hashes") != inputs.get("policy_hashes")
+                or not isinstance(input_python, dict)
+                or not isinstance(artifact_python, dict)
+                or artifact_python.get("identity") != input_python.get("identity")
+                or artifact_python.get("abi") != input_python.get("abi")
+                or artifact_python.get("executable_sha256")
+                != input_python.get("executable_sha256")
+                or not isinstance(input_python.get("stdlib_inventory"), dict)
+                or artifact_python.get("stdlib_tree_sha256")
+                != input_python["stdlib_inventory"].get("tree_sha256")
+                or not isinstance(source_artifact, dict)
+                or not isinstance(artifact_source, dict)
+                or {
+                    key: artifact_source.get(key) for key in source_artifact
+                }
+                != source_artifact
+            )
         )
-        or manifest.get("qualification")
-        != {
-            "argv": ["/usr/bin/python3.12", "-I", "-S"],
-            "script_sha256": _sha256_bytes(_CANDIDATE_IMPORT_SCRIPT.encode("ascii")),
-            "status": "PASS",
-        }
-        or artifact.get("policy_hashes") != inputs.get("policy_hashes")
-        or not isinstance(input_python, dict)
-        or not isinstance(artifact_python, dict)
-        or artifact_python.get("identity") != input_python.get("identity")
-        or artifact_python.get("abi") != input_python.get("abi")
-        or artifact_python.get("executable_sha256") != input_python.get("executable_sha256")
-        or not isinstance(input_python.get("stdlib_inventory"), dict)
-        or artifact_python.get("stdlib_tree_sha256")
-        != input_python["stdlib_inventory"].get("tree_sha256")
-        or not isinstance(source_artifact, dict)
-        or not isinstance(artifact_source, dict)
-        or {key: artifact_source.get(key) for key in source_artifact} != source_artifact
         or not isinstance(runtime_wheels, list)
         or not all(isinstance(record, dict) for record in runtime_wheels)
     ):
@@ -2716,6 +2806,256 @@ def attest_candidate_runtime_closure() -> dict[str, object]:
     }
 
 
+def _p1_source_bytes(source_commit: str, source: str) -> bytes:
+    if _SOURCE_COMMIT.fullmatch(source_commit) is None:
+        raise RuntimeClosureMaterializationError("P1 source commit is invalid")
+    try:
+        observed = _SYSTEM_GIT.lstat()
+    except OSError as exc:
+        raise RuntimeClosureMaterializationError(
+            "trusted system Git executable is invalid"
+        ) from exc
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(observed.st_mode) & 0o022
+        or not observed.st_mode & 0o111
+    ):
+        raise RuntimeClosureMaterializationError(
+            "trusted system Git executable is invalid"
+        )
+    try:
+        result = subprocess.run(
+            (
+                os.fspath(_SYSTEM_GIT),
+                "--no-replace-objects",
+                "show",
+                f"{source_commit}:{source}",
+            ),
+            cwd=_ROOT,
+            env=dict(_SYSTEM_GIT_ENV),
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeClosureMaterializationError(
+            "P1 source commit cannot supply the runtime inventory"
+        ) from exc
+    return result.stdout
+
+
+def _require_unique_p1_records(records: list[dict[str, object]]) -> None:
+    paths = [str(record.get("path")) for record in records]
+    targets = [str(record.get("target")) for record in records]
+    if len(paths) != len(set(paths)) or len(targets) != len(set(targets)):
+        raise RuntimeClosureMaterializationError(
+            "P1 closure file path or target inventory is duplicated"
+        )
+
+
+def materialize_p1_runtime_closure(
+    *,
+    base_runtime: Path,
+    artifact_directory: Path,
+    destination: Path,
+    sandbox_executable: Path,
+    cargo: Path,
+    llvm_toolchain: Path,
+    source_commit: str,
+) -> Path:
+    """Derive one immutable schema-8 product closure from exact accepted G1."""
+
+    from services.job_worker import p1_nautilus_closure as _p1
+    from services.job_worker.engine_spawn import ReadOnlyClosureMount
+
+    paths = tuple(
+        Path(value)
+        for value in (
+            base_runtime,
+            artifact_directory,
+            destination,
+            sandbox_executable,
+            cargo,
+            llvm_toolchain,
+        )
+    )
+    if any(not path.is_absolute() or path == Path("/") or ".." in path.parts for path in paths):
+        raise RuntimeClosureMaterializationError("all P1 materializer paths must be absolute and safe")
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeClosureMaterializationError("P1 destination already exists")
+    parent = destination.parent.lstat()
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) & 0o077
+    ):
+        raise RuntimeClosureMaterializationError("P1 destination parent is not private")
+
+    builder = _candidate_builder_tool()
+    engine, inputs = builder._verify_candidate_authority()
+    roots = builder._candidate_roots(engine)
+    expected_runtime = roots["candidate_runtime_root"]
+    expected_artifacts = roots["candidate_build_root"] / "artifacts"
+    if base_runtime != expected_runtime or artifact_directory != expected_artifacts:
+        raise RuntimeClosureMaterializationError("P1 materialization requires exact G1 authority paths")
+    _wheel, artifact, artifact_raw = _validate_candidate_artifact(
+        builder,
+        engine,
+        inputs,
+        roots,
+        revalidate_build_results=False,
+    )
+    base_policy = _load_policy(_CANDIDATE_BASE_POLICY)
+    policy = _p1._load_policy()
+    candidate = _attest_candidate_closure(
+        base_runtime,
+        artifact=artifact,
+        artifact_sha256=_sha256_bytes(artifact_raw),
+        inputs=inputs,
+        base_runtime=roots["rollback_root"] / "runtime-closure-v3",
+        base_policy=base_policy,
+        accepted_manifest_sha256=str(policy["candidate_closure_sha256"]),
+    )
+    candidate_raw = _read_file(
+        base_runtime / _CLOSURE_MANIFEST,
+        label="G1 closure manifest",
+        sealed=True,
+    )
+    if (
+        _sha256_bytes(candidate_raw) != policy["candidate_closure_sha256"]
+        or candidate["artifact_manifest_sha256"] != policy["artifact_manifest_sha256"]
+    ):
+        raise RuntimeClosureMaterializationError("G1 authority does not match the P1 policy")
+
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent))
+    published = False
+    completed = False
+    identity: tuple[int, int] | None = None
+
+    def publication_committed() -> None:
+        nonlocal published
+        published = True
+
+    try:
+        records: list[dict[str, object]] = []
+        for record in candidate["files"]:
+            assert isinstance(record, dict)
+            records.append(_copy_p1_inherited_file(base_runtime, staging, record))
+
+        inventory = policy["runtime_inventory"]
+        assert isinstance(inventory, list)
+        for record in inventory:
+            assert isinstance(record, dict)
+            source = str(record["source"])
+            raw = _p1_source_bytes(source_commit, source)
+            if _sha256_bytes(raw) != record["sha256"] or raw != (_ROOT / source).read_bytes():
+                raise RuntimeClosureMaterializationError("P1 runtime source authority drifted")
+            target = str(record["target"])
+            relative = PurePosixPath("files", *PurePosixPath(target).parts[1:])
+            output = staging.joinpath(*relative.parts)
+            output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            output.write_bytes(raw)
+            output.chmod(0o400)
+            records.append(
+                {
+                    "mode": "0400",
+                    "path": relative.as_posix(),
+                    "sha256": str(record["sha256"]),
+                    "size": len(raw),
+                    "target": target,
+                }
+            )
+
+        guard_policy = dict(policy["native_entry_guard"])
+        guard_policy.pop("build_environment")
+        guard = _build_native_entry_guard(
+            staging=staging,
+            policy={
+                "argv_prefix": policy["argv_prefix"],
+                "entrypoint": policy["entrypoint"],
+                "native_entry_guard": guard_policy,
+                "profile": policy["profile"],
+            },
+            cargo=cargo,
+            llvm_toolchain=llvm_toolchain,
+        )
+        records.append(guard["file"])
+        _require_unique_p1_records(records)
+        records.sort(key=lambda record: str(record["target"]))
+        manifest = {
+            key: policy[key]
+            for key in _p1._MANIFEST_FIELDS
+            if key not in {"files", "native_entry_guard", "schema_version", "source_commit"}
+        }
+        manifest.update(
+            {
+                "files": records,
+                "native_entry_guard": guard["provenance"],
+                "schema_version": 8,
+                "source_commit": source_commit,
+            }
+        )
+        manifest_path = staging / _CLOSURE_MANIFEST
+        manifest_path.write_bytes(_canonical_json_bytes(manifest) + b"\n")
+        manifest_path.chmod(0o400)
+
+        mounts: list[ReadOnlyClosureMount] = []
+        for record in records:
+            path = staging.joinpath(*PurePosixPath(str(record["path"])).parts)
+            observed = path.lstat()
+            mounts.append(
+                ReadOnlyClosureMount(
+                    source=path,
+                    target=PurePosixPath(str(record["target"])),
+                    identity=(observed.st_dev, observed.st_ino),
+                    size=int(record["size"]),
+                    mode=int(str(record["mode"]), 8),
+                    sha256=str(record["sha256"]),
+                )
+            )
+        closure_sha256 = _p1.p1_closure_authority_sha256(manifest, tuple(mounts))
+        lineage = _p1.derive_p1_product_lineage(
+            closure_sha256, str(policy["runtime_inventory_sha256"])
+        )
+        lineage_path = staging / "p1-product-lineage.json"
+        lineage_path.write_bytes(_canonical_json_bytes(lineage) + b"\n")
+        lineage_path.chmod(0o400)
+        _seal_tree(staging)
+        identity = (staging.lstat().st_dev, staging.lstat().st_ino)
+        config = NautilusClosureConfig(staging, artifact_directory, sandbox_executable)
+        if _p1.attest_p1_nautilus_closure(config).closure_sha256 != closure_sha256:
+            raise RuntimeClosureMaterializationError("P1 staging attestation drifted")
+        with _publish_noreplace(
+            staging,
+            destination,
+            parent_identity=(parent.st_dev, parent.st_ino),
+            staging_identity=identity,
+            completed_close_is_success=True,
+            publication_committed=publication_committed,
+        ):
+            pass
+        if _p1.attest_p1_nautilus_closure(
+            NautilusClosureConfig(destination, artifact_directory, sandbox_executable)
+        ).closure_sha256 != closure_sha256:
+            raise RuntimeClosureMaterializationError("published P1 closure attestation drifted")
+        completed = True
+        return destination
+    finally:
+        if not completed:
+            owned = destination if published else staging
+            try:
+                observed = owned.lstat()
+            except OSError:
+                pass
+            else:
+                if identity is None or (observed.st_dev, observed.st_ino) == identity:
+                    _unseal_and_remove(owned)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Materialize one sealed Nautilus execution-simulation closure"
@@ -2723,6 +3063,7 @@ def _parser() -> argparse.ArgumentParser:
     candidate = parser.add_mutually_exclusive_group()
     candidate.add_argument("--materialize-candidate", action="store_true")
     candidate.add_argument("--attest-candidate", action="store_true")
+    candidate.add_argument("--materialize-p1", action="store_true")
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--base-runtime", type=Path)
     parser.add_argument("--artifact-directory", type=Path)
@@ -2730,6 +3071,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sandbox", type=Path)
     parser.add_argument("--cargo", type=Path)
     parser.add_argument("--llvm-toolchain", type=Path)
+    parser.add_argument("--source-commit")
     return parser
 
 
@@ -2750,14 +3092,41 @@ def main(argv: Sequence[str] | None = None) -> None:
             arguments.llvm_toolchain,
         )
         if arguments.materialize_candidate:
-            if any(value is not None for value in supplied):
+            if any(value is not None for value in supplied) or arguments.source_commit is not None:
                 raise RuntimeClosureMaterializationError(
                     "candidate materialization accepts no caller-supplied authority"
                 )
             materialize_candidate_runtime_closure()
             return
+        if arguments.materialize_p1:
+            if arguments.policy is not None or any(
+                value is None
+                for value in (
+                    arguments.base_runtime,
+                    arguments.artifact_directory,
+                    arguments.destination,
+                    arguments.sandbox,
+                    arguments.cargo,
+                    arguments.llvm_toolchain,
+                    arguments.source_commit,
+                )
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "P1 materialization requires every explicit external authority"
+                )
+            destination = materialize_p1_runtime_closure(
+                base_runtime=arguments.base_runtime,
+                artifact_directory=arguments.artifact_directory,
+                destination=arguments.destination,
+                sandbox_executable=arguments.sandbox,
+                cargo=arguments.cargo,
+                llvm_toolchain=arguments.llvm_toolchain,
+                source_commit=arguments.source_commit,
+            )
+            print(destination)
+            return
         if arguments.attest_candidate:
-            if any(value is not None for value in supplied):
+            if any(value is not None for value in supplied) or arguments.source_commit is not None:
                 raise RuntimeClosureMaterializationError(
                     "candidate attestation accepts no caller-supplied authority"
                 )
@@ -2770,6 +3139,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         if any(value is None for value in supplied):
             raise RuntimeClosureMaterializationError(
                 "legacy materialization requires all explicit authority paths"
+            )
+        if arguments.source_commit is not None:
+            raise RuntimeClosureMaterializationError(
+                "legacy materialization does not accept a P1 source commit"
             )
         destination = materialize_runtime_closure(
             policy_path=arguments.policy,

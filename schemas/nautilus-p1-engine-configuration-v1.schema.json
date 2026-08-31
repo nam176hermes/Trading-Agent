@@ -1,0 +1,113 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "account_type": {
+      "const": "CASH",
+      "title": "Account Type",
+      "type": "string"
+    },
+    "allow_leverage": {
+      "const": false,
+      "title": "Allow Leverage",
+      "type": "boolean"
+    },
+    "allow_short": {
+      "const": false,
+      "title": "Allow Short",
+      "type": "boolean"
+    },
+    "bar_execution": {
+      "const": false,
+      "title": "Bar Execution",
+      "type": "boolean"
+    },
+    "fee_model": {
+      "const": "fixed-rate",
+      "title": "Fee Model",
+      "type": "string"
+    },
+    "fee_rate": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Fee Rate",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "fill_model": {
+      "const": "deterministic",
+      "title": "Fill Model",
+      "type": "string"
+    },
+    "load_state": {
+      "const": false,
+      "title": "Load State",
+      "type": "boolean"
+    },
+    "logging_bypass": {
+      "const": true,
+      "title": "Logging Bypass",
+      "type": "boolean"
+    },
+    "network_access": {
+      "const": false,
+      "title": "Network Access",
+      "type": "boolean"
+    },
+    "oms_type": {
+      "const": "NETTING",
+      "title": "Oms Type",
+      "type": "string"
+    },
+    "run_analysis": {
+      "const": false,
+      "title": "Run Analysis",
+      "type": "boolean"
+    },
+    "save_state": {
+      "const": false,
+      "title": "Save State",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "nautilus-p1-engine-configuration-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "starting_balance": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Starting Balance",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "starting_currency": {
+      "const": "USDT",
+      "title": "Starting Currency",
+      "type": "string"
+    },
+    "venue": {
+      "const": "BINANCE",
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "venue",
+    "account_type",
+    "oms_type",
+    "starting_currency",
+    "starting_balance",
+    "fill_model",
+    "fee_model",
+    "fee_rate",
+    "bar_execution",
+    "allow_leverage",
+    "allow_short",
+    "network_access",
+    "load_state",
+    "save_state",
+    "run_analysis",
+    "logging_bypass"
+  ],
+  "title": "P1EngineConfigurationV1",
+  "type": "object"
+}

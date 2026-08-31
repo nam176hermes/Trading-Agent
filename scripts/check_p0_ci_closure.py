@@ -700,7 +700,24 @@ def _host_workflow_valid(raw: bytes) -> bool:
             return False
         expected = _approved_common_steps() + [
             (
-                {"name": "Run host authority qualification", "run": "make ci-host-authority NONINTERACTIVE=1"},
+                {
+                    "name": "Sync legacy research environment",
+                    "run": (
+                        "uv sync --frozen --extra test --directory "
+                        "legacy/research-backend"
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Run host authority qualification",
+                    "run": (
+                        'TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" '
+                        "make ci-host-authority NONINTERACTIVE=1"
+                    ),
+                },
                 {},
             ),
         ]

@@ -56,6 +56,7 @@ _SEALED_PYTEST_PATHS = (
     "tests/jobs/test_repository_enqueue.py", "tests/jobs/test_repository_queries.py",
     "tests/jobs/test_repository_transactions.py", "tests/jobs/test_worker_leases.py",
     "tests/jobs/test_worker_lifecycle.py",
+    "tests/jobs/test_p1_parity_composition.py::test_worker_repository_persists_only_closed_p1_receipts",
 )
 _SEALED_PYTHON_UNITS = {
     "packages/domain": (("packages/domain/",), (), (), (665, 699), (173, 198)),

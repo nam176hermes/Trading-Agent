@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "EngineInstrumentId": {
+      "additionalProperties": false,
+      "description": "Canonical engine-facing instrument identity.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]{0,31}$",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]{0,31}$",
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "EngineInstrumentId",
+      "type": "object"
+    },
+    "EngineTargetPortfolio": {
+      "additionalProperties": false,
+      "description": "Canonical v1 target portfolio accepted by the engine boundary.",
+      "properties": {
+        "effective_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/EngineTargetPosition"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "format": "uuid",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "positions",
+        "source_signal_ids",
+        "effective_at",
+        "schema_version"
+      ],
+      "title": "EngineTargetPortfolio",
+      "type": "object"
+    },
+    "EngineTargetPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/EngineInstrumentId"
+        },
+        "target_weight": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Target Weight",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "instrument",
+        "target_weight"
+      ],
+      "title": "EngineTargetPosition",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "nautilus-p1-target-schedule-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/EngineTargetPortfolio"
+      },
+      "maxItems": 4096,
+      "minItems": 1,
+      "title": "Targets",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "targets"
+  ],
+  "title": "P1TargetScheduleV1",
+  "type": "object"
+}

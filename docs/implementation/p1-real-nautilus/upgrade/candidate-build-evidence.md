@@ -1,7 +1,16 @@
 # P1-U04 candidate build evidence
 
-Status: `X8_COMPLETE_X9_FINAL_GATES_PENDING`
+Status: `U04_ACCEPTED_G1_INACTIVE`
 Evidence date: 2026-08-27
+
+Immutable generation record: `NT1231-U04-G1`. Gate A accepted the existing
+Build A/Build B and schema-7 closure after fresh P1-scoped topology,
+P1-specific host, runtime-release host, specification, security/integrity, and
+evidence-replay checks. The global host gate remained truthfully `DEFERRED`
+only because the three separately governed PostgreSQL authorities were absent;
+P1 validation forbids manufacturing those approvals or running DB/service
+checks. This acceptance does not rebuild, rematerialize, activate, or promote
+the candidate.
 
 This is a post-build evidence record. The native authority, Build A, Build B,
 and schema-7 closure bind the source candidate below. The later evidence-only
@@ -104,6 +113,8 @@ Portable attempt 28 at the accepted source HEAD passed:
 
 Known limitation: native isolation is evaluated under the documented
 cooperative-host threat model; privileged host compromise is outside scope.
-There are no DEFERRED X4-X8 authorities. This evidence does not authorize
+There are no DEFERRED P1, X4-X8, or runtime-release authorities. The three
+PostgreSQL authorities remain intentionally `ABSENT/DEFERRED` and outside P1.
+This evidence does not authorize
 activation or promotion of 1.231, broker access, trading, push, PR, merge,
-deployment, production mutation, or U05.
+deployment, production mutation, or a U05 qualification verdict.

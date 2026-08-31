@@ -1,0 +1,111 @@
+{
+  "ceilings": {
+    "case_output_bytes": 2000000,
+    "case_peak_memory_kib": 4194304,
+    "case_runtime_seconds": 300,
+    "total_runtime_seconds": 1200
+  },
+  "scenarios": [
+    {
+      "boundary": "SEMANTIC_DRIFT",
+      "expected_class": "PASS",
+      "nodeids": [
+        "tests/p1_nautilus/adversarial/test_three_run_determinism.py",
+        "tests/nautilus_runtime_contracts/test_semantic_projection.py",
+        "tests/nautilus_upgrade/test_dual_runtime_semantic_parity.py"
+      ],
+      "scenario": "three-run-custody-and-semantic-determinism"
+    },
+    {
+      "boundary": "AUTHORITY",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/p1_nautilus/test_input_loader_adversarial.py",
+        "tests/p1_nautilus/test_instrument_factory_native.py::test_closure_snapshot_rejects_nonwheel_drift",
+        "tests/p1_nautilus/test_p1_closure_qualification.py",
+        "tests/p1_nautilus/test_runtime_bootstrap.py",
+        "tests/p1_nautilus/test_runtime_cli_source.py",
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_partial_external_authority_is_blocked_and_does_not_leak_paths",
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_transport_authority_rejects_checkout_and_symlink_paths",
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_wrong_sandbox_executable_is_blocked_before_native_attestation",
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_schema_valid_wrong_closure_digest_is_blocked_before_readiness",
+        "tests/p1_nautilus/test_vertical_slice_e2e.py::test_worker_runtime_authority_must_bind_exact_checkout_source",
+        "tests/jobs/test_p1_composition.py",
+        "tests/jobs/test_p1_nautilus_closure.py"
+      ],
+      "scenario": "closure-file-digest-mode-path-and-authority-drift"
+    },
+    {
+      "boundary": "INPUT_PROTOCOL",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/nautilus_runtime_contracts/test_artifacts.py",
+        "tests/p1_nautilus/test_input_loader.py",
+        "tests/p1_nautilus/test_market_data_loader.py"
+      ],
+      "scenario": "input-schema-precision-time-and-lookahead"
+    },
+    {
+      "boundary": "EXECUTION",
+      "expected_class": "PASS",
+      "nodeids": [
+        "tests/p1_nautilus/test_backtest_runner_native.py",
+        "tests/p1_nautilus/test_event_stream_native.py",
+        "tests/p1_nautilus/test_market_data_native.py",
+        "tests/p1_nautilus/test_target_strategy_native.py"
+      ],
+      "scenario": "sealed-g1-execution-rejection-and-terminal-state"
+    },
+    {
+      "boundary": "CUSTODY",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/jobs/test_engine_results_p1.py",
+        "tests/p1_nautilus/test_event_projector.py::test_writer_never_exposes_completion_after_partial_failure",
+        "tests/p1_nautilus/test_event_projector.py::test_writer_rejects_mutated_expected_request_authority",
+        "tests/p1_nautilus/test_event_projector.py::test_writer_rejects_forged_stream_digests",
+        "tests/p1_nautilus/test_event_projector.py::test_writer_rejects_rehashed_duplicate_run_start",
+        "tests/p1_nautilus/test_event_projector.py::test_writer_rejects_second_order_for_the_same_target"
+      ],
+      "scenario": "stdout-sequence-causation-and-completion-custody"
+    },
+    {
+      "boundary": "PERSISTENCE",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/engine_event_ledger/test_p1_stream_ingestion.py",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_engine_success_waits_for_exact_durable_receipt",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_engine_mismatched_receipt_blocks_success",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_new_attempt_cannot_rerun_after_prior_durable_receipt",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_commit_then_response_loss_reconciles_exact_receipt_before_success",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_failed_engine_receipt_reload_blocks_without_automatic_rerun",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_engine_identity_conflict_blocks_without_success",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_engine_sequence_refusal_blocks_with_durable_reason",
+        "tests/jobs/test_engine_worker_lifecycle.py::test_engine_transient_ingest_failure_blocks_without_automatic_rerun"
+      ],
+      "scenario": "ledger-collision-uncertain-commit-and-restart"
+    },
+    {
+      "boundary": "ACCOUNTING",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/portfolio_reducer/test_nautilus_p1_parity.py",
+        "tests/jobs/test_p1_parity_composition.py"
+      ],
+      "scenario": "projection-accounting-and-durable-parity"
+    },
+    {
+      "boundary": "REPLAY",
+      "expected_class": "EXPECTED_REJECTION_ASSERTED",
+      "nodeids": [
+        "tests/portfolio_reducer/test_portfolio_replay.py::test_snapshot_tail_is_identical_to_full_replay",
+        "tests/portfolio_reducer/test_portfolio_replay.py::test_repeating_basis_mark_and_correction_keep_exact_checkpoint_parity",
+        "tests/portfolio_reducer/test_portfolio_replay.py::test_tampered_record_hash_fails_closed",
+        "tests/portfolio_reducer/test_portfolio_replay.py::test_snapshot_tail_rejects_old_and_conflicting_events",
+        "tests/portfolio_reducer/test_portfolio_replay.py::test_replay_rejects_caller_reordering"
+      ],
+      "scenario": "trusted-prefix-replay-and-checkpoint-restart"
+    }
+  ],
+  "schema": "trading-agent-p1-adversarial-matrix/v1"
+}

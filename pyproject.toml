@@ -40,6 +40,7 @@ packages = [
 "apps/job_api" = "apps/job_api"
 "packages" = "packages"
 "services" = "services"
+"engines/nautilus/runtime_v1/profile.py" = "engines/nautilus/runtime_v1/profile.py"
 
 [tool.pytest.ini_options]
 addopts = "-s"

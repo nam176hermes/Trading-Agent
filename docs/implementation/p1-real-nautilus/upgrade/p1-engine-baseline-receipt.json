@@ -1,0 +1,71 @@
+{
+  "authority_limits": {
+    "candidate_active": false,
+    "candidate_promoted": false,
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "candidate_closure_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+  "candidate_generation_id": "NT1231-U04-G1",
+  "candidate_generation_sha256": "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c",
+  "engine_version": "1.231.0",
+  "input_receipt_sha256s": {
+    "u04_final_acceptance": "61b10af4eff49f6f239e7ae6c6707b2697280c07c322bea34de226bcc64f2c92",
+    "u05_qualification": "558115bfba04d3096e04837f0a6bb84db8e869f6c7ceb1629827fe7a79c0fcb9",
+    "u06_qualification": "30f7eec088ef4635e29f79cf5958efd9b680d822c5c73332100353356185916f",
+    "u07_qualification": "a6d93218218e30b872077a92265e2eb4b289aa704aca63351f71f58e2f773f60"
+  },
+  "legacy_phase4_authority": {
+    "active_policy_changes": 0,
+    "engine_version": "1.227.0",
+    "execution_simulation_policy_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+    "job_worker_loader_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+    "paper_compatibility_policy_sha256": "ab04b77042fb351a541764054e2bac7259097c749f6ff930c3fc68ef631d592c",
+    "schema_version": 6
+  },
+  "legacy_phase4_profiles_unchanged": true,
+  "operator_decision": "PROMOTE_1_231_FOR_P1",
+  "p1_00_status": "READY",
+  "p1_product_closure_schema": 8,
+  "qualification_source_commit": "979db632d96a1e45df571f22a70e2a9244574d84",
+  "qualification_source_tree": "afb9ae226c23f36643b661d8c42faef835f4cee6",
+  "review_source_commit": "de7f626ae5cdd1e9be1e7bc0c599d72c6819b5d6",
+  "review_source_tree": "747ef2e479a9d02470823bff4a5e44bc7f36e335",
+  "reviews": [
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "u04c2_evidence_rereview",
+      "role": "evidence",
+      "source_commit": "de7f626ae5cdd1e9be1e7bc0c599d72c6819b5d6",
+      "source_tree": "747ef2e479a9d02470823bff4a5e44bc7f36e335",
+      "verdict": "PASS"
+    },
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "u04c2_security_rereview",
+      "role": "security_integrity",
+      "source_commit": "de7f626ae5cdd1e9be1e7bc0c599d72c6819b5d6",
+      "source_tree": "747ef2e479a9d02470823bff4a5e44bc7f36e335",
+      "verdict": "PASS"
+    },
+    {
+      "critical": 0,
+      "important": 0,
+      "minor": 0,
+      "reviewer_id": "u04c2_spec_rereview",
+      "role": "specification",
+      "source_commit": "de7f626ae5cdd1e9be1e7bc0c599d72c6819b5d6",
+      "source_tree": "747ef2e479a9d02470823bff4a5e44bc7f36e335",
+      "verdict": "PASS"
+    }
+  ],
+  "schema": "trading-agent-p1-engine-baseline-receipt/v1",
+  "scope": "P1_A_AND_P1_B_ONLY",
+  "status": "P1_BASELINE_APPROVED",
+  "verdict": "PASS"
+}

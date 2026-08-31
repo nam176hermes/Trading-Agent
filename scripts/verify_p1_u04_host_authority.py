@@ -23,16 +23,37 @@ HOST_TESTS = (
     ROOT / "tests/nautilus_upgrade/host_authority/p1_u04_host_authority.py"
 )
 SCHEMA = "p1-u04-host-authority-receipt-v1"
+TOPOLOGY_SCHEMA = "p1-u04-host-topology-receipt-v1"
+_P1_REQUIRED_EXTERNAL = frozenset(
+    {
+        "EXT-PHASE3B-CORPUS",
+        "EXT-LEGACY-UV-AUTHORITY",
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+    }
+)
+_P1_FORBIDDEN_POSTGRES = frozenset(
+    {
+        "EXT-DISPOSABLE-PG-GREEN",
+        "EXT-DISPOSABLE-PG-RED",
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE",
+    }
+)
 
 
-def _emit(outcome: str, reason: str) -> int:
+def _emit(
+    outcome: str,
+    reason: str,
+    *,
+    schema: str = SCHEMA,
+    lane: str = "HOST_EXTERNAL_AUTHORITY",
+) -> int:
     print(
         json.dumps(
             {
-                "lane": "HOST_EXTERNAL_AUTHORITY",
+                "lane": lane,
                 "outcome": outcome,
                 "reason": reason,
-                "schema": SCHEMA,
+                "schema": schema,
             },
             ensure_ascii=True,
             separators=(",", ":"),
@@ -44,6 +65,103 @@ def _emit(outcome: str, reason: str) -> int:
 
 def _load_engine_policy() -> dict[str, object]:
     return json.loads(builder._CANDIDATE_ENGINE_POLICY.read_text(encoding="ascii"))
+
+
+def _validate_p1_external_outcomes(
+    receipts: list[dict[str, object]],
+) -> dict[str, str]:
+    expected = _P1_REQUIRED_EXTERNAL | _P1_FORBIDDEN_POSTGRES
+    by_code = {
+        str(receipt.get("capability_or_authority_code")): receipt
+        for receipt in receipts
+    }
+    if len(receipts) != len(by_code) or set(by_code) != expected:
+        raise ValueError("P1_U04_EXTERNAL_AUTHORITY_INVALID")
+    for code in _P1_REQUIRED_EXTERNAL:
+        receipt = by_code[code]
+        if (
+            receipt.get("outcome") != "PASS"
+            or receipt.get("preflight_state") != "VALID"
+            or receipt.get("redacted_fact_class") != "AUTHORITY_COMPLETE_VALIDATED"
+        ):
+            raise ValueError("P1_U04_EXTERNAL_AUTHORITY_INVALID")
+    for code in _P1_FORBIDDEN_POSTGRES:
+        receipt = by_code[code]
+        if (
+            receipt.get("outcome") != "DEFERRED"
+            or receipt.get("preflight_state") != "ABSENT"
+            or receipt.get("redacted_fact_class") != "AUTHORITY_RECORD_ABSENT"
+        ):
+            raise ValueError("P1_U04_EXTERNAL_AUTHORITY_INVALID")
+    return {code: str(by_code[code]["outcome"]) for code in sorted(by_code)}
+
+
+def _validate_p1_topology(evidence_root: Path, foundation_context_path: Path) -> int:
+    from scripts import t_g03_capability_topology as topology
+
+    try:
+        run_id, head_sha = topology._active_foundation_identity()
+        context = topology.load_foundation_context(
+            foundation_context_path, run_id=run_id, head_sha=head_sha,
+        )
+        inventory = ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
+        topology.validate_portable_defect_closure(
+            inventory=inventory,
+            evidence_root=evidence_root,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=foundation_context_path,
+        )
+        rows = topology._installed_inventory_rows(inventory, evidence_root)
+        baseline = topology.load_portable_root_baseline(
+            inventory=inventory,
+            evidence_root=evidence_root,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=foundation_context_path,
+        )
+        custody = topology._validate_custody_policy(baseline["collector_policy"])
+        topology_root = evidence_root / "capability-topology"
+        native_status = topology.validate_native_artifacts(
+            topology_root,
+            rows=rows,
+            foundation_context=context,
+            sealed_custody=custody,
+            require_pass=True,
+        )
+        receipts = [
+            topology.validate_external_artifact_set(
+                topology_root / f"{code}.json",
+                rows=rows,
+                foundation_context=context,
+                sealed_custody=custody,
+            )[0]
+            for code in sorted(_P1_REQUIRED_EXTERNAL | _P1_FORBIDDEN_POSTGRES)
+        ]
+        external = _validate_p1_external_outcomes(receipts)
+    except (OSError, RuntimeError, ValueError, topology.TopologyError):
+        return _emit(
+            "FAIL", "P1_TOPOLOGY_INVALID", schema=TOPOLOGY_SCHEMA,
+            lane="P1_U04_HOST_TOPOLOGY",
+        )
+    print(
+        json.dumps(
+            {
+                "external_outcomes": external,
+                "foundation_head_sha": head_sha,
+                "foundation_run_id": run_id,
+                "lane": "P1_U04_HOST_TOPOLOGY",
+                "native_status": native_status,
+                "outcome": "PASS",
+                "portable_closure_status": "PASS",
+                "schema": TOPOLOGY_SCHEMA,
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 def _cache_is_exact(cache: Path, policy: dict[str, object]) -> bool:
@@ -98,7 +216,31 @@ def _missing_host_authority(policy: dict[str, object]) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-cache", type=Path)
+    parser.add_argument("--topology-evidence-root", type=Path)
+    parser.add_argument("--foundation-context-path", type=Path)
     arguments = parser.parse_args(argv)
+    if (
+        arguments.topology_evidence_root is None
+        and arguments.foundation_context_path is not None
+    ) or (
+        arguments.topology_evidence_root is not None
+        and arguments.foundation_context_path is None
+    ):
+        return _emit(
+            "FAIL", "P1_TOPOLOGY_ARGUMENTS_INCOMPLETE", schema=TOPOLOGY_SCHEMA,
+            lane="P1_U04_HOST_TOPOLOGY",
+        )
+    if arguments.topology_evidence_root is not None:
+        if arguments.evidence_cache is not None:
+            return _emit(
+                "FAIL", "P1_TOPOLOGY_ARGUMENTS_MIXED", schema=TOPOLOGY_SCHEMA,
+                lane="P1_U04_HOST_TOPOLOGY",
+            )
+        assert arguments.foundation_context_path is not None
+        return _validate_p1_topology(
+            arguments.topology_evidence_root,
+            arguments.foundation_context_path,
+        )
     policy = _load_engine_policy()
     roots = policy["external_cache_isolation"]["external_roots"]
     expected_cache = Path(str(roots["candidate_input_root"]))

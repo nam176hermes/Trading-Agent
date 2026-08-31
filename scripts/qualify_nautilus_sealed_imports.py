@@ -15,8 +15,12 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
+import time
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
+from uuid import UUID
 
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +28,22 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from scripts import materialize_nautilus_runtime_closure as _closure
+from packages.engine_contracts import (
+    CURRENT_SCHEMA_VERSION,
+    ArtifactReference,
+    EngineCommandEnvelope,
+    RunBacktest,
+    payload_digest,
+)
+from services.job_worker.engine_artifacts import (
+    EngineArtifactBinding,
+    HashBoundArtifactResolver,
+)
+from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+from services.job_worker.engine_spawn import consume_prepared_engine_spawn
+from services.job_worker.nautilus_closure import NautilusClosureConfig
+from services.job_worker.p1_engine_spawn import P1EngineSpawnProvider
+from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
 
 
 _PROBE = _ROOT / "engines/nautilus/launcher/import_probe.py"
@@ -868,6 +888,212 @@ def qualify_sealed_imports(
         os.close(parent_fd)
 
 
+def qualify_p1_runtime(
+    *,
+    runtime_root: Path,
+    artifact_directory: Path,
+    sandbox_executable: Path,
+    receipt_path: Path,
+) -> Path:
+    """Run one exact offline P1 native smoke through the worker spawn boundary."""
+
+    for label, path in {
+        "P1 runtime": runtime_root,
+        "P1 artifact directory": artifact_directory,
+        "P1 sandbox": sandbox_executable,
+        "P1 receipt": receipt_path,
+    }.items():
+        _safe_absolute(path, label=label, must_exist=label != "P1 receipt")
+    parent_fd, parent_identity = _open_private_parent(receipt_path.parent)
+    try:
+        try:
+            os.stat(receipt_path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise SealedImportQualificationError("P1 receipt already exists")
+        try:
+            closure = attest_p1_nautilus_closure(
+                NautilusClosureConfig(
+                    runtime_root, artifact_directory, sandbox_executable
+                )
+            )
+        except Exception as exc:
+            raise SealedImportQualificationError(
+                "P1 product closure attestation failed"
+            ) from exc
+
+        with tempfile.TemporaryDirectory(
+            prefix="p1-runtime-qualification-", dir="/tmp"
+        ) as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            inputs_root = root / "artifacts"
+            transport_root = root / "transport"
+            inputs_root.mkdir(mode=0o700)
+            transport_root.mkdir(mode=0o700)
+            values = (
+                (
+                    "engine_configuration",
+                    (_ROOT / "tests/fixtures/p1_nautilus/contracts/engine-configuration.json").read_bytes(),
+                    "application/json",
+                ),
+                (
+                    "instrument_catalog",
+                    (_ROOT / "tests/fixtures/p1_nautilus/contracts/instrument-catalog.json").read_bytes(),
+                    "application/json",
+                ),
+                (
+                    "strategy_configuration",
+                    (_ROOT / "tests/fixtures/p1_nautilus/contracts/target-schedule.json").read_bytes(),
+                    "application/json",
+                ),
+                (
+                    "market_data",
+                    b'{"ask":"100","bid":"99","close":"100","event_time":"2026-08-05T12:00:00Z","high":"101","low":"98","open":"99","quote_time":"2026-08-05T12:00:00Z","sequence":1,"volume":"1000000"}\n'
+                    b'{"ask":"102","bid":"101","close":"102","event_time":"2026-08-05T12:01:00Z","high":"103","low":"100","open":"101","quote_time":"2026-08-05T12:01:00Z","sequence":2,"volume":"1000000"}\n',
+                    "application/jsonl",
+                ),
+            )
+            references: list[ArtifactReference] = []
+            bindings: list[EngineArtifactBinding] = []
+            for index, (name, raw, media_type) in enumerate(values, start=1):
+                source = inputs_root / name
+                source.write_bytes(raw)
+                source.chmod(0o400)
+                reference = ArtifactReference(
+                    artifact_id=UUID(
+                        f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+                    ),
+                    sha256=_sha256(raw),
+                    media_type=media_type,
+                )
+                references.append(reference)
+                bindings.append(EngineArtifactBinding(reference, source))
+            command = RunBacktest(
+                command_type="RunBacktest",
+                engine_configuration=references[0],
+                instrument_catalog=references[1],
+                strategy_configuration=references[2],
+                market_data=references[3],
+                start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+                end_time=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
+            )
+            envelope = EngineCommandEnvelope(
+                message_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                correlation_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+                causation_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+                engine_run_id=UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+                stream_sequence=1,
+                event_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+                initialization_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+                schema_version=CURRENT_SCHEMA_VERSION,
+                producer_identity="p1-runtime-qualification",
+                source_commit=closure.source_commit,
+                config_digest=payload_digest(
+                    {
+                        "engine_configuration": references[0],
+                        "instrument_catalog": references[1],
+                        "strategy_configuration": references[2],
+                    }
+                ),
+                payload_digest=payload_digest(command),
+                payload=command,
+            )
+            provider = P1EngineSpawnProvider(
+                transport_root=transport_root,
+                attest_closure=lambda: closure,
+                expected_manifest_schema_version=8,
+                profile_policy=P1_REAL_BACKTEST_POLICY,
+                attest_inputs=HashBoundArtifactResolver(tuple(bindings)),
+                monotonic_ns=time.monotonic_ns,
+            )
+            spawn = consume_prepared_engine_spawn(provider.prepare(envelope))
+            try:
+                result = subprocess.run(
+                    spawn.argv,
+                    cwd=spawn.cwd,
+                    env=spawn.environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    close_fds=True,
+                    pass_fds=spawn.pass_fds,
+                    timeout=spawn.timeout_seconds,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise SealedImportQualificationError(
+                    "P1 native smoke execution failed"
+                ) from exc
+            finally:
+                for descriptor in spawn.close_after_spawn_fds:
+                    os.close(descriptor)
+        if result.returncode != 0 or result.stderr or not result.stdout.endswith(b"\n"):
+            raise SealedImportQualificationError("P1 native smoke did not exit cleanly")
+        try:
+            events = tuple(json.loads(line) for line in result.stdout.splitlines())
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SealedImportQualificationError("P1 event stream is invalid JSON") from exc
+        try:
+            attributes = tuple(
+                {
+                    str(item["name"]): item["value"]
+                    for item in event["payload"]["attributes"]
+                }
+                for event in events
+            )
+        except (KeyError, TypeError) as exc:
+            raise SealedImportQualificationError(
+                "P1 event stream attributes are invalid"
+            ) from exc
+        if (
+            not events
+            or any(type(event) is not dict for event in events)
+            or b"".join(_canonical(event) + b"\n" for event in events) != result.stdout
+            or any(event.get("stream_sequence") != index for index, event in enumerate(events, start=2))
+            or any(
+                type(event.get("payload")) is not dict
+                or event["payload"].get("event_type") is None
+                or event.get("schema_version") != "1.0.0"
+                or facts.get("schema_version") != "nautilus-p1-event-stream-v1"
+                or len(facts) != len(event["payload"].get("attributes", ()))
+                for event, facts in zip(events, attributes, strict=True)
+            )
+            or events[-1]["payload"].get("event_type") != "RunCompleted"
+            or attributes[-1].get("closure_digest") != closure.closure_sha256
+        ):
+            raise SealedImportQualificationError("P1 event stream authority is invalid")
+        receipt = {
+            "authority_limits": {
+                "live_authorized": False,
+                "network_trading_authorized": False,
+                "production_authorized": False,
+            },
+            "closure_sha256": closure.closure_sha256,
+            "event_count": len(events),
+            "event_stream_sha256": _sha256(result.stdout),
+            "manifest_schema_version": 8,
+            "profile": P1_REAL_BACKTEST_POLICY.profile,
+            "runtime_inventory_sha256": closure.runtime_inventory_sha256,
+            "schema": "trading-agent-p1-runtime-qualification/v1",
+            "semantic_digest": attributes[-1]["semantic_digest"],
+            "source_commit": closure.source_commit,
+            "status": "PASS",
+        }
+        receipt["receipt_sha256"] = _sha256(_canonical(receipt))
+        _publish_receipt(
+            parent_fd,
+            receipt_path.parent,
+            receipt_path.name,
+            _canonical(receipt) + b"\n",
+            parent_identity,
+        )
+        return receipt_path
+    finally:
+        os.close(parent_fd)
+
+
 def _abort(message: str) -> NoReturn:
     print(f"sealed import qualification failed: {message}", file=sys.stderr)
     raise SystemExit(2)
@@ -875,13 +1101,48 @@ def _abort(message: str) -> NoReturn:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", required=True, type=Path)
-    parser.add_argument("--base-runtime", required=True, type=Path)
-    parser.add_argument("--artifact-directory", required=True, type=Path)
-    parser.add_argument("--sandbox", required=True, type=Path)
-    parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--p1", action="store_true")
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--base-runtime", type=Path)
+    parser.add_argument("--artifact-directory", type=Path)
+    parser.add_argument("--sandbox", type=Path)
+    parser.add_argument("--receipt", type=Path)
     arguments = parser.parse_args()
     try:
+        supplied = (
+            arguments.policy,
+            arguments.base_runtime,
+            arguments.artifact_directory,
+            arguments.sandbox,
+            arguments.receipt,
+        )
+        if arguments.p1:
+            if all(value is None for value in supplied):
+                print('{"schema":"trading-agent-p1-runtime-qualification/v1","status":"DEFERRED"}')
+                return 0
+            if arguments.policy is not None or any(
+                value is None
+                for value in (
+                    arguments.base_runtime,
+                    arguments.artifact_directory,
+                    arguments.sandbox,
+                    arguments.receipt,
+                )
+            ):
+                raise SealedImportQualificationError(
+                    "P1 qualification authority is partial or invalid"
+                )
+            qualify_p1_runtime(
+                runtime_root=arguments.base_runtime,
+                artifact_directory=arguments.artifact_directory,
+                sandbox_executable=arguments.sandbox,
+                receipt_path=arguments.receipt,
+            )
+            return 0
+        if any(value is None for value in supplied):
+            raise SealedImportQualificationError(
+                "legacy qualification requires every explicit authority"
+            )
         qualify_sealed_imports(
             policy_path=arguments.policy,
             base_runtime=arguments.base_runtime,

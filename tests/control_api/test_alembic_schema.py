@@ -9,6 +9,8 @@ from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError
 
 from tests.jobs._postgres import (
     _upgrade_to_revision,
@@ -59,7 +61,34 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0011_engine_backtest_worker_authority"
+EXACT_HEAD = "0018_p1_paper_closure_rotation"
+P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
+P1_OLD_CLOSURE_SHA256 = (
+    "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
+)
+P1_NEW_CLOSURE_SHA256 = (
+    "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+)
+P1_INGEST_REGPROCEDURE = (
+    "job_plane.ingest_p1_engine_event_batch_v2("
+    "text,uuid,uuid,uuid,uuid,text,text,text,text,text)"
+)
+
+
+def _p1_ingest_authority(connection: Connection) -> tuple[object, ...]:
+    return tuple(
+        connection.exec_driver_sql(
+            "SELECT pg_get_functiondef(function_row.oid), "
+            "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+            "function_row.prosrc, 'UTF8')), 'hex'), "
+            "pg_get_userbyid(function_row.proowner), function_row.proacl::text, "
+            "function_row.prosecdef, function_row.provolatile, "
+            "function_row.proparallel, function_row.proconfig "
+            "FROM pg_catalog.pg_proc AS function_row "
+            "WHERE function_row.oid = to_regprocedure(%s)",
+            (P1_INGEST_REGPROCEDURE,),
+        ).one()
+    )
 
 
 def alembic_config() -> Config:
@@ -76,7 +105,131 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
         with engine.connect() as connection:
             config = alembic_config()
             config.attributes["connection"] = connection
+            command.upgrade(config, P1_PROJECTION_REVISION)
+            before = _p1_ingest_authority(connection)
+            before_definition = before[0]
+            assert isinstance(before_definition, str)
+            assert before[1] == (
+                "2550c8513692664f383abc828f0245cc3f7554b20d6f58e0b125714626fc6cae"
+            )
+            assert before[2] == "trading_owner"
+            assert before_definition.count(P1_OLD_CLOSURE_SHA256) == 2
+            assert P1_NEW_CLOSURE_SHA256 not in before_definition
+
+            wrong_prior = before_definition.replace(
+                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256, 1
+            )
+            connection.exec_driver_sql(
+                wrong_prior,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                before_definition,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+
+            drifted_body = before_definition.replace(
+                "        DECLARE\n",
+                "        DECLARE\n          -- retained-digest body drift\n",
+                1,
+            )
+            assert drifted_body != before_definition
+            assert drifted_body.count(P1_OLD_CLOSURE_SHA256) == 2
+            connection.exec_driver_sql(
+                drifted_body,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                before_definition,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+
+            connection.exec_driver_sql(
+                "GRANT EXECUTE ON FUNCTION " + P1_INGEST_REGPROCEDURE
+                + " TO trading_job_worker"
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                "REVOKE EXECUTE ON FUNCTION " + P1_INGEST_REGPROCEDURE
+                + " FROM trading_job_worker"
+            )
+            connection.commit()
+
+            connection.exec_driver_sql(
+                "CREATE FUNCTION public.length(value text) RETURNS integer "
+                "LANGUAGE plpgsql AS $$BEGIN "
+                "RAISE EXCEPTION 'hostile search path function executed'; "
+                "END$$"
+            )
+            connection.exec_driver_sql(
+                "CREATE DOMAIN public.text AS pg_catalog.text"
+            )
+            connection.exec_driver_sql(
+                "CREATE DOMAIN public.uuid AS pg_catalog.uuid"
+            )
+            hostile_signature = (
+                "job_plane.ingest_p1_engine_event_batch_v2("
+                "public.text,public.uuid,public.uuid,public.uuid,public.uuid,"
+                "public.text,public.text,public.text,public.text,public.text)"
+            )
+            connection.exec_driver_sql(
+                "CREATE FUNCTION " + hostile_signature
+                + " RETURNS integer LANGUAGE sql AS $$SELECT 1$$"
+            )
+            connection.exec_driver_sql(
+                "CREATE FUNCTION public.hostile_text_equal("
+                "pg_catalog.text, pg_catalog.text) RETURNS boolean "
+                "LANGUAGE plpgsql AS $$BEGIN "
+                "RAISE EXCEPTION 'hostile equality operator executed'; "
+                "END$$"
+            )
+            connection.exec_driver_sql(
+                "CREATE OPERATOR public.= ("
+                "LEFTARG = pg_catalog.text, RIGHTARG = pg_catalog.text, "
+                "FUNCTION = public.hostile_text_equal)"
+            )
+            connection.exec_driver_sql("SET search_path = public, pg_catalog")
+            connection.commit()
             command.upgrade(config, "head")
+            connection.exec_driver_sql(
+                "DROP OPERATOR public.= (pg_catalog.text, pg_catalog.text)"
+            )
+            connection.exec_driver_sql(
+                "DROP FUNCTION public.hostile_text_equal("
+                "pg_catalog.text, pg_catalog.text)"
+            )
+            connection.exec_driver_sql("DROP FUNCTION " + hostile_signature)
+            connection.exec_driver_sql(
+                "DROP FUNCTION public.length(pg_catalog.text)"
+            )
+            connection.exec_driver_sql("DROP DOMAIN public.uuid")
+            connection.exec_driver_sql("DROP DOMAIN public.text")
+            connection.exec_driver_sql("RESET search_path")
+            connection.commit()
+            after = _p1_ingest_authority(connection)
+            assert after[0] == before_definition.replace(
+                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
+            )
+            assert after[1] == (
+                "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089"
+            )
+            assert after[2:] == before[2:]
             command.upgrade(config, "head")
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == EXPECTED_TABLES
@@ -143,6 +296,14 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             assert cost_columns["symbols_provenance_quality"]["nullable"] is False
             assert cost_columns["symbols_evidence_state"]["nullable"] is False
 
+            engine_projection_columns = {
+                item["name"]: item
+                for item in inspector.get_columns("engine_run_projections")
+            }
+            assert engine_projection_columns["batch_sha256"]["nullable"] is True
+            assert engine_projection_columns["semantic_digest"]["nullable"] is True
+            assert engine_projection_columns["request_message_id"]["nullable"] is True
+
             foreign_keys = sum(
                 (inspector.get_foreign_keys(table) for table in EXPECTED_TABLES),
                 start=[],
@@ -163,7 +324,94 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "ck_cost_sessions_symbols_state",
                 "ck_phase3b_backfill_runs_status",
                 "ck_phase3b_backfill_events_reason",
+                "engine_run_projection_result_authority_complete",
             }
+
+            projection_foreign_keys = {
+                item["name"]
+                for item in inspector.get_foreign_keys("engine_run_projections")
+            }
+            assert "engine_run_projection_batch_fkey" in projection_foreign_keys
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.ingest_p1_engine_event_batch_v2("
+                "text,uuid,uuid,uuid,uuid,text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.ingest_engine_job_result_v2(text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.ingest_legacy_engine_job_result_v2("
+                "text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.paper_worker_job_id_allowed(text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'public.engine_run_completion_append_guard()')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT count(*) FROM pg_catalog.pg_policies "
+                "WHERE schemaname = 'public' "
+                "AND tablename = 'worker_heartbeats' "
+                "AND policyname IN ("
+                "'job_plane_worker_heartbeats_insert', "
+                "'job_plane_worker_heartbeats_update') "
+                "AND roles = ARRAY['trading_job_worker']::name[] "
+                "AND with_check LIKE "
+                "'%paper_worker_job_id_allowed(current_job_id)%'"
+            ).scalar_one() == 2
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_p1_engine_event_batch_v2("
+                "text,uuid,uuid,uuid,uuid,text,text,text,text,text)', "
+                "'EXECUTE')"
+            ).scalar_one() is False
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_engine_job_result_v2("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_legacy_engine_job_result_v2("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_engine_job_result("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is False
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.paper_worker_job_id_allowed(text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.paper_worker_job_allowed(text,jsonb)', 'EXECUTE')"
+            ).scalar_one() is False
+            for role in (
+                "trading_jobs",
+                "trading_migrator",
+                "trading_reader",
+                "trading_job_api",
+                "trading_job_scheduler",
+            ):
+                assert connection.exec_driver_sql(
+                    "SELECT has_function_privilege("
+                    f"'{role}', "
+                    "'job_plane.paper_worker_job_id_allowed(text)', 'EXECUTE')"
+                ).scalar_one() is False
 
             assert {
                 "uq_decision_field_lineage_identity",

@@ -23,6 +23,7 @@ from packages.domain.portfolio import (
     VenueExposureSnapshot,
 )
 from packages.domain.portfolio_events import (
+    PortfolioAccountObservationEntry,
     PortfolioConversionEntry,
     PortfolioFillEntry,
     PortfolioFundingEntry,
@@ -75,6 +76,20 @@ def _decimal(value: Fraction, *, field: str) -> Decimal:
     sign = 1 if numerator < 0 else 0
     digits = tuple(int(character) for character in str(abs(numerator))) or (0,)
     return Decimal((sign, digits, -scale))
+
+
+def _rounded_decimal(value: Fraction, precision: int, *, field: str) -> Decimal:
+    scale = 10**precision
+    scaled = value * scale
+    quotient, remainder = divmod(abs(scaled.numerator), scaled.denominator)
+    doubled = remainder * 2
+    if doubled > scaled.denominator or (
+        doubled == scaled.denominator and quotient % 2
+    ):
+        quotient += 1
+    return _decimal(
+        Fraction((-1 if scaled < 0 else 1) * quotient, scale), field=field
+    )
 
 
 def _sum(*values: Decimal, field: str) -> Decimal:
@@ -210,6 +225,7 @@ def _validate_event(event: object) -> PortfolioEvent:
         raise PortfolioReplayError("event must be an EventEnvelope")
     if type(event.payload) not in (
         PortfolioOpeningEntry,
+        PortfolioAccountObservationEntry,
         PortfolioFillEntry,
         PortfolioMarkEntry,
         PortfolioFundingEntry,
@@ -326,23 +342,114 @@ def _new_position(entry: PortfolioFillEntry, fill: FillEvent) -> PortfolioPositi
 
 def _cash_deltas(fill: FillEvent) -> tuple[Money, ...]:
     definition = fill.instrument_definition
-    gross = _money(
-        _product(fill.quantity.value, fill.last_fill_price.amount, definition.multiplier, field="fill notional"),
-        definition.settlement_currency,
-        field="fill notional",
+    gross = (
+        _fraction(fill.quantity.value)
+        * _fraction(fill.last_fill_price.amount)
+        * _fraction(definition.multiplier)
     )
-    trade_delta = -gross.amount if fill.side is OrderSide.BUY else gross.amount
+    trade_delta = -gross if fill.side is OrderSide.BUY else gross
     by_currency = {definition.settlement_currency: trade_delta}
-    by_currency[fill.commission.currency] = _sum(
-        by_currency.get(fill.commission.currency, Decimal(0)),
-        -fill.commission.amount,
-        field="cash delta",
-    )
+    by_currency[fill.commission.currency] = by_currency.get(
+        fill.commission.currency, Fraction(0)
+    ) - _fraction(fill.commission.amount)
     return tuple(
-        _money(amount, currency, field="cash delta")
+        _money(
+            _rounded_decimal(amount, currency.precision, field="cash delta"),
+            currency,
+            field="cash delta",
+        )
         for currency, amount in sorted(by_currency.items(), key=lambda item: item[0].code)
         if amount != 0
     )
+
+
+def _advanced_cost_basis(
+    current: Fraction, basis: Fraction, fill: FillEvent
+) -> tuple[Fraction, Fraction]:
+    signed_fill = _fraction(fill.quantity.value)
+    if fill.side is OrderSide.SELL:
+        signed_fill = -signed_fill
+    residual = current + signed_fill
+    fill_basis = abs(signed_fill) * _fraction(fill.last_fill_price.amount)
+    if residual == 0:
+        return residual, Fraction(0)
+    if current == 0 or current * residual < 0:
+        return residual, abs(residual) * _fraction(fill.last_fill_price.amount)
+    if current * signed_fill > 0:
+        return residual, basis + fill_basis
+    return residual, basis * abs(residual) / abs(current)
+
+
+def _accounting_before(
+    active_effects: tuple[PortfolioExecutionEffect, ...],
+    position_key: tuple[str, str],
+    *,
+    current: Decimal,
+    average_before: Price | None,
+) -> tuple[Fraction, Fraction]:
+    effects = sorted(
+        (
+            effect
+            for effect in active_effects
+            if effect.position_key == position_key
+        ),
+        key=lambda effect: effect.logical_sequence,
+    )
+    if effects:
+        quantity = _fraction(effects[0].quantity_before.value)
+        opening_average = effects[0].average_before
+    else:
+        quantity = _fraction(current)
+        opening_average = average_before
+    if quantity != 0 and opening_average is None:
+        raise PortfolioReplayError("non-zero position requires an average entry price")
+    basis = (
+        abs(quantity) * _fraction(opening_average.amount)
+        if opening_average is not None
+        else Fraction(0)
+    )
+    realized = Fraction(0)
+    for effect in effects:
+        if _fraction(effect.quantity_before.value) != quantity:
+            raise PortfolioReplayError("active execution quantity lineage is inconsistent")
+        realized += _realized_for_fill(
+            effect.fill, current=quantity, basis_before=basis
+        )
+        quantity, basis = _advanced_cost_basis(quantity, basis, effect.fill)
+    if quantity != _fraction(current):
+        raise PortfolioReplayError("active execution cost basis does not match position")
+    return basis, realized
+
+
+def _cost_basis_before(
+    active_effects: tuple[PortfolioExecutionEffect, ...],
+    position_key: tuple[str, str],
+    *,
+    current: Decimal,
+    average_before: Price | None,
+) -> Fraction:
+    return _accounting_before(
+        active_effects,
+        position_key,
+        current=current,
+        average_before=average_before,
+    )[0]
+
+
+def _realized_for_fill(
+    fill: FillEvent, *, current: Fraction, basis_before: Fraction
+) -> Fraction:
+    signed_fill = _fraction(fill.quantity.value)
+    if fill.side is OrderSide.SELL:
+        signed_fill = -signed_fill
+    closed = min(abs(current), abs(signed_fill))
+    multiplier = _fraction(fill.instrument_definition.multiplier)
+    price = _fraction(fill.last_fill_price.amount)
+    if current > 0 and signed_fill < 0:
+        return (price - basis_before / abs(current)) * closed * multiplier
+    if current < 0 and signed_fill > 0:
+        return (basis_before / abs(current) - price) * closed * multiplier
+    return Fraction(0)
 
 
 def _fill_accounting(
@@ -350,54 +457,39 @@ def _fill_accounting(
     *,
     current: Decimal,
     average_before: Price | None,
-) -> tuple[Decimal, Decimal, Price | None, Decimal, Decimal]:
+    basis_before: Fraction,
+) -> tuple[Decimal, Decimal, Price | None, Fraction, Decimal, Fraction]:
     definition = fill.instrument_definition
     signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
     residual = _sum(current, signed_fill, field="position quantity")
-    closed = min(abs(current), abs(signed_fill))
-    realized_delta = Decimal(0)
-    if current > 0 and signed_fill < 0:
-        if average_before is None:
-            raise PortfolioReplayError("long position requires an average entry price")
-        realized_delta = _product(
-            _sum(fill.last_fill_price.amount, -average_before.amount, field="realized PnL"),
-            closed,
-            definition.multiplier,
-            field="realized PnL",
-        )
-    elif current < 0 and signed_fill > 0:
-        if average_before is None:
-            raise PortfolioReplayError("short position requires an average entry price")
-        realized_delta = _product(
-            _sum(average_before.amount, -fill.last_fill_price.amount, field="realized PnL"),
-            closed,
-            definition.multiplier,
-            field="realized PnL",
-        )
-    if residual == 0:
+    current_fraction = _fraction(current)
+    signed_fraction = _fraction(signed_fill)
+    residual_fraction = current_fraction + signed_fraction
+    if current_fraction != 0 and average_before is None:
+        raise PortfolioReplayError("non-zero position requires an average entry price")
+    realized = _realized_for_fill(
+        fill, current=current_fraction, basis_before=basis_before
+    )
+    _, basis_after = _advanced_cost_basis(
+        current_fraction, basis_before, fill
+    )
+    if residual_fraction == 0:
         next_average = None
-    elif current == 0 or current * residual < 0:
-        next_average = fill.last_fill_price
-    elif current * signed_fill > 0:
-        if average_before is None:
-            raise PortfolioReplayError("open position requires an average entry price")
-        numerator = _sum(
-            _product(abs(current), average_before.amount, field="weighted average"),
-            _product(abs(signed_fill), fill.last_fill_price.amount, field="weighted average"),
-            field="weighted average",
-        )
+    else:
         next_average = Price(
-            _decimal(_fraction(numerator) / _fraction(abs(residual)), field="weighted average"),
+            _rounded_decimal(
+                basis_after / abs(residual_fraction),
+                definition.settlement_currency.precision,
+                field="weighted average",
+            ),
             definition.settlement_currency,
         )
-    else:
-        next_average = average_before
     fee_delta = (
         fill.commission.amount
         if fill.commission.currency is definition.settlement_currency
         else Decimal(0)
     )
-    return signed_fill, residual, next_average, realized_delta, fee_delta
+    return signed_fill, residual, next_average, realized, fee_delta, basis_after
 
 
 def _mark_and_unrealized(
@@ -405,6 +497,7 @@ def _mark_and_unrealized(
     *,
     quantity: Quantity,
     average_entry_price: Price | None,
+    cost_basis: Fraction,
     retained_mark: PositionMark | None = None,
 ) -> tuple[PositionMark | None, Money]:
     if quantity.value == 0:
@@ -418,14 +511,15 @@ def _mark_and_unrealized(
         )
     if average_entry_price is None or position.instrument_definition is None:
         raise PortfolioReplayError("marked position requires cost basis and instrument definition")
-    unrealized = _product(
-        _sum(
-            selected_mark.price.amount,
-            -average_entry_price.amount,
-            field="unrealized PnL",
-        ),
-        quantity.value,
-        position.instrument_definition.multiplier,
+    quantity_fraction = _fraction(quantity.value)
+    unrealized = _rounded_decimal(
+        (
+            _fraction(selected_mark.price.amount)
+            - cost_basis / abs(quantity_fraction)
+        )
+        * quantity_fraction
+        * _fraction(position.instrument_definition.multiplier),
+        position.settlement_currency.precision,
         field="unrealized PnL",
     )
     return selected_mark, _money(
@@ -448,16 +542,38 @@ def _fill_effect(
     if position.instrument_definition is not None and position.instrument_definition != definition:
         raise PortfolioReplayError("fill instrument definition conflicts with active position")
     current = position.quantity.value
-    signed_fill, residual, next_average, realized_delta, fee_delta = _fill_accounting(
+    position_key = (entry.strategy_id, position.instrument.canonical)
+    basis_before, realized_before = _accounting_before(
+        state.active_effects,
+        position_key,
+        current=current,
+        average_before=position.average_entry_price,
+    )
+    signed_fill, residual, next_average, realized, fee_delta, basis_after = _fill_accounting(
         fill,
         current=current,
         average_before=position.average_entry_price,
+        basis_before=basis_before,
+    )
+    realized_delta = _sum(
+        _rounded_decimal(
+            realized_before + realized,
+            definition.settlement_currency.precision,
+            field="realized PnL",
+        ),
+        -_rounded_decimal(
+            realized_before,
+            definition.settlement_currency.precision,
+            field="realized PnL",
+        ),
+        field="realized PnL delta",
     )
     next_quantity = _quantity(residual, fill.quantity.precision)
     next_mark, next_unrealized = _mark_and_unrealized(
         position,
         quantity=next_quantity,
         average_entry_price=next_average,
+        cost_basis=basis_after,
         retained_mark=retained_mark,
     )
     next_position = PortfolioPositionState(
@@ -500,7 +616,11 @@ def _fill_effect(
     return effect, next_position
 
 
-def validate_execution_effect(effect: PortfolioExecutionEffect) -> None:
+def validate_execution_effect(
+    effect: PortfolioExecutionEffect,
+    *,
+    prior_effects: tuple[PortfolioExecutionEffect, ...] = (),
+) -> None:
     """Reject any retained effect that is not the exact result of its source fill."""
 
     fill = effect.fill
@@ -510,12 +630,32 @@ def validate_execution_effect(effect: PortfolioExecutionEffect) -> None:
         FillReportStatus.CORRECTION,
     ):
         raise PortfolioReplayError("snapshot effect source is not an active execution")
-    signed_fill, _residual, average_after, realized_delta, fee_delta = _fill_accounting(
-        fill,
+    basis_before, realized_before = _accounting_before(
+        prior_effects,
+        effect.position_key,
         current=effect.quantity_before.value,
         average_before=effect.average_before,
     )
+    signed_fill, _residual, average_after, realized, fee_delta, _basis_after = _fill_accounting(
+        fill,
+        current=effect.quantity_before.value,
+        average_before=effect.average_before,
+        basis_before=basis_before,
+    )
     settlement = fill.instrument_definition.settlement_currency
+    realized_delta = _sum(
+        _rounded_decimal(
+            realized_before + realized,
+            settlement.precision,
+            field="realized PnL",
+        ),
+        -_rounded_decimal(
+            realized_before,
+            settlement.precision,
+            field="realized PnL",
+        ),
+        field="realized PnL delta",
+    )
     expected_realized = (
         (_money(realized_delta, settlement, field="balance realized PnL"),)
         if realized_delta != 0
@@ -705,10 +845,22 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
         raise PortfolioReplayError("active normal execution has no position to reverse")
     next_quantity = _sum(position.quantity.value, -effect.quantity_delta.value, field="reversed position quantity")
     next_quantity_value = _quantity(next_quantity, position.quantity.precision)
+    remaining_effects = tuple(
+        item
+        for item in state.active_effects
+        if item.execution_id != effect.execution_id
+    )
+    next_basis = _cost_basis_before(
+        remaining_effects,
+        effect.position_key,
+        current=next_quantity,
+        average_before=effect.average_before,
+    )
     next_mark, next_unrealized = _mark_and_unrealized(
         position,
         quantity=next_quantity_value,
         average_entry_price=effect.average_before,
+        cost_basis=next_basis,
     )
     next_position = PortfolioPositionState(
         account_id=position.account_id,
@@ -933,14 +1085,21 @@ def _apply_mark(
             raise PortfolioReplayError("mark currency must match position settlement currency")
         assert position.average_entry_price is not None
         assert position.instrument_definition is not None
-        unrealized = _product(
-            _sum(entry.mark.price.amount, -position.average_entry_price.amount, field="unrealized PnL"),
-            position.quantity.value,
-            position.instrument_definition.multiplier,
-            field="unrealized PnL",
+        basis = _cost_basis_before(
+            state.active_effects,
+            (position.strategy_id, position.instrument.canonical),
+            current=position.quantity.value,
+            average_before=position.average_entry_price,
+        )
+        _, next_unrealized = _mark_and_unrealized(
+            position,
+            quantity=position.quantity,
+            average_entry_price=position.average_entry_price,
+            cost_basis=basis,
+            retained_mark=entry.mark,
         )
         unrealized_delta = _sum(
-            unrealized,
+            next_unrealized.amount,
             -position.unrealized_pnl.amount,
             field="balance unrealized PnL delta",
         )
@@ -960,7 +1119,7 @@ def _apply_mark(
                 mark=entry.mark,
                 average_entry_price=position.average_entry_price,
                 realized_pnl=position.realized_pnl,
-                unrealized_pnl=_money(unrealized, position.settlement_currency, field="unrealized PnL"),
+                unrealized_pnl=next_unrealized,
                 fees=position.fees,
                 funding=position.funding,
                 observed_at=entry.effective_at,
@@ -1190,6 +1349,30 @@ def apply_portfolio_event(state: PortfolioReplayState, event: object) -> Portfol
         return _apply_valuation_rate(state, canonical, payload)
     if type(payload) is PortfolioReconciliationEntry:
         return _apply_reconciliation(state, canonical, payload)
+    if type(payload) is PortfolioAccountObservationEntry:
+        balance = next(
+            (
+                item
+                for item in state.snapshot.balances
+                if item.currency is payload.currency
+            ),
+            None,
+        )
+        if balance is None or (
+            balance.cash != payload.cash_balance
+            or balance.fees != payload.fees
+            or balance.realized_pnl != payload.realized_pnl
+            or balance.unrealized_pnl != payload.unrealized_pnl
+        ):
+            raise PortfolioReplayError(
+                "account observation does not match reduced portfolio state"
+            )
+        if payload.effective_at < state.snapshot.observed_at:
+            raise PortfolioReplayError("account observation time cannot regress")
+        snapshot = state.snapshot.model_copy(
+            update={"observed_at": payload.effective_at}
+        )
+        return _next_state(state, snapshot=snapshot, event=canonical)
     assert type(payload) is PortfolioFillEntry
     fill = payload.fill
     if fill.status in (FillReportStatus.PARTIALLY_FILLED, FillReportStatus.FILLED):

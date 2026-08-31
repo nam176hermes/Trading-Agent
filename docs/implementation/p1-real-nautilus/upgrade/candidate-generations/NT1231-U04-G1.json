@@ -1,0 +1,55 @@
+{
+  "artifact": {
+    "artifact_manifest_sha256": "24f1439ad5fc4f74dd950f892d39470c8d37f1e052add2dfb52ff20904fc50d3",
+    "native_object_count": 111,
+    "wheel_sha256": "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb",
+    "wheel_size": 183626605
+  },
+  "authority_digests": {
+    "u02_provenance_policy_sha256": "f921b50ab5af8a9e518fd599ebcb2425cd7d2f8130263875d46dd34c3e40af8a",
+    "u02_source_archive_sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+    "u03_toolchain_inputs_sha256": "22418d3ecda1ae15044c99350a0bcb26d942b0602c408170e7c2b7ae9523f519",
+    "x4_authority_receipt_sha256": "fcca4a496208c454a7eb6ef122a7f867c2e8cd5497cfd0c374f28a637ff61010"
+  },
+  "authority_limits": {
+    "candidate_active": false,
+    "candidate_promoted": false,
+    "live_authorized": false,
+    "network_trading_authorized": false,
+    "production_authorized": false
+  },
+  "closure": {
+    "attestation_sha256": "11cd9d08092f2d133eaf820220b9bf2540edb747f2257b0e70c401605981ad10",
+    "directory_count": 12,
+    "file_inventory_sha256": "48c6e3e6c4c7dda92c76501e63f80be0b98dfceb9a2e2609a41439fa7c69ef50",
+    "manifest_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+    "native_inventory_sha256": "82eb559376246753ce9d939bc5a818a42f2cb26580f98b425d427f3c35e35fd7",
+    "regular_file_count": 88,
+    "schema_version": 7,
+    "symlink_count": 0,
+    "writable_regular_file_count": 0
+  },
+  "engine_identity": {
+    "family": "nautilus-cython-v1",
+    "name": "nautilus_trader",
+    "release_tag": "v1.231.0",
+    "release_tag_object": "d3e1685e979925d7b0ffacd1b3f442547686e18f",
+    "source_sha256": "142dde40e77339745aa5fe6bcbb3de5624cee087f526879da00f127df077530f",
+    "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    "version": "1.231.0"
+  },
+  "generation_id": "NT1231-U04-G1",
+  "repository_source": {
+    "build_commit": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+    "build_tree": "42ece253bcf6356a522d9fc5fd2582645eddc56c",
+    "evidence_commit": "199d5ae65a2d1798f1c3aee9761ff763237fe910",
+    "evidence_tree": "a093d41727b60b99cb57608a43854f87f69ac769"
+  },
+  "rollback": {
+    "closure_sha256": "14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa",
+    "schema_version": 6,
+    "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+    "version": "1.227.0"
+  },
+  "schema": "trading-agent-nautilus-candidate-generation/v1"
+}

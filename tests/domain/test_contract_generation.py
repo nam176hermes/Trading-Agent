@@ -56,6 +56,7 @@ EXPECTED = {
     "OutboxIntent.json",
     "AppendOutcome.json",
     "PortfolioOpeningEntry.json",
+    "PortfolioAccountObservationEntry.json",
     "PortfolioFillEntry.json",
     "PortfolioMarkEntry.json",
     "PortfolioFundingEntry.json",
@@ -66,6 +67,7 @@ EXPECTED = {
     "PortfolioSnapshotRecord.json",
     "PortfolioSnapshotAuthority.json",
     "EventEnvelope_PortfolioOpeningEntry_.json",
+    "EventEnvelope_PortfolioAccountObservationEntry_.json",
     "EventEnvelope_PortfolioFillEntry_.json",
     "EventEnvelope_PortfolioMarkEntry_.json",
     "EventEnvelope_PortfolioFundingEntry_.json",
@@ -101,7 +103,7 @@ LEGACY_EVENT_TYPES = {
     "SignalProposal", "TargetPortfolio", "RiskDecision", "OrderIntent", "OrderEvent", "FillEvent",
 }
 PORTFOLIO_ENTRY_EVENT_TYPES = {
-    "PortfolioOpeningEntry", "PortfolioFillEntry", "PortfolioMarkEntry", "PortfolioFundingEntry",
+    "PortfolioOpeningEntry", "PortfolioAccountObservationEntry", "PortfolioFillEntry", "PortfolioMarkEntry", "PortfolioFundingEntry",
     "PortfolioConversionEntry", "PortfolioValuationRateEntry", "PortfolioReconciliationEntry",
 }
 RUNTIME_RISK_EVENT_TYPES = {"RuntimeOrderRiskDecision"}

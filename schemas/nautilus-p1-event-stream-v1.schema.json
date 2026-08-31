@@ -1,0 +1,753 @@
+{
+  "$defs": {
+    "P1AccountObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "cash_balance": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Cash Balance",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "event_type": {
+          "const": "AccountObserved",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "fees": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Fees",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "native_type": {
+          "const": "Account",
+          "title": "Native Type",
+          "type": "string"
+        },
+        "origin": {
+          "const": "NAUTILUS_CACHE_OBSERVATION",
+          "title": "Origin",
+          "type": "string"
+        },
+        "realized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Realized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Unrealized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "cash_balance",
+        "fees",
+        "realized_pnl",
+        "unrealized_pnl"
+      ],
+      "title": "P1AccountObserved",
+      "type": "object"
+    },
+    "P1Fill": {
+      "additionalProperties": false,
+      "properties": {
+        "client_order_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Client Order Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "Fill",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "fee": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Fee",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "fee_currency": {
+          "const": "USDT",
+          "title": "Fee Currency",
+          "type": "string"
+        },
+        "native_fill_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Native Fill Id",
+          "type": "string"
+        },
+        "native_type": {
+          "const": "OrderFilled",
+          "title": "Native Type",
+          "type": "string"
+        },
+        "origin": {
+          "const": "NAUTILUS_CALLBACK",
+          "title": "Origin",
+          "type": "string"
+        },
+        "price": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Price",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "quantity": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Quantity",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "side": {
+          "enum": [
+            "BUY",
+            "SELL"
+          ],
+          "title": "Side",
+          "type": "string"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "client_order_id",
+        "native_fill_id",
+        "side",
+        "quantity",
+        "price",
+        "fee",
+        "fee_currency"
+      ],
+      "title": "P1Fill",
+      "type": "object"
+    },
+    "P1OrderSubmitted": {
+      "additionalProperties": false,
+      "properties": {
+        "client_order_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Client Order Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "OrderSubmitted",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "native_order_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Native Order Id",
+          "type": "string"
+        },
+        "native_type": {
+          "const": "Order",
+          "title": "Native Type",
+          "type": "string"
+        },
+        "order_type": {
+          "const": "MARKET",
+          "title": "Order Type",
+          "type": "string"
+        },
+        "origin": {
+          "const": "CONTROL_PLANE",
+          "title": "Origin",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Quantity",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "side": {
+          "enum": [
+            "BUY",
+            "SELL"
+          ],
+          "title": "Side",
+          "type": "string"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "client_order_id",
+        "native_order_id",
+        "target_id",
+        "source_signal_ids",
+        "side",
+        "quantity",
+        "order_type"
+      ],
+      "title": "P1OrderSubmitted",
+      "type": "object"
+    },
+    "P1PositionObserved": {
+      "additionalProperties": false,
+      "properties": {
+        "average_entry_price": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Average Entry Price",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "event_type": {
+          "const": "PositionObserved",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "native_type": {
+          "const": "Position",
+          "title": "Native Type",
+          "type": "string"
+        },
+        "origin": {
+          "const": "NAUTILUS_CACHE_OBSERVATION",
+          "title": "Origin",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Quantity",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "realized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Realized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Unrealized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "quantity",
+        "average_entry_price",
+        "realized_pnl",
+        "unrealized_pnl"
+      ],
+      "title": "P1PositionObserved",
+      "type": "object"
+    },
+    "P1RunCompleted": {
+      "additionalProperties": false,
+      "properties": {
+        "closure_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Closure Digest",
+          "type": "string"
+        },
+        "engine_version": {
+          "const": "1.231.0",
+          "title": "Engine Version",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "RunCompleted",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "fees": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Fees",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "fill_count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Fill Count",
+          "type": "integer"
+        },
+        "final_cash": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Final Cash",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "final_position": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Final Position",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "native_type": {
+          "title": "Native Type",
+          "type": "null"
+        },
+        "order_count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Order Count",
+          "type": "integer"
+        },
+        "origin": {
+          "const": "CONTROL_PLANE",
+          "title": "Origin",
+          "type": "string"
+        },
+        "realized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Realized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "runtime_family": {
+          "const": "cython-v1",
+          "title": "Runtime Family",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "semantic_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Semantic Digest",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "target_count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Target Count",
+          "type": "integer"
+        },
+        "unrealized_pnl": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Unrealized Pnl",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "upstream_commit": {
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+          "title": "Upstream Commit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "runtime_family",
+        "engine_version",
+        "upstream_commit",
+        "closure_digest",
+        "target_count",
+        "order_count",
+        "fill_count",
+        "final_cash",
+        "final_position",
+        "fees",
+        "realized_pnl",
+        "unrealized_pnl",
+        "semantic_digest"
+      ],
+      "title": "P1RunCompleted",
+      "type": "object"
+    },
+    "P1RunStarted": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Catalog Digest",
+          "type": "string"
+        },
+        "closure_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Closure Digest",
+          "type": "string"
+        },
+        "config_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Config Digest",
+          "type": "string"
+        },
+        "data_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Data Digest",
+          "type": "string"
+        },
+        "engine_version": {
+          "const": "1.231.0",
+          "title": "Engine Version",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "RunStarted",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "native_type": {
+          "title": "Native Type",
+          "type": "null"
+        },
+        "origin": {
+          "const": "CONTROL_PLANE",
+          "title": "Origin",
+          "type": "string"
+        },
+        "runtime_family": {
+          "const": "cython-v1",
+          "title": "Runtime Family",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "upstream_commit": {
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+          "title": "Upstream Commit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "runtime_family",
+        "engine_version",
+        "upstream_commit",
+        "closure_digest",
+        "config_digest",
+        "catalog_digest",
+        "data_digest"
+      ],
+      "title": "P1RunStarted",
+      "type": "object"
+    },
+    "P1TargetAccepted": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "TargetAccepted",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "native_type": {
+          "title": "Native Type",
+          "type": "null"
+        },
+        "origin": {
+          "const": "CONTROL_PLANE",
+          "title": "Origin",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "target_weight": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Target Weight",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "target_id",
+        "source_signal_ids",
+        "target_weight"
+      ],
+      "title": "P1TargetAccepted",
+      "type": "object"
+    },
+    "P1TargetQuantityPlanned": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "const": "TargetQuantityPlanned",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "native_type": {
+          "title": "Native Type",
+          "type": "null"
+        },
+        "origin": {
+          "const": "CONTROL_PLANE",
+          "title": "Origin",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Quantity",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "schema_version": {
+          "const": "nautilus-p1-event-stream-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "target_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "sequence",
+        "simulation_time",
+        "event_type",
+        "origin",
+        "native_type",
+        "target_id",
+        "quantity"
+      ],
+      "title": "P1TargetQuantityPlanned",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "AccountObserved": "#/$defs/P1AccountObserved",
+      "Fill": "#/$defs/P1Fill",
+      "OrderSubmitted": "#/$defs/P1OrderSubmitted",
+      "PositionObserved": "#/$defs/P1PositionObserved",
+      "RunCompleted": "#/$defs/P1RunCompleted",
+      "RunStarted": "#/$defs/P1RunStarted",
+      "TargetAccepted": "#/$defs/P1TargetAccepted",
+      "TargetQuantityPlanned": "#/$defs/P1TargetQuantityPlanned"
+    },
+    "propertyName": "event_type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/P1RunStarted"
+    },
+    {
+      "$ref": "#/$defs/P1TargetAccepted"
+    },
+    {
+      "$ref": "#/$defs/P1TargetQuantityPlanned"
+    },
+    {
+      "$ref": "#/$defs/P1OrderSubmitted"
+    },
+    {
+      "$ref": "#/$defs/P1Fill"
+    },
+    {
+      "$ref": "#/$defs/P1PositionObserved"
+    },
+    {
+      "$ref": "#/$defs/P1AccountObserved"
+    },
+    {
+      "$ref": "#/$defs/P1RunCompleted"
+    }
+  ]
+}

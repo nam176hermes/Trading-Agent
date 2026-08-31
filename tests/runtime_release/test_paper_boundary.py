@@ -268,6 +268,7 @@ def test_projected_result_validator_matches_canonical_report_path() -> None:
             "_seal",
             "_valid_report_assets",
             "_validate_report",
+            "parse_datetime",
         }
         return {
             node.name: ast.dump(node, include_attributes=False)
@@ -694,6 +695,7 @@ import importlib
 import importlib.util
 import pathlib
 import sys
+import types
 sys.path.insert(0, str(pathlib.Path.cwd()))
 for name in {modules!r}:
     importlib.import_module(name)
@@ -708,6 +710,7 @@ for name in {forbidden_modules!r}:
 contracts = importlib.import_module("packages.job_contracts")
 assert not hasattr(contracts, "EngineBacktestPayload")
 runner = importlib.import_module("services.job_worker.process_runner")
+results = importlib.import_module("services.job_worker.results")
 store = importlib.import_module("services.job_store.worker_repository")
 assert not hasattr(runner, "EngineSpawnProvider")
 assert not hasattr(store, "PostgresEngineEventLedger")
@@ -719,6 +722,49 @@ except ValueError:
     pass
 else:
     raise AssertionError("BACKTEST parse authority is present")
+
+repository = object.__new__(store.WorkerRepository)
+finalizations = []
+repository.finalize = lambda *args, **kwargs: finalizations.append((args, kwargs)) or True
+claimed = types.SimpleNamespace(
+    job_id="job_" + "1" * 32,
+    attempt_id="attempt_" + "2" * 32,
+    worker_id="worker-paper",
+    lease_token="lease-paper",
+)
+result = results.ValidatedResult(
+    artifact_type="legacy-report",
+    relative_ref="results/report.json",
+    sha256="3" * 64,
+    size_bytes=17,
+    media_type="application/json",
+    truncated=False,
+    validator_id="legacy-report-v1",
+    validation_metadata={{"lineage": "generic-paper-result"}},
+)
+assert repository.finalize_execution(
+    claimed,
+    expected_state=contracts.JobState.RUNNING,
+    expected_attempt_outcome="RUNNING",
+    final_state=contracts.JobState.SUCCEEDED,
+    reason_code="SUCCEEDED",
+    trace_id="trace-paper",
+    outcome=None,
+    result=result,
+    stream_artifacts=(),
+)
+assert len(finalizations) == 1
+assert finalizations[0][1]["result_metadata"] == {{
+    "artifacts": [{{
+        "type": "legacy-report",
+        "ref": "results/report.json",
+        "sha256": "3" * 64,
+        "size_bytes": 17,
+        "truncated": False,
+    }}],
+}}
+assert "packages.engine_event_ledger" not in sys.modules
+assert "packages.engine_portfolio_projection.parity" not in sys.modules
 """
 
     completed = subprocess.run(

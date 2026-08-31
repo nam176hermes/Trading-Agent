@@ -833,10 +833,40 @@ def test_unbound_generic_receipt_cannot_reconcile_job_result_success() -> None:
     batch = ingestor.calls[0]
     assert ingestor.repository.load_receipt(batch.sha256) is not None
     assert ingestor.repository.load_job_receipt(JOB_ID) is None
-    retry = [value for name, value in repository.calls if name == "retry"]
-    assert len(retry) == 1
-    assert retry[0]["reason_code"] == "RESULT_VALIDATION_FAILED"
-    assert not any(name == "finalize" for name, _ in repository.calls)
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+    assert final["result"] is None
+    assert not any(name == "retry" for name, _ in repository.calls)
+
+
+def test_failed_engine_receipt_reload_blocks_without_automatic_rerun() -> None:
+    class UnavailableReconciliation(Ingestor):
+        def __init__(self) -> None:
+            super().__init__(error=RuntimeError("ingestion outcome is uncertain"))
+            self.reloads = 0
+
+        def load_job_receipt(self, job_id):
+            self.reloads += 1
+            if self.reloads == 1:
+                return None
+            raise RuntimeError("durable receipt reload is unavailable")
+
+    repository = Repository(_claim())
+
+    assert _worker(
+        repository,
+        Runner(_outcome()),
+        Provider(),
+        Validator(),
+        ingestor=UnavailableReconciliation(),
+    ).run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+    assert final["result"] is None
+    assert not any(name == "retry" for name, _ in repository.calls)
 
 
 def test_engine_identity_conflict_blocks_without_success() -> None:
@@ -1006,7 +1036,7 @@ def test_engine_safety_drift_after_ingest_blocks_durable_batch() -> None:
     assert final["reason_code"] == "SAFETY_STATE_STALE"
 
 
-def test_engine_transient_ingest_failure_uses_existing_retry_policy() -> None:
+def test_engine_transient_ingest_failure_blocks_without_automatic_rerun() -> None:
     repository = Repository(_claim())
     ingestor = Ingestor(error=RuntimeError("database unavailable"))
 
@@ -1014,10 +1044,11 @@ def test_engine_transient_ingest_failure_uses_existing_retry_policy() -> None:
         repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
     ).run_once()
 
-    retry = [value for name, value in repository.calls if name == "retry"]
-    assert len(retry) == 1
-    assert retry[0]["reason_code"] == "RESULT_VALIDATION_FAILED"
-    assert not any(name == "finalize" for name, _ in repository.calls)
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+    assert final["result"] is None
+    assert not any(name == "retry" for name, _ in repository.calls)
 
 
 @pytest.mark.parametrize(

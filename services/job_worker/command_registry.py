@@ -18,7 +18,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from packages.job_contracts import JobType, SnapshotPayload, parse_payload
 from packages.runtime_release import (
@@ -31,8 +31,10 @@ from packages.runtime_release.config import (
     RuntimeAuthority,
     RuntimeAuthorityV2,
     RuntimePathsV2,
+    SafetyAuthority,
     attest_application_release_v2 as _attest_application_release_v2,
     load_runtime_authority_v2 as _load_runtime_authority_v2,
+    refresh_runtime_authority_v2 as _refresh_runtime_authority_v2,
 )
 from packages.runtime_release.semantic import SemanticEvidence, attest_current_semantic_inputs
 from packages.runtime_release.backend_policy import APPROVED_PHASE4_BACKEND_COMMIT
@@ -472,6 +474,167 @@ def attest_worker_runtime_authority() -> WorkerRuntimeAuthority:
     )
 
 
+def refresh_staging_worker_runtime_authority(
+    authority: WorkerRuntimeAuthority,
+    *,
+    refresh_dynamic_evidence: Callable[[], None],
+) -> WorkerRuntimeAuthority:
+    """Refresh dynamic Package 6 evidence after one complete static attestation."""
+
+    try:
+        if not isinstance(authority, WorkerRuntimeAuthority):
+            raise ValueError
+        previous = authority.runtime_authority
+        if _attest_application_release_v2(previous) is not True:
+            raise ValueError
+        refresh_dynamic_evidence()
+        current = _refresh_runtime_authority_v2(previous)
+        stable = _refresh_runtime_authority_v2(current)
+        static_values = (
+            "source_commit", "source_tree", "installation_root", "application_root",
+            "application_python", "backend_root", "backend_python",
+            "backend_artifact_sha256", "command_manifest", "runtime_paths", "scope",
+            "package6_approval_sha256", "production_release_authority_sha256",
+            "stage_file_set_sha256", "application_artifact_sha256",
+            "application_python_sha256", "backend_python_sha256",
+            "command_authority_sha256", "_authority_pin",
+        )
+        if any(getattr(current, name) != getattr(previous, name) for name in static_values):
+            raise ValueError
+        if (
+            stable._authority_pin != current._authority_pin
+            or stable._dynamic_evidence_pin != current._dynamic_evidence_pin
+            or _runtime_python_path() != current.application_python
+            or current.scope != "PACKAGE6_STAGING_ONLY"
+            or not isinstance(current.safety, SafetyAuthority)
+            or not isinstance(current.semantic_evidence, SemanticEvidence)
+            or not isinstance(current.runtime_paths, RuntimePathsV2)
+            or not isinstance(previous.safety, SafetyAuthority)
+            or current.safety.exporter_commit != previous.safety.exporter_commit
+            or current.safety.source_fingerprint
+            != previous.safety.source_fingerprint
+            or current.semantic_evidence != previous.semantic_evidence
+        ):
+            raise ValueError
+        identity = authority.authority_identity
+        return WorkerRuntimeAuthority(
+            current.source_commit,
+            current.source_commit,
+            current.safety.snapshot_path,
+            current.safety.exporter_commit,
+            current.safety.source_fingerprint,
+            current.semantic_evidence,
+            identity,
+            authority.authority_document_sha256,
+            current._authority_pin,
+            current.runtime_paths,
+            current,
+        )
+    except Exception:
+        raise CommandRegistryError(
+            "RUNTIME_AUTHORITY_CHANGED",
+            "protected runtime authority changed during dynamic refresh",
+        ) from None
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+    init=False,
+    eq=False,
+    repr=False,
+    weakref_slot=True,
+)
+class P1StagingSafetyAuthorityRefresher:
+    """Refresh only dynamic P1 staging safety while retaining one exact pin."""
+
+    _authority: WorkerRuntimeAuthority
+    _refresh_dynamic_evidence: Callable[[], None]
+    _operation_token: object
+    _operation_binding: tuple[tuple[object, ...], str, tuple[str, ...]]
+
+    def matches_operation(
+        self,
+        *,
+        operation_token: object,
+        authority_pin: tuple[object, ...],
+        semantic_sha256: str,
+        arguments: tuple[str, ...],
+    ) -> bool:
+        return (
+            operation_token is self._operation_token
+            and self._operation_binding
+            == (authority_pin, semantic_sha256, arguments)
+        )
+
+    def refresh(
+        self, authority: WorkerRuntimeAuthority
+    ) -> WorkerRuntimeAuthority:
+        if (
+            self not in _ISSUED_P1_SAFETY_REFRESHERS
+            or authority is not self._authority
+        ):
+            raise CommandRegistryError(
+                "RUNTIME_AUTHORITY_CHANGED",
+                "P1 staging safety authority changed before refresh",
+            )
+        refreshed = refresh_staging_worker_runtime_authority(
+            authority,
+            refresh_dynamic_evidence=self._refresh_dynamic_evidence,
+        )
+        if type(refreshed) is not WorkerRuntimeAuthority:
+            raise CommandRegistryError(
+                "RUNTIME_AUTHORITY_CHANGED",
+                "P1 staging safety authority refresh returned invalid authority",
+            )
+        object.__setattr__(self, "_authority", refreshed)
+        return refreshed
+
+
+_ISSUED_P1_SAFETY_REFRESHERS: weakref.WeakSet[
+    P1StagingSafetyAuthorityRefresher
+] = weakref.WeakSet()
+
+
+def _issue_p1_staging_safety_authority_refresher(
+    authority: WorkerRuntimeAuthority,
+    *,
+    refresh_dynamic_evidence: Callable[[], None],
+    operation_token: object,
+    operation_binding: tuple[tuple[object, ...], str, tuple[str, ...]],
+) -> P1StagingSafetyAuthorityRefresher:
+    """Issue the internal P1-only rotating safety capability."""
+
+    if (
+        type(authority) is not WorkerRuntimeAuthority
+        or authority.runtime_authority.scope != "PACKAGE6_STAGING_ONLY"
+        or not callable(refresh_dynamic_evidence)
+        or operation_token is None
+        or type(operation_binding) is not tuple
+        or len(operation_binding) != 3
+        or operation_binding[0] != authority.authority_pin
+        or type(operation_binding[1]) is not str
+        or len(operation_binding[1]) != 64
+        or any(character not in "0123456789abcdef" for character in operation_binding[1])
+        or type(operation_binding[2]) is not tuple
+        or any(type(item) is not str for item in operation_binding[2])
+        or operation_binding[2].count("--execute") != 1
+    ):
+        raise CommandRegistryError(
+            "RUNTIME_AUTHORITY_CHANGED",
+            "exact P1 staging safety refresh authority is required",
+        )
+    refresher = P1StagingSafetyAuthorityRefresher()
+    object.__setattr__(refresher, "_authority", authority)
+    object.__setattr__(
+        refresher, "_refresh_dynamic_evidence", refresh_dynamic_evidence
+    )
+    object.__setattr__(refresher, "_operation_token", operation_token)
+    object.__setattr__(refresher, "_operation_binding", operation_binding)
+    _ISSUED_P1_SAFETY_REFRESHERS.add(refresher)
+    return refresher
+
+
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
 class ValidatedCommandCapability:
     _attestation: _Attestation
@@ -680,8 +843,10 @@ __all__ = [
     "APPROVED_RELEASE_MANIFEST_PATH",
     "BuiltCommand", "COMMAND_REGISTRY", "CommandLineage", "CommandRegistryError",
     "CommandSpec", "FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS",
-    "PAPER_COMMAND_ARGV_PREFIX", "PRESPAWN_FULL_REATTESTATION_COUNT", "PreparedSpawn",
+    "P1StagingSafetyAuthorityRefresher", "PAPER_COMMAND_ARGV_PREFIX",
+    "PRESPAWN_FULL_REATTESTATION_COUNT", "PreparedSpawn",
     "ValidatedCommandCapability", "WorkerRuntimeAuthority", "attest_command_capability",
     "attest_worker_runtime_authority", "build_command",
     "consume_prepared_spawn", "prepare_immediate_spawn",
+    "refresh_staging_worker_runtime_authority",
 ]

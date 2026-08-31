@@ -1059,6 +1059,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
         "ops/release-v2/provision-root.sh",
         "ops/release-v2/verify-stage.py",
         "packages/runtime_release/config.py",
+        "scripts/build_p1_package6_host_authority.py",
     }
     schema = json.loads(
         Path("schemas/package6-paper-runtime-approval.schema.json").read_text(
@@ -1072,7 +1073,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
         binding_schema["minItems"]
         == binding_schema["maxItems"]
         == len(PACKAGE6_SOURCE_BINDING_PATHS)
-        == 78
+        == 79
     )
 
 

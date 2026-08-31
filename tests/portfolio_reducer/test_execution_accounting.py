@@ -233,6 +233,49 @@ def test_multiple_entries_use_exact_weighted_average_and_settlement_fee(opened_s
     assert state.snapshot.balances[0].fees.amount == Decimal("3")
 
 
+def test_repeating_weighted_basis_is_rounded_only_at_currency_boundaries(opened_state) -> None:
+    events = (
+        fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="1", price="100"),
+        fill_event(event_number=3, execution_number=30, side=OrderSide.BUY, quantity="2", price="101"),
+        fill_event(event_number=4, execution_number=40, side=OrderSide.SELL, quantity="1", price="102"),
+        fill_event(event_number=5, execution_number=50, side=OrderSide.SELL, quantity="2", price="102"),
+    )
+
+    state = opened_state
+    state = apply_portfolio_event(state, events[0])
+    state = apply_portfolio_event(state, events[1])
+    assert state.snapshot.positions[0].average_entry_price == Price(
+        Decimal("100.67"), Currency.USD
+    )
+    state = apply_portfolio_event(state, events[2])
+    assert state.snapshot.positions[0].realized_pnl.amount == Decimal("1.33")
+    state = apply_portfolio_event(state, events[3])
+
+    position = state.snapshot.positions[0]
+    assert position.quantity.value == Decimal("0.00")
+    assert position.average_entry_price is None
+    assert position.realized_pnl.amount == Decimal("4.00")
+    assert state.snapshot.balances[0].cash.amount == Decimal("1004.00")
+    assert state.snapshot.balances[0].realized_pnl.amount == Decimal("4.00")
+
+
+def test_split_fill_realized_pnl_rounds_only_after_exact_aggregation(
+    opened_state,
+) -> None:
+    events = (
+        fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="1", price="100"),
+        fill_event(event_number=3, execution_number=30, side=OrderSide.SELL, quantity="0.40", price="100.01"),
+        fill_event(event_number=4, execution_number=40, side=OrderSide.SELL, quantity="0.40", price="100.01"),
+    )
+
+    state = opened_state
+    for event in events:
+        state = apply_portfolio_event(state, event)
+
+    assert state.snapshot.positions[0].realized_pnl.amount == Decimal("0.01")
+    assert state.snapshot.balances[0].realized_pnl.amount == Decimal("0.01")
+
+
 def test_different_fee_currency_debits_only_its_balance(opened_state) -> None:
     state = apply_portfolio_event(
         opened_state,

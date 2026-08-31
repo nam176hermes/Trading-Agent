@@ -939,9 +939,11 @@ def test_extended_attributes_are_rejected_when_supported(tmp_path: Path) -> None
     if not hasattr(os, "setxattr"):
         pytest.skip("extended attributes unavailable")
     stage, authority, verifier, _, digest = make_release_fixture(tmp_path)
-    target = stage / "backend/main.py"
+    target = stage / "backend/paper_main.py"
     try:
+        target.chmod(0o644)
         os.setxattr(target, "user.release-test", b"1", follow_symlinks=False)
+        target.chmod(0o444)
     except OSError:
         pytest.skip("filesystem does not support user xattrs")
     try:
@@ -951,7 +953,9 @@ def test_extended_attributes_are_rejected_when_supported(tmp_path: Path) -> None
             test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
             )
     finally:
+        target.chmod(0o644)
         os.removexattr(target, "user.release-test", follow_symlinks=False)
+        target.chmod(0o444)
 
 
 def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> None:

@@ -1,0 +1,1 @@
+{"event_type":"TargetAccepted","native_type":null,"origin":"CONTROL_PLANE","schema_version":"nautilus-p1-event-stream-v1","sequence":3,"simulation_time":"2026-08-05T12:00:00Z","source_signal_ids":["signal-1"],"target_id":"target-1","target_weight":"2"}

@@ -14,6 +14,7 @@ from tests.foundation._package6_staging_fixture import (
     package6_staging_lease,
 )
 import packages.runtime_release.config as runtime_config
+import packages.runtime_release.staging_v2 as staging_v2
 import packages.runtime_release.job_plane as job_plane
 from packages.runtime_release.paper_application import (
     runtime_release_config as projected_runtime_config,
@@ -410,6 +411,46 @@ def test_v2_staging_loader_rejects_any_live_authority_bit(
         load_runtime_authority_v2()
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_V2_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("offset_seconds", (-7, 1))
+def test_dynamic_refresh_rejects_stale_or_future_safety_evidence(
+    tmp_path: Path,
+    offset_seconds: int,
+) -> None:
+    now = datetime.now(UTC).replace(microsecond=0)
+    generated = now + timedelta(seconds=offset_seconds)
+    safety_path = tmp_path / "safety.json"
+    semantic_path = tmp_path / "semantic.json"
+    safety = {
+        "effective_mode": "PAPER",
+        "expires_at": (generated + timedelta(seconds=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "exporter_commit": "a" * 40,
+        "generated_at": generated.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "kill_switch_state": "INACTIVE",
+        "live_execution_enabled": False,
+        "live_trading_approved": False,
+        "requested_mode": "PAPER",
+        "schema_version": 1,
+        "source_fingerprint": "b" * 64,
+    }
+    safety_sha = _write_fixed(safety_path, safety, 0o600)
+    semantic_sha = _write_fixed(semantic_path, {"provider_free": True})
+
+    with pytest.raises(ValueError):
+        staging_v2._validate_dynamic_files(
+            runtime_paths={
+                "safety_snapshot": safety_path,
+                "semantic_authority": semantic_path,
+            },
+            safety={
+                "snapshot_sha256": safety_sha,
+                "exporter_commit": "a" * 40,
+                "source_fingerprint": "b" * 64,
+            },
+            semantic={"active_authority_sha256": semantic_sha},
+            now=now,
+        )
 
 
 def test_unapproved_v2_promotion_blocks_job_api_before_repository_exists() -> None:

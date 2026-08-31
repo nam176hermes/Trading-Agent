@@ -1,0 +1,99 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "base_currency": {
+      "const": "BTC",
+      "title": "Base Currency",
+      "type": "string"
+    },
+    "instrument_id": {
+      "const": "BTCUSDT.BINANCE",
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "min_notional": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Min Notional",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "min_quantity": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Min Quantity",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "price_precision": {
+      "maximum": 18,
+      "minimum": 0,
+      "title": "Price Precision",
+      "type": "integer"
+    },
+    "product_type": {
+      "const": "crypto_spot",
+      "title": "Product Type",
+      "type": "string"
+    },
+    "provenance_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Provenance Sha256",
+      "type": "string"
+    },
+    "quote_currency": {
+      "const": "USDT",
+      "title": "Quote Currency",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "nautilus-p1-instrument-catalog-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "size_precision": {
+      "maximum": 18,
+      "minimum": 0,
+      "title": "Size Precision",
+      "type": "integer"
+    },
+    "step_size": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Step Size",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "symbol": {
+      "const": "BTCUSDT",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tick_size": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Tick Size",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "venue": {
+      "const": "BINANCE",
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "instrument_id",
+    "product_type",
+    "symbol",
+    "base_currency",
+    "quote_currency",
+    "venue",
+    "price_precision",
+    "size_precision",
+    "tick_size",
+    "step_size",
+    "min_quantity",
+    "min_notional",
+    "provenance_sha256"
+  ],
+  "title": "P1InstrumentCatalogV1",
+  "type": "object"
+}

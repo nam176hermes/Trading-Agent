@@ -11,8 +11,10 @@ FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
 OBSERVABILITY_DEPENDENCY_BASELINE = "bb176622567d10543454caddae271693a4216aa2"
 REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
+P1_16_ACCEPTED = "01611dd69d763511078d2deb4013a3def6f80581"
+P1_30_MAKEFILE_BLOB = "e1a84072b8901f6805c149c8a6557a49f523becd"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
-CURRENT_EXTRACTOR_BLOB = "84bb733d621607b14767a48a82efc964a5b702c6"
+CURRENT_EXTRACTOR_BLOB = "83d750d475af788b664e3ca4c2e266f75df58eeb"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
     "tests/governance/nautilus_pin_inventory/test_git_source.py",
@@ -29,7 +31,6 @@ ACCEPTED_A_PATHS = (
     "engines/nautilus/sealed-uv-exec-policy.json",
     "engines/nautilus/wheel-cache-policy.json",
     "engines/nautilus/toolchain-inputs.json",
-    "Makefile",
     "scripts/prepare_nautilus_input_cache.py",
     "scripts/verify_nautilus_provenance.py",
     "services/job_worker/nautilus_closure.py",
@@ -63,8 +64,9 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
-    for path in ("pyproject.toml", "uv.lock"):
-        assert _entry(head, path) == _entry(OBSERVABILITY_DEPENDENCY_BASELINE, path)
+    assert _entry(head, "Makefile") == f"100644 blob {P1_30_MAKEFILE_BLOB}\tMakefile"
+    assert _entry(head, "pyproject.toml") == _entry(P1_16_ACCEPTED, "pyproject.toml")
+    assert _entry(head, "uv.lock") == _entry(OBSERVABILITY_DEPENDENCY_BASELINE, "uv.lock")
     assert _entry(ACCEPTED_A, "scripts/build_nautilus_engine.py") == (
         "100644 blob 193c20272ef8eff4ccc9660069b9f523c4105f54\t"
         "scripts/build_nautilus_engine.py"

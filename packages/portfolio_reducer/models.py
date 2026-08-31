@@ -44,6 +44,7 @@ class PortfolioAppliedEvent(DomainModel):
     sequence: Annotated[int, Field(gt=0)]
     event_type: Literal[
         "PortfolioOpeningEntry",
+        "PortfolioAccountObservationEntry",
         "PortfolioFillEntry",
         "PortfolioMarkEntry",
         "PortfolioFundingEntry",

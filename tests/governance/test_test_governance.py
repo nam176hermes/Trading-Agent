@@ -200,11 +200,11 @@ def test_allowlist_schema_is_exact_and_unknown_is_never_accepted() -> None:
         and item["approval_record_type"] == "disposable-postgres-test-approval-v1"
     ]
     assert migrated_pg_skips == []
-    assert len(tracked) == 31
+    assert len(tracked) == 38
     assert sum(
         item["component"] == "root" and item["outcome"] == "deselected"
         for item in tracked
-    ) == 29
+    ) == 36
     assert sum(
         item["component"] == "legacy" and item["outcome"] == "skipped"
         for item in tracked

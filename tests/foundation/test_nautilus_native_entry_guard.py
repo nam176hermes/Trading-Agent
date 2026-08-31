@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import scripts.materialize_nautilus_runtime_closure as materializer_module
+from engines.nautilus.runtime_v1.profile import P1_REAL_BACKTEST_PROFILE
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +33,7 @@ TARGET = "x86_64-unknown-linux-gnu"
 GUARD_TARGET = "/engine/bin/nautilus-entry-guard"
 LAUNCHER_TARGET = "/engine/launcher/nautilus_backtest.py"
 PAPER_LAUNCHER_TARGET = "/engine/launcher/nautilus_paper_compat.py"
+P1_LAUNCHER_TARGET = "/engine/runtime_v1/main.py"
 REQUEST_TARGET = "/inputs/request.json"
 SIDECAR_TARGET = "/inputs/request.sha256"
 
@@ -73,7 +75,9 @@ def _build_guard(
         "LC_ALL": "C.UTF-8",
         "NAUTILUS_GUARD_ENTRYPOINT": GUARD_TARGET,
         "NAUTILUS_GUARD_LAUNCHER": (
-            LAUNCHER_TARGET
+            P1_LAUNCHER_TARGET
+            if profile == P1_REAL_BACKTEST_PROFILE
+            else LAUNCHER_TARGET
             if profile == "execution-simulation"
             else PAPER_LAUNCHER_TARGET
         ),
@@ -139,7 +143,9 @@ def _exact_guard_argv(
         "-I",
         "-S",
         (
-            LAUNCHER_TARGET
+            P1_LAUNCHER_TARGET
+            if profile == P1_REAL_BACKTEST_PROFILE
+            else LAUNCHER_TARGET
             if profile == "execution-simulation"
             else PAPER_LAUNCHER_TARGET
         ),
@@ -176,6 +182,44 @@ def test_native_guard_execs_the_guarded_fixture_only_for_exact_os_argv(
         LAUNCHER_TARGET,
         "--profile",
         "execution-simulation",
+        REQUEST_TARGET,
+        SIDECAR_TARGET,
+        "unset",
+    ]
+
+
+@pytest.mark.host_coupled
+def test_unchanged_native_guard_execs_only_the_exact_p1_handoff(
+    tmp_path: Path,
+) -> None:
+    guarded_executable, marker = _inert_fixture(tmp_path)
+    guard = _build_guard(
+        tmp_path,
+        guarded_executable,
+        profile=P1_REAL_BACKTEST_PROFILE,
+    )
+    completed = subprocess.run(
+        _exact_guard_argv(
+            guarded_executable,
+            profile=P1_REAL_BACKTEST_PROFILE,
+        ),
+        executable=guard,
+        check=False,
+        env={"POISON": "ambient-value"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == b""
+    assert completed.stderr == b""
+    assert marker.read_text(encoding="ascii").splitlines() == [
+        "-I",
+        "-S",
+        P1_LAUNCHER_TARGET,
+        "--profile",
+        P1_REAL_BACKTEST_PROFILE,
         REQUEST_TARGET,
         SIDECAR_TARGET,
         "unset",

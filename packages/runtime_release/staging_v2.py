@@ -7,7 +7,7 @@ callers must provide explicit Package 6 staging authority and activation files.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import errno
 import hashlib
@@ -31,6 +31,7 @@ SCHEMA_VERSION = 1
 MAX_AUTHORITY_BYTES = 32 * 1024 * 1024
 MAX_DYNAMIC_BYTES = 8192
 MAX_AUTHORITY_WINDOW = timedelta(minutes=30)
+_SAFETY_SNAPSHOT_TTL_SECONDS = 6
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -675,6 +676,7 @@ def _validate_dynamic_files(
     runtime_paths: Mapping[str, Path],
     safety: Mapping[str, object],
     semantic: Mapping[str, object],
+    now: datetime | None = None,
 ) -> None:
     safety_raw, _identity = _safe_read(
         runtime_paths["safety_snapshot"], max_bytes=MAX_DYNAMIC_BYTES, mode=0o600
@@ -708,8 +710,15 @@ def _validate_dynamic_files(
         or safety_document["source_fingerprint"] != safety["source_fingerprint"]
     ):
         raise ValueError
-    _timestamp(safety_document["generated_at"])
-    _timestamp(safety_document["expires_at"])
+    safety_generated = _timestamp(safety_document["generated_at"])
+    safety_expires = _timestamp(safety_document["expires_at"])
+    if now is not None and (
+        safety_expires - safety_generated
+        != timedelta(seconds=_SAFETY_SNAPSHOT_TTL_SECONDS)
+        or safety_generated > now
+        or now >= safety_expires
+    ):
+        raise ValueError
 
     semantic_raw, _identity = _safe_read(
         runtime_paths["semantic_authority"],
@@ -718,6 +727,85 @@ def _validate_dynamic_files(
     )
     if sha256_bytes(semantic_raw) != semantic["active_authority_sha256"]:
         raise ValueError
+
+
+def refresh_staging_dynamic_material(
+    material: object,
+    source: Mapping[str, str] | None = None,
+    *,
+    now: datetime | None = None,
+) -> StagingAuthorityMaterial:
+    """Refresh only rotating evidence for one already-attested sealed stage."""
+
+    environment = os.environ if source is None else source
+    current = datetime.now(UTC) if now is None else now.astimezone(UTC)
+    try:
+        if not isinstance(material, StagingAuthorityMaterial):
+            raise ValueError
+        if (
+            environment.get(STAGING_SCOPE_ENV) != STAGING_SCOPE
+            or _canonical_absolute(environment.get(STAGING_AUTHORITY_PATH_ENV))
+            != material.authority_path
+            or _canonical_absolute(environment.get(STAGING_ACTIVATION_PATH_ENV))
+            != material.activation_path
+            or _digest(environment.get(PACKAGE6_APPROVAL_SHA256_ENV))
+            != material.package6_approval_sha256
+        ):
+            raise ValueError
+        _authority_document, authority_raw, authority_identity = _load_canonical(
+            material.authority_path,
+            max_bytes=MAX_AUTHORITY_BYTES,
+            mode=0o444,
+        )
+        if (
+            authority_identity != material.authority_identity
+            or sha256_bytes(authority_raw) != material.authority_sha256
+        ):
+            raise ValueError
+        activation_document, activation_raw, _identity = _load_canonical(
+            material.activation_path,
+            max_bytes=MAX_DYNAMIC_BYTES,
+            mode=0o444,
+        )
+        _activation, dynamic_values = _validate_activation(
+            activation_document,
+            authority_sha256=material.authority_sha256,
+            approval_sha256=material.package6_approval_sha256,
+            now=current,
+        )
+        if (
+            dynamic_values["generated"] != material.authority_generated_at
+            or dynamic_values["expires"] != material.authority_expires_at
+            or dynamic_values["activation_binding_sha256"]
+            != material.activation_binding_sha256
+        ):
+            raise ValueError
+        _validate_dynamic_files(
+            runtime_paths=material.runtime_paths,
+            safety=dynamic_values["safety"],
+            semantic=dynamic_values["semantic"],
+            now=current,
+        )
+        semantic = dynamic_values["semantic"]
+        safety = dynamic_values["safety"]
+        return replace(
+            material,
+            safety_snapshot_sha256=safety["snapshot_sha256"],
+            safety_exporter_commit=safety["exporter_commit"],
+            safety_source_fingerprint=safety["source_fingerprint"],
+            semantic_active_authority_sha256=semantic["active_authority_sha256"],
+            semantic_version_manifest_sha256=semantic["version_manifest_sha256"],
+            semantic_input_fingerprint=semantic["semantic_input_fingerprint"],
+            semantic_manifest_version=semantic["manifest_version"],
+            semantic_generated_at=semantic["generated_at"],
+            semantic_expires_at=semantic["expires_at"],
+            semantic_policy_sha256=semantic["policy_sha256"],
+            activation_sha256=sha256_bytes(activation_raw),
+        )
+    except StagingAuthorityError:
+        raise
+    except Exception:
+        raise StagingAuthorityError("staging authority is unavailable") from None
 
 
 def load_staging_authority_material(
@@ -1030,6 +1118,7 @@ __all__ = [
     "command_manifest_for_stage",
     "component_digest",
     "load_staging_authority_material",
+    "refresh_staging_dynamic_material",
     "sha256_bytes",
     "walk_sealed_stage",
 ]

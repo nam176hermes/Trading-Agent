@@ -20,6 +20,7 @@ from .clock import require_utc
 from .orders import FillEvent, OrderEvent, OrderIntent, validate_fill_report_batch
 from .portfolio import TargetPortfolio
 from .portfolio_events import (
+    PortfolioAccountObservationEntry,
     PortfolioConversionEntry,
     PortfolioFillEntry,
     PortfolioFundingEntry,
@@ -50,6 +51,7 @@ EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
     OrderEvent: "OrderEvent",
     FillEvent: "FillEvent",
     PortfolioOpeningEntry: "PortfolioOpeningEntry",
+    PortfolioAccountObservationEntry: "PortfolioAccountObservationEntry",
     PortfolioFillEntry: "PortfolioFillEntry",
     PortfolioMarkEntry: "PortfolioMarkEntry",
     PortfolioFundingEntry: "PortfolioFundingEntry",

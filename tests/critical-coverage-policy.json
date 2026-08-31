@@ -28,7 +28,8 @@
       "tests/jobs/test_repository_queries.py",
       "tests/jobs/test_repository_transactions.py",
       "tests/jobs/test_worker_leases.py",
-      "tests/jobs/test_worker_lifecycle.py"
+      "tests/jobs/test_worker_lifecycle.py",
+      "tests/jobs/test_p1_parity_composition.py::test_worker_repository_persists_only_closed_p1_receipts"
     ],
     "units": [
       {
