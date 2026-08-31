@@ -1,13 +1,15 @@
-# P1-A final local-source review
+# P1-A final review
 
-Status: `P1_A_LOCAL_SOURCE_ACCEPTED`
+Status: `P1_A_COMPLETE`
 
 The reviewed source is commit
 `080a0786c4e661bd23c48bbbaa5ec3758c23940c`, tree
-`81ebb5c1551b5a1f2d2bcc5a4b5f33baa9849bdf`. This receipt closes the local
-P1-25 source gate only. It does not claim remote canonical `P1_A_COMPLETE`,
-paper activation, deployment, production, broker, exchange, network-trading,
-or live authority.
+`81ebb5c1551b5a1f2d2bcc5a4b5f33baa9849bdf`. Authorized integration produced
+remote source `9444a0089a46916811cfddb83fc49eb3d26ae216`, tree
+`a083bf4612ec63fd5ac5d6eb29e60670046c548b`; protected Foundation run
+`33348201903` passed on that exact SHA. This closes P1-25 as
+`P1_A_COMPLETE` without granting paper activation, deployment, production,
+broker, exchange, network-trading, or live authority.
 
 ## Runtime and lineage
 
@@ -76,8 +78,9 @@ unchanged rollback authority, and false live/network/production flags.
 
 ## Acceptance boundary
 
-P1-26 may consume this exact local-source acceptance. Remote canonical
-`P1_A_COMPLETE` remains pending a separately authorized checkpoint PR, merge,
-and protected-main verification on the accepted final tree or explicitly
-approved merge semantics. The acceptance-document commit is reporting
-metadata and is not part of the reviewed runtime tree above.
+P1-26 consumed this exact local-source acceptance. Remote canonical
+`P1_A_COMPLETE` is certified by the integrated SHA/tree above and Foundation
+run `33348201903`
+([GitHub Actions](https://github.com/nam176hermes/Trading-Agent/actions/runs/33348201903)).
+The acceptance-document closure commit reports metadata and is not part of the
+reviewed runtime tree above.

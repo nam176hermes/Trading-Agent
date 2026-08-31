@@ -14,7 +14,7 @@ SAFE = {
 }
 
 
-def test_p1_30_closes_local_source_without_remote_or_live_overclaim() -> None:
+def test_p1_30_closes_remote_source_without_live_overclaim() -> None:
     receipt = json.loads(RECEIPT.read_bytes())
     assert receipt["schema"] == "trading-agent-p1-paper-qualification/v1"
     assert receipt["status"] == "P1_LOCAL_SOURCE_CERTIFIED"
@@ -37,11 +37,14 @@ def test_p1_30_closes_local_source_without_remote_or_live_overclaim() -> None:
 
     ledger = (P1 / "task-ledger.md").read_text(encoding="utf-8")
     assert "| P1-29 | P1-27, P1-28 | ACCEPTED |" in ledger
-    assert "| P1-30 | P1-29 | ACCEPTED_LOCAL |" in ledger
+    assert "| P1-30 | P1-29 | ACCEPTED |" in ledger
 
     certification = (P1 / "P1-FINAL-CERTIFICATION.md").read_text(encoding="utf-8")
-    assert "Status: `P1_LOCAL_SOURCE_COMPLETE`" in certification
-    assert "`P1_COMPLETE` remains pending" in certification
+    assert "Status: `P1_COMPLETE`" in certification
+    assert "9444a0089a46916811cfddb83fc49eb3d26ae216" in certification
+    assert "a083bf4612ec63fd5ac5d6eb29e60670046c548b" in certification
+    assert "Foundation run `33348201903`" in certification
+    assert "remains pending" not in certification
     assert "PAPER_LOCAL_ONLY" in certification
     assert "NETWORK_DISABLED" in certification
     assert "LIVE_NOT_AUTHORIZED" in certification
