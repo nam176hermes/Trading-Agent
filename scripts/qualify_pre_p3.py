@@ -38,6 +38,15 @@ from scripts.qualify_p1_engine_lts import SAFE_AUTHORITY_LIMITS as P1_SAFE_AUTHO
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = {"broker": False, "live": False, "network": False, "production": False}
+P1_QUALIFICATION_OPERATION = "p2-security-master-runtime-green-v1"
+_P1_EXTERNAL_OUTCOMES = {
+    "EXT-DISPOSABLE-PG-GREEN": "DEFERRED",
+    "EXT-DISPOSABLE-PG-RED": "DEFERRED",
+    "EXT-DISPOSABLE-PG-RED-EVIDENCE": "DEFERRED",
+    "EXT-LEGACY-UV-AUTHORITY": "PASS",
+    "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "PASS",
+    "EXT-PHASE3B-CORPUS": "PASS",
+}
 
 
 class QualificationError(ValueError):
@@ -87,7 +96,9 @@ def _run(*command: str) -> str:
     return result.stdout
 
 
-def _write(path: Path, payload: dict[str, Any]) -> None:
+def _write(
+    path: Path, payload: dict[str, Any], *, trailing_newline: bool = True
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
@@ -97,7 +108,7 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
         created = True
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = None
-            handle.write(canonical_json_bytes(payload) + b"\n")
+            handle.write(canonical_json_bytes(payload) + (b"\n" if trailing_newline else b""))
             handle.flush()
             os.fsync(handle.fileno())
     except FileExistsError as exc:
@@ -158,6 +169,118 @@ def _source_v2() -> dict[str, str]:
         return canonical_source_identity(ROOT, "HEAD")
     except ValueError as exc:
         raise QualificationError("canonical source identity is unavailable") from exc
+
+
+def p1_external_v1(
+    topology_path: Path,
+    output_dir: Path,
+    *,
+    operation: str,
+) -> None:
+    source = _source_v2()
+    qualification = qualification_metadata()
+    try:
+        topology_raw = _read_receipt(topology_path)
+        topology = json.loads(topology_raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise QualificationError("P1 topology receipt is invalid") from exc
+    if (
+        not isinstance(topology, dict)
+        or topology_raw != canonical_json_bytes(topology) + b"\n"
+        or set(topology)
+        != {
+            "external_outcomes",
+            "foundation_head_sha",
+            "foundation_run_id",
+            "lane",
+            "native_status",
+            "outcome",
+            "portable_closure_status",
+            "schema",
+        }
+        or topology.get("external_outcomes") != _P1_EXTERNAL_OUTCOMES
+        or topology.get("foundation_head_sha") != source["commit_sha"]
+        or topology.get("foundation_run_id") != qualification["run_id"]
+        or topology.get("lane") != "P1_U04_HOST_TOPOLOGY"
+        or topology.get("native_status") != "PASS"
+        or topology.get("outcome") != "PASS"
+        or topology.get("portable_closure_status") != "PASS"
+        or topology.get("schema") != "p1-u04-host-topology-receipt-v1"
+    ):
+        raise QualificationError("P1 topology receipt did not pass")
+
+    expected_context = {
+        "GITHUB_ACTOR": "nam176hermes",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
+        "GITHUB_SHA": source["commit_sha"],
+        "GITHUB_WORKFLOW": "Host Authority",
+        "GITHUB_WORKFLOW_REF": (
+            "nam176hermes/Trading-Agent/.github/workflows/"
+            "host-authority.yml@refs/heads/main"
+        ),
+        "GITHUB_WORKFLOW_SHA": source["commit_sha"],
+    }
+    if operation != P1_QUALIFICATION_OPERATION or any(
+        os.environ.get(name) != value for name, value in expected_context.items()
+    ):
+        raise QualificationError("P1 operator run context is invalid")
+
+    decision = {
+        "actor": expected_context["GITHUB_ACTOR"],
+        "authority": dict(AUTHORITY),
+        "event": expected_context["GITHUB_EVENT_NAME"],
+        "operation": operation,
+        "ref": expected_context["GITHUB_REF"],
+        "repository": expected_context["GITHUB_REPOSITORY"],
+        "run_attempt": qualification["run_attempt"],
+        "run_id": qualification["run_id"],
+        "schema_version": "pre-p3-operator-decision-v1",
+        "sha": source["commit_sha"],
+        "workflow": expected_context["GITHUB_WORKFLOW"],
+        "workflow_ref": expected_context["GITHUB_WORKFLOW_REF"],
+        "workflow_sha": expected_context["GITHUB_WORKFLOW_SHA"],
+    }
+    topology_sha256 = hashlib.sha256(topology_raw).hexdigest()
+    decision_sha256 = hashlib.sha256(canonical_json_bytes(decision) + b"\n").hexdigest()
+    specifications = {
+        "p1-foundation-proof-v1.json": (
+            "trading-agent-p1-lts-foundation-proof/v1",
+            "PASS",
+            topology_sha256,
+        ),
+        "p1-native-proof-v1.json": (
+            "trading-agent-p1-lts-native-proof/v1",
+            "PASS",
+            topology_sha256,
+        ),
+        "p1-operator-acceptance-v1.json": (
+            "trading-agent-p1-lts-operator-acceptance/v1",
+            "ACCEPT",
+            decision_sha256,
+        ),
+    }
+    outputs = (output_dir / "p1-operator-decision-v1.json",) + tuple(
+        output_dir / name for name in specifications
+    )
+    if any(os.path.lexists(path) for path in outputs):
+        raise QualificationError("P1 external receipt output already exists")
+    _write(outputs[0], decision)
+    for name, (schema, verdict, evidence_sha256) in specifications.items():
+        _write(
+            output_dir / name,
+            {
+                "authority_limits": dict(P1_SAFE_AUTHORITY_LIMITS),
+                "evidence_sha256s": [evidence_sha256],
+                "execution_scope": "PAPER_LOCAL_ONLY",
+                "schema": schema,
+                "source_commit": source["commit_sha"],
+                "source_tree": source["tree_sha"],
+                "verdict": verdict,
+            },
+            trailing_newline=False,
+        )
 
 
 def _tracked_evidence(path: Path, name: str) -> dict[str, str]:
@@ -728,6 +851,10 @@ def main(arguments: list[str] | None = None) -> int:
     pre = commands.add_parser("final")
     pre.add_argument("--receipt-dir", type=Path, required=True)
     pre.add_argument("--output", type=Path, required=True)
+    p1_external = commands.add_parser("p1-external-v1")
+    p1_external.add_argument("--topology", type=Path, required=True)
+    p1_external.add_argument("--output-dir", type=Path, required=True)
+    p1_external.add_argument("--operation", required=True)
     for name in ("p2-source-v2", "p2-runtime-v2"):
         command = commands.add_parser(name)
         command.add_argument("--output", type=Path, required=True)
@@ -769,6 +896,12 @@ def main(arguments: list[str] | None = None) -> int:
             p3_foundation(args.output_dir)
         elif args.command == "final":
             pre_p3_final(args.receipt_dir, args.output)
+        elif args.command == "p1-external-v1":
+            p1_external_v1(
+                args.topology,
+                args.output_dir,
+                operation=args.operation,
+            )
         elif args.command == "p2-source-v2":
             p2_source_v2(args.output, qualification=qualification_metadata())
         elif args.command == "p2-runtime-v2":
