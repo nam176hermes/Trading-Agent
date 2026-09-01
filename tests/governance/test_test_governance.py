@@ -200,11 +200,11 @@ def test_allowlist_schema_is_exact_and_unknown_is_never_accepted() -> None:
         and item["approval_record_type"] == "disposable-postgres-test-approval-v1"
     ]
     assert migrated_pg_skips == []
-    assert len(tracked) == 38
+    assert len(tracked) == 39
     assert sum(
         item["component"] == "root" and item["outcome"] == "deselected"
         for item in tracked
-    ) == 36
+    ) == 37
     assert sum(
         item["component"] == "legacy" and item["outcome"] == "skipped"
         for item in tracked
@@ -251,6 +251,29 @@ def test_new_skip_and_stale_allowlist_entry_both_fail() -> None:
 
     with pytest.raises(GovernanceError, match="outcomes changed"):
         compare_inventory([record("deselected")], [approved])
+
+
+def test_security_master_disposable_postgres_skip_is_governed() -> None:
+    node_id = (
+        "tests/security_master/test_postgres_runtime.py::"
+        "test_runtime_migration_and_pit_correction_are_fail_closed"
+    )
+    entries = validate_allowlist_document(
+        json.loads(test_governance.DEFAULT_ALLOWLIST.read_text(encoding="utf-8")),
+        today=date(2026, 9, 1),
+    )
+    approved = [item for item in entries if item["test_node_id"] == node_id]
+
+    compare_inventory(
+        [{
+            "test_node_id": node_id,
+            "component": "root",
+            "outcome": "deselected",
+            "reason": "marker expression deselected: runtime_postgres",
+            "phase": "collection",
+        }],
+        approved,
+    )
 
 
 def test_not_run_observation_always_fails_inventory() -> None:
