@@ -201,6 +201,14 @@ def test_append_revalidates_exact_evidence_and_payload_unions() -> None:
     assert "adjusted_price" not in text
 
 
+def test_postgres_regex_bounds_remain_executable_without_weakening_legal_name() -> None:
+    text = source()
+
+    assert "'^[ -~]{1,256}$'" not in text
+    assert "v_payload ->> 'legal_name' !~ '^[ -~]+$'" in text
+    assert "pg_catalog.length(v_payload ->> 'legal_name') > 256" in text
+
+
 def test_append_types_duplicate_roots_and_locks_retraction_lookup_keys() -> None:
     text = source()
     body = text.split("CREATE FUNCTION public.append_security_master_revision", 1)[1]
