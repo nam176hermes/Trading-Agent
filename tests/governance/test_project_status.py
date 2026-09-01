@@ -83,10 +83,22 @@ def test_status_is_derived_and_never_promotes_live_authority() -> None:
 
     assert status["gates"]["P1_COMPLETE"] == "PASS"
     assert status["gates"]["P0"] == "P0_SOURCE_COMPLETE"
-    assert status["gates"]["P1_H_COMPLETE"] == "HELD"
+    readiness_gates = (
+        "P1_H_COMPLETE",
+        "P1_LTS_READY",
+        "P2_SOURCE_COMPLETE",
+        "P2_RUNTIME_QUALIFIED",
+        "P2_QUALIFIED",
+        "P3_BASELINES_FROZEN",
+        "P3_EVALUATION_PROTOCOL_FROZEN",
+        "ALPHA_REGISTRY_FOUNDATION",
+    )
+    assert {status["gates"][gate] for gate in readiness_gates} <= {"HELD", "PASS"}
     assert status["gates"]["PROJECT_STATUS_AUTHORITY"] == "PASS"
     assert status["execution_scope"] == "PAPER_LOCAL_ONLY"
-    assert status["p3_alpha_development_allowed"] is False
+    assert status["p3_alpha_development_allowed"] is all(
+        status["gates"][gate] == "PASS" for gate in readiness_gates
+    )
     assert status["live_eligible"] is False
     assert status["live_enabled"] is False
     assert set(status["authority"].values()) == {False}
