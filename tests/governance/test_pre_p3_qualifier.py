@@ -2,12 +2,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from packages.engine_contracts.serialization import canonical_json_bytes
+from packages.pre_p3_provenance import (
+    SOURCE_CLOSURE_POLICY_SHA256,
+    make_v2_gate_receipt,
+    validate_v2_gate_receipt,
+)
 from packages.project_status import make_pass_receipt, receipt_sha256, validate_pass_receipt
-from scripts.qualify_pre_p3 import QualificationError, p1_bridge, p2_final, pre_p3_final
+from scripts import qualify_pre_p3
+from scripts.qualify_pre_p3 import (
+    QualificationError,
+    p1_bridge,
+    p2_final,
+    pre_p3_final,
+)
 
 
 SHA = "a" * 40
@@ -134,6 +146,150 @@ def test_p2_final_binds_source_and_runtime_receipts(tmp_path: Path) -> None:
         source["receipt_sha256"],
         runtime["receipt_sha256"],
     }
+
+
+def test_receipt_writer_never_replaces_existing_evidence(tmp_path: Path) -> None:
+    """Break caught: a rerun silently rewrites historical qualification."""
+    source = make_pass_receipt(
+        "P2_SOURCE_COMPLETE",
+        source_sha=SHA,
+        source_tree=TREE,
+        evidence_sha256s=("1" * 64,),
+    )
+    runtime = make_pass_receipt(
+        "P2_RUNTIME_QUALIFIED",
+        source_sha=SHA,
+        source_tree=TREE,
+        evidence_sha256s=("2" * 64,),
+    )
+    _write(tmp_path / "source.json", source)
+    _write(tmp_path / "runtime.json", runtime)
+    output = tmp_path / "final.json"
+    output.write_bytes(b"historical evidence\n")
+
+    with pytest.raises(QualificationError, match="already exists"):
+        p2_final(tmp_path / "source.json", tmp_path / "runtime.json", output)
+
+    assert output.read_bytes() == b"historical evidence\n"
+
+
+def test_qualification_rejects_symlinked_receipt_inputs(tmp_path: Path) -> None:
+    """Break caught: effective evidence bytes escape the reviewed receipt path."""
+    source = make_pass_receipt(
+        "P2_SOURCE_COMPLETE",
+        source_sha=SHA,
+        source_tree=TREE,
+        evidence_sha256s=("1" * 64,),
+    )
+    runtime = make_pass_receipt(
+        "P2_RUNTIME_QUALIFIED",
+        source_sha=SHA,
+        source_tree=TREE,
+        evidence_sha256s=("2" * 64,),
+    )
+    _write(tmp_path / "real-source.json", source)
+    (tmp_path / "source.json").symlink_to("real-source.json")
+    _write(tmp_path / "runtime.json", runtime)
+
+    with pytest.raises(QualificationError, match="regular file"):
+        p2_final(
+            tmp_path / "source.json",
+            tmp_path / "runtime.json",
+            tmp_path / "final.json",
+        )
+
+
+def test_p2_final_v2_binds_both_upstream_receipts() -> None:
+    source_identity = {
+        "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+        "closure_schema_version": "trading-agent-source-closure-v1",
+        "closure_sha256": "2" * 64,
+        "commit_sha": SHA,
+        "tree_sha": TREE,
+    }
+    qualification = {
+        "completed_at_utc": "2026-09-01T12:00:00Z",
+        "producer": "scripts/qualify_pre_p3.py",
+        "run_attempt": "1",
+        "run_id": "12345",
+    }
+    evidence = ({
+        "kind": "EXTERNAL_RECEIPT",
+        "locator": "test-proof",
+        "name": "test-proof",
+        "sha256": "3" * 64,
+    },)
+    source = make_v2_gate_receipt(
+        "P2_SOURCE_COMPLETE",
+        source=source_identity,
+        evidence=evidence,
+        qualification=qualification,
+    )
+    runtime = make_v2_gate_receipt(
+        "P2_RUNTIME_QUALIFIED",
+        source=source_identity,
+        evidence=evidence,
+        qualification=qualification,
+    )
+
+    receipt = qualify_pre_p3.p2_final_v2(source, runtime, qualification=qualification)
+
+    validate_v2_gate_receipt(receipt, "P2_QUALIFIED")
+    assert {
+        item["locator"]: item["sha256"]
+        for item in receipt["evidence"]
+    } == {
+        "P2_RUNTIME_QUALIFIED": runtime["receipt_sha256"],
+        "P2_SOURCE_COMPLETE": source["receipt_sha256"],
+    }
+
+
+def test_v2_qualification_metadata_requires_real_ci_run_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: synthetic or unavailable run metadata produces PASS evidence."""
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+
+    with pytest.raises(QualificationError, match="run identity"):
+        qualify_pre_p3.qualification_metadata()
+
+
+def test_v2_qualification_rejects_untracked_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Break caught: qualification reports HEAD while testing uncommitted bytes."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(("git", "init", "-b", "main"), cwd=root, check=True, capture_output=True)
+    subprocess.run(("git", "config", "user.name", "Test Operator"), cwd=root, check=True)
+    subprocess.run(
+        ("git", "config", "user.email", "operator@example.invalid"), cwd=root, check=True
+    )
+    (root / "source.py").write_text("VALUE = 1\n")
+    subprocess.run(("git", "add", "source.py"), cwd=root, check=True)
+    subprocess.run(("git", "commit", "-m", "source"), cwd=root, check=True, capture_output=True)
+    (root / "untracked.py").write_text("VALUE = 2\n")
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", root)
+
+    with pytest.raises(QualificationError, match="clean source tree"):
+        qualify_pre_p3._source_v2()
+
+
+def test_promotion_issuance_rejects_dirty_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Break caught: post-main proof is issued from an uncommitted worktree."""
+    monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setattr(qualify_pre_p3, "_git", lambda *args: "?? untracked.py")
+
+    with pytest.raises(QualificationError, match="clean source tree"):
+        qualify_pre_p3.promotion_v1(
+            tmp_path / "candidate.json",
+            tmp_path / "promotion.json",
+            promoted_revision="HEAD",
+        )
 
 
 def test_pre_p3_final_requires_all_eight_same_source_gates(tmp_path: Path) -> None:

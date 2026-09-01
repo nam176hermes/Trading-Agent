@@ -1308,7 +1308,11 @@ def test_workflow_upload_reread_is_independent_of_checkout_namespace_swap(
     tmp_path: Path,
 ) -> None:
     workflow = Path(".github/workflows/foundation.yml").read_text(encoding="utf-8")
-    matched = re.search(r"^\s+path:\s+([^\n]+)$", workflow, re.MULTILINE)
+    matched = re.search(
+        r"^\s+path:\s+([^\n]*trading-agent-ci-portable-publication[^\n]+)$",
+        workflow,
+        re.MULTILINE,
+    )
     assert matched is not None
     configured = matched.group(1).strip()
     runner_temp = tmp_path / "runner-temp"
