@@ -24,7 +24,7 @@ jobs:
       LIVE_TRADING_APPROVED: "false"
     steps:
       - name: Validate protected qualification request
-        run: test "$GITHUB_REF" = "refs/heads/main" && test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA" && test "${{ github.actor }}" = "${{ github.repository_owner }}" && test "${{ inputs.operation }}" = "p2-security-master-runtime-green-v1"
+        run: test "$GITHUB_REF" = "refs/heads/main" && test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA" && test "${{ github.actor }}" = "${{ github.repository_owner }}" && test "${{ inputs.operation }}" = "p2-security-master-runtime-green-v1" && test -n "${DISPOSABLE_PG_GREEN_APPROVAL_RECORD:-}" && test -n "${DISPOSABLE_PG_GREEN_FIXTURE_PLAN:-}"
 
       - name: Check out repository
         uses: actions/checkout@v4
@@ -56,7 +56,7 @@ jobs:
         run: uv sync --frozen --extra test --directory legacy/research-backend
 
       - name: Run host authority qualification
-        run: TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" make ci-pre-p3-host-authority NONINTERACTIVE=1
+        run: env -u DISPOSABLE_PG_GREEN_APPROVAL_RECORD -u DISPOSABLE_PG_GREEN_FIXTURE_PLAN -u TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES -u TRADING_TEST_DISPOSABLE_APPROVAL_RECORD -u TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE -u TRADING_TEST_DISPOSABLE_FIXTURE_PLAN TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" make ci-pre-p3-host-authority NONINTERACTIVE=1
 
       - name: Prepare private Pre-P3 receipt destination
         run: set -euo pipefail; receipt_dir="${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"; if test -e "$receipt_dir" || test -L "$receipt_dir"; then exit 2; fi; install -d -m 0700 -- "$receipt_dir"; test "$(stat -c '%u:%a' -- "$receipt_dir")" = "$(id -u):700"

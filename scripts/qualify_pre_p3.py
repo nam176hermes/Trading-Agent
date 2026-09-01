@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -34,6 +34,25 @@ from packages.project_status import (
     validate_pass_receipt,
 )
 from scripts.qualify_p1_engine_lts import SAFE_AUTHORITY_LIMITS as P1_SAFE_AUTHORITY_LIMITS
+from scripts.validate_disposable_postgres_approval import (
+    APPROVAL_SOURCE_BINDING_PATHS,
+    BIND_HOST,
+    CLUSTER_NAME,
+    DISPOSABLE_DATABASE_NAME,
+    FORBIDDEN_PORTS,
+    PGDATA_PREFIX,
+    _runtime_setting_names,
+    canonical_record_sha256 as approval_record_sha256,
+    load_protected_approval_record,
+    validate_disposable_postgres_approval_record,
+    validate_source_binding_files,
+)
+from scripts.validate_disposable_postgres_fixture_plan import (
+    canonical_record_sha256 as fixture_plan_sha256,
+    lifecycle_actions_for,
+    load_protected_fixture_plan,
+    validate_disposable_postgres_fixture_plan,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -85,9 +104,14 @@ def _sha(path: Path) -> str:
         raise QualificationError(f"required evidence is unavailable: {path}") from exc
 
 
-def _run(*command: str) -> str:
+def _run(*command: str, environment: dict[str, str] | None = None) -> str:
     result = subprocess.run(
-        command, cwd=ROOT, text=True, capture_output=True, check=False
+        command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        env=environment,
+        check=False,
     )
     if result.returncode:
         sys.stderr.write(result.stdout)
@@ -169,6 +193,220 @@ def _source_v2() -> dict[str, str]:
         return canonical_source_identity(ROOT, "HEAD")
     except ValueError as exc:
         raise QualificationError("canonical source identity is unavailable") from exc
+
+
+def issue_p2_fixture(
+    output_dir: Path,
+    *,
+    operator: str,
+    reviewer: str,
+    approved_at: datetime,
+) -> tuple[Path, Path]:
+    try:
+        resolved_output = output_dir.resolve(strict=False)
+        source_root = ROOT.resolve(strict=True)
+        git_common_dir = Path(
+            _git("rev-parse", "--path-format=absolute", "--git-common-dir")
+        ).resolve(strict=True)
+    except OSError as exc:
+        raise QualificationError("P2 fixture output path is unavailable") from exc
+    if resolved_output == source_root or resolved_output.is_relative_to(source_root):
+        raise QualificationError("P2 fixture output must remain outside source checkout")
+    if resolved_output == git_common_dir or resolved_output.is_relative_to(git_common_dir):
+        raise QualificationError("P2 fixture output must remain outside Git metadata")
+    source = _source_v2()
+    if approved_at.tzinfo is None or approved_at.utcoffset() is None:
+        raise QualificationError("P2 fixture approval time must be timezone-aware")
+    approved_at = approved_at.astimezone(timezone.utc).replace(microsecond=0)
+    expires_at = approved_at + timedelta(hours=2)
+    approved_timestamp = approved_at.isoformat().replace("+00:00", "Z")
+    expires_timestamp = expires_at.isoformat().replace("+00:00", "Z")
+    operation = {
+        "test_path": "tests/security_master/test_postgres_runtime.py",
+        "operation_id": P1_QUALIFICATION_OPERATION,
+    }
+    source_bindings = [
+        {"path": path, "sha256": _sha(ROOT / path)}
+        for path in APPROVAL_SOURCE_BINDING_PATHS
+    ]
+    approval: dict[str, Any] = {
+        "record_kind": "DISPOSABLE_POSTGRES_TEST_APPROVAL",
+        "schema_version": 1,
+        "record_id": "DISPOSABLE_POSTGRES_TEST_PRE_P3_RUNTIME_GREEN_V1",
+        "scope": "DISPOSABLE_PG_GREEN",
+        "source": {
+            "commit": source["commit_sha"],
+            "tree": source["tree_sha"],
+        },
+        "validity": {
+            "approved_at_utc": approved_timestamp,
+            "expires_at_utc": expires_timestamp,
+        },
+        "review": {
+            "decision": "APPROVED",
+            "operator_identity": operator,
+            "reviewer_identity": reviewer,
+        },
+        "approved_operations": [operation],
+        "source_bindings": source_bindings,
+        "constraints": {
+            "pgdata_prefix": PGDATA_PREFIX,
+            "bind_host": BIND_HOST,
+            "port_allocation": "EXPLICITLY_APPROVED",
+            "forbidden_ports": list(FORBIDDEN_PORTS),
+            "cluster_name": CLUSTER_NAME,
+            "database_name": DISPOSABLE_DATABASE_NAME,
+            "runtime_settings_policy": "REJECT_IF_PRESENT",
+        },
+        "red_sql_binding": None,
+        "canonical_record_sha256": "0" * 64,
+    }
+    approval["canonical_record_sha256"] = approval_record_sha256(approval)
+    slot_root = f"/tmp/phase4-postgres-pre-p3-{source['commit_sha'][:12]}"
+    if Path(slot_root).exists() or Path(slot_root).is_symlink():
+        raise QualificationError("P2 fixture root already exists")
+    plan: dict[str, Any] = {
+        "record_kind": "DISPOSABLE_POSTGRES_FIXTURE_PLAN",
+        "schema_version": 1,
+        "source": dict(approval["source"]),
+        "approval_record_sha256": approval_record_sha256(approval),
+        "validity": dict(approval["validity"]),
+        "greenlight": {
+            "decision": "APPROVED",
+            "operator_identity": operator,
+            "approved_at_utc": approved_timestamp,
+            "operation_lifecycles": [
+                {
+                    **operation,
+                    "lifecycle_actions": list(lifecycle_actions_for("MIGRATE")),
+                }
+            ],
+        },
+        "constraints": {
+            "bind_host": BIND_HOST,
+            "cluster_name": CLUSTER_NAME,
+            "database_name": DISPOSABLE_DATABASE_NAME,
+            "forbidden_ports": list(FORBIDDEN_PORTS),
+            "port_allocation": "EXPLICITLY_APPROVED",
+        },
+        "slots": [
+            {
+                **operation,
+                "ordinal": 1,
+                "root": slot_root,
+                "pgdata": f"{slot_root}/data",
+                "port": 49152,
+            }
+        ],
+        "canonical_record_sha256": "0" * 64,
+    }
+    plan["canonical_record_sha256"] = fixture_plan_sha256(plan)
+    validate_disposable_postgres_approval_record(
+        approval,
+        expected_scope="DISPOSABLE_PG_GREEN",
+        expected_commit=source["commit_sha"],
+        expected_tree=source["tree_sha"],
+        expected_sql_sha256=None,
+        runtime_setting_names=frozenset(),
+        now=approved_at,
+    )
+    validate_source_binding_files(approval, ROOT)
+    validate_disposable_postgres_fixture_plan(
+        plan,
+        approval,
+        source_commit=source["commit_sha"],
+        source_tree=source["tree_sha"],
+        now=approved_at,
+    )
+    try:
+        os.mkdir(output_dir, 0o700)
+        metadata = output_dir.lstat()
+    except OSError as exc:
+        raise QualificationError("P2 fixture output directory is unavailable") from exc
+    if (
+        output_dir.is_symlink()
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise QualificationError("P2 fixture output directory is not private")
+    approval_path = output_dir / "p2-disposable-postgres-approval-v1.json"
+    plan_path = output_dir / "p2-disposable-postgres-fixture-plan-v1.json"
+    _write(approval_path, approval)
+    _write(plan_path, plan)
+    return approval_path, plan_path
+
+
+def p2_runtime_environment(
+    *, source: dict[str, str] | None = None, now: datetime | None = None
+) -> dict[str, str]:
+    runtime_settings = _runtime_setting_names()
+    if runtime_settings:
+        raise QualificationError("runtime database settings are forbidden")
+    approval_raw = os.environ.get("DISPOSABLE_PG_GREEN_APPROVAL_RECORD", "")
+    plan_raw = os.environ.get("DISPOSABLE_PG_GREEN_FIXTURE_PLAN", "")
+    if not approval_raw or not plan_raw:
+        raise QualificationError("external P2 disposable PostgreSQL approval is required")
+    approval_path = Path(approval_raw)
+    plan_path = Path(plan_raw)
+    source = source or _source_v2()
+    validation_now = now or datetime.now(timezone.utc)
+    try:
+        approval = load_protected_approval_record(approval_path)
+        plan = load_protected_fixture_plan(plan_path)
+        validate_disposable_postgres_approval_record(
+            approval,
+            expected_scope="DISPOSABLE_PG_GREEN",
+            expected_commit=source["commit_sha"],
+            expected_tree=source["tree_sha"],
+            expected_sql_sha256=None,
+            runtime_setting_names=frozenset(),
+            now=validation_now,
+        )
+        validate_source_binding_files(approval, ROOT)
+        slots = validate_disposable_postgres_fixture_plan(
+            plan,
+            approval,
+            source_commit=source["commit_sha"],
+            source_tree=source["tree_sha"],
+            now=validation_now,
+        )
+    except ValueError as exc:
+        raise QualificationError("external P2 disposable PostgreSQL authority is invalid") from exc
+    expected_pair = (
+        "tests/security_master/test_postgres_runtime.py",
+        P1_QUALIFICATION_OPERATION,
+    )
+    if (
+        approval.get("approved_operations")
+        != [{"test_path": expected_pair[0], "operation_id": expected_pair[1]}]
+        or len(slots) != 1
+        or (slots[0].test_path, slots[0].operation_id, slots[0].ordinal)
+        != (*expected_pair, 1)
+    ):
+        raise QualificationError("external P2 disposable PostgreSQL authority is not narrow")
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("GIT_")
+        and not name.startswith("TRADING_TEST_DISPOSABLE_")
+        and not name.startswith("DISPOSABLE_PG_")
+    }
+    environment.update(
+        {
+            "TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES": "YES",
+            "TRADING_TEST_DISPOSABLE_APPROVAL_RECORD": str(approval_path),
+            "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE": "DISPOSABLE_PG_GREEN",
+            "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN": str(plan_path),
+            "TRADING_TEST_REQUESTED_MODE": "paper",
+            "TRADING_TEST_EFFECTIVE_MODE": "paper",
+            "LIVE_EXECUTION_ENABLED": "false",
+            "LIVE_TRADING_APPROVED": "false",
+            "LIVE_TRADING_ENABLED": "false",
+            "TRADING_TEST_KILL_SWITCH": "INACTIVE",
+        }
+    )
+    return environment
 
 
 def p1_external_v1(
@@ -395,10 +633,21 @@ def p2_source_v2(output: Path, *, qualification: dict[str, str]) -> None:
 
 def p2_runtime_v2(output: Path, *, qualification: dict[str, str]) -> None:
     source = _source_v2()
-    _run("make", "test-p2-runtime-postgres")
-    version = _run("/usr/lib/postgresql/16/bin/postgres", "--version").strip()
+    environment = p2_runtime_environment(source=source)
+    _run("make", "test-p2-runtime-postgres", environment=environment)
+    version = _run(
+        "/usr/lib/postgresql/16/bin/postgres",
+        "--version",
+        environment=environment,
+    ).strip()
     if not version.startswith("postgres (PostgreSQL) 16."):
         raise QualificationError("runtime qualification did not use PostgreSQL 16")
+    try:
+        current_source = _source_v2()
+    except QualificationError as exc:
+        raise QualificationError("source changed during runtime qualification") from exc
+    if current_source != source:
+        raise QualificationError("source changed during runtime qualification")
     evidence = (
         {
             "kind": "TOOL_IDENTITY",
@@ -511,8 +760,13 @@ def p2_source(output: Path) -> None:
 
 def p2_runtime(output: Path) -> None:
     source_sha, source_tree = _source()
-    _run("make", "test-p2-runtime-postgres")
-    version = _run("/usr/lib/postgresql/16/bin/postgres", "--version").strip()
+    environment = p2_runtime_environment()
+    _run("make", "test-p2-runtime-postgres", environment=environment)
+    version = _run(
+        "/usr/lib/postgresql/16/bin/postgres",
+        "--version",
+        environment=environment,
+    ).strip()
     if not version.startswith("postgres (PostgreSQL) 16."):
         raise QualificationError("runtime qualification did not use PostgreSQL 16")
     evidence = (
@@ -855,6 +1109,10 @@ def main(arguments: list[str] | None = None) -> int:
     p1_external.add_argument("--topology", type=Path, required=True)
     p1_external.add_argument("--output-dir", type=Path, required=True)
     p1_external.add_argument("--operation", required=True)
+    p2_fixture = commands.add_parser("p2-fixture-v1")
+    p2_fixture.add_argument("--output-dir", type=Path, required=True)
+    p2_fixture.add_argument("--operator", required=True)
+    p2_fixture.add_argument("--reviewer", required=True)
     for name in ("p2-source-v2", "p2-runtime-v2"):
         command = commands.add_parser(name)
         command.add_argument("--output", type=Path, required=True)
@@ -901,6 +1159,13 @@ def main(arguments: list[str] | None = None) -> int:
                 args.topology,
                 args.output_dir,
                 operation=args.operation,
+            )
+        elif args.command == "p2-fixture-v1":
+            issue_p2_fixture(
+                args.output_dir,
+                operator=args.operator,
+                reviewer=args.reviewer,
+                approved_at=datetime.now(timezone.utc),
             )
         elif args.command == "p2-source-v2":
             p2_source_v2(args.output, qualification=qualification_metadata())
