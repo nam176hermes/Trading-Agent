@@ -186,6 +186,11 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert "class_d_requires_operator_policy" in foundation
     assert "decision.get(\"change_class\") == \"D\"" in foundation
     assert "decision.get(\"disposition\") == \"HELD\"" in foundation
+    assert "Generate protected-main promotion provenance" in foundation
+    assert "scripts/qualify_pre_p3.py promotion-v1" in foundation
+    assert "github.event_name == 'push'" in foundation
+    assert "github.ref == 'refs/heads/main'" in foundation
+    assert "Publish protected-main promotion provenance" in foundation
 
     assert re.search(r"^  workflow_dispatch:$", host, re.MULTILINE)
     assert "push:" not in host and "pull_request" not in host

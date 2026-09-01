@@ -94,10 +94,11 @@ def test_status_is_derived_and_never_promotes_live_authority() -> None:
         "ALPHA_REGISTRY_FOUNDATION",
     )
     assert {status["gates"][gate] for gate in readiness_gates} <= {"HELD", "PASS"}
+    assert status["gates"]["PRE_P3_READY"] in {"HELD", "PASS"}
     assert status["gates"]["PROJECT_STATUS_AUTHORITY"] == "PASS"
     assert status["execution_scope"] == "PAPER_LOCAL_ONLY"
-    assert status["p3_alpha_development_allowed"] is all(
-        status["gates"][gate] == "PASS" for gate in readiness_gates
+    assert status["p3_alpha_development_allowed"] is (
+        status["gates"]["PRE_P3_READY"] == "PASS"
     )
     assert status["live_eligible"] is False
     assert status["live_enabled"] is False
@@ -106,6 +107,31 @@ def test_status_is_derived_and_never_promotes_live_authority() -> None:
     assert status["latest_receipts"]["P0"]["path"].endswith(
         "p0-source-complete-v1.json"
     )
+    assert status["schema_version"] == "trading-agent-project-status-v2"
+
+
+def test_committed_project_status_is_the_canonical_derivation() -> None:
+    """Break caught: a manually asserted PASS survives canonical CI."""
+    committed = (ROOT / "docs/implementation/project-status.json").read_bytes()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/derive_project_status.py",
+            "--check",
+            "docs/implementation/project-status.json",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert committed == json.dumps(
+        derive_project_status(ROOT),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode() + b"\n"
 
 
 def test_status_cli_is_canonical_and_check_mode_detects_drift(tmp_path: Path) -> None:
@@ -141,3 +167,48 @@ def test_status_cli_is_canonical_and_check_mode_detects_drift(tmp_path: Path) ->
         check=False,
     )
     assert checked.returncode == 1
+
+
+def test_status_cli_writes_the_canonical_projection_atomically(tmp_path: Path) -> None:
+    """Break caught: operators hand-edit generated project authority."""
+    path = tmp_path / "status.json"
+    result = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--write", str(path)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode()
+    assert path.read_bytes() == json.dumps(
+        derive_project_status(ROOT),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode() + b"\n"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_status_cli_rejects_symlinked_projection_paths(tmp_path: Path) -> None:
+    """Break caught: status generation follows a leaf symlink and overwrites its target."""
+    target = tmp_path / "target.json"
+    target.write_bytes(b"preserve\n")
+    link = tmp_path / "status.json"
+    link.symlink_to(target)
+
+    written = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--write", str(link)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    checked = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--check", str(link)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+    assert written.returncode == 2
+    assert checked.returncode == 1
+    assert target.read_bytes() == b"preserve\n"

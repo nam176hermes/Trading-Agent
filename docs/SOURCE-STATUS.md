@@ -46,15 +46,26 @@ installation, PostgreSQL recovery or migration, service changes, scheduler
 changes, paper-production promotion and live trading remain separate,
 approval-gated operations.
 
-## Current source status (2026-08-03)
+## Current source status (2026-09-01)
 
-The checkout contains a paper-only, unsealed working candidate after P10
-canonical-market-data and Packet 9 coverage work. It includes migration `0009`
-and its source tests, but no source change creates runtime authority. In
-particular, this does not build or activate Release Authority v2, modify the
-historical production baseline, change `promotion-status.json` to `GO`, run a
-production PostgreSQL migration, restart a service, enable a scheduler, or
-enable live execution/trading.
+The checkout contains paper-only source through migration
+`0019_p2_security_master`, P1/P1-H/P2 qualification tooling, and Pre-P3
+governance. Canonical project status is derived from immutable receipts rather
+than asserted manually. Legacy v1 receipts remain historical evidence but do
+not authorize Pre-P3 readiness after history-rewriting promotion.
+
+The v2 design binds qualification to a deterministic source-closure digest and
+retains the original commit/tree/run evidence. A candidate can retain semantic
+qualification across squash, rebase, cherry-pick, or a controlled release only
+when the current closure is identical. `PRE_P3_READY` remains `HELD` until the
+candidate receipt set and a separate protected-main promotion receipt both
+validate. Only then may the derived status permit P3 alpha development.
+
+No source change creates runtime or live authority. In particular, this does
+not build or activate Release Authority v2, modify the historical production
+baseline, change `promotion-status.json` to `GO`, run a production PostgreSQL
+migration, restart a service, enable a scheduler, or enable live
+execution/trading.
 
 Dashboard ownership is recorded in
 [the route inventory](production/dashboard-route-inventory.md). The inventory
