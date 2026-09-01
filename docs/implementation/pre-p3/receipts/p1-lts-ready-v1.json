@@ -1,0 +1,2 @@
+{"authority":{"broker":false,"live":false,"network":false,"production":false},"evidence_sha256s":["20c8b4e2a8b813e1daf35fa82d419d4c3152ccb0fea39f95097c69e37f695258","4fed0927327fe81ea7f83e82ce2700a48c466aa1bcb8db6c7c85f5cc818d3da1"],"gate":"P1_LTS_READY","receipt_sha256":"495f64eceaea4dbe5fb9dc710b6aaf5f21a45e7725781e7b4eae940c19ebd994","schema_version":"pre-p3-gate-receipt-v1","source_sha":"83a5dd1b4bef1f425d3bc048d6334dcc1c55907b","source_tree":"73e4800ace98443d013935ff838d35f87ec97a3a","status":"PASS"}
+
