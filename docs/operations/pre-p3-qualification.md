@@ -47,6 +47,14 @@ Only after the protected GREEN fixture plan grants the exact operation
 `p2-security-master-runtime-green-v1`:
 
 ```bash
+uv run python scripts/qualify_pre_p3.py p2-fixture-v1 \
+  --output-dir /absolute/private/pre-p3-p2-fixture \
+  --operator nam176hermes \
+  --reviewer distinct-governance-reviewer
+
+export DISPOSABLE_PG_GREEN_APPROVAL_RECORD=/absolute/private/pre-p3-p2-fixture/p2-disposable-postgres-approval-v1.json
+export DISPOSABLE_PG_GREEN_FIXTURE_PLAN=/absolute/private/pre-p3-p2-fixture/p2-disposable-postgres-fixture-plan-v1.json
+
 uv run python scripts/qualify_pre_p3.py p2-runtime-v2 \
   --output "$PRE_P3_RECEIPT_DIR/p2-runtime-qualified-v2.json"
 
@@ -57,7 +65,11 @@ uv run python scripts/qualify_pre_p3.py p2-final-v2 \
 ```
 
 Never substitute an existing, production, operator, or remotely hosted
-database. Missing approval produces no runtime receipt.
+database. The approval and fixture plan are source-bound, expire after two
+hours, require distinct operator/reviewer identities, and must remain outside
+Git with mode `0600`. Start the self-hosted runner from the shell that exports
+the two paths above; the P1 lane explicitly removes them and the P2 lane alone
+consumes them. Missing or invalid approval produces no runtime receipt.
 
 ## 3. Certify the candidate, without granting P3
 

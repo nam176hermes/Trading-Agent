@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import subprocess
@@ -13,6 +14,15 @@ from packages.pre_p3_provenance import (
     validate_v2_gate_receipt,
 )
 from packages.project_status import make_pass_receipt, receipt_sha256, validate_pass_receipt
+from scripts.validate_disposable_postgres_approval import (
+    load_protected_approval_record,
+    validate_disposable_postgres_approval_record,
+    validate_source_binding_files,
+)
+from scripts.validate_disposable_postgres_fixture_plan import (
+    load_protected_fixture_plan,
+    validate_disposable_postgres_fixture_plan,
+)
 from scripts import qualify_pre_p3
 from scripts.qualify_pre_p3 import (
     QualificationError,
@@ -290,6 +300,191 @@ def test_v2_qualification_metadata_requires_real_ci_run_identity(
 
     with pytest.raises(QualificationError, match="run identity"):
         qualify_pre_p3.qualification_metadata()
+
+
+def test_p2_fixture_issuer_creates_private_source_bound_green_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = {
+        "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+        "closure_schema_version": "trading-agent-source-closure-v1",
+        "closure_sha256": "c" * 64,
+        "commit_sha": SHA,
+        "tree_sha": TREE,
+    }
+    approved_at = datetime(2026, 9, 1, 23, 30, tzinfo=UTC)
+    monkeypatch.setattr(qualify_pre_p3, "_source_v2", lambda: source)
+
+    approval_path, plan_path = qualify_pre_p3.issue_p2_fixture(
+        tmp_path / "authority",
+        operator="nam176hermes",
+        reviewer="codex-governance-auditor",
+        approved_at=approved_at,
+    )
+
+    assert (tmp_path / "authority").stat().st_mode & 0o777 == 0o700
+    assert approval_path.stat().st_mode & 0o777 == 0o600
+    assert plan_path.stat().st_mode & 0o777 == 0o600
+    approval = load_protected_approval_record(approval_path)
+    plan = load_protected_fixture_plan(plan_path)
+    validate_disposable_postgres_approval_record(
+        approval,
+        expected_scope="DISPOSABLE_PG_GREEN",
+        expected_commit=SHA,
+        expected_tree=TREE,
+        expected_sql_sha256=None,
+        runtime_setting_names=frozenset(),
+        now=approved_at,
+    )
+    validate_source_binding_files(approval, qualify_pre_p3.ROOT)
+    slots = validate_disposable_postgres_fixture_plan(
+        plan,
+        approval,
+        source_commit=SHA,
+        source_tree=TREE,
+        now=approved_at,
+    )
+    assert [(slot.test_path, slot.operation_id, slot.ordinal) for slot in slots] == [
+        (
+            "tests/security_master/test_postgres_runtime.py",
+            "p2-security-master-runtime-green-v1",
+            1,
+        )
+    ]
+
+
+def test_p2_runtime_environment_requires_external_fixture_and_rejects_runtime_dsn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = {
+        "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+        "closure_schema_version": "trading-agent-source-closure-v1",
+        "closure_sha256": "c" * 64,
+        "commit_sha": SHA,
+        "tree_sha": TREE,
+    }
+    approved_at = datetime(2026, 9, 1, 23, 30, tzinfo=UTC)
+    monkeypatch.setattr(qualify_pre_p3, "_source_v2", lambda: source)
+    approval_path, plan_path = qualify_pre_p3.issue_p2_fixture(
+        tmp_path / "authority",
+        operator="nam176hermes",
+        reviewer="codex-governance-auditor",
+        approved_at=approved_at,
+    )
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_APPROVAL_RECORD", str(approval_path))
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_FIXTURE_PLAN", str(plan_path))
+    monkeypatch.setenv("DATABASE_URL", "postgresql://forbidden.invalid/runtime")
+
+    with pytest.raises(QualificationError, match="runtime database settings"):
+        qualify_pre_p3.p2_runtime_environment(now=approved_at)
+
+    monkeypatch.delenv("DATABASE_URL")
+    environment = qualify_pre_p3.p2_runtime_environment(now=approved_at)
+    assert environment["TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES"] == "YES"
+    assert environment["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == "DISPOSABLE_PG_GREEN"
+    assert environment["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"] == str(approval_path)
+    assert environment["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"] == str(plan_path)
+    assert environment["TRADING_TEST_REQUESTED_MODE"] == "paper"
+    assert environment["TRADING_TEST_EFFECTIVE_MODE"] == "paper"
+    assert environment["LIVE_EXECUTION_ENABLED"] == "false"
+    assert environment["LIVE_TRADING_APPROVED"] == "false"
+    assert environment["LIVE_TRADING_ENABLED"] == "false"
+    assert environment["TRADING_TEST_KILL_SWITCH"] == "INACTIVE"
+    assert all(
+        name not in environment
+        for name in ("DATABASE_URL", "POSTGRES_URL", "TRADING_DATABASE_URL")
+    )
+
+
+def test_p2_fixture_issuer_rejects_source_checkout_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_source_v2",
+        lambda: {
+            "commit_sha": SHA,
+            "tree_sha": TREE,
+        },
+    )
+
+    with pytest.raises(QualificationError, match="outside source checkout"):
+        qualify_pre_p3.issue_p2_fixture(
+            qualify_pre_p3.ROOT / "scripts",
+            operator="nam176hermes",
+            reviewer="codex-governance-auditor",
+            approved_at=datetime(2026, 9, 1, 23, 30, tzinfo=UTC),
+        )
+
+
+def test_p2_fixture_issuer_rejects_git_metadata_destination() -> None:
+    git_common_dir = Path(
+        subprocess.run(
+            ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
+            cwd=qualify_pre_p3.ROOT,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+    )
+
+    with pytest.raises(QualificationError, match="Git metadata"):
+        qualify_pre_p3.issue_p2_fixture(
+            git_common_dir / "pre-p3-authority",
+            operator="nam176hermes",
+            reviewer="codex-governance-auditor",
+            approved_at=datetime(2026, 9, 1, 23, 30, tzinfo=UTC),
+        )
+
+
+def test_p2_runtime_rejects_source_change_during_qualification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = {
+        "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+        "closure_schema_version": "trading-agent-source-closure-v1",
+        "closure_sha256": "c" * 64,
+        "commit_sha": SHA,
+        "tree_sha": TREE,
+    }
+    changed_source = source | {
+        "closure_sha256": "d" * 64,
+        "commit_sha": "e" * 40,
+        "tree_sha": "f" * 40,
+    }
+    qualification = {
+        "completed_at_utc": "2026-09-01T23:30:00Z",
+        "producer": "scripts/qualify_pre_p3.py",
+        "run_attempt": "1",
+        "run_id": "12345",
+    }
+    approved_at = datetime.now(UTC).replace(microsecond=0)
+    monkeypatch.setattr(qualify_pre_p3, "_source_v2", lambda: source)
+    approval_path, plan_path = qualify_pre_p3.issue_p2_fixture(
+        tmp_path / "authority",
+        operator="nam176hermes",
+        reviewer="codex-governance-auditor",
+        approved_at=approved_at,
+    )
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_APPROVAL_RECORD", str(approval_path))
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_FIXTURE_PLAN", str(plan_path))
+    snapshots = iter((source, changed_source))
+    monkeypatch.setattr(qualify_pre_p3, "_source_v2", lambda: next(snapshots))
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_run",
+        lambda *command, environment=None: (
+            "postgres (PostgreSQL) 16.10" if "--version" in command else ""
+        ),
+    )
+
+    with pytest.raises(QualificationError, match="source changed"):
+        qualify_pre_p3.p2_runtime_v2(
+            tmp_path / "runtime.json",
+            qualification=qualification,
+        )
+
+    assert not (tmp_path / "runtime.json").exists()
 
 
 def test_p1_external_receipts_bind_exact_protected_run_and_safe_authority(
