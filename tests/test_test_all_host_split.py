@@ -201,6 +201,20 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert (
         'run: TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.'
         '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" '
-        "make ci-host-authority NONINTERACTIVE=1"
+        "make ci-pre-p3-host-authority NONINTERACTIVE=1"
     ) in host
     assert "$RUNNER_TEMP/trading-agent-host-authority" not in host
+    assert "operation:" in host
+    assert "p2-security-master-runtime-green-v1" in host
+    assert "scripts/verify_p1_u04_host_authority.py" in host
+    assert "scripts/qualify_pre_p3.py p1-external-v1" in host
+    assert "make -s qualify-p1-engine-lts-final" in host
+    assert "scripts/qualify_pre_p3.py p1-bridge-v2" in host
+    assert "scripts/qualify_pre_p3.py p2-source-v2" in host
+    assert "scripts/qualify_pre_p3.py p2-runtime-v2" in host
+    assert "scripts/qualify_pre_p3.py p2-final-v2" in host
+    assert "scripts/qualify_pre_p3.py p3-foundation-v2" in host
+    assert "scripts/qualify_pre_p3.py candidate-v2" in host
+    assert "uses: actions/upload-artifact@v4" in host
+    assert "name: pre-p3-qualification-${{ github.run_id }}-${{ github.run_attempt }}" in host
+    assert "retention-days: 14" in host

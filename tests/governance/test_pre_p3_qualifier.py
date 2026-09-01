@@ -26,6 +26,43 @@ SHA = "a" * 40
 TREE = "b" * 40
 
 
+def _p1_topology_receipt() -> dict[str, object]:
+    return {
+        "external_outcomes": {
+            "EXT-DISPOSABLE-PG-GREEN": "DEFERRED",
+            "EXT-DISPOSABLE-PG-RED": "DEFERRED",
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE": "DEFERRED",
+            "EXT-LEGACY-UV-AUTHORITY": "PASS",
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "PASS",
+            "EXT-PHASE3B-CORPUS": "PASS",
+        },
+        "foundation_head_sha": SHA,
+        "foundation_run_id": "12345",
+        "lane": "P1_U04_HOST_TOPOLOGY",
+        "native_status": "PASS",
+        "outcome": "PASS",
+        "portable_closure_status": "PASS",
+        "schema": "p1-u04-host-topology-receipt-v1",
+    }
+
+
+def _set_operator_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    values = {
+        "GITHUB_ACTOR": "nam176hermes",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "12345",
+        "GITHUB_SHA": SHA,
+        "GITHUB_WORKFLOW": "Host Authority",
+        "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/host-authority.yml@refs/heads/main",
+        "GITHUB_WORKFLOW_SHA": SHA,
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
 def _write(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(canonical_json_bytes(payload) + b"\n")
@@ -253,6 +290,132 @@ def test_v2_qualification_metadata_requires_real_ci_run_identity(
 
     with pytest.raises(QualificationError, match="run identity"):
         qualify_pre_p3.qualification_metadata()
+
+
+def test_p1_external_receipts_bind_exact_protected_run_and_safe_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topology = tmp_path / "topology.json"
+    _write(topology, _p1_topology_receipt())
+    _set_operator_context(monkeypatch)
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_source_v2",
+        lambda: {
+            "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+            "closure_schema_version": "trading-agent-source-closure-v1",
+            "closure_sha256": "c" * 64,
+            "commit_sha": SHA,
+            "tree_sha": TREE,
+        },
+    )
+
+    qualify_pre_p3.p1_external_v1(
+        topology,
+        tmp_path / "receipts",
+        operation="p2-security-master-runtime-green-v1",
+    )
+
+    names = {
+        "p1-foundation-proof-v1.json": ("trading-agent-p1-lts-foundation-proof/v1", "PASS"),
+        "p1-native-proof-v1.json": ("trading-agent-p1-lts-native-proof/v1", "PASS"),
+        "p1-operator-acceptance-v1.json": ("trading-agent-p1-lts-operator-acceptance/v1", "ACCEPT"),
+    }
+    for name, (schema, verdict) in names.items():
+        path = tmp_path / "receipts" / name
+        assert not path.read_bytes().endswith(b"\n")
+        receipt = json.loads(path.read_bytes())
+        assert receipt["schema"] == schema
+        assert receipt["verdict"] == verdict
+        assert receipt["source_commit"] == SHA
+        assert receipt["source_tree"] == TREE
+        assert all(value is False for value in receipt["authority_limits"].values())
+        assert len(receipt["evidence_sha256s"]) == 1
+
+    decision = json.loads(
+        (tmp_path / "receipts" / "p1-operator-decision-v1.json").read_bytes()
+    )
+    assert decision["operation"] == "p2-security-master-runtime-green-v1"
+    assert decision["actor"] == "nam176hermes"
+    assert decision["sha"] == SHA
+    assert all(value is False for value in decision["authority"].values())
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("GITHUB_ACTOR", "contributor", "operator"),
+        ("GITHUB_EVENT_NAME", "push", "operator"),
+        ("GITHUB_REF", "refs/heads/feature", "operator"),
+        ("GITHUB_SHA", "d" * 40, "operator"),
+        ("GITHUB_WORKFLOW_SHA", "d" * 40, "operator"),
+    ],
+)
+def test_p1_external_receipts_reject_wrong_operator_run_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    message: str,
+) -> None:
+    topology = tmp_path / "topology.json"
+    _write(topology, _p1_topology_receipt())
+    _set_operator_context(monkeypatch)
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_source_v2",
+        lambda: {"commit_sha": SHA, "tree_sha": TREE},
+    )
+
+    with pytest.raises(QualificationError, match=message):
+        qualify_pre_p3.p1_external_v1(
+            topology,
+            tmp_path / "receipts",
+            operation="p2-security-master-runtime-green-v1",
+        )
+
+
+def test_p1_external_receipts_reject_mixed_or_incomplete_host_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _p1_topology_receipt()
+    payload["native_status"] = "DEFERRED"
+    topology = tmp_path / "topology.json"
+    _write(topology, payload)
+    _set_operator_context(monkeypatch)
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_source_v2",
+        lambda: {"commit_sha": SHA, "tree_sha": TREE},
+    )
+
+    with pytest.raises(QualificationError, match="topology"):
+        qualify_pre_p3.p1_external_v1(
+            topology,
+            tmp_path / "receipts",
+            operation="p2-security-master-runtime-green-v1",
+        )
+
+
+def test_p1_external_receipts_reject_unapproved_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    topology = tmp_path / "topology.json"
+    _write(topology, _p1_topology_receipt())
+    _set_operator_context(monkeypatch)
+    monkeypatch.setattr(
+        qualify_pre_p3,
+        "_source_v2",
+        lambda: {"commit_sha": SHA, "tree_sha": TREE},
+    )
+
+    with pytest.raises(QualificationError, match="operator"):
+        qualify_pre_p3.p1_external_v1(
+            topology,
+            tmp_path / "receipts",
+            operation="unapproved-operation",
+        )
 
 
 def test_v2_qualification_rejects_untracked_source(

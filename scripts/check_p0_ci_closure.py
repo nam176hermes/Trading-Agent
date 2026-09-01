@@ -719,11 +719,25 @@ def _host_workflow_valid(raw: bytes) -> bool:
         triggers = _direct_map(_block(lines, 0, "on"), 2)
         if triggers != {"workflow_dispatch": ""}:
             return False
+        dispatch = _block(lines, 2, "workflow_dispatch")
+        if _direct_map(dispatch, 4) != {"inputs": ""}:
+            return False
+        inputs = _block(lines, 4, "inputs")
+        if _direct_map(inputs, 6) != {"operation": ""}:
+            return False
+        operation = _block(lines, 6, "operation")
+        if _direct_map(operation, 8) != {
+            "description": "Exact approved protected operation",
+            "required": "true", "type": "choice", "options": "",
+        } or [(line.indent, line.text) for line in operation if line.indent == 10] != [
+            (10, "- p2-security-master-runtime-green-v1")
+        ]:
+            return False
         job = _block(lines, 2, "qualify")
         direct = _direct_map(job, 4)
         if direct != {
             "runs-on": "[self-hosted, linux, x64, trading-authority]",
-            "environment": "trading-authority", "timeout-minutes": "45",
+            "environment": "trading-authority", "timeout-minutes": "90",
             "env": "", "steps": "",
         }:
             return False
@@ -733,7 +747,21 @@ def _host_workflow_valid(raw: bytes) -> bool:
             "LIVE_TRADING_APPROVED": '"false"',
         }:
             return False
-        expected = _approved_common_steps() + [
+        expected = [
+            (
+                {
+                    "name": "Validate protected qualification request",
+                    "run": (
+                        'test "$GITHUB_REF" = "refs/heads/main" && '
+                        'test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA" && '
+                        'test "${{ github.actor }}" = "${{ github.repository_owner }}" && '
+                        'test "${{ inputs.operation }}" = '
+                        '"p2-security-master-runtime-green-v1"'
+                    ),
+                },
+                {},
+            ),
+        ] + _approved_common_steps() + [
             (
                 {
                     "name": "Sync legacy research environment",
@@ -750,10 +778,140 @@ def _host_workflow_valid(raw: bytes) -> bool:
                     "run": (
                         'TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.'
                         '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" '
-                        "make ci-host-authority NONINTERACTIVE=1"
+                        "make ci-pre-p3-host-authority NONINTERACTIVE=1"
                     ),
                 },
                 {},
+            ),
+            (
+                {
+                    "name": "Prepare private Pre-P3 receipt destination",
+                    "run": (
+                        'set -euo pipefail; receipt_dir="${RUNNER_TEMP:?}/pre-p3-qualification.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"; if test -e "$receipt_dir" '
+                        '|| test -L "$receipt_dir"; then exit 2; fi; install -d -m 0700 -- '
+                        '"$receipt_dir"; test "$(stat -c \'%u:%a\' -- "$receipt_dir")" = '
+                        '"$(id -u):700"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Validate P1 scoped host topology",
+                    "run": (
+                        'uv run python scripts/verify_p1_u04_host_authority.py '
+                        '--topology-evidence-root "/tmp/trading-agent-host-authority.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" --foundation-context-path '
+                        '"/tmp/trading-agent-host-authority.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/capability-topology/foundation-context.json" > '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-host-topology-v1.json"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Issue source-bound P1 external proofs",
+                    "run": (
+                        'uv run python scripts/qualify_pre_p3.py p1-external-v1 '
+                        '--topology "${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-host-topology-v1.json" --output-dir '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}" --operation "${{ inputs.operation }}"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Qualify P1-H and P1 LTS",
+                    "run": (
+                        'make -s qualify-p1-engine-lts-final P1_LTS_FOUNDATION_RECEIPT='
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-foundation-proof-v1.json" '
+                        'P1_LTS_NATIVE_RECEIPT="${RUNNER_TEMP:?}/pre-p3-qualification.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}/p1-native-proof-v1.json" '
+                        'P1_LTS_OPERATOR_RECEIPT="${RUNNER_TEMP:?}/pre-p3-qualification.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}/p1-operator-acceptance-v1.json" > '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-lts-native-v1.json"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Issue P1 v2 gate receipts",
+                    "run": (
+                        'uv run python scripts/qualify_pre_p3.py p1-bridge-v2 --p1-lts '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-lts-native-v1.json" --p1-h-output '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-h-complete-v2.json" --p1-lts-output '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p1-lts-ready-v2.json"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Qualify P2 source and P3 foundations",
+                    "run": (
+                        'uv run python scripts/qualify_pre_p3.py p2-source-v2 --output '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p2-source-complete-v2.json" && uv run python '
+                        'scripts/qualify_pre_p3.py p3-foundation-v2 --output-dir '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Qualify P2 disposable PostgreSQL runtime",
+                    "run": (
+                        'uv run python scripts/qualify_pre_p3.py p2-runtime-v2 --output '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p2-runtime-qualified-v2.json"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Issue P2 final and candidate receipts",
+                    "run": (
+                        'uv run python scripts/qualify_pre_p3.py p2-final-v2 --source '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p2-source-complete-v2.json" --runtime '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p2-runtime-qualified-v2.json" --output '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}/p2-qualified-v2.json" && uv run python '
+                        'scripts/qualify_pre_p3.py candidate-v2 --receipt-dir '
+                        '"${RUNNER_TEMP:?}/pre-p3-qualification.${GITHUB_RUN_ID}.'
+                        '${GITHUB_RUN_ATTEMPT}" --legacy-receipt-dir '
+                        'docs/implementation/pre-p3/receipts --base-sha "$GITHUB_SHA" '
+                        '--promotion-type SQUASH --output "${RUNNER_TEMP:?}/pre-p3-qualification.'
+                        '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}/pre-p3-candidate-v2.json"'
+                    ),
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Publish reviewed Pre-P3 qualification receipts",
+                    "uses": "actions/upload-artifact@v4", "with": "",
+                },
+                {
+                    "name": "pre-p3-qualification-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/pre-p3-qualification.${{ github.run_id }}.${{ github.run_attempt }}/*.json",
+                    "if-no-files-found": "error", "retention-days": "14",
+                },
             ),
         ]
         return [_step_contract(step) for step in _steps(job)] == _expected_step_contracts(expected)

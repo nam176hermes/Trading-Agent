@@ -705,6 +705,7 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
         ("ci-host-authority", ("ci-host-authority-private",)),
         ("ci-host-authority-private", ("ci-portable-topology",)),
         ("ci-host-authority-private", ("test-runtime-release-host",)),
+        ("ci-pre-p3-host-authority", ("ci-portable-topology",)),
     }
     if {(target, argv) for target, _span, argv, _command_span in discovered_occurrences} - approved_forms:
         raise MakeContractError("unapproved recursive Make form")

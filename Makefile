@@ -12,6 +12,7 @@
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
 	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private ci-common-private \
 	ci-host-authority ci-host-authority-private artifact-firewall-check audit-delivery-contract \
+	ci-pre-p3-host-authority \
 	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
 	check-test-governance-topology check-portable-defect-closure check-p0-ci-closure \
 	qualify-p1-engine-lts-local qualify-p1-engine-lts-report \
@@ -581,6 +582,20 @@ ci-host-authority-private:
 	uv run python -m scripts.t_g03_capability_topology validate-native --require-pass --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 	uv run python -m scripts.t_g03_capability_topology validate-external --require-pass --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 	$(MAKE) test-runtime-release-host
+
+# Pre-P3 P1 evidence deliberately excludes disposable PostgreSQL authority;
+# P2 qualifies that boundary separately with its own disposable fixture.
+ci-pre-p3-host-authority: check-p0-baseline
+	@set -eu; \
+		foundation_context_path=$$(uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$(TEST_EVIDENCE_DIR)"); \
+		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
+		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci-pre-p3-host-authority.XXXXXXXXXX); \
+		chmod 0700 "$$ci_tmpdir"; \
+		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
+		cleanup_ci_tmpdir() { find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$ci_tmpdir"; }; \
+		trap 'cleanup_ci_tmpdir' EXIT; \
+		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
+			$(MAKE) ci-portable-topology
 
 # Capability topology is separate from strict ci/audit and never releases runtime proof.
 test-portable-source:

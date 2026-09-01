@@ -470,9 +470,18 @@ def test_make_execution_semantic_mutations_fail_closed(
         ),
         ("host-authority.yml", b"  workflow_dispatch:\n", b"  push:\n", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"runs-on: [self-hosted, linux, x64, trading-authority]", b"runs-on: ubuntu-24.04", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
-        ("host-authority.yml", b"make ci-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"make ci-pre-p3-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"          - p2-security-master-runtime-green-v1", b"          - unapproved-operation", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"timeout-minutes: 90", b"timeout-minutes: 900", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"qualify_pre_p3.py p2-runtime-v2", b"qualify_pre_p3.py p2-source-v2", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        (
+            "host-authority.yml",
+            b"${{ runner.temp }}/pre-p3-qualification.${{ github.run_id }}.${{ github.run_attempt }}/*.json",
+            b"${{ runner.temp }}/**/*.json",
+            "P0_CLOSURE_HOST_WORKFLOW_INVALID",
+        ),
     ],
-    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route"],
+    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route", "host-operation", "host-timeout", "host-runtime", "host-artifact-path"],
 )
 def test_structural_workflow_contract_attacks_fail_closed(context: closure._ValidationContext, workflow: str, old: bytes, new: bytes, code: str) -> None:
     """Break caught: workflow authority, route, runner or artifact custody drifts."""
