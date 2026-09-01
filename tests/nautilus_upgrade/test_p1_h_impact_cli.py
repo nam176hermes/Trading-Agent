@@ -105,7 +105,7 @@ def test_checkpoint_owner_is_class_c_and_lts_policy_is_class_d() -> None:
 
     recovery = classify_changed_paths(("packages/domain/recovery.py",))
     policy = classify_changed_paths(
-        ("docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v1.json",)
+        ("docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v2.json",)
     )
     policy_anchor = classify_changed_paths(
         ("packages/nautilus_upgrade_authority/lts.py",)

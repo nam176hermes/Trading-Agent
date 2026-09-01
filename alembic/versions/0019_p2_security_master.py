@@ -600,7 +600,8 @@ def upgrade() -> None:
                  OR pg_catalog.jsonb_typeof(v_payload -> 'legal_name') <> 'string'
                  OR pg_catalog.jsonb_typeof(v_payload -> 'jurisdiction') <> 'string'
                  OR v_payload ->> 'issuer_id' !~ v_uuid_pattern
-                 OR v_payload ->> 'legal_name' !~ '^[ -~]{1,256}$'
+                 OR v_payload ->> 'legal_name' !~ '^[ -~]+$'
+                 OR pg_catalog.length(v_payload ->> 'legal_name') > 256
                  OR v_payload ->> 'legal_name' IS DISTINCT FROM
                       pg_catalog.btrim(v_payload ->> 'legal_name')
                  OR v_payload ->> 'jurisdiction' !~ v_token_pattern THEN

@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+import pytest
+
+from packages.project_status import (
+    ProjectStatusError,
+    derive_project_status,
+    make_pass_receipt,
+    receipt_sha256,
+    validate_pass_receipt,
+)
+
+
+ROOT = Path(__file__).parents[2]
+
+
+def test_p0_receipt_binds_the_published_promotion_dossier() -> None:
+    receipt = json.loads(
+        (
+            ROOT
+            / "docs/implementation/pre-p3/receipts/p0-source-complete-v1.json"
+        ).read_bytes()
+    )
+
+    validate_pass_receipt(receipt, "P0_SOURCE_COMPLETE")
+    assert receipt["source_sha"] == "e0baa410cdcf0de4344d58ad82fd8a56788f84df"
+    assert receipt["source_tree"] == "c066f28b97dc1e1e09fced9527a2f5c50322be12"
+    assert "3a130e5ff0b52cc948e3c1b56dceabc5aba739e0b83f06de9884ce91d7bfdbe6" in receipt[
+        "evidence_sha256s"
+    ]
+
+
+def test_gate_receipts_are_self_hashing_and_fail_closed() -> None:
+    receipt = make_pass_receipt(
+        "P2_SOURCE_COMPLETE",
+        source_sha="a" * 40,
+        source_tree="b" * 40,
+        evidence_sha256s=("d" * 64, "c" * 64),
+    )
+
+    assert receipt["evidence_sha256s"] == ["c" * 64, "d" * 64]
+    assert validate_pass_receipt(receipt, "P2_SOURCE_COMPLETE") == receipt
+    forged = receipt | {"status": "HELD"}
+    with pytest.raises(ProjectStatusError):
+        validate_pass_receipt(forged, "P2_SOURCE_COMPLETE")
+    forged = receipt | {"authority": receipt["authority"] | {"network": True}}
+    with pytest.raises(ProjectStatusError):
+        validate_pass_receipt(forged, "P2_SOURCE_COMPLETE")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_sha", "z" * 40),
+        ("source_tree", "z" * 40),
+        ("evidence_sha256s", ["z" * 64]),
+    ),
+)
+def test_gate_receipts_reject_non_hex_content_identities(
+    field: str, value: object
+) -> None:
+    receipt = make_pass_receipt(
+        "P2_SOURCE_COMPLETE",
+        source_sha="a" * 40,
+        source_tree="b" * 40,
+        evidence_sha256s=("c" * 64,),
+    )
+    forged = receipt | {field: value}
+    forged["receipt_sha256"] = receipt_sha256(forged)
+
+    with pytest.raises(ProjectStatusError):
+        validate_pass_receipt(forged, "P2_SOURCE_COMPLETE")
+
+
+def test_status_is_derived_and_never_promotes_live_authority() -> None:
+    status = derive_project_status(ROOT)
+
+    assert status["gates"]["P1_COMPLETE"] == "PASS"
+    assert status["gates"]["P0"] == "P0_SOURCE_COMPLETE"
+    readiness_gates = (
+        "P1_H_COMPLETE",
+        "P1_LTS_READY",
+        "P2_SOURCE_COMPLETE",
+        "P2_RUNTIME_QUALIFIED",
+        "P2_QUALIFIED",
+        "P3_BASELINES_FROZEN",
+        "P3_EVALUATION_PROTOCOL_FROZEN",
+        "ALPHA_REGISTRY_FOUNDATION",
+    )
+    assert {status["gates"][gate] for gate in readiness_gates} <= {"HELD", "PASS"}
+    assert status["gates"]["PROJECT_STATUS_AUTHORITY"] == "PASS"
+    assert status["execution_scope"] == "PAPER_LOCAL_ONLY"
+    assert status["p3_alpha_development_allowed"] is all(
+        status["gates"][gate] == "PASS" for gate in readiness_gates
+    )
+    assert status["live_eligible"] is False
+    assert status["live_enabled"] is False
+    assert set(status["authority"].values()) == {False}
+    assert "P0: P0_SOURCE_COMPLETE absent" not in status["blockers"]
+    assert status["latest_receipts"]["P0"]["path"].endswith(
+        "p0-source-complete-v1.json"
+    )
+
+
+def test_status_cli_is_canonical_and_check_mode_detects_drift(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.encode() == json.dumps(
+        json.loads(result.stdout),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode() + b"\n"
+
+    path = tmp_path / "status.json"
+    path.write_text(result.stdout)
+    checked = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--check", str(path)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    assert checked.returncode == 0
+    path.write_bytes(path.read_bytes() + hashlib.sha256(b"drift").digest())
+    checked = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--check", str(path)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    assert checked.returncode == 1

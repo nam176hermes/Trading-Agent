@@ -531,6 +531,20 @@
       "security_critical": true,
       "target_phase": "Host release proof",
       "test_node_id": "tests/runtime_release/test_v2.py::test_pinned_uv_projection_identity_matches_builder_probe"
+    },
+    {
+      "allowed_in_ci": true,
+      "approval_record_type": "disposable-postgres-test-approval-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "control-plane",
+      "reason": "marker expression deselected: runtime_postgres",
+      "reason_category": "DISPOSABLE_POSTGRES_REQUIRED",
+      "required_binary_or_service": "approved disposable PostgreSQL 16 cluster",
+      "review_by": "2026-10-31",
+      "security_critical": true,
+      "target_phase": "P2 runtime qualification",
+      "test_node_id": "tests/security_master/test_postgres_runtime.py::test_runtime_migration_and_pit_correction_are_fail_closed"
     }
   ],
   "schema_version": 1

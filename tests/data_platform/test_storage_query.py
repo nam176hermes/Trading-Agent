@@ -10,6 +10,7 @@ import pytest
 
 from packages.data_catalog.artifact_store import ArtifactIntegrityError, LocalArtifactStore
 from packages.data_catalog.v2 import build_snapshot, materialize_arrow_partition
+from packages.data_catalog.v3 import build_snapshot_v3, materialize_arrow_partition_v3
 from packages.data_contracts import ArrowFieldV1, ArrowSchemaV1, PITQueryMode, PITQueryV1
 from packages.data_query import query_snapshot_parity
 
@@ -163,3 +164,68 @@ def test_duckdb_polars_and_pyarrow_return_identical_canonical_rows(tmp_path: Pat
     assert result.row_count == 2
     assert result.pyarrow_sha256 == result.polars_sha256 == result.duckdb_sha256
     assert result.rows[1]["close"] == "101.25000000"
+
+
+def test_query_parity_reads_only_the_visible_v3_revision(tmp_path: Path) -> None:
+    store = LocalArtifactStore(tmp_path)
+    v3_schema = canonical_schema().model_copy(
+        update={"schema_id": "canonical-bars-v3", "data_api_epoch": 2}
+    )
+    root = materialize_arrow_partition_v3(
+        table(),
+        schema=v3_schema,
+        store=store,
+        partition_id=UUID("50000000-0000-4000-8000-000000000001"),
+        dataset="bars",
+        partition_key=("BTC-USD", "2026-01-01"),
+        partition_spec_version="day-v1",
+        source_available_at=T0 + timedelta(minutes=2),
+        system_observed_at=T0 + timedelta(minutes=3),
+        ingested_at=T0 + timedelta(minutes=4),
+        raw_evidence_sha256s=("a" * 64,),
+        transform_receipt_sha256="b" * 64,
+        quality_receipt_sha256="c" * 64,
+        revision_series_id=UUID("60000000-0000-4000-8000-000000000001"),
+        revision_ordinal=1,
+    )
+    correction = materialize_arrow_partition_v3(
+        table().set_column(
+            1,
+            "close",
+            pa.array(
+                (Decimal("100.00000000"), Decimal("102.00000000")),
+                type=pa.decimal128(18, 8),
+            ),
+        ),
+        schema=v3_schema,
+        store=store,
+        partition_id=UUID("50000000-0000-4000-8000-000000000002"),
+        dataset="bars",
+        partition_key=("BTC-USD", "2026-01-01"),
+        partition_spec_version="day-v1",
+        source_available_at=T0 + timedelta(minutes=6),
+        system_observed_at=T0 + timedelta(minutes=7),
+        ingested_at=T0 + timedelta(minutes=8),
+        raw_evidence_sha256s=("d" * 64,),
+        transform_receipt_sha256="e" * 64,
+        quality_receipt_sha256="f" * 64,
+        revision_series_id=root.manifest.revision_series_id,
+        revision_ordinal=2,
+        supersedes_partition_id=root.manifest.partition_id,
+        supersedes_manifest_sha256=root.manifest.digest,
+    )
+    snapshot = build_snapshot_v3(
+        dataset="bars",
+        query=PITQueryV1(
+            mode=PITQueryMode.AS_INGESTED,
+            valid_at=T0 + timedelta(minutes=2),
+            cutoff=T0 + timedelta(minutes=9),
+        ),
+        schema=v3_schema,
+        partitions=(correction.manifest, root.manifest),
+    )
+
+    result = query_snapshot_parity(snapshot, store=store, order_by=("ts_event",))
+
+    assert snapshot.partitions == (correction.manifest,)
+    assert result.rows[1]["close"] == "102.00000000"

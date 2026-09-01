@@ -11,7 +11,7 @@ from uuid import UUID
 import pyarrow as pa
 
 from packages.data_catalog.artifact_store import LocalArtifactStore
-from packages.data_catalog.v2 import build_snapshot, materialize_arrow_partition
+from packages.data_catalog.v3 import build_snapshot_v3, materialize_arrow_partition_v3
 from packages.data_contracts import ArrowFieldV1, ArrowSchemaV1, PITQueryMode, PITQueryV1
 from packages.data_documents import DocumentRegistry, LocalPageIndex, RetrievalCaseV1, benchmark_retrieval
 from packages.data_projections import project_qlib_csv
@@ -28,11 +28,15 @@ _AT = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 @dataclass(frozen=True, slots=True)
-class P2CertificationReceiptV1:
+class P2CertificationReceiptV2:
+    data_api_epoch: int
+    migration_head: str
     provider_receipt_sha256: str
     quality_receipt_sha256: str
     snapshot_sha256: str
     snapshot_row_count: int
+    corrected_snapshot_sha256: str
+    pit_leakage_closed: bool
     query_rows_sha256: str
     query_parity: bool
     qlib_manifest_sha256: str
@@ -42,13 +46,17 @@ class P2CertificationReceiptV1:
     def payload(self) -> dict[str, object]:
         return {
             "iceberg_enabled": self.iceberg_enabled,
+            "data_api_epoch": self.data_api_epoch,
+            "migration_head": self.migration_head,
+            "corrected_snapshot_sha256": self.corrected_snapshot_sha256,
+            "pit_leakage_closed": self.pit_leakage_closed,
             "provider_receipt_sha256": self.provider_receipt_sha256,
             "qlib_manifest_sha256": self.qlib_manifest_sha256,
             "quality_receipt_sha256": self.quality_receipt_sha256,
             "query_parity": self.query_parity,
             "query_rows_sha256": self.query_rows_sha256,
             "retrieval_recall_at_3": self.retrieval_recall_at_3,
-            "schema_version": "p2-data-platform-certification-v1",
+            "schema_version": "p2-data-platform-certification-v2",
             "snapshot_row_count": self.snapshot_row_count,
             "snapshot_sha256": self.snapshot_sha256,
         }
@@ -62,7 +70,7 @@ def _schema() -> ArrowSchemaV1:
     decimal = "decimal128(18,8)"
     return ArrowSchemaV1(
         schema_id="canonical-bars-v1",
-        data_api_epoch=1,
+        data_api_epoch=2,
         fields=(
             ArrowFieldV1(field_id=1, name="ts_event", data_type="timestamp[ns,UTC]", nullable=False),
             ArrowFieldV1(field_id=2, name="open", data_type=decimal, nullable=False),
@@ -74,14 +82,16 @@ def _schema() -> ArrowSchemaV1:
     )
 
 
-def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceiptV1:
-    request = MarketDataSnapshotRequest(
-        provider=P10_PROVIDER,
-        instrument="crypto_spot:FIXTURE:BTC",
-        timeframe="1m",
-        interval_seconds=60,
-        requested_at="2026-01-01T00:00:00Z",
-        provider_retry_limit=1,
+def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceiptV2:
+    request = MarketDataSnapshotRequest.model_validate(
+        {
+            "provider": P10_PROVIDER,
+            "instrument": "crypto_spot:FIXTURE:BTC",
+            "timeframe": "1m",
+            "interval_seconds": 60,
+            "requested_at": "2026-01-01T00:00:00Z",
+            "provider_retry_limit": 1,
+        }
     )
     ingestion = ingest_market_data(
         DeterministicProviderFreeFixture(),
@@ -89,6 +99,7 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
         store=store,
         evidence_id=UUID("70000000-0000-4000-8000-000000000001"),
     )
+    candles = ingestion.snapshot.candles
     rows = tuple(
         {
             "ts_event": candle.open_time,
@@ -98,7 +109,7 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
             "close": candle.close,
             "volume": candle.volume,
         }
-        for candle in ingestion.snapshot.candles
+        for candle in candles
     )
     quality = validate_bar_rows(rows, dataset="bars")
     decimal_type = pa.decimal128(18, 8)
@@ -106,12 +117,12 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
         {
             "ts_event": pa.array(tuple(row["ts_event"] for row in rows), type=pa.timestamp("ns", tz="UTC")),
             **{
-                name: pa.array(tuple(Decimal(row[name]) for row in rows), type=decimal_type)
+                name: pa.array(tuple(getattr(candle, name) for candle in candles), type=decimal_type)
                 for name in ("open", "high", "low", "close", "volume")
             },
         }
     )
-    partition = materialize_arrow_partition(
+    partition = materialize_arrow_partition_v3(
         table,
         schema=_schema(),
         store=store,
@@ -125,12 +136,51 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
         raw_evidence_sha256s=(ingestion.evidence.content_sha256,),
         transform_receipt_sha256=ingestion.receipt.digest,
         quality_receipt_sha256=quality.digest,
+        revision_series_id=UUID("70000000-0000-4000-8000-000000000004"),
+        revision_ordinal=1,
     )
-    snapshot = build_snapshot(
+    corrected_table = table.set_column(
+        table.schema.get_field_index("close"),
+        "close",
+        pa.array(
+            (*tuple(candle.close for candle in candles[:-1]), Decimal("102.00000000")),
+            type=decimal_type,
+        ),
+    )
+    correction = materialize_arrow_partition_v3(
+        corrected_table,
+        schema=_schema(),
+        store=store,
+        partition_id=UUID("70000000-0000-4000-8000-000000000005"),
+        dataset="bars",
+        partition_key=("BTC-FIXTURE", "2025-12-31"),
+        partition_spec_version="day-v1",
+        source_available_at=_AT.replace(day=2),
+        system_observed_at=_AT.replace(day=2),
+        ingested_at=_AT.replace(day=2),
+        raw_evidence_sha256s=(ingestion.evidence.content_sha256,),
+        transform_receipt_sha256=ingestion.receipt.digest,
+        quality_receipt_sha256=quality.digest,
+        revision_series_id=partition.manifest.revision_series_id,
+        revision_ordinal=2,
+        supersedes_partition_id=partition.manifest.partition_id,
+        supersedes_manifest_sha256=partition.manifest.digest,
+    )
+    snapshot = build_snapshot_v3(
         dataset="bars",
         query=PITQueryV1(mode=PITQueryMode.AS_INGESTED, valid_at=_AT, cutoff=_AT),
         schema=_schema(),
-        partitions=(partition.manifest,),
+        partitions=(correction.manifest, partition.manifest),
+    )
+    corrected_snapshot = build_snapshot_v3(
+        dataset="bars",
+        query=PITQueryV1(
+            mode=PITQueryMode.AS_INGESTED,
+            valid_at=_AT.replace(day=2),
+            cutoff=_AT.replace(day=2),
+        ),
+        schema=_schema(),
+        partitions=(partition.manifest, correction.manifest),
     )
     parity = query_snapshot_parity(snapshot, store=store, order_by=("ts_event",))
     qlib = project_qlib_csv(
@@ -154,11 +204,18 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
     iceberg = evaluate_iceberg_gate(
         IcebergScaleProfileV1(0, 1, False, 0, 2)
     )
-    return P2CertificationReceiptV1(
+    return P2CertificationReceiptV2(
+        data_api_epoch=2,
+        migration_head="0019_p2_security_master",
         provider_receipt_sha256=ingestion.receipt.digest,
         quality_receipt_sha256=quality.digest,
         snapshot_sha256=snapshot.snapshot_digest,
         snapshot_row_count=snapshot.row_count,
+        corrected_snapshot_sha256=corrected_snapshot.snapshot_digest,
+        pit_leakage_closed=(
+            snapshot.partitions == (partition.manifest,)
+            and corrected_snapshot.partitions == (correction.manifest,)
+        ),
         query_rows_sha256=parity.pyarrow_sha256,
         query_parity=(
             parity.pyarrow_sha256 == parity.polars_sha256 == parity.duckdb_sha256
@@ -169,4 +226,4 @@ def certify_p2_data_platform(store: LocalArtifactStore) -> P2CertificationReceip
     )
 
 
-__all__ = ["P2CertificationReceiptV1", "certify_p2_data_platform"]
+__all__ = ["P2CertificationReceiptV2", "certify_p2_data_platform"]

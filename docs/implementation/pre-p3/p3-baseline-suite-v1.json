@@ -1,0 +1,34 @@
+{
+  "asset_universe": ["BTCUSDT.BINANCE"],
+  "baselines": [
+    {"baseline_id": "B0_CASH", "implementation": "packages.alpha_lifecycle.baselines:baseline_weights", "position_sizing": "zero", "qualification_status": "SPEC_FROZEN", "rebalance_schedule": "none", "version": "1.0.0"},
+    {"baseline_id": "B1_BUY_AND_HOLD", "implementation": "packages.alpha_lifecycle.baselines:baseline_weights", "position_sizing": "weight-1", "qualification_status": "SPEC_FROZEN", "rebalance_schedule": "first-eligible-close", "version": "1.0.0"},
+    {"baseline_id": "B2_EQUAL_WEIGHT", "implementation": "packages.alpha_lifecycle.baselines:baseline_weights", "position_sizing": "equal-weight-long-only", "qualification_status": "SPEC_FROZEN", "rebalance_schedule": "monthly-first-close", "version": "1.0.0"},
+    {"baseline_id": "B3_SIMPLE_MOMENTUM", "implementation": "packages.alpha_lifecycle.baselines:baseline_weights", "position_sizing": "weight-1-if-positive-126d-excluding-5d-else-0", "qualification_status": "SPEC_FROZEN", "rebalance_schedule": "monthly-first-close", "version": "1.0.0"},
+    {"baseline_id": "B4_SIMPLE_MEAN_REVERSION", "implementation": "packages.alpha_lifecycle.baselines:baseline_weights", "position_sizing": "20d-population-z-enter-minus-1-retain-below-0-exit-at-0", "qualification_status": "SPEC_FROZEN", "rebalance_schedule": "weekly-monday-close", "version": "1.0.0"}
+  ],
+  "baseline_result_contract": "packages.alpha_lifecycle.baselines:BaselineResultV1",
+  "benchmark_metric_ids": ["total_return", "cagr", "volatility", "max_drawdown", "downside_risk", "sharpe", "sortino", "calmar", "trade_count", "turnover", "average_holding_days", "fees", "spread", "slippage", "funding", "borrow_cost", "worst_day", "worst_week", "worst_month", "expected_shortfall_5"],
+  "borrow_cost_bps": 0,
+  "data_api_epoch": 2,
+  "date_range_policy": "campaign-record-must-bind-disjoint-train-validation-oos",
+  "decision_frequency": "UTC-daily-close",
+  "fee_bps": 10,
+  "funding_bps": 0,
+  "leverage_max": "1",
+  "latency_assumption": "decision-at-close-execution-next-bar",
+  "position_domain": ["0", "1"],
+  "precision": {"context": 50, "rounding": "ROUND_HALF_EVEN", "scale": 12},
+  "qualification_fixture": {
+    "certification_receipt_sha256": "48589c3e7e6a16270053edc437e29f0e2e172a12139cda78ce2ce3f8e6ee5139",
+    "dataset_snapshot_sha256": "25c1b42c23984a53ca81dc88dbbdce1243b61d0a2ec79f86399987e84dc2b8a8",
+    "minimum_daily_closes_for_real_campaign": 750
+  },
+  "risk_constraints": {"allow_leverage": false, "allow_short": false, "long_only": true},
+  "schema_version": "p3-baseline-suite-v1",
+  "slippage_bps": 5,
+  "spread_bps": 5,
+  "status": "FROZEN",
+  "transaction_cost_application": "round-trip-turnover",
+  "walk_forward_policy": "minimum-3-disjoint-oos-folds"
+}

@@ -65,7 +65,11 @@ def project_qlib_csv(rows: tuple[Mapping[str, object], ...]) -> QlibCsvProjectio
             (
                 instrument,
                 _qlib_time(timestamp),
-                *(_qlib_decimal(row, field) for field in ("open", "high", "low", "close", "volume")),
+                _qlib_decimal(row, "open"),
+                _qlib_decimal(row, "high"),
+                _qlib_decimal(row, "low"),
+                _qlib_decimal(row, "close"),
+                _qlib_decimal(row, "volume"),
             )
         )
     projected.sort(key=lambda value: (value[1], value[0]))

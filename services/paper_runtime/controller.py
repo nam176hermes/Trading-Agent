@@ -15,10 +15,14 @@ from urllib.request import urlopen
 import weakref
 
 from packages.engine_contracts import (
+    CURRENT_SCHEMA_VERSION,
     EngineCommandEnvelope,
+    EngineSessionIdentityV1,
     RunBacktest,
     canonical_json_bytes,
 )
+from packages.nautilus_runtime_contracts.events import P1_EVENT_SCHEMA
+from packages.nautilus_runtime_contracts.paper import PAPER_PROTOCOL_SCHEMA
 from scripts.validate_package6_runtime_approval import (
     PACKAGE6_JOB_API_ENVIRONMENT_KEYS,
     PACKAGE6_WORKER_ENVIRONMENT_KEYS,
@@ -40,10 +44,10 @@ from .custodian_client import (
     TranscriptStream,
 )
 from .nautilus_session import (
-    NautilusPaperChild,
+    EngineSessionPort,
     NautilusPaperSession,
     NautilusSessionResult,
-    _issue_nautilus_paper_child,
+    _issue_engine_session_port,
 )
 from .nautilus_process import (
     NautilusPaperProcess,
@@ -68,14 +72,14 @@ def _custodian_authority_sha256(attestation: CustodianAttestation) -> str:
     return hashlib.sha256(canonical_json_bytes(asdict(attestation))).hexdigest()
 
 
-def issue_nautilus_paper_child(
+def issue_engine_session_port(
     capability: ValidatedPackage6Capability,
     *,
     custodian_client: CustodianClient,
     closure_attestation: P1EngineClosureAttestation,
     request: EngineCommandEnvelope,
     process: NautilusPaperProcess,
-) -> NautilusPaperChild:
+) -> EngineSessionPort:
     """Issue one closure- and custody-bound interactive P1 child handle."""
 
     if (
@@ -92,8 +96,16 @@ def issue_nautilus_paper_child(
     closure = validate_p1_engine_closure_attestation(closure_attestation)
     if not process.matches_authority(closure, request):
         raise TypeError("exact P1 paper process authority is required")
-    return _issue_nautilus_paper_child(
-        closure_digest=closure.closure_sha256,
+    return _issue_engine_session_port(
+        identity=EngineSessionIdentityV1(
+            runtime_family=closure.runtime_family,
+            engine_version=closure.engine_version,
+            engine_upstream_commit=closure.engine_upstream_commit,
+            closure_digest=closure.closure_sha256,
+            request_protocol=CURRENT_SCHEMA_VERSION,
+            event_schema=P1_EVENT_SCHEMA,
+            paper_schema=PAPER_PROTOCOL_SCHEMA,
+        ),
         capability_sha256=capability.approval_sha256,
         custodian_authority_sha256=_custodian_authority_sha256(
             custodian_client.attestation
@@ -102,9 +114,6 @@ def issue_nautilus_paper_child(
         paper_source_sha256=process.paper_source_sha256,
         session_id=request.engine_run_id,
         owner_id=request.causation_id,
-        runtime_family=closure.runtime_family,
-        engine_version=closure.engine_version,
-        engine_upstream_commit=closure.engine_upstream_commit,
         exchange=process.exchange,
         close_input=process.close_input,
         abort=process.abort,
@@ -1536,6 +1545,6 @@ __all__ = [
     "StopEvidence",
     "TrackedProcessIdentity",
     "TranscriptMetadata",
-    "issue_nautilus_paper_child",
+    "issue_engine_session_port",
     "issue_runtime_child_authorities",
 ]

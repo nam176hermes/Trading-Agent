@@ -16,13 +16,14 @@ uv sync --frozen
 make check-contracts
 uv run pytest -q tests/data_platform tests/security_master
 uv run python scripts/certify_p2_data_platform.py
+make qualify-p2-source PRE_P3_RECEIPT_DIR=/absolute/private/pre-p3-receipts
 ```
 
 The certification command runs the P2 and security-master suites, then executes
 the provider-free data path three times. `PASS` requires byte-identical receipts
 for all repetitions, immutable evidence and Parquet seals, PIT selection,
-PyArrow/Polars/DuckDB parity, Qlib projection, retrieval recall, and a closed
-Iceberg gate.
+PyArrow/Polars/DuckDB parity, Qlib projection, retrieval recall, revision-chain
+closure, the T1/T2/T3 correction campaign, and a closed Iceberg gate.
 
 ## PostgreSQL qualification
 
@@ -30,7 +31,7 @@ Migration `0019_p2_security_master` is covered by static and repository tests.
 A real PostgreSQL 16 migration is a separate approved disposable-runtime lane:
 
 ```bash
-make test-runtime-postgres
+make test-p2-runtime-postgres
 ```
 
 Absent runtime authority is `DEFERRED`, not permission to use an existing

@@ -33,6 +33,7 @@ from packages.engine_contracts import (
     ArtifactReference,
     EngineCommandEnvelope,
     EngineInstrumentId,
+    EngineSessionIdentityV1,
     EngineTargetPortfolio,
     EngineTargetPosition,
     RunBacktest,
@@ -72,15 +73,15 @@ from services.paper_runtime import controller as controller_module
 from services.paper_runtime.controller import (
     Package6Controller,
     _custodian_authority_sha256,
-    issue_nautilus_paper_child,
+    issue_engine_session_port,
 )
 from services.paper_runtime.custodian_client import CustodianAttestation, CustodianClient
 from services.paper_runtime.nautilus_checkpoint import ZERO_CHECKPOINT_SHA256
 from services.paper_runtime.nautilus_session import (
-    NautilusPaperChild,
+    EngineSessionPort,
     NautilusPaperSession,
     NautilusSessionRejected,
-    _issue_nautilus_paper_child,
+    _issue_engine_session_port,
 )
 from services.paper_runtime import nautilus_process as process_module
 
@@ -610,8 +611,16 @@ def _session(
     capability, client, closure = _controller_authority(
         monkeypatch, closure_digest=authority_closure
     )
-    handle = _issue_nautilus_paper_child(
-        closure_digest=closure.closure_sha256,
+    handle = _issue_engine_session_port(
+        identity=EngineSessionIdentityV1(
+            runtime_family=closure.runtime_family,
+            engine_version=closure.engine_version,
+            engine_upstream_commit=closure.engine_upstream_commit,
+            closure_digest=closure.closure_sha256,
+            request_protocol="1.0.0",
+            event_schema="nautilus-p1-event-stream-v1",
+            paper_schema="nautilus-paper-session-v2",
+        ),
         capability_sha256=capability.approval_sha256,
         custodian_authority_sha256=_custodian_authority_sha256(
             client.attestation
@@ -620,9 +629,6 @@ def _session(
         paper_source_sha256=P1_PAPER_SOURCE_SHA256,
         session_id=SESSION,
         owner_id=OWNER,
-        runtime_family=closure.runtime_family,
-        engine_version=closure.engine_version,
-        engine_upstream_commit=closure.engine_upstream_commit,
         exchange=child.exchange,
         close_input=child.close,
         abort=child.abort,
@@ -844,7 +850,7 @@ def test_public_issuer_rejects_unattested_process(
     capability, client, closure = _controller_authority(monkeypatch)
 
     with pytest.raises(TypeError, match="custody"):
-        issue_nautilus_paper_child(
+        issue_engine_session_port(
             capability,
             custodian_client=client,
             closure_attestation=closure,  # type: ignore[arg-type]
@@ -870,7 +876,7 @@ def test_invalid_checkpoint_type_aborts_active_child(
 
 def test_freely_constructed_child_is_not_session_authority() -> None:
     with pytest.raises(TypeError):
-        NautilusPaperChild(  # type: ignore[call-arg]
+        EngineSessionPort(  # type: ignore[call-arg]
             closure_digest=CLOSURE,
             authority_sha256="3" * 64,
             exchange=lambda _raw: b"",

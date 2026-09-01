@@ -1,0 +1,28 @@
+{
+  "baseline_binding": "BaselineResultV1 must bind the exact alpha DatasetSnapshot and cost model",
+  "capacity": {"median_participation_max": "0.02", "peak_participation_max": "0.10", "single_instrument_concentration": "NOT_APPLICABLE_SINGLE_INSTRUMENT_SCOPE"},
+  "cost_stress": {"double_cost_net_return_min_exclusive": "0", "fee_bps": 10, "slippage_bps": 5, "spread_bps": 5},
+  "criteria": [
+    {"criterion_id": "C01", "failure_code": "E_PIT_LEAKAGE", "rule": "pit_adversarial_passed"},
+    {"criterion_id": "C02", "failure_code": "E_REPRODUCIBILITY", "rule": "exactly_3_identical_result_digests"},
+    {"criterion_id": "C03", "failure_code": "E_OOS_EDGE", "rule": "total_return_gt_0_and_cagr_gt_0"},
+    {"criterion_id": "C04", "failure_code": "E_AFTER_COST", "rule": "net_return_gt_0_and_no_metric_failure"},
+    {"criterion_id": "C05", "failure_code": "E_BASELINE_EXCESS", "rule": "total_return_minus_frozen_baseline_gte_0.02"},
+    {"criterion_id": "C06", "failure_code": "E_MEDIAN_FOLD", "rule": "median_fold_excess_gt_0"},
+    {"criterion_id": "C07", "failure_code": "E_FOLD_COUNT", "rule": "at_least_2_positive_folds"},
+    {"criterion_id": "C08", "failure_code": "E_SHARPE", "rule": "sharpe_gte_0.75"},
+    {"criterion_id": "C09", "failure_code": "E_SORTINO", "rule": "sortino_gte_1"},
+    {"criterion_id": "C10", "failure_code": "E_MAX_DRAWDOWN", "rule": "max_drawdown_lte_0.25"},
+    {"criterion_id": "C11", "failure_code": "E_TRADE_COUNT", "rule": "trade_count_gte_30"},
+    {"criterion_id": "C12", "failure_code": "E_REGIME_DEPENDENCE", "rule": "at_least_2_positive_regimes_and_worst_gte_minus_0.10"},
+    {"criterion_id": "C13", "failure_code": "E_PERTURBATION", "rule": "all_parameter_perturbation_returns_gt_0"},
+    {"criterion_id": "C14", "failure_code": "E_DOUBLE_COST", "rule": "double_cost_net_return_gt_0"},
+    {"criterion_id": "C15", "failure_code": "E_DELAYED_EXECUTION", "rule": "one_bar_delayed_net_return_gt_0"},
+    {"criterion_id": "C16", "failure_code": "E_CAPACITY", "rule": "median_participation_lte_0.02_and_peak_lte_0.10"}
+  ],
+  "metric_implementation": "packages.alpha_lifecycle.metrics:calculate_performance_metrics",
+  "protocol_implementation": "packages.alpha_lifecycle.protocol:evaluate_alpha_qualification",
+  "schema_version": "p3-evaluation-protocol-v1",
+  "status": "FROZEN",
+  "undefined_metric_policy": "null-with-stable-failure-code"
+}
