@@ -188,7 +188,6 @@ def _definition_revisions() -> tuple[SecurityMasterRevisionV1, ...]:
     )
 
 
-@pytest.mark.runtime_postgres
 def test_runtime_migration_and_pit_correction_are_fail_closed() -> None:
     if (
         os.environ.get("TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES") != "YES"
