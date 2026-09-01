@@ -54,6 +54,9 @@ TARGETS = {
         "market-data-canonical-persistence-runtime-green-v1",
         "market-data-empty-head-runtime-green-v1",
     },
+    "tests/security_master/test_postgres_runtime.py": {
+        "p2-security-master-runtime-green-v1"
+    },
 }
 FORBIDDEN_SOURCE = (
     "postgres-reader.env",
@@ -156,11 +159,17 @@ def test_make_targets_select_only_reviewed_disposable_modules() -> None:
         "tests/control_api/test_alembic_schema.py",
         "tests/control_api/test_foundation_postgres_runtime_parity.py",
         "tests/jobs/test_engine_event_postgres_runtime.py",
+        "tests/security_master/test_postgres_runtime.py",
     ] == [
         line.strip().removesuffix(" \\")
         for line in recipe.splitlines()
         if line.strip().startswith("tests/")
     ]
+    assert (
+        "test-p2-runtime-postgres:\n"
+        "\tuv run python scripts/run_required_runtime_pytest.py \\\n"
+        "\t\ttests/security_master/test_postgres_runtime.py"
+    ) in makefile
     assert (
         "test-event-ledger-runtime-postgres:\n"
         "\tuv run python scripts/run_required_runtime_pytest.py \\\n"

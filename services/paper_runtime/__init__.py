@@ -10,7 +10,7 @@ from .controller import (
     SourceDrift,
     StopEvidence,
     TrackedProcessIdentity,
-    issue_nautilus_paper_child,
+    issue_engine_session_port,
     issue_runtime_child_authorities,
 )
 from .custodian_client import (
@@ -63,7 +63,7 @@ from .nautilus_recovery import (
     write_nautilus_recovery_receipt,
 )
 from .nautilus_session import (
-    NautilusPaperChild,
+    EngineSessionPort,
     NautilusPaperSession,
     NautilusSessionRejected,
     NautilusSessionResult,
@@ -91,7 +91,7 @@ __all__ = [
     "NautilusCheckpointRecord",
     "NautilusCheckpointStore",
     "NautilusChildState",
-    "NautilusPaperChild",
+    "EngineSessionPort",
     "NautilusPaperProcess",
     "NautilusPaperSession",
     "NautilusRecoveryDecision",
@@ -121,7 +121,7 @@ __all__ = [
     "issue_postgres_cleanup_evidence",
     "launch_nautilus_paper_process",
     "load_nautilus_recovery_receipt",
-    "issue_nautilus_paper_child",
+    "issue_engine_session_port",
     "request_and_wait_for_postgres_cleanup",
     "issue_runtime_child_authorities",
     "run_approved_runtime_chain",

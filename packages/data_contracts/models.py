@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 import hashlib
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
@@ -264,12 +264,91 @@ class DatasetSnapshotV2(_FrozenModel):
         return hashlib.sha256(canonical_json_bytes(self)).hexdigest()
 
 
+class DatasetPartitionManifestV3(DatasetPartitionManifestV2):
+    schema_version: Literal["dataset-partition-manifest-v3"] = (
+        "dataset-partition-manifest-v3"
+    )
+    revision_series_id: UUID
+    revision_ordinal: Annotated[int, Field(ge=1, le=1_000_000)]
+    supersedes_partition_id: UUID | None
+    supersedes_manifest_sha256: Sha256Hex | None
+
+    @model_validator(mode="after")
+    def _revision_identity(self) -> "DatasetPartitionManifestV3":
+        if self.data_api_epoch != 2:
+            raise ValueError("E_MIXED_DATA_EPOCH: V3 partitions require Data API epoch 2")
+        predecessors = (
+            self.supersedes_partition_id,
+            self.supersedes_manifest_sha256,
+        )
+        if self.revision_ordinal == 1 and any(value is not None for value in predecessors):
+            raise ValueError("E_REVISION_ROOT: revision roots cannot supersede a partition")
+        if self.revision_ordinal > 1 and any(value is None for value in predecessors):
+            raise ValueError("E_REVISION_PREDECESSOR: non-root revisions require exact predecessors")
+        return self
+
+
+class DatasetSnapshotV3(_FrozenModel):
+    schema_version: Literal["dataset-snapshot-v3"] = "dataset-snapshot-v3"
+    dataset: _Token
+    query: PITQueryV1
+    schema_id: _Token
+    schema_fingerprint: Sha256Hex
+    data_api_epoch: Annotated[int, Field(ge=1, le=65535)]
+    partitions: Annotated[
+        tuple[DatasetPartitionManifestV3, ...], Field(max_length=100_000)
+    ]
+
+    @model_validator(mode="after")
+    def _closed_snapshot(self) -> "DatasetSnapshotV3":
+        if self.data_api_epoch != 2:
+            raise ValueError("E_MIXED_DATA_EPOCH: V3 snapshots require Data API epoch 2")
+        ordered = tuple(
+            sorted(
+                self.partitions,
+                key=lambda value: (
+                    value.partition_key,
+                    value.first_event_at,
+                    value.partition_id.bytes,
+                ),
+            )
+        )
+        if len({value.partition_id for value in ordered}) != len(ordered):
+            raise ValueError("partition identifiers must be unique")
+        visibility = self.query.visibility_field
+        for partition in ordered:
+            if (
+                partition.dataset != self.dataset
+                or partition.schema_id != self.schema_id
+                or partition.schema_fingerprint != self.schema_fingerprint
+                or partition.data_api_epoch != self.data_api_epoch
+            ):
+                raise ValueError("partition schema or dataset contract does not match snapshot")
+            if getattr(partition, visibility) > self.query.cutoff:
+                raise ValueError("partition is not visible at the requested PIT cutoff")
+            if partition.last_event_at > self.query.valid_at:
+                raise ValueError("partition event window exceeds the requested valid_at")
+        object.__setattr__(self, "partitions", ordered)
+        return self
+
+    @computed_field
+    @property
+    def row_count(self) -> int:
+        return sum(value.row_count for value in self.partitions)
+
+    @property
+    def snapshot_digest(self) -> str:
+        return hashlib.sha256(canonical_json_bytes(self)).hexdigest()
+
+
 __all__ = [
     "ArtifactRefV1",
     "ArrowFieldV1",
     "ArrowSchemaV1",
     "DatasetPartitionManifestV2",
+    "DatasetPartitionManifestV3",
     "DatasetSnapshotV2",
+    "DatasetSnapshotV3",
     "PITQueryMode",
     "PITQueryV1",
     "ProviderCapabilityV1",

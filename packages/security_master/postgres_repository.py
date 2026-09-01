@@ -300,7 +300,11 @@ class PostgresSecurityMasterRepository:
             or type(inserted) is not bool
         ):
             raise SecurityMasterPersistenceError("security-master database authority returned invalid outcome")
-        return SecurityMasterPersistenceOutcome(revision_id, cast(str, revision_digest), cast(bool, inserted))
+        return SecurityMasterPersistenceOutcome(
+            cast(UUID, revision_id),
+            cast(str, revision_digest),
+            cast(bool, inserted),
+        )
 
     def load_revision(
         self, revision_id: UUID
