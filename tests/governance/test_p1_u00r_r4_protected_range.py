@@ -17,8 +17,8 @@ HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
 CURRENT_EXTRACTOR_BLOB = "83d750d475af788b664e3ca4c2e266f75df58eeb"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
-    "tests/governance/nautilus_pin_inventory/test_git_source.py",
 )
+PACK_LAYOUT_TEST_BLOB = "c36114d7d3c4ba85312e4dd0bd2a70e5ab4608a9"
 TASK1_ACCEPTED_PATHS = ("tests/governance/nautilus_pin_inventory/test_source_io.py",)
 OVERLAY_PATH = "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md"
 ACCEPTED_A_PATHS = (
@@ -59,6 +59,10 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip()
     for path in TASK1_REPAIR_PATHS:
         assert _entry(head, path) == _entry(FIX7_R3, path)
+    assert _entry(head, "tests/governance/nautilus_pin_inventory/test_git_source.py") == (
+        f"100644 blob {PACK_LAYOUT_TEST_BLOB}\t"
+        "tests/governance/nautilus_pin_inventory/test_git_source.py"
+    )
     for path in TASK1_ACCEPTED_PATHS:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
