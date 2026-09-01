@@ -641,9 +641,14 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         triggers = _direct_map(_block(lines, 0, "on"), 2)
         if triggers != {"push": "", "pull_request": "", "workflow_dispatch": ""}:
             return False
+        if _direct_map(_block(lines, 2, "pull_request"), 4) != {
+            "types": "[opened, synchronize, reopened, labeled, unlabeled]"
+        }:
+            return False
         job = _block(lines, 2, "verify")
         direct = _direct_map(job, 4)
         if direct != {
+            "name": "verify-${{ github.event_name }}",
             "runs-on": "ubuntu-24.04", "timeout-minutes": "45",
             "env": "", "steps": "",
         }:
@@ -658,7 +663,8 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             (
                 {
                     "name": "Classify P1-H change impact from base authority",
-                    "run": 'set -euo pipefail; base_sha="${{ github.event.pull_request.base.sha || github.event.before }}"; if test -z "$base_sha" || test "$base_sha" = "0000000000000000000000000000000000000000"; then base_sha="$(git rev-parse "$GITHUB_SHA^")"; fi; resolved_base="$(git rev-parse --verify "$base_sha^{commit}")"; test "$resolved_base" = "$base_sha"; authority_root="${RUNNER_TEMP:?}/p1-h-base-authority"; if test -e "$authority_root" || test -L "$authority_root"; then exit 2; fi; install -d -m 0700 -- "$authority_root"; test "$(stat -c \'%u:%a\' -- "$authority_root")" = "$(id -u):700"; git archive "$base_sha" | tar -x -C "$authority_root"; PYTHONPATH="$authority_root" uv run python "$authority_root/scripts/classify_p1_h_impact.py" --repo "$GITHUB_WORKSPACE" --base "$base_sha" --head "$GITHUB_SHA"',
+                    "if": "github.event_name == 'pull_request'",
+                    "run": "set -euo pipefail; base_sha=\"${{ github.event.pull_request.base.sha }}\"; resolved_base=\"$(git rev-parse --verify \"$base_sha^{commit}\")\"; test \"$resolved_base\" = \"$base_sha\"; authority_root=\"${RUNNER_TEMP:?}/p1-h-base-authority\"; if test -e \"$authority_root\" || test -L \"$authority_root\"; then exit 2; fi; install -d -m 0700 -- \"$authority_root\"; test \"$(stat -c '%u:%a' -- \"$authority_root\")\" = \"$(id -u):700\"; git archive \"$base_sha\" | tar -x -C \"$authority_root\"; decision_path=\"$authority_root/decision.json\"; if PYTHONPATH=\"$authority_root\" uv run python \"$authority_root/scripts/classify_p1_h_impact.py\" --repo \"$GITHUB_WORKSPACE\" --base \"$base_sha\" --head \"$GITHUB_SHA\" > \"$decision_path\"; then cat \"$decision_path\"; exit 0; fi; status=$?; cat \"$decision_path\"; test \"$status\" -eq 2; uv run python -c 'import json,sys; decision=json.load(open(sys.argv[1], encoding=\"utf-8\")); assert decision.get(\"change_class\") == \"D\"; assert decision.get(\"disposition\") == \"HELD\"; assert decision.get(\"reasons\") == [\"class_d_requires_operator_policy\"]' \"$decision_path\"; test \"${{ contains(github.event.pull_request.labels.*.name, 'p1-class-d-approved') }}\" = \"true\"",
                 },
                 {},
             ),

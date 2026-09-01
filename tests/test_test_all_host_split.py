@@ -164,6 +164,7 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     # test its literal privileges, triggers, runner class, and invocation contract.
     assert re.search(r"^permissions:\n  contents: read$", foundation, re.MULTILINE)
     assert re.search(r"^    runs-on: ubuntu-(latest|24\.04)$", foundation, re.MULTILINE)
+    assert 'name: verify-${{ github.event_name }}' in foundation
     assert "run: make ci-portable NONINTERACTIVE=1" in foundation
     assert "if: always()" in foundation
     assert (
@@ -179,6 +180,12 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert "self-hosted" not in foundation
     assert "environment:" not in foundation
     assert "secrets." not in foundation
+    assert "if: github.event_name == 'pull_request'" in foundation
+    assert "p1-class-d-approved" in foundation
+    assert "github.event.pull_request.labels.*.name" in foundation
+    assert "class_d_requires_operator_policy" in foundation
+    assert "decision.get(\"change_class\") == \"D\"" in foundation
+    assert "decision.get(\"disposition\") == \"HELD\"" in foundation
 
     assert re.search(r"^  workflow_dispatch:$", host, re.MULTILINE)
     assert "push:" not in host and "pull_request" not in host
