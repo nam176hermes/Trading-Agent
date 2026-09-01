@@ -171,7 +171,7 @@ def _definition_revisions() -> tuple[SecurityMasterRevisionV1, ...]:
     return tuple(
         SecurityMasterRevisionV1(
             schema_version="security-master-revision-v1",
-            revision_id=UUID(f"91000000-0000-4000-8000-{index:012d}"),
+            revision_id=UUID(f"92000000-0000-4000-8000-{index:012d}"),
             fact_id=UUID(f"81000000-0000-4000-8000-{index + 1:012d}"),
             subject_id=subject_id,
             subject_kind=kind,
@@ -206,6 +206,9 @@ def test_runtime_migration_and_pit_correction_are_fail_closed() -> None:
             revision_id=UUID("91000000-0000-4000-8000-000000000002"),
             predecessor=root,
         )
+        assert root.revision_id not in {
+            definition.revision_id for definition in _definition_revisions()
+        }
         with psycopg.connect(settings.conninfo()) as connection:
             assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == HEAD
             with pytest.raises(psycopg.ProgrammingError, match="SYMBOL_MAPPING relation is invalid"):
