@@ -2,7 +2,7 @@
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
-	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
+	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres test-p2-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
@@ -13,7 +13,11 @@
 	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private ci-common-private \
 	ci-host-authority ci-host-authority-private artifact-firewall-check audit-delivery-contract \
 	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
-	check-test-governance-topology check-portable-defect-closure check-p0-ci-closure
+	check-test-governance-topology check-portable-defect-closure check-p0-ci-closure \
+	qualify-p1-engine-lts-local qualify-p1-engine-lts-report \
+	qualify-p1-engine-lts-source-ready qualify-p1-engine-lts-final \
+	check-project-status qualify-p2-source qualify-p2-runtime qualify-p2-final \
+	qualify-p3-foundation certify-pre-p3
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 PYTHON ?= uv run python
@@ -35,6 +39,9 @@ P1_NAUTILUS_CARGO ?=
 P1_NAUTILUS_LLVM_TOOLCHAIN ?=
 P1_NAUTILUS_SOURCE_COMMIT ?=
 P1_NAUTILUS_QUALIFICATION_RECEIPT ?=
+P1_LTS_FOUNDATION_RECEIPT ?=
+P1_LTS_NATIVE_RECEIPT ?=
+P1_LTS_OPERATOR_RECEIPT ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -64,6 +71,58 @@ generate-p1-nautilus-contracts:
 
 check-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+
+qualify-p1-engine-lts-local:
+	$(PYTHON) scripts/qualify_p1_engine_lts.py --mode local
+
+qualify-p1-engine-lts-report:
+	$(PYTHON) scripts/qualify_p1_engine_lts.py --mode report
+
+qualify-p1-engine-lts-source-ready:
+	@test -n "$(P1_LTS_FOUNDATION_RECEIPT)$(P1_LTS_NATIVE_RECEIPT)$(P1_LTS_OPERATOR_RECEIPT)"
+	$(PYTHON) scripts/qualify_p1_engine_lts.py --mode source-ready \
+		--foundation-receipt "$(P1_LTS_FOUNDATION_RECEIPT)" \
+		--native-receipt "$(P1_LTS_NATIVE_RECEIPT)" \
+		--operator-receipt "$(P1_LTS_OPERATOR_RECEIPT)"
+
+qualify-p1-engine-lts-final:
+	@test -n "$(P1_LTS_FOUNDATION_RECEIPT)$(P1_LTS_NATIVE_RECEIPT)$(P1_LTS_OPERATOR_RECEIPT)"
+	$(PYTHON) scripts/qualify_p1_engine_lts.py --mode final \
+		--foundation-receipt "$(P1_LTS_FOUNDATION_RECEIPT)" \
+		--native-receipt "$(P1_LTS_NATIVE_RECEIPT)" \
+		--operator-receipt "$(P1_LTS_OPERATOR_RECEIPT)"
+
+check-project-status:
+	$(PYTHON) scripts/derive_project_status.py \
+		--check docs/implementation/project-status.json
+
+qualify-p2-source:
+	@test -n "$(PRE_P3_RECEIPT_DIR)"
+	$(PYTHON) scripts/qualify_pre_p3.py p2-source \
+		--output "$(PRE_P3_RECEIPT_DIR)/p2-source-complete-v1.json"
+
+qualify-p2-runtime:
+	@test -n "$(PRE_P3_RECEIPT_DIR)"
+	$(PYTHON) scripts/qualify_pre_p3.py p2-runtime \
+		--output "$(PRE_P3_RECEIPT_DIR)/p2-runtime-qualified-v1.json"
+
+qualify-p2-final:
+	@test -n "$(PRE_P3_RECEIPT_DIR)"
+	$(PYTHON) scripts/qualify_pre_p3.py p2-final \
+		--source "$(PRE_P3_RECEIPT_DIR)/p2-source-complete-v1.json" \
+		--runtime "$(PRE_P3_RECEIPT_DIR)/p2-runtime-qualified-v1.json" \
+		--output "$(PRE_P3_RECEIPT_DIR)/p2-qualified-v1.json"
+
+qualify-p3-foundation:
+	@test -n "$(PRE_P3_RECEIPT_DIR)"
+	$(PYTHON) scripts/qualify_pre_p3.py p3-foundation \
+		--output-dir "$(PRE_P3_RECEIPT_DIR)"
+
+certify-pre-p3:
+	@test -n "$(PRE_P3_RECEIPT_DIR)"
+	$(PYTHON) scripts/qualify_pre_p3.py final \
+		--receipt-dir "$(PRE_P3_RECEIPT_DIR)" \
+		--output "$(PRE_P3_RECEIPT_DIR)/PRE-P3-CERTIFICATION.json"
 
 qualify-p1-nautilus-vertical-slice:
 	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
@@ -277,7 +336,12 @@ test-runtime-postgres:
 		tests/control_api/test_postgres_repositories.py \
 		tests/control_api/test_alembic_schema.py \
 		tests/control_api/test_foundation_postgres_runtime_parity.py \
-		tests/jobs/test_engine_event_postgres_runtime.py
+		tests/jobs/test_engine_event_postgres_runtime.py \
+		tests/security_master/test_postgres_runtime.py
+
+test-p2-runtime-postgres:
+	uv run python scripts/run_required_runtime_pytest.py \
+		tests/security_master/test_postgres_runtime.py
 
 test-package6-paper-runtime:
 	uv run python scripts/run_required_runtime_pytest.py \

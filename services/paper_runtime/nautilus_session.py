@@ -51,9 +51,9 @@ from .nautilus_checkpoint import (
     ZERO_CHECKPOINT_SHA256,
 )
 from .nautilus_child import (
-    NautilusPaperChild,
-    is_issued_nautilus_paper_child as _is_issued_child,
-    issue_nautilus_paper_child as _issue_nautilus_paper_child,
+    EngineSessionPort,
+    is_issued_engine_session_port as _is_issued_child,
+    issue_engine_session_port as _issue_engine_session_port,
 )
 from .nautilus_protocol import (
     NautilusRecoveryRecorder,
@@ -88,7 +88,7 @@ class NautilusPaperSession:
         request: EngineCommandEnvelope,
         job_id: str,
         attempt_id: str,
-        child: NautilusPaperChild,
+        child: EngineSessionPort,
         safety_preflight: Callable[[], SafetyEvidence],
         clock: Callable[[], datetime],
         event_ledger: EngineEventLedgerRepository,
@@ -438,9 +438,9 @@ class NautilusPaperSession:
 
 
 __all__ = [
-    "NautilusPaperChild",
+    "EngineSessionPort",
     "NautilusPaperSession",
     "NautilusSessionRejected",
     "NautilusSessionResult",
-    "_issue_nautilus_paper_child",
+    "_issue_engine_session_port",
 ]

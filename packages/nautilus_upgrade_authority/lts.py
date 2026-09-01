@@ -1,4 +1,4 @@
-"""Pure, source-owned LTS policy for the accepted P1 Nautilus lane."""
+"""Pure, source-owned LTS policy and change classifier for the P1 Nautilus lane."""
 
 from __future__ import annotations
 
@@ -9,7 +9,17 @@ import hashlib
 import hmac
 import json
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import Annotated, Literal, cast
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from packages.nautilus_runtime_contracts.paper import PAPER_PROTOCOL_SCHEMA
 from packages.nautilus_upgrade_authority.lifecycle import (
@@ -23,24 +33,13 @@ from packages.nautilus_upgrade_authority.lifecycle import (
 )
 
 
-_EXPECTED_POLICY_SHA256 = "c851425432b3a6a5d14e56bf8810687b39f8ff5e8946df888284224fba4e305c"
+_EXPECTED_POLICY_SHA256 = "3f5055e2db482da951b3d27a7a489623e8f8ec9b0a7bd2848e220ffcd30363e0"
+_SHA256 = r"^[0-9a-f]{64}$"
+_COMMIT = r"^[0-9a-f]{40}$"
 
 
 class P1LtsPolicyError(ValueError):
     """The P1 LTS policy or its selected runtime identity is invalid."""
-
-
-class LineageRole(str, Enum):
-    BASELINE = "BASELINE"
-    CHALLENGER = "CHALLENGER"
-    ROLLBACK = "ROLLBACK"
-
-
-class SourceQualification(str, Enum):
-    UNASSESSED = "UNASSESSED"
-    QUALIFIED = "QUALIFIED"
-    REJECTED = "REJECTED"
-    STALE = "STALE"
 
 
 class P1ChangeClass(str, Enum):
@@ -55,28 +54,13 @@ class P1ImpactDisposition(str, Enum):
     HELD = "HELD"
 
 
-@dataclass(frozen=True, slots=True)
-class P1CompatibilityTupleV1:
-    runtime_family: str
-    engine_version: str
-    engine_upstream_commit: str
-    python_abi: str
-    candidate_closure_schema_version: int
-    candidate_closure_sha256: str
-    product_closure_schema_version: int
-    product_closure_sha256: str
-    request_protocol_version: str
-    event_schema: str
-    paper_schema: str
-    semantic_profile: str
-    rollback_version: str
-    rollback_upstream_commit: str
-    rollback_closure_schema_version: int
-    rollback_closure_sha256: str
+class _FrozenModel(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, strict=True, revalidate_instances="always"
+    )
 
 
-@dataclass(frozen=True, slots=True)
-class P1AuthorityLimitsV1:
+class P1AuthorityLimitsV1(_FrozenModel):
     network_authorized: bool
     live_authorized: bool
     production_authorized: bool
@@ -84,39 +68,131 @@ class P1AuthorityLimitsV1:
     database_runtime_authorized: bool
 
 
-@dataclass(frozen=True, slots=True)
-class P1EvidenceBindingV1:
+class P1EvidenceBindingV1(_FrozenModel):
     path: str
-    sha256: str
+    sha256: Annotated[str, Field(pattern=_SHA256)]
+
+    @model_validator(mode="after")
+    def _safe_path(self) -> "P1EvidenceBindingV1":
+        parsed = PurePosixPath(self.path)
+        if not self.path or parsed.is_absolute() or ".." in parsed.parts or "\\" in self.path:
+            raise ValueError("binding path is invalid")
+        return self
 
 
-@dataclass(frozen=True, slots=True)
-class P1ScenarioBindingV1:
+class P1EngineRegistryEntryV2(_FrozenModel):
+    runtime_family: str
+    engine_version: str
+    engine_upstream_commit: Annotated[str, Field(pattern=_COMMIT)]
+    python_abi: str
+    closure_schema_version: Annotated[int, Field(ge=1)]
+    closure_sha256: Annotated[str, Field(pattern=_SHA256)]
+    semantic_profile: str
+    lifecycle: EngineLifecycle
+
+    @field_validator("lifecycle", mode="before")
+    @classmethod
+    def _json_lifecycle(cls, value: object) -> object:
+        return EngineLifecycle(value) if type(value) is str else value
+
+
+class P1EventApiEpochV1(_FrozenModel):
+    request_protocol: str
+    event_schema: str
+    paper_schema: str
+    result_validator: str
+    manifest_schema: Annotated[int, Field(ge=1)]
+
+
+class P1CheckpointPolicyV1(_FrozenModel):
+    active_schema: str
+    replay_required_from: tuple[str, ...]
+    incompatible_by_default: bool
+
+    @field_validator("replay_required_from", mode="before")
+    @classmethod
+    def _json_tuple(cls, value: object) -> object:
+        return tuple(value) if type(value) is list else value
+
+
+class P1GoldenScenarioV1(_FrozenModel):
+    result_sha256: Annotated[str, Field(pattern=_SHA256)]
+    event_sha256: Annotated[str, Field(pattern=_SHA256)]
+    oracle_sha256: Annotated[str, Field(pattern=_SHA256)]
+    candidate_semantic_sha256: Annotated[str, Field(pattern=_SHA256)]
+    rollback_semantic_sha256: Annotated[str, Field(pattern=_SHA256)]
+
+
+class P1GoldenRegistryV1(_FrozenModel):
     module: str
     object_name: str
-    sha256: str
+    source_path: str
+    source_sha256: Annotated[str, Field(pattern=_SHA256)]
+    scenarios: dict[str, P1GoldenScenarioV1]
 
 
-@dataclass(frozen=True, slots=True)
-class P1QualificationNodeV1:
+class P1QualificationNodeV1(_FrozenModel):
     node_id: str
     dependencies: tuple[str, ...]
 
+    @field_validator("dependencies", mode="before")
+    @classmethod
+    def _json_tuple(cls, value: object) -> object:
+        return tuple(value) if type(value) is list else value
 
-@dataclass(frozen=True, slots=True)
-class P1LtsPolicyV1:
-    schema: str
-    lineage_role: LineageRole
-    source_qualification: SourceQualification
-    execution_scope: str
-    compatibility: P1CompatibilityTupleV1
-    authority_limits: P1AuthorityLimitsV1
-    candidate_generation: P1EvidenceBindingV1
+
+class P1BindingsV2(_FrozenModel):
     baseline_receipt: P1EvidenceBindingV1
-    scenarios: P1ScenarioBindingV1
-    evidence: tuple[P1EvidenceBindingV1, ...]
-    qualification_nodes: tuple[P1QualificationNodeV1, ...]
-    record_sha256: str
+    candidate_generation: P1EvidenceBindingV1
+    p1_complete_receipt: P1EvidenceBindingV1
+    release_regression_matrix: P1EvidenceBindingV1
+    rollback_evidence: P1EvidenceBindingV1
+    u06_regression: P1EvidenceBindingV1
+    u07_dual_runtime: P1EvidenceBindingV1
+
+
+class P1LtsPolicyV2(_FrozenModel):
+    document_schema: Literal["trading-agent-p1-engine-lts-policy/v2"] = Field(alias="schema")
+    execution_scope: Literal["PAPER_LOCAL_ONLY"]
+    authority_limits: P1AuthorityLimitsV1
+    engine_registry: tuple[P1EngineRegistryEntryV2, ...]
+    event_api_epoch: P1EventApiEpochV1
+    checkpoint_policy: P1CheckpointPolicyV1
+    golden_registry: P1GoldenRegistryV1
+    qualification_dag: tuple[P1QualificationNodeV1, ...]
+    bindings: P1BindingsV2
+    _record_sha256: str = PrivateAttr()
+
+    @property
+    def record_sha256(self) -> str:
+        return self._record_sha256
+
+    @field_validator("engine_registry", "qualification_dag", mode="before")
+    @classmethod
+    def _json_tuple(cls, value: object) -> object:
+        return tuple(value) if type(value) is list else value
+
+    @model_validator(mode="after")
+    def _closed_policy(self) -> "P1LtsPolicyV2":
+        if any(self.authority_limits.model_dump().values()):
+            raise ValueError("P1 LTS policy grants invalid authority")
+        registry = validate_engine_registry(
+            EngineRegistryEntry(item.runtime_family, item.engine_version, item.lifecycle)
+            for item in self.engine_registry
+        )
+        if len(registry) != 2 or {item.lifecycle for item in registry} != {
+            EngineLifecycle.ACTIVE,
+            EngineLifecycle.ROLLBACK,
+        }:
+            raise ValueError("P1 LTS registry requires active and rollback engines")
+        if not self.checkpoint_policy.incompatible_by_default or len(self.golden_registry.scenarios) != 8:
+            raise ValueError("P1 LTS compatibility policy is incomplete")
+        seen: set[str] = set()
+        for node in self.qualification_dag:
+            if node.node_id in seen or not set(node.dependencies) <= seen:
+                raise ValueError("P1 LTS qualification nodes are not a static DAG")
+            seen.add(node.node_id)
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,101 +203,38 @@ class P1ImpactDecisionV1:
     reasons: tuple[str, ...]
 
 
-_POLICY_KEYS = {
-    "schema",
-    "lineage_role",
-    "source_qualification",
-    "execution_scope",
-    "compatibility",
-    "authority_limits",
-    "candidate_generation",
-    "baseline_receipt",
-    "scenarios",
-    "evidence",
-    "qualification_nodes",
-}
-_COMPATIBILITY_KEYS = set(P1CompatibilityTupleV1.__dataclass_fields__)
-_AUTHORITY_KEYS = set(P1AuthorityLimitsV1.__dataclass_fields__)
-_BINDING_KEYS = {"path", "sha256"}
-_SCENARIO_KEYS = {"module", "object_name", "sha256"}
-_NODE_KEYS = {"node_id", "dependencies"}
-
 _CLASS_NODES = {
-    P1ChangeClass.A: (
-        "P1S_SOURCE",
-        "P1S_RECOVERY",
-        "P1S_GOLDEN",
-        "P1H_FOUNDATION",
-    ),
+    P1ChangeClass.A: ("P1S_SOURCE", "P1S_RECOVERY", "P1S_GOLDEN", "P1H_FOUNDATION"),
     P1ChangeClass.B: (
-        "P1S_SOURCE",
-        "P1S_RECOVERY",
-        "P1S_GOLDEN",
-        "P1N_G1",
-        "P1N_E2E",
-        "P1N_PAPER",
-        "P1H_FOUNDATION",
-        "P1O_ACCEPT",
+        "P1S_SOURCE", "P1S_RECOVERY", "P1S_GOLDEN", "P1N_G1",
+        "P1N_E2E", "P1N_PAPER", "P1H_FOUNDATION", "P1O_ACCEPT",
     ),
     P1ChangeClass.C: (
-        "P1S_SOURCE",
-        "P1S_RECOVERY",
-        "P1S_GOLDEN",
-        "P1N_G1",
-        "P1N_E2E",
-        "P1N_PAPER",
-        "P1H_FOUNDATION",
-        "P1O_ACCEPT",
+        "P1S_SOURCE", "P1S_RECOVERY", "P1S_GOLDEN", "P1N_G1",
+        "P1N_E2E", "P1N_PAPER", "P1H_FOUNDATION", "P1O_ACCEPT",
     ),
 }
-_CLASS_ORDER = {
-    P1ChangeClass.A: 0,
-    P1ChangeClass.B: 1,
-    P1ChangeClass.C: 2,
-    P1ChangeClass.D: 3,
-}
-_CLASS_D_PREFIXES = (
-    "packages/engine_contracts/",
-    "packages/nautilus_runtime_contracts/",
-)
+_CLASS_ORDER = {P1ChangeClass.A: 0, P1ChangeClass.B: 1, P1ChangeClass.C: 2, P1ChangeClass.D: 3}
+_CLASS_D_PREFIXES = ("packages/engine_contracts/", "packages/nautilus_runtime_contracts/")
 _CLASS_D_PATHS = {
-    "docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v1.json",
+    "docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v2.json",
     "packages/nautilus_upgrade_authority/lts.py",
 }
 _CLASS_C_PATHS = {"packages/domain/recovery.py", "pyproject.toml", "uv.lock"}
 _CLASS_C_PREFIXES = (
-    "engines/nautilus/candidates/",
-    "engines/nautilus/native_entry_guard/",
-    "engines/nautilus/sealed_uv_exec/",
-    "scripts/build_nautilus",
-    "scripts/materialize_nautilus_runtime_closure.py",
-    "scripts/verify_nautilus_runtime_closure.py",
+    "engines/nautilus/candidates/", "engines/nautilus/native_entry_guard/",
+    "engines/nautilus/sealed_uv_exec/", "scripts/build_nautilus",
+    "scripts/materialize_nautilus_runtime_closure.py", "scripts/verify_nautilus_runtime_closure.py",
 )
 _CLASS_B_PREFIXES = (
-    "engines/nautilus/",
-    "packages/nautilus_backtest/",
-    "services/job_worker/",
-    "services/paper_runtime/",
+    "engines/nautilus/", "packages/nautilus_backtest/", "services/job_worker/", "services/paper_runtime/",
 )
 _CLASS_A_PATHS = {"Makefile", "scripts/qualify_p1_engine_lts.py"}
-_CLASS_A_PREFIXES = (
-    "docs/",
-    "tests/",
-    "packages/nautilus_upgrade_authority/",
-)
+_CLASS_A_PREFIXES = ("docs/", "tests/", "packages/nautilus_upgrade_authority/")
 
 
 def _canonical(value: object) -> bytes:
-    return (
-        json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
+    return (json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n").encode()
 
 
 def _loads_exact(raw: bytes) -> dict[str, object]:
@@ -237,12 +250,7 @@ def _loads_exact(raw: bytes) -> dict[str, object]:
         raise P1LtsPolicyError("P1 LTS policy float input is forbidden")
 
     try:
-        value = json.loads(
-            raw,
-            object_pairs_hook=no_duplicates,
-            parse_float=reject_float,
-            parse_constant=reject_float,
-        )
+        value = json.loads(raw, object_pairs_hook=no_duplicates, parse_float=reject_float, parse_constant=reject_float)
     except P1LtsPolicyError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -252,156 +260,42 @@ def _loads_exact(raw: bytes) -> dict[str, object]:
     return cast(dict[str, object], value)
 
 
-def _exact_object(value: object, keys: set[str]) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != keys:
-        raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-    return cast(dict[str, object], value)
-
-
-def _string(value: object) -> str:
-    if not isinstance(value, str):
-        raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-    return value
-
-
-def _integer(value: object) -> int:
-    if type(value) is not int:
-        raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-    return cast(int, value)
-
-
-def _boolean(value: object) -> bool:
-    if type(value) is not bool:
-        raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-    return cast(bool, value)
-
-
-def _binding(value: object) -> P1EvidenceBindingV1:
-    item = _exact_object(value, _BINDING_KEYS)
-    return P1EvidenceBindingV1(
-        path=_string(item["path"]),
-        sha256=_string(item["sha256"]),
-    )
-
-
-def load_p1_lts_policy(path: Path) -> P1LtsPolicyV1:
-    """Load the one accepted P1 LTS policy from exact canonical bytes."""
-
+def load_p1_lts_policy(path: Path) -> P1LtsPolicyV2:
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise P1LtsPolicyError("P1 LTS policy is unavailable") from exc
     value = _loads_exact(raw)
-    record_sha256 = hashlib.sha256(raw).hexdigest()
-    if not hmac.compare_digest(record_sha256, _EXPECTED_POLICY_SHA256):
+    digest = hashlib.sha256(raw).hexdigest()
+    if not hmac.compare_digest(digest, _EXPECTED_POLICY_SHA256):
         raise P1LtsPolicyError("P1 LTS policy SHA-256 is not accepted")
-    value = _exact_object(value, _POLICY_KEYS)
-    compatibility = _exact_object(value["compatibility"], _COMPATIBILITY_KEYS)
-    limits = _exact_object(value["authority_limits"], _AUTHORITY_KEYS)
-    scenarios = _exact_object(value["scenarios"], _SCENARIO_KEYS)
-    evidence_value = value["evidence"]
-    nodes_value = value["qualification_nodes"]
-    if not isinstance(evidence_value, list) or not isinstance(nodes_value, list):
-        raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-    nodes: list[P1QualificationNodeV1] = []
-    seen: set[str] = set()
-    for raw_node in nodes_value:
-        node = _exact_object(raw_node, _NODE_KEYS)
-        node_id = _string(node["node_id"])
-        dependencies_value = node["dependencies"]
-        if not isinstance(dependencies_value, list):
-            raise P1LtsPolicyError("P1 LTS policy shape is invalid")
-        dependencies = tuple(_string(item) for item in dependencies_value)
-        if node_id in seen or not set(dependencies) <= seen:
-            raise P1LtsPolicyError("P1 LTS qualification nodes are not a static DAG")
-        nodes.append(P1QualificationNodeV1(node_id, dependencies))
-        seen.add(node_id)
     try:
-        result = P1LtsPolicyV1(
-            schema=_string(value["schema"]),
-            lineage_role=LineageRole(_string(value["lineage_role"])),
-            source_qualification=SourceQualification(_string(value["source_qualification"])),
-            execution_scope=_string(value["execution_scope"]),
-            compatibility=P1CompatibilityTupleV1(
-                runtime_family=_string(compatibility["runtime_family"]),
-                engine_version=_string(compatibility["engine_version"]),
-                engine_upstream_commit=_string(compatibility["engine_upstream_commit"]),
-                python_abi=_string(compatibility["python_abi"]),
-                candidate_closure_schema_version=_integer(
-                    compatibility["candidate_closure_schema_version"]
-                ),
-                candidate_closure_sha256=_string(compatibility["candidate_closure_sha256"]),
-                product_closure_schema_version=_integer(
-                    compatibility["product_closure_schema_version"]
-                ),
-                product_closure_sha256=_string(compatibility["product_closure_sha256"]),
-                request_protocol_version=_string(compatibility["request_protocol_version"]),
-                event_schema=_string(compatibility["event_schema"]),
-                paper_schema=_string(compatibility["paper_schema"]),
-                semantic_profile=_string(compatibility["semantic_profile"]),
-                rollback_version=_string(compatibility["rollback_version"]),
-                rollback_upstream_commit=_string(compatibility["rollback_upstream_commit"]),
-                rollback_closure_schema_version=_integer(
-                    compatibility["rollback_closure_schema_version"]
-                ),
-                rollback_closure_sha256=_string(compatibility["rollback_closure_sha256"]),
-            ),
-            authority_limits=P1AuthorityLimitsV1(
-                network_authorized=_boolean(limits["network_authorized"]),
-                live_authorized=_boolean(limits["live_authorized"]),
-                production_authorized=_boolean(limits["production_authorized"]),
-                broker_access_authorized=_boolean(limits["broker_access_authorized"]),
-                database_runtime_authorized=_boolean(limits["database_runtime_authorized"]),
-            ),
-            candidate_generation=_binding(value["candidate_generation"]),
-            baseline_receipt=_binding(value["baseline_receipt"]),
-            scenarios=P1ScenarioBindingV1(
-                module=_string(scenarios["module"]),
-                object_name=_string(scenarios["object_name"]),
-                sha256=_string(scenarios["sha256"]),
-            ),
-            evidence=tuple(_binding(item) for item in evidence_value),
-            qualification_nodes=tuple(nodes),
-            record_sha256=record_sha256,
-        )
-    except ValueError as exc:
-        raise P1LtsPolicyError("P1 LTS policy enum value is invalid") from exc
-    if (
-        result.schema != "trading-agent-p1-engine-lts-policy/v1"
-        or result.execution_scope != "PAPER_LOCAL_ONLY"
-        or any(
-            (
-                result.authority_limits.network_authorized,
-                result.authority_limits.live_authorized,
-                result.authority_limits.production_authorized,
-                result.authority_limits.broker_access_authorized,
-                result.authority_limits.database_runtime_authorized,
-            )
-        )
-    ):
-        raise P1LtsPolicyError("P1 LTS policy grants invalid authority")
-    return result
+        policy = P1LtsPolicyV2.model_validate(value)
+    except ValidationError as exc:
+        raise P1LtsPolicyError("P1 LTS policy shape is invalid") from exc
+    object.__setattr__(policy, "_record_sha256", digest)
+    return policy
 
 
-def validate_p1_lts_identity(policy: P1LtsPolicyV1, engine_policy: object) -> None:
-    """Fail closed unless the selected worker policy matches the accepted tuple."""
-
+def validate_p1_lts_identity(policy: P1LtsPolicyV2, engine_policy: object) -> None:
+    active = next(item for item in policy.engine_registry if item.lifecycle is EngineLifecycle.ACTIVE)
     expected: Mapping[str, object] = {
-        "runtime_family": policy.compatibility.runtime_family,
-        "engine_version": policy.compatibility.engine_version,
-        "engine_upstream_commit": policy.compatibility.engine_upstream_commit,
-        "manifest_schema_version": policy.compatibility.product_closure_schema_version,
-        "closure_sha256": policy.compatibility.product_closure_sha256,
-        "request_protocol_version": policy.compatibility.request_protocol_version,
-        "event_schema": policy.compatibility.event_schema,
-        "semantic_profile": policy.compatibility.semantic_profile,
-        "p1_baseline_receipt_sha256": policy.baseline_receipt.sha256,
+        "runtime_family": active.runtime_family,
+        "engine_version": active.engine_version,
+        "engine_upstream_commit": active.engine_upstream_commit,
+        "manifest_schema_version": active.closure_schema_version,
+        "closure_sha256": active.closure_sha256,
+        "request_protocol_version": policy.event_api_epoch.request_protocol,
+        "event_schema": policy.event_api_epoch.event_schema,
+        "semantic_profile": active.semantic_profile,
+        "p1_baseline_receipt_sha256": policy.bindings.baseline_receipt.sha256,
     }
     argv_prefix = getattr(engine_policy, "argv_prefix", ())
-    expected_python = {"cp312": "/usr/bin/python3.12"}.get(policy.compatibility.python_abi)
+    expected_python = {"cp312": "/usr/bin/python3.12"}.get(active.python_abi)
     if (
         any(getattr(engine_policy, key, None) != value for key, value in expected.items())
-        or policy.compatibility.paper_schema != PAPER_PROTOCOL_SCHEMA
+        or policy.event_api_epoch.paper_schema != PAPER_PROTOCOL_SCHEMA
+        or policy.event_api_epoch.result_validator != getattr(engine_policy, "result_validator_id", None)
         or expected_python is None
         or not isinstance(argv_prefix, tuple)
         or not argv_prefix
@@ -427,13 +321,7 @@ def _path_class(path: str) -> P1ChangeClass | None:
     return None
 
 
-def classify_p1_change(
-    changed_paths: Iterable[str],
-    declared_class: P1ChangeClass | str,
-    compatibility_changed: bool,
-) -> P1ImpactDecisionV1:
-    """Classify source impact with the declaration as a floor and unknown as held."""
-
+def classify_p1_change(changed_paths: Iterable[str], declared_class: P1ChangeClass | str, compatibility_changed: bool) -> P1ImpactDecisionV1:
     declared = P1ChangeClass(declared_class)
     paths = tuple(changed_paths)
     reasons: list[str] = []
@@ -453,48 +341,22 @@ def classify_p1_change(
     if compatibility_changed:
         change_class = P1ChangeClass.D
     if change_class is P1ChangeClass.D:
-        return P1ImpactDecisionV1(
-            change_class=change_class,
-            disposition=P1ImpactDisposition.HELD,
-            required_node_ids=(),
-            reasons=tuple(reasons or ("class_d_requires_operator_policy",)),
-        )
+        return P1ImpactDecisionV1(change_class=change_class, disposition=P1ImpactDisposition.HELD, required_node_ids=(), reasons=tuple(reasons or ("class_d_requires_operator_policy",)))
     if _CLASS_ORDER[change_class] > _CLASS_ORDER[declared]:
         reasons.append("source_path_escalated_declared_class")
     if change_class is P1ChangeClass.C:
         reasons.append("closure_rebuild_and_verify_required")
-    return P1ImpactDecisionV1(
-        change_class=change_class,
-        disposition=P1ImpactDisposition.QUALIFIABLE,
-        required_node_ids=_CLASS_NODES[change_class],
-        reasons=tuple(reasons),
-    )
+    return P1ImpactDecisionV1(change_class=change_class, disposition=P1ImpactDisposition.QUALIFIABLE, required_node_ids=_CLASS_NODES[change_class], reasons=tuple(reasons))
 
 
 def classify_changed_paths(changed_paths: Iterable[str]) -> P1ImpactDecisionV1:
-    """Fail closed for an undeclared source change."""
-
     return classify_p1_change(changed_paths, P1ChangeClass.A, False)
 
 
 __all__ = [
-    "CheckpointCompatibility",
-    "EngineLifecycle",
-    "EngineRegistryEntry",
-    "EventApiEpoch",
-    "LineageRole",
-    "P1ChangeClass",
-    "P1CompatibilityTupleV1",
-    "P1ImpactDecisionV1",
-    "P1ImpactDisposition",
-    "P1LtsPolicyError",
-    "P1LtsPolicyV1",
-    "SourceQualification",
-    "classify_changed_paths",
-    "classify_checkpoint_compatibility",
-    "classify_p1_change",
-    "load_p1_lts_policy",
-    "golden_registry_sha256",
-    "validate_p1_lts_identity",
-    "validate_engine_registry",
+    "CheckpointCompatibility", "EngineLifecycle", "EngineRegistryEntry", "EventApiEpoch",
+    "P1ChangeClass", "P1ImpactDecisionV1", "P1ImpactDisposition", "P1LtsPolicyError",
+    "P1LtsPolicyV2", "classify_changed_paths", "classify_checkpoint_compatibility",
+    "classify_p1_change", "golden_registry_sha256", "load_p1_lts_policy",
+    "validate_engine_registry", "validate_p1_lts_identity",
 ]

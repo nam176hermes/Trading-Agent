@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, asdict, replace
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from packages.nautilus_upgrade_authority.lts import (
-    LineageRole,
     P1ChangeClass,
     P1ImpactDisposition,
     P1LtsPolicyError,
-    SourceQualification,
     classify_p1_change,
     load_p1_lts_policy,
     validate_p1_lts_identity,
@@ -26,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = (
     ROOT
     / "docs/implementation/p1-real-nautilus/lts"
-    / "p1-engine-lts-policy-v1.json"
+    / "p1-engine-lts-policy-v2.json"
 )
 
 
@@ -46,25 +45,24 @@ def _canonical(document: object) -> bytes:
 def test_loads_exact_frozen_policy_and_current_compatibility_tuple() -> None:
     policy = load_p1_lts_policy(POLICY_PATH)
 
-    assert policy.schema == "trading-agent-p1-engine-lts-policy/v1"
-    assert policy.lineage_role is LineageRole.BASELINE
-    assert policy.source_qualification is SourceQualification.UNASSESSED
-    assert policy.compatibility.runtime_family == "cython-v1"
-    assert policy.compatibility.engine_version == "1.231.0"
-    assert policy.compatibility.candidate_closure_schema_version == 7
-    assert policy.compatibility.candidate_closure_sha256 == (
-        "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
-    )
-    assert policy.compatibility.product_closure_schema_version == 8
-    assert policy.compatibility.product_closure_sha256 == (
+    assert policy.document_schema == "trading-agent-p1-engine-lts-policy/v2"
+    active, rollback = policy.engine_registry
+    assert active.lifecycle.value == "ACTIVE"
+    assert active.runtime_family == "cython-v1"
+    assert active.engine_version == "1.231.0"
+    assert active.closure_schema_version == 8
+    assert active.closure_sha256 == (
         "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
     )
-    assert policy.compatibility.paper_schema == "nautilus-paper-session-v2"
-    assert policy.compatibility.semantic_profile == "nautilus-p1-real-backtest-v1"
+    assert rollback.lifecycle.value == "ROLLBACK"
+    assert rollback.engine_version == "1.227.0"
+    assert policy.event_api_epoch.paper_schema == "nautilus-paper-session-v2"
+    assert policy.checkpoint_policy.active_schema == "sandbox-recovery-checkpoint-v2"
     assert policy.execution_scope == "PAPER_LOCAL_ONLY"
-    assert all(value is False for value in asdict(policy.authority_limits).values())
-    with pytest.raises(FrozenInstanceError):
-        policy.source_qualification = SourceQualification.QUALIFIED
+    assert all(value is False for value in policy.authority_limits.model_dump().values())
+    assert not hasattr(policy, "source_qualification")
+    with pytest.raises(ValidationError, match="frozen"):
+        policy.execution_scope = "LIVE"
 
     validate_p1_lts_identity(policy, P1_REAL_BACKTEST_POLICY)
 
@@ -72,25 +70,32 @@ def test_loads_exact_frozen_policy_and_current_compatibility_tuple() -> None:
 def test_policy_binds_existing_generation_scenarios_and_receipts() -> None:
     policy = load_p1_lts_policy(POLICY_PATH)
 
-    assert policy.candidate_generation.path == (
+    assert policy.bindings.candidate_generation.path == (
         "docs/implementation/p1-real-nautilus/upgrade/candidate-generations/"
         "NT1231-U04-G1.json"
     )
-    assert policy.candidate_generation.sha256 == (
+    assert policy.bindings.candidate_generation.sha256 == (
         "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c"
     )
-    assert policy.scenarios.module == "packages.nautilus_backtest.fixtures"
-    assert policy.scenarios.object_name == "SCENARIO_IDS"
-    assert policy.scenarios.sha256 == (
+    assert policy.golden_registry.module == "packages.nautilus_backtest.fixtures"
+    assert policy.golden_registry.object_name == "SCENARIO_IDS"
+    assert policy.golden_registry.source_sha256 == (
         "95ec82b986113780dbef8b8b0cb3751533ba0cf2e28209d91c3ce07f2a4fc885"
     )
-    for binding in (policy.candidate_generation, policy.baseline_receipt, *policy.evidence):
+    for binding in policy.bindings.model_dump().values():
+        binding = type(policy.bindings.candidate_generation).model_validate(binding)
         assert hashlib.sha256((ROOT / binding.path).read_bytes()).hexdigest() == binding.sha256
+
+    u06 = json.loads((ROOT / policy.bindings.u06_regression.path).read_bytes())
+    u07 = json.loads((ROOT / policy.bindings.u07_dual_runtime.path).read_bytes())
+    for scenario_id, expected in policy.golden_registry.scenarios.items():
+        assert expected.result_sha256 == u06["evidence"]["scenarios"][scenario_id]["result_sha256"]
+        assert expected.candidate_semantic_sha256 == u07["evidence"]["scenarios"][scenario_id]["candidate_semantic_sha256"]
 
 
 def test_policy_qualification_nodes_are_static_and_acyclic() -> None:
     policy = load_p1_lts_policy(POLICY_PATH)
-    nodes = {node.node_id: node.dependencies for node in policy.qualification_nodes}
+    nodes = {node.node_id: node.dependencies for node in policy.qualification_dag}
 
     assert nodes == {
         "P1S_SOURCE": (),
@@ -208,9 +213,9 @@ def test_invalid_change_path_is_held(path: str) -> None:
 
 def test_policy_rejects_any_byte_mutation(tmp_path: Path) -> None:
     document = json.loads(POLICY_PATH.read_bytes())
-    compatibility = document["compatibility"]
-    assert isinstance(compatibility, dict)
-    compatibility["engine_version"] = "1.232.0"
+    registry = document["engine_registry"]
+    assert isinstance(registry, list)
+    registry[0]["engine_version"] = "1.232.0"
     mutated = tmp_path / POLICY_PATH.name
     mutated.write_bytes(_canonical(document))
 

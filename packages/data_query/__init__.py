@@ -14,7 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from packages.data_catalog.artifact_store import LocalArtifactStore
-from packages.data_contracts import ArtifactRefV1, DatasetSnapshotV2
+from packages.data_contracts import ArtifactRefV1, DatasetSnapshotV2, DatasetSnapshotV3
 from packages.engine_contracts.serialization import canonical_json_bytes
 
 
@@ -67,12 +67,13 @@ def _digest(rows: tuple[dict[str, str], ...]) -> str:
 
 
 def query_snapshot_parity(
-    snapshot: DatasetSnapshotV2,
+    snapshot: DatasetSnapshotV2 | DatasetSnapshotV3,
     *,
     store: LocalArtifactStore,
     order_by: tuple[str, ...],
 ) -> QueryParityResultV1:
-    canonical = DatasetSnapshotV2.model_validate(snapshot)
+    snapshot_type = DatasetSnapshotV3 if isinstance(snapshot, DatasetSnapshotV3) else DatasetSnapshotV2
+    canonical = snapshot_type.model_validate(snapshot)
     paths = [
         str(
             store.verified_path(

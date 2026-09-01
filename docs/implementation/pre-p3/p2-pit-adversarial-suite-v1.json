@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"case_id": "PRICE_BAR_REVISION", "node_id": "tests/data_platform/test_revision_chains.py::test_t2_snapshot_never_sees_correction_first_known_at_t3"},
+    {"case_id": "SYMBOL_MAPPING_CHANGE", "node_id": "tests/security_master/test_resolver.py::test_symbol_mapping_lookup_keys_cannot_change_within_fact"},
+    {"case_id": "SECURITY_METADATA_CORRECTION", "node_id": "tests/security_master/test_resolver.py::test_resolver_lineage_uses_strict_recorded_at_not_evidence_known_at"},
+    {"case_id": "CORPORATE_ACTION", "node_id": "tests/security_master/test_p1_projection.py::test_rejects_stale_ambiguous_or_unrepresentable_inputs"},
+    {"case_id": "LISTING_DELISTING", "node_id": "tests/security_master/test_models.py::test_corporate_action_union_covers_raw_p2_facts_only"},
+    {"case_id": "PROVIDER_CONFLICT", "node_id": "tests/data_platform/test_provider_quality.py::test_provider_conflicts_use_explicit_priority_and_fail_on_same_rank_ambiguity"},
+    {"case_id": "LATE_ARRIVING_DATA", "node_id": "tests/security_master/test_parquet_snapshot.py::test_snapshot_rejects_revision_recorded_after_the_knowledge_cutoff"}
+  ],
+  "required_cutoff_rule": "actual_at_T1_correction_known_at_T3_query_cutoff_T2_must_select_only_T1",
+  "schema_version": "p2-pit-adversarial-suite-v1"
+}

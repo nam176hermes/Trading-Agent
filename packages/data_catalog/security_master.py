@@ -361,9 +361,8 @@ def materialize_security_master_snapshot(
                 os.close(sealed_fd)
         finally:
             os.close(parquet_fd)
-        manifest = SecurityMasterSnapshotManifestV1(
-            **semantic,
-            parquet_sha256=parquet_sha256,
+        manifest = SecurityMasterSnapshotManifestV1.model_validate(
+            {**semantic, "parquet_sha256": parquet_sha256}
         )
         _write_new_manifest(directory_fd, manifest_name, manifest)
         artifact = MaterializedSecurityMasterSnapshotV1(
@@ -548,9 +547,11 @@ def verify_security_master_snapshot(
             != parquet_sha256
         ):
             raise CatalogMaterializationError("parquet writer policy is not canonical")
-        expected_manifest = SecurityMasterSnapshotManifestV1(
-            **_semantic_manifest_values(revisions, manifest.knowledge_cutoff),
-            parquet_sha256=manifest.parquet_sha256,
+        expected_manifest = SecurityMasterSnapshotManifestV1.model_validate(
+            {
+                **_semantic_manifest_values(revisions, manifest.knowledge_cutoff),
+                "parquet_sha256": manifest.parquet_sha256,
+            }
         )
         if expected_manifest != manifest:
             raise CatalogMaterializationError(

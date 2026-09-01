@@ -51,6 +51,7 @@ from .serialization import (
     canonical_json_bytes,
     payload_digest,
 )
+from .session import EngineSessionIdentityV1
 from .versions import CURRENT_SCHEMA_VERSION, SchemaVersion
 
 __all__ = [
@@ -96,6 +97,7 @@ __all__ = [
     "EventFamily",
     "EventValue",
     "EngineRunManifest",
+    "EngineSessionIdentityV1",
     "ManifestArtifact",
     "TransportArtifact",
     "ProducerIdentity",
