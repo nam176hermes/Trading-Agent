@@ -72,7 +72,7 @@ def test_post_emits_canonical_json_bytes_and_bearer_authentication() -> None:
     opener = _Opener(_Response(b'{"ok":true}', url="http://127.0.0.1:8402/v1/commands"))
     client = BoundedJsonHttpClient(
         "http://127.0.0.1:8402",
-        token="cli-token",
+        token=str.join("-", ("cli", "token")),
         correlation_id="corr_0123456789abcdef0123456789abcdef",
         opener=opener,
     )

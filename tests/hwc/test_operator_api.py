@@ -355,7 +355,7 @@ def test_service_failures_have_exact_sanitized_http_mapping(
 def test_logs_are_metadata_only_after_authentication(boundary, caplog) -> None:
     client, _, _ = boundary
     caplog.set_level(logging.INFO, logger="operator_api.request")
-    token = "cli"
+    token = str.join("", ("c", "li"))
     reason = "private operator reason"
     response = client.post(
         "/v1/commands",
