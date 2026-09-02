@@ -196,6 +196,7 @@ def test_activation_freezes_exact_bytes_and_digests_without_replacing_existing_m
     unchanged = decide("WEB", command, state(kill="ACTIVE"))
     assert unchanged.operation == "NO_CHANGE"
     assert unchanged.desired_kill_switch_bytes is None
+    assert unchanged.desired_file_sha256 == SHA
     assert unchanged.reason_sha256 is None
 
 
@@ -207,6 +208,12 @@ def test_paper_mode_uses_exact_lowercase_source_bytes() -> None:
     )
     assert plan.desired_mode_bytes == b"paper\n"
     assert plan.desired_file_sha256 == hashlib.sha256(b"paper\n").hexdigest()
+    unchanged = decide(
+        "CLI",
+        {"command_type": "SET_REQUESTED_MODE", "desired_mode": "PAPER"},
+        state(),
+    )
+    assert unchanged.desired_file_sha256 == SHA
 
 
 @pytest.mark.parametrize(

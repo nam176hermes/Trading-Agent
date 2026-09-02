@@ -7,11 +7,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Mapping
 
-from packages.runtime_release.config import ProtectedAuthorityError, load_runtime_authority
+from packages.runtime_release.config import ProtectedAuthorityError
 from packages.safety_evidence import CanonicalKillSwitchState
 from services.job_worker.errors import SafetyBlockedError
 from services.job_worker.safety import SafetyMode, SafetySnapshot
-from services.job_worker.safety_state import SafetyStateClient
 from trading_control.db import DatabaseSettings, connect
 
 from ..contracts import (
@@ -40,25 +39,6 @@ class PostgresReadinessProbe:
                 return connection.execute("SELECT 1").fetchone()[0] == 1
         except Exception:
             return False
-
-
-def authority_bound_safety_provider() -> Callable[[], SafetySnapshot]:
-    """Build a current-safety reader pinned to the protected runtime authority."""
-
-    authority = load_runtime_authority()
-    client = SafetyStateClient(
-        authority.safety.snapshot_path,
-        expected_exporter_commit=authority.safety.exporter_commit,
-        expected_source_fingerprint=authority.safety.source_fingerprint,
-    )
-
-    def read() -> SafetySnapshot:
-        authority.recheck()
-        evidence = client.evidence()
-        authority.recheck()
-        return evidence
-
-    return read
 
 
 class PostgresOperationalStatusRepository:

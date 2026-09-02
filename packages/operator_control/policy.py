@@ -105,12 +105,15 @@ def _decide_mode(
         _reject("LIVE_EXECUTION_DISABLED", 403)
     _check_expected(request, current)
     if current.requested_mode == "PAPER":
+        if current.mode_file_sha256 is None:
+            _reject("SOURCE_STATE_UNKNOWN", 503)
         return _plan(
             actor=actor,
             request=request,
             current=current,
             operation="NO_CHANGE",
             outcome_code="MODE_ALREADY_PAPER",
+            desired_digest=current.mode_file_sha256,
         )
     return _plan(
         actor=actor,
@@ -139,12 +142,15 @@ def _decide_kill_switch(
         _reject("SOURCE_STATE_UNKNOWN", 503)
     if command.desired_state == "ACTIVE":
         if current.kill_switch_state == "ACTIVE":
+            if current.kill_switch_file_sha256 is None:
+                _reject("SOURCE_STATE_UNKNOWN", 503)
             return _plan(
                 actor=actor,
                 request=request,
                 current=current,
                 operation="NO_CHANGE",
                 outcome_code="KILL_SWITCH_ALREADY_ACTIVE",
+                desired_digest=current.kill_switch_file_sha256,
             )
         assert command.reason is not None
         frozen = accepted_at.isoformat().replace("+00:00", "Z").encode("ascii")

@@ -1,6 +1,7 @@
 """Protected operator source-state and journal services."""
 
 from .journal import CommandJournal, CommandJournalError, JournalSnapshot
+from .service import OperatorControlService
 from .state_store import (
     ClearResult,
     OperatorStatePaths,
@@ -16,6 +17,7 @@ __all__ = [
     "JournalSnapshot",
     "OperatorStatePaths",
     "OperatorStateStore",
+    "OperatorControlService",
     "RecoveryError",
     "classify_recovery",
 ]
