@@ -80,6 +80,9 @@ def test_portable_and_host_routes_have_distinct_required_semantics() -> None:
     assert "validate-native" in host_recipe and "--require-pass" in host_recipe
     assert "validate-external" in host_recipe and "--require-pass" in host_recipe
     assert "check-p0-baseline" in host
+    pre_p3_recipe = targets["ci-pre-p3-host-authority"][1]
+    assert "unset DISPOSABLE_PG_GREEN_APPROVAL_RECORD" in pre_p3_recipe
+    assert "DISPOSABLE_PG_GREEN_FIXTURE_PLAN" in pre_p3_recipe
 
 
 def test_portable_route_uses_topology_once_without_repeating_its_root_universe() -> None:

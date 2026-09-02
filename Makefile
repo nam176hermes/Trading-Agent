@@ -594,6 +594,12 @@ ci-pre-p3-host-authority: check-p0-baseline
 		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
 		cleanup_ci_tmpdir() { find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$ci_tmpdir"; }; \
 		trap 'cleanup_ci_tmpdir' EXIT; \
+		unset DISPOSABLE_PG_GREEN_APPROVAL_RECORD \
+			DISPOSABLE_PG_GREEN_FIXTURE_PLAN \
+			TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES \
+			TRADING_TEST_DISPOSABLE_APPROVAL_RECORD \
+			TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE \
+			TRADING_TEST_DISPOSABLE_FIXTURE_PLAN; \
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
 			$(MAKE) ci-portable-topology
 
