@@ -39,6 +39,7 @@ from control_api.contracts import (
 )
 from packages.job_contracts import (
     ActorIdentity,
+    ActorType,
     ArtifactMetadata,
     AttemptMetadata,
     BacktestPayload,
@@ -138,6 +139,7 @@ from packages.runtime_release import (
     ValidatedJobPlaneAuthority,
     validate_job_plane_authority,
 )
+from scripts.operator_contract_generation import render_operator_contracts
 
 DEFAULT_TOOL_ROOT = ROOT / "apps" / "dashboard"
 TYPESCRIPT_FACTORY_COMPAT = ROOT / "scripts" / "typescript_factory_compat.cjs"
@@ -331,7 +333,7 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         JobApiSettings(
             bearer_token="contract-generation-only",
             principal=ActorIdentity(
-                actor_type="OPERATOR", actor_id="contract-generator"
+                actor_type=ActorType.OPERATOR, actor_id="contract-generator"
             ),
         ),
         repository=object(),
@@ -390,6 +392,9 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         check=True,
     )
     (job_dashboard_output / "api-types.ts").chmod(0o644)
+    operator_dashboard_output = render_operator_contracts(
+        destination / "generated/operator-api", tool_root
+    )
     node_executable = shutil.which("node")
     if node_executable is None:
         raise RuntimeError("node executable is required for contract generation")
@@ -418,6 +423,9 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         destination / "generated": ROOT / "generated",
         job_dashboard_output / "api-types.ts": (
             ROOT / "apps/dashboard/src/generated/job-api-types.ts"
+        ),
+        operator_dashboard_output: (
+            ROOT / "apps/dashboard/src/generated/operator-api-types.ts"
         ),
     }
 

@@ -13,7 +13,7 @@
     {"gate": "HWC_OPERATOR_JOURNAL", "evidence": "services/operator_control", "test": "tests/hwc/test_operator_protected_fs.py + tests/hwc/test_operator_journal.py + tests/hwc/test_operator_recovery.py", "source_only": true},
     {"gate": "HWC_OPERATOR_SERVICE", "evidence": "services/operator_control/service.py", "test": "tests/hwc/test_operator_service.py", "source_only": true},
     {"gate": "HWC_CREDENTIAL_BOUNDARY", "evidence": "apps/operator_api/auth.py", "test": "tests/hwc/test_operator_api_auth.py", "source_only": true},
-    {"gate": "HWC_OPERATOR_API", "evidence": "apps/operator_api/app.py", "test": "tests/hwc/test_operator_api.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_API", "evidence": "apps/operator_api/app.py + generated/operator-api", "test": "tests/hwc/test_operator_api.py + tests/hwc/test_operator_api_auth.py + tests/hwc/test_operator_contract_generation.py", "source_only": true},
     {"gate": "ARCH_CONTRACT_READY", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc/test_hwc_status.py", "source_only": true},
     {"gate": "HWC_DASHBOARD_AUTHORITY_REMOVED", "evidence": "scripts/check_hwc_boundaries.py --final", "test": "apps/dashboard/tests/mutation-policy.test.mjs", "source_only": true},
     {"gate": "HWC_OPERATOR_CLI", "evidence": "apps/operator_cli", "test": "tests/hwc/test_operator_cli.py", "source_only": true},

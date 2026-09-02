@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "SetKillSwitchV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "SET_KILL_SWITCH",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "desired_state": {
+          "enum": [
+            "ACTIVE",
+            "INACTIVE"
+          ],
+          "title": "Desired State",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "command_type",
+        "desired_state",
+        "reason"
+      ],
+      "title": "SetKillSwitchV1",
+      "type": "object"
+    },
+    "SetRequestedModeV1": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "SET_REQUESTED_MODE",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "desired_mode": {
+          "enum": [
+            "PAPER",
+            "DRYRUN",
+            "LIVE"
+          ],
+          "title": "Desired Mode",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "desired_mode"
+      ],
+      "title": "SetRequestedModeV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "command": {
+      "discriminator": {
+        "mapping": {
+          "SET_KILL_SWITCH": "#/$defs/SetKillSwitchV1",
+          "SET_REQUESTED_MODE": "#/$defs/SetRequestedModeV1"
+        },
+        "propertyName": "command_type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SetRequestedModeV1"
+        },
+        {
+          "$ref": "#/$defs/SetKillSwitchV1"
+        }
+      ],
+      "title": "Command"
+    },
+    "command_id": {
+      "pattern": "^cmd_[0-9a-f]{32}$",
+      "title": "Command Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "expected_state_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expected State Sha256"
+    },
+    "idempotency_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "submit-operator-command-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "command_id",
+    "idempotency_key",
+    "correlation_id",
+    "expected_state_sha256",
+    "command"
+  ],
+  "title": "SubmitOperatorCommandV1",
+  "type": "object"
+}

@@ -40,6 +40,7 @@ packages = [
 
 [tool.hatch.build.targets.wheel.force-include]
 "apps/job_api" = "apps/job_api"
+"apps/operator_api" = "apps/operator_api"
 "packages" = "packages"
 "services" = "services"
 "engines/nautilus/runtime_v1/profile.py" = "engines/nautilus/runtime_v1/profile.py"

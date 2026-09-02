@@ -184,7 +184,7 @@ audit-release:
 
 audit-python-source:
 	uvx --from bandit==1.9.4 bandit -q -lll -r \
-		apps/control_api packages services legacy/research-backend scripts \
+		apps/control_api apps/operator_api packages services legacy/research-backend scripts \
 		-x '*/tests/*,*/.venv/*'
 
 audit-dependencies-production:

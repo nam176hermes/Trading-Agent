@@ -12,7 +12,8 @@
       "services/job_worker",
       "packages/job_contracts",
       "packages/job_authority",
-      "services/job_store"
+      "services/job_store",
+      "apps/operator_api"
     ],
     "pytest_paths": [
       "tests/domain",
@@ -29,7 +30,10 @@
       "tests/jobs/test_repository_transactions.py",
       "tests/jobs/test_worker_leases.py",
       "tests/jobs/test_worker_lifecycle.py",
-      "tests/jobs/test_p1_parity_composition.py::test_worker_repository_persists_only_closed_p1_receipts"
+      "tests/jobs/test_p1_parity_composition.py::test_worker_repository_persists_only_closed_p1_receipts",
+      "tests/hwc/test_operator_api.py",
+      "tests/hwc/test_operator_api_auth.py",
+      "tests/hwc/test_operator_contract_generation.py"
     ],
     "units": [
       {
@@ -96,6 +100,16 @@
         "line_goal_percent": 95,
         "branch_goal_percent": 90,
         "line_next_step_percent": 95,
+        "branch_next_step_percent": 80
+      },
+      {
+        "name": "operator API",
+        "prefixes": ["apps/operator_api/"],
+        "line_minimum": {"covered": 363, "total": 376},
+        "branch_minimum": {"covered": 45, "total": 58},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 97,
         "branch_next_step_percent": 80
       }
     ]
@@ -213,6 +227,13 @@
         "apps/dashboard/tests/browser-auth-source.test.mjs::auth guard stays fail-closed on timeout and network errors",
         "apps/dashboard/tests/api-access-boundary.test.mjs::rejects absent and cross-origin mutation origins",
         "apps/dashboard/tests/dashboard-request-hardening.test.mjs::shared reader rejects declared, chunked, and invalid UTF-8 request bodies"
+      ]
+    },
+    {
+      "case": "operator API capability and body-size failures",
+      "tests": [
+        "tests/hwc/test_operator_api.py::test_state_is_cli_only_and_identity_headers_cannot_widen_access",
+        "tests/hwc/test_operator_api.py::test_body_cap_runs_before_json_parser_and_service"
       ]
     }
   ]

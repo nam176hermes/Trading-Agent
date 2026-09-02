@@ -28,3 +28,22 @@ cannot override it.
 
 This source boundary grants no broker, network-trading, live, production,
 deployment, or Release Authority v2 capability.
+
+## HTTP contract
+
+The API exposes exactly four routes: public `GET /health/live` and
+`GET /health/ready`, CLI-only `GET /v1/state`, and authenticated
+`POST /v1/commands`. WEB credentials may only activate the kill switch; CLI
+credentials may also read raw state, set PAPER mode, and clear the kill switch
+under the protected safety checks.
+
+Request bodies are capped at 8 KiB before JSON parsing. Responses are
+non-cacheable JSON with `nosniff` and a trace ID. Request logs contain only the
+trace ID, method, normalized endpoint, status, duration, and authenticated
+principal ID; command bodies, reasons, tokens, paths, journal content, and
+receipts are excluded.
+
+The versioned OpenAPI and JSON Schema artifacts live under
+`generated/operator-api/`. The dashboard consumer type is generated at
+`apps/dashboard/src/generated/operator-api-types.ts`; it grants no browser
+access to credentials or protected state.

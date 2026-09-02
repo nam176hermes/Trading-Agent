@@ -24,13 +24,12 @@ class OperatorApiConfigurationError(ValueError):
 
 
 def _path(value: object) -> Path:
-    if not isinstance(value, (str, os.PathLike)):
+    if not isinstance(value, (str, Path)):
         raise OperatorApiConfigurationError("operator API configuration is invalid")
     raw = os.fspath(value)
     path = Path(raw)
     if (
-        not isinstance(raw, str)
-        or not path.is_absolute()
+        not path.is_absolute()
         or path.anchor != "/"
         or path == Path("/")
         or os.path.normpath(raw) != raw

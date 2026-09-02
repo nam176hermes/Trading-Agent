@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "CommandReceiptV1": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Accepted At",
+          "type": "string"
+        },
+        "actor": {
+          "$ref": "#/$defs/OperatorActorV1"
+        },
+        "applied_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Applied At",
+          "type": "string"
+        },
+        "applied_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Applied Sha256",
+          "type": "string"
+        },
+        "command_id": {
+          "pattern": "^cmd_[0-9a-f]{32}$",
+          "title": "Command Id",
+          "type": "string"
+        },
+        "command_type": {
+          "enum": [
+            "SET_REQUESTED_MODE",
+            "SET_KILL_SWITCH"
+          ],
+          "title": "Command Type",
+          "type": "string"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "correlation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "desired_state": {
+          "enum": [
+            "PAPER",
+            "KILL_SWITCH_ACTIVE",
+            "KILL_SWITCH_INACTIVE"
+          ],
+          "title": "Desired State",
+          "type": "string"
+        },
+        "expected_state_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Expected State Sha256"
+        },
+        "idempotency_key_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Idempotency Key Sha256",
+          "type": "string"
+        },
+        "intent_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Intent Sha256",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "APPLIED",
+            "NO_CHANGE",
+            "RECOVERED_APPLIED"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "outcome_code": {
+          "title": "Outcome Code",
+          "type": "string"
+        },
+        "prior_state_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Prior State Sha256",
+          "type": "string"
+        },
+        "reason_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reason Sha256"
+        },
+        "receipt_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Receipt Sha256",
+          "type": "string"
+        },
+        "request_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Request Sha256",
+          "type": "string"
+        },
+        "resulting_state_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Resulting State Sha256",
+          "type": "string"
+        },
+        "safety_evidence_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Safety Evidence Sha256"
+        },
+        "schema_version": {
+          "const": "operator-command-receipt-v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "command_id",
+        "idempotency_key_sha256",
+        "correlation_id",
+        "request_sha256",
+        "actor",
+        "command_type",
+        "desired_state",
+        "prior_state_sha256",
+        "expected_state_sha256",
+        "safety_evidence_sha256",
+        "reason_sha256",
+        "accepted_at",
+        "applied_at",
+        "completed_at",
+        "outcome",
+        "outcome_code",
+        "resulting_state_sha256",
+        "intent_sha256",
+        "applied_sha256",
+        "receipt_sha256"
+      ],
+      "title": "CommandReceiptV1",
+      "type": "object"
+    },
+    "OperatorActorV1": {
+      "additionalProperties": false,
+      "properties": {
+        "interface": {
+          "enum": [
+            "WEB",
+            "CLI"
+          ],
+          "title": "Interface",
+          "type": "string"
+        },
+        "principal_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Principal Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "operator-actor-v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "principal_id",
+        "interface"
+      ],
+      "title": "OperatorActorV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "deduplicated": {
+      "title": "Deduplicated",
+      "type": "boolean"
+    },
+    "receipt": {
+      "$ref": "#/$defs/CommandReceiptV1"
+    },
+    "schema_version": {
+      "const": "operator-command-execution-result-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "receipt",
+    "deduplicated"
+  ],
+  "title": "CommandExecutionResultV1",
+  "type": "object"
+}
