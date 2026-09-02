@@ -12,7 +12,14 @@ from typing import Sequence
 ROOT = Path(__file__).resolve().parents[1]
 RUFF_VERSION = "ruff==0.16.5"
 BASEDPYRIGHT_VERSION = "basedpyright==1.39.10"
-PRODUCTION_PATHS = ("apps/control_api", "apps/job_api", "packages", "services", "scripts")
+PRODUCTION_PATHS = (
+    "apps/control_api",
+    "apps/job_api",
+    "apps/operator_api",
+    "packages",
+    "services",
+    "scripts",
+)
 
 
 def _run(command: Sequence[str]) -> int:

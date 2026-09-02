@@ -1,0 +1,54 @@
+{
+  "$defs": {
+    "OperatorHealthData": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "UP",
+            "READY",
+            "NOT_READY"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "OperatorHealthData",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "data": {
+      "$ref": "#/$defs/OperatorHealthData"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "trace_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "trace_id",
+    "generated_at",
+    "data"
+  ],
+  "title": "OperatorHealthEnvelope",
+  "type": "object"
+}

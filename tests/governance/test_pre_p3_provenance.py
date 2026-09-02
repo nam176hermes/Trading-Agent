@@ -10,8 +10,13 @@ import pytest
 
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages import project_status
+from packages.hwc_status import (
+    derive_hwc_source_status,
+    status_sha256 as hwc_status_sha256,
+)
 from packages.project_status import make_pass_receipt
 from packages.pre_p3_provenance import (
+    SOURCE_CLOSURE_POLICY_SHA256,
     ProvenanceError,
     canonical_source_identity,
     make_candidate_certificate,
@@ -23,6 +28,10 @@ from packages.pre_p3_provenance import (
     validate_promotion_receipt,
     validate_v2_gate_receipt,
 )
+from scripts import qualify_pre_p3
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _git(root: Path, *args: str) -> str:
@@ -152,6 +161,24 @@ def test_only_exact_generated_status_path_is_excluded(tmp_path: Path) -> None:
     assert canonical_source_identity(root, "HEAD")["closure_sha256"] != qualified[
         "closure_sha256"
     ]
+
+
+def test_existing_v2_candidate_shape_is_preserved_but_policy_is_stale() -> None:
+    """Break caught: historical evidence is silently re-attributed to new policy."""
+    candidate = json.loads(
+        (
+            ROOT
+            / "docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json"
+        ).read_bytes()
+    )
+
+    assert candidate["schema_version"] == "pre-p3-candidate-certification-v2"
+    assert candidate["receipt_sha256"] == payload_sha256(candidate)
+    assert candidate["source"]["closure_policy_sha256"] != (
+        SOURCE_CLOSURE_POLICY_SHA256
+    )
+    with pytest.raises(ProvenanceError, match="source identity"):
+        validate_candidate_certificate(candidate)
 
 
 def _qualification() -> dict[str, str]:
@@ -398,6 +425,42 @@ def _legacy_bindings(root: Path, source: dict[str, str]) -> dict[str, str]:
         )
         bindings[gate] = hashlib.sha256(path.read_bytes()).hexdigest()
     return bindings
+
+
+def test_candidate_v2_proceeds_only_with_matching_hwc_source_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GOV-HWC-006: a valid receipt chain is certifiable after the HWC gate passes."""
+    root = _repo(tmp_path)
+    source = canonical_source_identity(root, "HEAD")
+    receipts = _receipt_set(root, source)
+    receipt_dir = _write_receipts(root, receipts)
+    _legacy_bindings(root, source)
+    ready = json.loads(json.dumps(derive_hwc_source_status(ROOT)))
+    ready["gates"]["HWC_PORTABLE_QUALIFIED"] = "PASS"
+    ready["gates"]["HWC_SOURCE_READY"] = "PASS"
+    ready["blockers"] = []
+    ready["status_sha256"] = hwc_status_sha256(ready)
+    status_path = root / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_bytes(canonical_json_bytes(ready) + b"\n")
+    output = root / "candidate-v2.json"
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", root)
+    monkeypatch.setattr(
+        qualify_pre_p3, "derive_hwc_source_status", lambda candidate_root: ready
+    )
+
+    qualify_pre_p3.candidate_v2(
+        receipt_dir,
+        receipt_dir,
+        output,
+        base_sha=_git(root, "rev-parse", "HEAD^"),
+        promotion_type="SQUASH",
+        qualification=_qualification(),
+    )
+
+    candidate = json.loads(output.read_bytes())
+    assert candidate["status"] == "PRE_P3_CANDIDATE_QUALIFIED"
 
 
 def test_candidate_certificate_requires_one_source_and_derived_receipt_chain(

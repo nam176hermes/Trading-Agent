@@ -1,0 +1,94 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "kill_switch_activated_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Kill Switch Activated At"
+    },
+    "kill_switch_file_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Kill Switch File Sha256"
+    },
+    "kill_switch_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Kill Switch Reason"
+    },
+    "kill_switch_state": {
+      "enum": [
+        "ACTIVE",
+        "INACTIVE",
+        "UNKNOWN"
+      ],
+      "title": "Kill Switch State",
+      "type": "string"
+    },
+    "mode_file_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Mode File Sha256"
+    },
+    "requested_mode": {
+      "enum": [
+        "PAPER",
+        "DRYRUN",
+        "LIVE",
+        "UNKNOWN"
+      ],
+      "title": "Requested Mode",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "operator-source-state-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "State Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "requested_mode",
+    "kill_switch_state",
+    "kill_switch_activated_at",
+    "kill_switch_reason",
+    "mode_file_sha256",
+    "kill_switch_file_sha256",
+    "state_sha256"
+  ],
+  "title": "OperatorSourceStateV1",
+  "type": "object"
+}

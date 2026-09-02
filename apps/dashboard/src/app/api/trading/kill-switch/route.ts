@@ -1,25 +1,27 @@
 import { NextResponse } from 'next/server';
 import { authorizeMutation } from '@/lib/trading/auth';
-import {
-  activateKillSwitch,
-  clearKillSwitch,
-  publicKillSwitchPath,
-  readKillSwitchState,
-} from '@/lib/trading/kill-switch';
 import { controlApiUnavailableResponse, getControlStatus } from '@/lib/trading/control-api';
+import { submitKillSwitchActivation } from '@/lib/trading/operator-api';
 import { readBoundedJsonBody } from '@/lib/trading/request-body';
 
 const MAX_KILL_SWITCH_BODY_BYTES = 4 * 1024;
 
-function isKillSwitchRequest(value: unknown): value is { action: 'on'; reason?: string } | { action: 'off' } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const body = value as Record<string, unknown>;
+type KillSwitchRequest = { action: 'on'; reason: string; operation_id: string };
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isKillSwitchRequest(value: unknown): value is KillSwitchRequest {
+  if (!isObject(value)) return false;
+  const body = value;
   const keys = Object.keys(body).sort();
-  if (body.action === 'off') return keys.length === 1 && keys[0] === 'action';
-  return body.action === 'on'
-    && ((keys.length === 1 && keys[0] === 'action')
-      || (keys.length === 2 && keys[0] === 'action' && keys[1] === 'reason'
-        && typeof body.reason === 'string' && body.reason.length <= 256));
+  return keys.length === 3
+    && keys[0] === 'action' && keys[1] === 'operation_id' && keys[2] === 'reason'
+    && body.action === 'on'
+    && typeof body.operation_id === 'string' && /^op_[0-9a-f]{32}$/.test(body.operation_id)
+    && typeof body.reason === 'string' && body.reason === body.reason.trim()
+    && body.reason.length >= 1 && body.reason.length <= 256 && !/[\r\n]/.test(body.reason);
 }
 
 export async function GET() {
@@ -48,22 +50,38 @@ export async function POST(request: Request) {
         { status: parsed.reason === 'too_large' ? 413 : 400 },
       );
     }
+    if (isObject(parsed.value) && parsed.value.action === 'off') {
+      return NextResponse.json(
+        { ok: false, code: 'CLI_REQUIRED', message: 'Clear the kill switch via CLI.' },
+        { status: 403 },
+      );
+    }
     if (!isKillSwitchRequest(parsed.value)) {
       return NextResponse.json({ ok: false, code: 'INVALID_ACTION' }, { status: 400 });
     }
-    const { action } = parsed.value;
-    const reason = action === 'on' ? parsed.value.reason : undefined;
-
-    const state = action === 'on'
-      ? activateKillSwitch((reason as string | undefined)?.trim() || 'Manual dashboard override')
-      : clearKillSwitch();
-    const reread = readKillSwitchState();
-    if (reread.state !== state.state || reread.state === 'UNKNOWN') {
-      return NextResponse.json({ ok: false, code: 'KILL_SWITCH_VERIFICATION_FAILED', state: reread.state }, { status: 503 });
+    const result = await submitKillSwitchActivation({
+      operationId: parsed.value.operation_id,
+      reason: parsed.value.reason,
+    });
+    let observationStatus: 'OBSERVED' | 'PENDING' | 'UNAVAILABLE' = 'UNAVAILABLE';
+    try {
+      const { data } = await getControlStatus();
+      observationStatus = data.kill_switch_state === 'ACTIVE' ? 'OBSERVED' : 'PENDING';
+    } catch {
+      // The command receipt remains authoritative when observation is unavailable.
     }
-    return NextResponse.json({ ok: true, ...reread, path: publicKillSwitchPath() });
+    return NextResponse.json({
+      ok: true,
+      command_status: 'SUCCEEDED',
+      observation_status: observationStatus,
+      receipt: result.receipt,
+      deduplicated: result.deduplicated,
+    });
   } catch {
-    return NextResponse.json({ ok: false, code: 'KILL_SWITCH_WRITE_FAILED', state: 'UNKNOWN' }, { status: 503 });
+    return NextResponse.json(
+      { ok: false, code: 'OPERATOR_API_UNAVAILABLE', message: 'Operator command service is unavailable.' },
+      { status: 503 },
+    );
   }
 }
 

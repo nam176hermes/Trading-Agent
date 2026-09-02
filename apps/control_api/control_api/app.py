@@ -59,8 +59,8 @@ from .repositories.status import (
     PostgresOperationalStatusRepository,
     PostgresReadinessProbe,
     TRUE_VALUES,
-    authority_bound_safety_provider,
 )
+from services.safety_state.provider import authority_bound_safety_provider
 from trading_control.db import DatabaseSettings
 from services.job_worker.safety import SafetySnapshot
 

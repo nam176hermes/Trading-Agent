@@ -1,0 +1,24 @@
+{
+  "schema_version": "hwc-boundary-policy-v1",
+  "route_inventory": "docs/implementation/hwc/hwc-authority-inventory-v1.json",
+  "allowed_dashboard_local_write": "apps/dashboard/src/lib/trading/auth.ts",
+  "grandfathered_state_writes": [],
+  "python_interface_import_forbidden": [
+    "packages/domain",
+    "packages/engine_contracts",
+    "packages/event_ledger",
+    "packages/alpha_lifecycle",
+    "services/paper_runtime"
+  ],
+  "operator_cli_forbidden_import_prefixes": [
+    "apps.dashboard",
+    "services",
+    "engines.nautilus",
+    "psycopg",
+    "sqlalchemy"
+  ],
+  "dashboard_forbidden_patterns": [
+    "node:child_process",
+    "child_process"
+  ]
+}

@@ -98,19 +98,9 @@ export function HaltBanner() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            fetch('/api/trading/kill-switch', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action: 'off' }),
-            }).then(() => window.location.reload()).catch(() => {});
-          }}
-          className="flex-shrink-0 rounded border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/20 transition-colors"
-        >
-          Override
-        </button>
+        <span className="flex-shrink-0 rounded border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-300">
+          Clear via CLI
+        </span>
       </div>
     </div>
   );

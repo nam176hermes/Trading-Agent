@@ -150,80 +150,57 @@ test('bounded JSON reader rejects syntactically invalid UTF-8 text and releases 
   assert.deepEqual(result, { ok: false, reason: 'invalid' });
 });
 
-test('mutation DTOs reject extras, Infinity, and unsafe symbols while valid requests preserve state', async () => {
-  const updateStop = await import('../src/app/api/trading/update-stop/route.ts');
-  const plan = await import('../src/app/api/trading/plan/route.ts');
-  const mode = await import('../src/app/api/trading/mode/route.ts');
-  const killSwitch = await import('../src/app/api/trading/kill-switch/route.ts');
-  const watchlist = await import('../src/app/api/trading/watchlist/route.ts');
+test('retired compatibility routes return typed unavailable without reading or changing local state', async () => {
+  const [updateStop, plan, correlation, mode, killSwitch, watchlist] = await Promise.all([
+    import('../src/app/api/trading/update-stop/route.ts'),
+    import('../src/app/api/trading/plan/route.ts'),
+    import('../src/app/api/trading/correlation/route.ts'),
+    import('../src/app/api/trading/mode/route.ts'),
+    import('../src/app/api/trading/kill-switch/route.ts'),
+    import('../src/app/api/trading/watchlist/route.ts'),
+  ]);
 
-  const stopsDir = path.join(dataRoot, 'memory');
-  fs.mkdirSync(stopsDir, { recursive: true });
-  fs.chmodSync(stopsDir, 0o700);
-  fs.writeFileSync(path.join(stopsDir, 'trailing_stops.json'), JSON.stringify({
-    BTC: { stop: 90, highest_price: 120, risk_note: 'synthetic' },
-  }));
+  const stateDir = path.join(dataRoot, 'memory');
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  const stopsPath = path.join(stateDir, 'trailing_stops.json');
+  const watchlistPath = path.join(stateDir, 'watchlist.json');
+  fs.writeFileSync(stopsPath, '{"BTC":{"stop":90}}', { mode: 0o600 });
+  fs.writeFileSync(watchlistPath, '{"symbols":["BTC"]}', { mode: 0o600 });
 
-  for (const body of [
-    { symbol: 'BTC', stopLoss: 1e309 },
-    { symbol: '__proto__', stopLoss: 100 },
-    { symbol: 'BTC', stopLoss: 100, extra: true },
+  for (const [route, url, body] of [
+    [plan, 'plan', { query: 'synthetic query', keywords: ['Risk'] }],
+    [updateStop, 'update-stop', { symbol: 'BTC', stopLoss: 100 }],
+    [watchlist, 'watchlist', { action: 'add', symbol: 'ETH' }],
   ]) {
-    const response = await updateStop.POST(await authorizedRequest('https://dashboard.test/api/trading/update-stop', 'operator', body));
-    assert.equal(response.status, 400);
+    const response = await route.POST(await authorizedRequest(
+      `https://dashboard.test/api/trading/${url}`, 'operator', body,
+    ));
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.code, 'COMMAND_UNAVAILABLE');
   }
-  const validStop = await updateStop.POST(await authorizedRequest(
-    'https://dashboard.test/api/trading/update-stop', 'operator', { symbol: 'btc', stopLoss: 100 },
-  ));
-  assert.equal(validStop.status, 200);
-  const stops = JSON.parse(fs.readFileSync(path.join(stopsDir, 'trailing_stops.json'), 'utf8'));
-  assert.deepEqual(stops.BTC, { stop: 100, highest_price: 120, risk_note: 'synthetic', manual: true });
+  for (const response of [await correlation.GET(), await watchlist.GET()]) {
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error.code, 'SOURCE_UNAVAILABLE');
+  }
+  assert.equal(fs.readFileSync(stopsPath, 'utf8'), '{"BTC":{"stop":90}}');
+  assert.equal(fs.readFileSync(watchlistPath, 'utf8'), '{"symbols":["BTC"]}');
 
-  assert.equal((await plan.POST(await authorizedRequest('https://dashboard.test/api/trading/plan', 'operator', {
-    query: 'synthetic query', keywords: ['Risk'], extra: true,
-  }))).status, 400);
-  assert.equal((await plan.POST(await authorizedRequest('https://dashboard.test/api/trading/plan', 'operator', {
-    query: 'synthetic query', keywords: ['Risk'],
-  }))).status, 200);
-
-  assert.equal((await mode.POST(await authorizedRequest('https://dashboard.test/api/trading/mode', 'admin', {
-    mode: 'paper', extra: true,
-  }))).status, 400);
-  assert.equal((await mode.POST(await authorizedRequest('https://dashboard.test/api/trading/mode', 'admin', {
-    mode: 'paper',
-  }))).status, 200);
+  for (const body of [{ mode: 'paper', extra: true }, { mode: 'paper' }]) {
+    const response = await mode.POST(await authorizedRequest(
+      'https://dashboard.test/api/trading/mode', 'admin', body,
+    ));
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'CLI_REQUIRED');
+  }
+  assert.equal(fs.existsSync(path.join(dataRoot, '.mode')), false);
 
   assert.equal((await killSwitch.POST(await authorizedRequest('https://dashboard.test/api/trading/kill-switch', 'admin', {
     action: 'off', reason: 'not allowed for off',
-  }))).status, 400);
+  }))).status, 403);
   assert.equal((await killSwitch.POST(await authorizedRequest('https://dashboard.test/api/trading/kill-switch', 'admin', {
     action: 'on', reason: 'synthetic safety drill',
-  }))).status, 200);
-
-  assert.equal((await watchlist.POST(await authorizedRequest('https://dashboard.test/api/trading/watchlist', 'operator', {
-    action: 'add', symbol: 'constructor', extra: true,
   }))).status, 400);
-  const validWatchlist = await watchlist.POST(await authorizedRequest('https://dashboard.test/api/trading/watchlist', 'operator', {
-    action: 'add', symbol: 'btc',
-  }));
-  assert.equal(validWatchlist.status, 200);
-  assert.equal((await validWatchlist.json()).symbols.includes('BTC'), true);
-});
 
-test('update-stop preserves corrupted risk state and fails closed', async () => {
-  const updateStop = await import('../src/app/api/trading/update-stop/route.ts');
-  const stopsDir = path.join(dataRoot, 'memory');
-  const stopsPath = path.join(stopsDir, 'trailing_stops.json');
-  fs.mkdirSync(stopsDir, { recursive: true });
-  const corrupted = '{"BTC":{"stop":90}';
-  fs.writeFileSync(stopsPath, corrupted, { mode: 0o600 });
-
-  const response = await updateStop.POST(await authorizedRequest(
-    'https://dashboard.test/api/trading/update-stop', 'operator', { symbol: 'BTC', stopLoss: 100 },
-  ));
-
-  assert.equal(response.status, 503);
-  assert.equal(fs.readFileSync(stopsPath, 'utf8'), corrupted);
 });
 
 test('local state reader rejects symlinks, nonregular files, and oversized regular files', async () => {
@@ -258,40 +235,7 @@ test('local state writer creates private modes, atomically replaces, and cleans 
   assert.deepEqual(fs.readdirSync(stateDir), ['state.json']);
 });
 
-test('local state updater preserves existing evidence when validation fails', async () => {
-  const { updatePrivateLocalStateFile } = await import('../src/lib/trading/local-state.ts');
-  const stateDir = path.join(dataRoot, 'validated-state');
-  const target = path.join(stateDir, 'state.txt');
-  const malformed = 'malformed-evidence\n';
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(target, malformed, { mode: 0o600 });
-
-  assert.throws(
-    () => updatePrivateLocalStateFile(target, 1024, () => {
-      throw new Error('persisted schema rejected');
-    }),
-    /persisted schema rejected/,
-  );
-  assert.equal(fs.readFileSync(target, 'utf8'), malformed);
-  assert.deepEqual(fs.readdirSync(stateDir), ['state.txt']);
-});
-
-test('local state updater creates missing private state after validating absence', async () => {
-  const { updatePrivateLocalStateFile } = await import('../src/lib/trading/local-state.ts');
-  const stateDir = path.join(dataRoot, 'new-state', 'nested');
-  const target = path.join(stateDir, 'state.txt');
-
-  updatePrivateLocalStateFile(target, 1024, (existing) => {
-    assert.equal(existing, null);
-    return 'paper\n';
-  });
-
-  assert.equal(fs.readFileSync(target, 'utf8'), 'paper\n');
-  assert.equal(fs.statSync(stateDir).mode & 0o777, 0o700);
-  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
-});
-
-test('mode route rejects malformed persisted state without deleting evidence', async () => {
+test('mode route ignores persisted state and preserves it while requiring CLI', async () => {
   const mode = await import('../src/app/api/trading/mode/route.ts');
   const target = path.join(dataRoot, '.mode');
   const malformed = 'paper\nunknown\n';
@@ -301,8 +245,8 @@ test('mode route rejects malformed persisted state without deleting evidence', a
     'https://dashboard.test/api/trading/mode', 'admin', { mode: 'paper' },
   ));
 
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { ok: false, code: 'MODE_STATE_UNAVAILABLE' });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, 'CLI_REQUIRED');
   assert.equal(fs.readFileSync(target, 'utf8'), malformed);
   assert.equal(fs.readdirSync(dataRoot).some((entry) => entry.startsWith('..mode.tmp.')), false);
 });
@@ -338,37 +282,6 @@ test('local state writer rejects a safe leaf below an attacker-writable ancestor
   assert.equal(fs.existsSync(target), false);
 });
 
-test('local state removal rejects an attacker-writable parent and preserves the file', async () => {
-  const { removePrivateLocalStateFile } = await import('../src/lib/trading/local-state.ts');
-  const unsafeDirectory = path.join(dataRoot, 'unsafe-removal');
-  const target = path.join(unsafeDirectory, 'state.json');
-  fs.mkdirSync(unsafeDirectory, { mode: 0o777 });
-  fs.chmodSync(unsafeDirectory, 0o777);
-  fs.writeFileSync(target, '{"preserve":true}', { mode: 0o600 });
-
-  assert.throws(
-    () => removePrivateLocalStateFile(target),
-    /safe state directory|writable by another principal/i,
-  );
-  assert.equal(fs.readFileSync(target, 'utf8'), '{"preserve":true}');
-});
-
-test('watchlist refuses malformed persisted symbols without overwriting the unsafe state', async () => {
-  const watchlist = await import('../src/app/api/trading/watchlist/route.ts');
-  const stateDir = path.join(dataRoot, 'memory');
-  const target = path.join(stateDir, 'watchlist.json');
-  const unsafe = JSON.stringify({ symbols: ['btc', 'BTC'] });
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(target, unsafe, { mode: 0o600 });
-
-  const response = await watchlist.POST(await authorizedRequest(
-    'https://dashboard.test/api/trading/watchlist', 'operator', { action: 'add', symbol: 'ETH' },
-  ));
-
-  assert.equal(response.status, 503);
-  assert.equal(fs.readFileSync(target, 'utf8'), unsafe);
-});
-
 test('shared reader joins decoded tiny chunks without changing UTF-8 body semantics', async () => {
   const { readBoundedUtf8Body } = await import('../src/lib/trading/request-body.ts');
   const encoded = new TextEncoder().encode('{"symbol":"BTC","note":"€"}');
@@ -386,19 +299,25 @@ test('shared reader joins decoded tiny chunks without changing UTF-8 body semant
   assert.deepEqual(result, { ok: true, text: '{"symbol":"BTC","note":"€"}' });
 });
 
-test('all JSON routes use the shared bounded reader instead of request.json', () => {
+test('only active JSON routes use the shared bounded reader', () => {
   const routes = [
     'src/app/api/auth/session/route.ts',
-    'src/app/api/trading/update-stop/route.ts',
-    'src/app/api/trading/plan/route.ts',
-    'src/app/api/trading/mode/route.ts',
     'src/app/api/trading/kill-switch/route.ts',
-    'src/app/api/trading/watchlist/route.ts',
   ];
   for (const route of routes) {
     const source = fs.readFileSync(path.join(ROOT, route), 'utf8');
     assert.doesNotMatch(source, /request\.json\(/, route);
     assert.match(source, /request-body/, route);
+  }
+  const mode = fs.readFileSync(
+    path.join(ROOT, 'src/app/api/trading/mode/route.ts'), 'utf8',
+  );
+  assert.doesNotMatch(mode, /request-body|request\.json\(/);
+  for (const route of ['plan', 'update-stop', 'watchlist']) {
+    const source = fs.readFileSync(
+      path.join(ROOT, `src/app/api/trading/${route}/route.ts`), 'utf8',
+    );
+    assert.doesNotMatch(source, /request-body|request\.json\(/);
   }
 });
 
@@ -428,28 +347,34 @@ test('local state accepts a sticky mapped-owner system ancestor', async () => {
   }
 });
 
-test('watchlist rejects additions at the persisted symbol limit without corrupting state', async () => {
-  const watchlist = await import('../src/app/api/trading/watchlist/route.ts');
-  const stateDir = path.join(dataRoot, 'memory');
-  const target = path.join(stateDir, 'watchlist.json');
-  const symbols = Array.from({ length: 64 }, (_, index) =>
-    String.fromCharCode(65 + Math.floor(index / 26), 65 + (index % 26)));
-  const original = JSON.stringify({ symbols });
-  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(target, original, { mode: 0o600 });
-
-  const response = await watchlist.POST(await authorizedRequest(
-    'https://dashboard.test/api/trading/watchlist', 'operator', { action: 'add', symbol: 'ZZZZZ' },
-  ));
-
-  assert.equal(response.status, 409);
-  assert.equal(fs.readFileSync(target, 'utf8'), original);
-});
-
-test('halt banner uses the strict kill-switch-off request contract', () => {
+test('halt banner requires CLI for kill-switch clear', () => {
   const source = fs.readFileSync(path.join(
     ROOT, 'src/components/trading/halt-banner.tsx',
   ), 'utf8');
-  assert.match(source, /JSON\.stringify\(\{ action: 'off' \}\)/);
-  assert.doesNotMatch(source, /action: 'off', reason:/);
+  assert.match(source, /Clear via CLI/);
+  assert.doesNotMatch(source, /fetch\('\/api\/trading\/kill-switch'|action: 'off'|Override/);
+});
+
+test('retired compatibility UI names canonical unavailability and has no mutation caller', () => {
+  const sources = {
+    plan: fs.readFileSync(path.join(ROOT, 'src/components/trading/plan-builder.tsx'), 'utf8'),
+    correlation: fs.readFileSync(path.join(ROOT, 'src/components/trading/correlation-matrix.tsx'), 'utf8'),
+    portfolio: fs.readFileSync(path.join(ROOT, 'src/components/trading/portfolio-card.tsx'), 'utf8'),
+    watchlist: fs.readFileSync(path.join(ROOT, 'src/components/trading/watchlist-editor.tsx'), 'utf8'),
+  };
+  assert.match(sources.plan, /Canonical research planning is unavailable/);
+  assert.match(sources.correlation, /Canonical correlation source is unavailable/);
+  assert.match(sources.portfolio, /Stop mutation unavailable/);
+  assert.match(sources.portfolio, /Canonical paper portfolio is unavailable/);
+  assert.match(sources.watchlist, /Canonical watchlist is unavailable/);
+  assert.doesNotMatch(Object.values(sources).join('\n'), /fetch\('\/api\/trading\/(?:plan|correlation|update-stop|watchlist)/);
+});
+
+test('risk page catches unavailable market source and still renders typed correlation state', () => {
+  const source = fs.readFileSync(path.join(
+    ROOT, 'src/app/dashboard/risk/page.tsx',
+  ), 'utf8');
+  assert.match(source, /Canonical risk source is unavailable/);
+  assert.match(source, /catch/);
+  assert.match(source, /<CorrelationMatrix \/>/);
 });

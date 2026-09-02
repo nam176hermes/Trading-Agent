@@ -11,9 +11,10 @@ export interface PipelineSubmission {
 
 export type KillSwitchAuthorityState = 'ACTIVE' | 'INACTIVE' | 'UNKNOWN';
 export interface KillSwitchIntent {
-  observedState: 'ACTIVE' | 'INACTIVE';
+  observedState: 'INACTIVE';
   observedRevision: number;
-  action: 'on' | 'off';
+  action: 'on';
+  operationId: string;
 }
 
 export type QuickActionFetch = (
@@ -131,7 +132,7 @@ export async function submitPipelineCommand(
   try {
     const response = await fetcher('/api/trading/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
       body: JSON.stringify(command),
     });
     if (!response.ok) return null;
@@ -146,11 +147,11 @@ export function createKillSwitchIntent(
   revision: number,
 ): KillSwitchIntent | null {
   if (!Number.isSafeInteger(revision) || revision < 0) return null;
-  if (state === 'ACTIVE') {
-    return { observedState: 'ACTIVE', observedRevision: revision, action: 'off' };
-  }
   if (state === 'INACTIVE') {
-    return { observedState: 'INACTIVE', observedRevision: revision, action: 'on' };
+    const operationId = `op_${globalThis.crypto.randomUUID().replaceAll('-', '')}`;
+    return /^op_[0-9a-f]{32}$/.test(operationId)
+      ? { observedState: 'INACTIVE', observedRevision: revision, action: 'on', operationId }
+      : null;
   }
   return null;
 }
@@ -174,11 +175,11 @@ export function killSwitchRequest(
   currentState: KillSwitchAuthorityState,
   currentRevision: number,
   reason: string,
-): { action: 'on' | 'off'; reason?: string } | null {
+): { action: 'on'; reason: string; operation_id: string } | null {
   const validated = validateKillSwitchIntent(intent, currentState, currentRevision);
   if (validated === null) return null;
   const trimmedReason = reason.trim();
-  return validated.action === 'on' && trimmedReason
-    ? { action: validated.action, reason: trimmedReason }
-    : { action: validated.action };
+  return trimmedReason.length >= 1 && trimmedReason.length <= 256 && !/[\r\n]/.test(trimmedReason)
+    ? { action: 'on', reason: trimmedReason, operation_id: validated.operationId }
+    : null;
 }

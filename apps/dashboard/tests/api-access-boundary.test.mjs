@@ -38,7 +38,9 @@ afterEach(() => {
   else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
 });
 
-async function boundaryRequest(pathname, { method = 'GET', role, token, origin } = {}) {
+async function boundaryRequest(pathname, {
+  method = 'GET', role, token, origin, sameOriginMarker, fetchSite,
+} = {}) {
   const [{ proxy }, { issueSession }] = await Promise.all([
     import('../src/proxy.ts'),
     import('../src/lib/trading/session.ts'),
@@ -47,6 +49,8 @@ async function boundaryRequest(pathname, { method = 'GET', role, token, origin }
   const sessionToken = token ?? (role ? issueSession(role) : null);
   if (sessionToken) headers.set('cookie', `trading_session=${sessionToken}`);
   if (origin) headers.set('origin', origin);
+  if (sameOriginMarker) headers.set('x-trading-same-origin', sameOriginMarker);
+  if (fetchSite) headers.set('sec-fetch-site', fetchSite);
   return proxy(new NextRequest(`https://dashboard.test${pathname}`, { method, headers }));
 }
 
@@ -153,6 +157,40 @@ test('rejects absent and cross-origin mutation origins', async () => {
       message: 'Same-origin request required.',
     });
   }
+});
+
+test('allows Chromium same-origin evidence when POST omits Origin', async () => {
+  const browser = await boundaryRequest('/api/trading/kill-switch', {
+    method: 'POST', role: 'admin', sameOriginMarker: '1',
+  });
+  assert.equal(browser.headers.get('x-middleware-next'), '1');
+
+  const response = await boundaryRequest('/api/trading/kill-switch', {
+    method: 'POST', role: 'admin', fetchSite: 'same-origin',
+  });
+  assert.equal(response.headers.get('x-middleware-next'), '1');
+
+  for (const fetchSite of ['cross-site', 'same-site', 'none']) {
+    const rejected = await boundaryRequest('/api/trading/kill-switch', {
+      method: 'POST', role: 'admin', fetchSite,
+    });
+    assert.equal(rejected.status, 403);
+  }
+
+  const rejectedMarker = await boundaryRequest('/api/trading/kill-switch', {
+    method: 'POST', role: 'admin', sameOriginMarker: '0',
+  });
+  assert.equal(rejectedMarker.status, 403);
+});
+
+test('rejects a mismatched origin even with the same-origin marker', async () => {
+  const response = await boundaryRequest('/api/trading/kill-switch', {
+    method: 'POST',
+    role: 'admin',
+    origin: 'https://attacker.test',
+    sameOriginMarker: '1',
+  });
+  assert.equal(response.status, 403);
 });
 
 test('rejects a mismatched origin even in explicit non-browser test mode', async () => {

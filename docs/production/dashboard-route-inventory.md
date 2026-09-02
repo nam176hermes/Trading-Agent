@@ -1,6 +1,6 @@
 # Dashboard route inventory
 
-**Snapshot:** 2026-08-03. This static source inventory covers every
+**Snapshot:** 2026-09-02. This static source inventory covers every
 `apps/dashboard/src/app/api/trading/**/route.ts` handler. It neither probes a
 runtime nor authorizes an endpoint. A frontend caller is a source-level match
 outside a handler; `none found` is not caller-removal proof.
@@ -12,6 +12,11 @@ fail-closed `503` `SOURCE_UNAVAILABLE` envelope, unless a row says otherwise.
 No handler is classified `dead`: removal requires caller proof and replacement
 tests.
 
+The machine-readable HWC inventory and exact-byte migration debt live under
+`docs/implementation/hwc/`. Compatibility writers are temporary source debt;
+they grant no runtime authority and must be removed before
+`HWC_DASHBOARD_AUTHORITY_REMOVED` can pass.
+
 ## Phase 4 vertical-slice disposition
 
 Every `canonical` row below is **IMPLEMENT_CANONICAL_UPSTREAM**: market data
@@ -21,9 +26,8 @@ unavailable` row is **RETAIN_TYPED_UNAVAILABLE_WITH_CLEAR_UX** until its
 canonical upstream contract exists. This explicitly includes portfolio,
 performance, balances, positions, orders, PnL, and exports: none may be
 represented by fabricated empty or healthy values. `compatibility` rows remain
-bounded local-state or alias behavior, not a hidden upstream fallback. No row
-is selected for **REMOVE_AFTER_CALLER_PROOF_AND_REPLACEMENT_TESTS** in this
-phase.
+bounded alias behavior, not a hidden upstream fallback. Dashboard-owned
+trading-state writes have been removed.
 
 ## Mutation authorization audit policy
 
@@ -32,7 +36,7 @@ and `MUTATION_LOW_RISK` — requires a protected authorization-audit write after
 session and role authorization, before the mutation handler runs. An unsafe,
 malformed, over-bound, or unavailable audit file returns the bounded
 `503 AUDIT_UNAVAILABLE` response and the handler is not called. This includes
-the low-risk watchlist mutation because it persists a protected local override.
+disabled low-risk command routes so authorization remains explicit.
 
 The `dashboard_mutation_authorization` record contains only the `event`
 discriminator, action, classification, authenticated role, timestamp, and
@@ -57,7 +61,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/capability` | GET / reader | Control API capability envelope or typed unavailable | none found | canonical |
 | `/circuit-breaker` | GET / reader | None; `SOURCE_UNAVAILABLE` | `halt-banner`, `circuit-breaker-status` | typed unavailable |
 | `/close-position` | POST / operator | No command upstream; `COMMAND_UNAVAILABLE` 503 | none found | typed unavailable |
-| `/correlation` | GET / reader | In-process correlation JSON | `portfolio-card`, `correlation-matrix` | compatibility |
+| `/correlation` | GET / reader | No canonical correlation source; `SOURCE_UNAVAILABLE` | `correlation-matrix` | typed unavailable |
 | `/costs` | GET / reader | Control API cost envelope or typed unavailable | `settings-state` | canonical |
 | `/data-sources` | GET / reader | None; `SOURCE_UNAVAILABLE` | `data-source-state` | typed unavailable |
 | `/decisions` | GET / reader | Control API decision page or typed unavailable | `history/page`, `risk-asset-list` | canonical |
@@ -75,13 +79,13 @@ only to the granted path because only that path can reach a mutation handler.
 | `/jobs/:id` | GET / reader | Job API detail v1 envelope | `pipeline-status`, `run-pipeline-button` | canonical |
 | `/jobs/:id/cancel` | POST / operator | Job API cancel v1 envelope or disabled-command 503 | none found (dynamic caller) | canonical |
 | `/keys` | GET, POST / admin | No credential-management upstream; authenticated typed 503 | `settings/page` | typed unavailable |
-| `/kill-switch` | GET / reader; POST / admin | Control status plus protected local switch; structured state/error JSON | `quick-actions`, `halt-banner` | compatibility |
+| `/kill-switch` | GET / reader; POST / admin | Control status query; activation is a strict Operator API WEB command; clear returns local `403 CLI_REQUIRED` | `quick-actions` | canonical read / Operator API command |
 | `/live-positions` | GET / reader | None; `SOURCE_UNAVAILABLE` | `live-positions-card` | typed unavailable |
 | `/macro` | GET / reader | None; `SOURCE_UNAVAILABLE` | `macro-dashboard` | typed unavailable |
 | `/market` | GET / reader | Control API canonical P10 snapshot/freshness envelope or typed unavailable | `market-ticker` | canonical |
 | `/memory` | GET / reader | None; `SOURCE_UNAVAILABLE` | `memory-context` | typed unavailable |
 | `/meta` | GET / reader | Control API deployment metadata JSON | `operator-state` | canonical |
-| `/mode` | GET / reader; POST / admin | Control status plus protected local mode; structured mode/error JSON | `operator-state` (GET); no static POST caller | compatibility |
+| `/mode` | GET / reader; POST / admin | Control status query; POST returns `403 CLI_REQUIRED` without parsing or local state access | `operator-state` (GET); no static POST caller | canonical read / CLI-only command |
 | `/modules` | GET / reader | Static module catalog; JSON array | none found | compatibility |
 | `/news` | GET / reader | None; `SOURCE_UNAVAILABLE` | `news-feed` | typed unavailable |
 | `/optimizer` | GET / reader | None; `SOURCE_UNAVAILABLE` | `benchmark-comparison` | typed unavailable |
@@ -89,7 +93,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/performance-export` | GET / reader | No export upstream; authenticated typed 503 | `performance/page` | typed unavailable |
 | `/performance` | GET / reader | No performance upstream; authenticated typed 503 | `performance/page` | typed unavailable |
 | `/pipeline-status` | GET / reader | Job API list v1 envelope | `pipeline-status` | canonical |
-| `/plan` | POST / operator | Deterministic local plan; validated JSON or typed input error | `plan-builder` | compatibility |
+| `/plan` | POST / operator | No canonical planning command; `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 | `/pnl` | GET / reader | None; `SOURCE_UNAVAILABLE` | `pnl-tracker-card` | typed unavailable |
 | `/portfolio` | GET / reader | None; `SOURCE_UNAVAILABLE` | `exposure-gauge`, `portfolio-card` | typed unavailable |
 | `/position-sizing` | GET / reader | None; `SOURCE_UNAVAILABLE` | `position-sizing-calculator` | typed unavailable |
@@ -108,9 +112,9 @@ only to the granted path because only that path can reach a mutation handler.
 | `/status` | GET / reader | Control API system/report JSON or typed unavailable | none found | canonical |
 | `/summary` | GET / reader | Control API market/decision JSON or typed unavailable | none found | canonical |
 | `/ta-validation` | GET / reader | None; `SOURCE_UNAVAILABLE` | none found | typed unavailable |
-| `/update-stop` | POST / operator | Protected local trailing-stop state; validated JSON/error | `portfolio-card` | compatibility |
+| `/update-stop` | POST / operator | No canonical stop command; `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 | `/walk-forward` | GET / reader | None; `SOURCE_UNAVAILABLE` | none found | typed unavailable |
-| `/watchlist` | GET / reader; POST / operator | GET is unavailable; POST uses protected local override JSON | `watchlist-editor` | compatibility |
+| `/watchlist` | GET / reader; POST / operator | `SOURCE_UNAVAILABLE` / `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 
 ## Ownership rules
 

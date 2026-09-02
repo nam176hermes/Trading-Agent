@@ -33,19 +33,6 @@ export function exchangeConfigurationPresentation(
     : { label: 'not configured', configured: false };
 }
 
-export function settingsModeControlTitle(
-  availability: 'LOADING' | 'AVAILABLE' | 'UNAVAILABLE',
-  currentMode: 'PAPER' | 'DRYRUN' | 'LIVE' | 'UNKNOWN',
-  option: 'paper' | 'dryrun' | 'live',
-): string {
-  if (availability === 'AVAILABLE' && currentMode === option.toUpperCase()) {
-    return 'Canonical current mode; mode changes are disabled.';
-  }
-  return currentMode === 'UNKNOWN'
-    ? 'Canonical mode is UNKNOWN; mode changes are disabled.'
-    : 'Mode changes are disabled; live trading remains NO_GO.';
-}
-
 export type SettingsAvailability = 'LOADING' | 'AVAILABLE' | 'UNAVAILABLE';
 
 export interface SettingsOperatorStatus {

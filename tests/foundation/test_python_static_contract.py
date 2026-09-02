@@ -15,7 +15,15 @@ def test_static_toolchain_is_pinned_and_scoped_to_production_python() -> None:
     assert 'target-version = "py311"' in ruff_config
     assert 'select = ["E9", "F821", "F822"]' in ruff_config
 
-    assert '"apps/control_api", "apps/job_api", "packages", "services", "scripts"' in workflow
+    for path in (
+        "apps/control_api",
+        "apps/job_api",
+        "apps/operator_api",
+        "packages",
+        "services",
+        "scripts",
+    ):
+        assert f'"{path}"' in workflow
     assert '"--project"' in workflow
     assert '"pyrightconfig.legacy.json"' in workflow
     assert '"legacy/research-backend/.venv/bin/python"' in workflow

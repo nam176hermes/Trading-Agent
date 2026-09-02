@@ -46,6 +46,9 @@ before adding a production dependency.
   or modify orders as part of source consolidation.
 - Treat legacy research and LLM output as untrusted input to deterministic risk
   and execution controls.
+- New P3+ interfaces must obey the accepted HWC ownership and boundary policy:
+  Control API is read-only, Job API owns durable jobs, and bounded operator
+  state commands belong only to Operator API. Dashboard and CLI remain clients.
 
 ## Default Codex workflow
 

@@ -29,6 +29,52 @@ def create_database(path) -> None:
     connection.close()
 
 
+def test_authority_bound_safety_provider_keeps_existing_recheck_contract(
+    monkeypatch,
+) -> None:
+    from control_api import app as app_module
+    from services.safety_state import provider as provider_module
+
+    calls: list[object] = []
+    expected = object()
+
+    class Authority:
+        class Safety:
+            snapshot_path = Path("/protected/snapshot.json")
+            exporter_commit = "a" * 40
+            source_fingerprint = "b" * 64
+
+        safety = Safety()
+
+        def recheck(self) -> None:
+            calls.append("recheck")
+
+    class Client:
+        def __init__(self, *args, **kwargs) -> None:
+            calls.append((args, kwargs))
+
+        def evidence(self):
+            calls.append("evidence")
+            return expected
+
+    monkeypatch.setattr(provider_module, "load_runtime_authority", Authority)
+    monkeypatch.setattr(provider_module, "SafetyStateClient", Client)
+    read = app_module.authority_bound_safety_provider()
+    assert read() is expected
+    assert calls == [
+        (
+            (Path("/protected/snapshot.json"),),
+            {
+                "expected_exporter_commit": "a" * 40,
+                "expected_source_fingerprint": "b" * 64,
+            },
+        ),
+        "recheck",
+        "evidence",
+        "recheck",
+    ]
+
+
 def test_status_separates_runtime_liveness_from_research_freshness(tmp_path) -> None:
     (tmp_path / "memory").mkdir()
     create_database(tmp_path / "memory" / "trading.db")

@@ -1,0 +1,934 @@
+{
+  "components": {
+    "schemas": {
+      "CommandExecutionResultV1": {
+        "additionalProperties": false,
+        "properties": {
+          "deduplicated": {
+            "title": "Deduplicated",
+            "type": "boolean"
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/CommandReceiptV1"
+          },
+          "schema_version": {
+            "const": "operator-command-execution-result-v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "receipt",
+          "deduplicated"
+        ],
+        "title": "CommandExecutionResultV1",
+        "type": "object"
+      },
+      "CommandReceiptV1": {
+        "additionalProperties": false,
+        "properties": {
+          "accepted_at": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+            "title": "Accepted At",
+            "type": "string"
+          },
+          "actor": {
+            "$ref": "#/components/schemas/OperatorActorV1"
+          },
+          "applied_at": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+            "title": "Applied At",
+            "type": "string"
+          },
+          "applied_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Applied Sha256",
+            "type": "string"
+          },
+          "command_id": {
+            "pattern": "^cmd_[0-9a-f]{32}$",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "command_type": {
+            "enum": [
+              "SET_REQUESTED_MODE",
+              "SET_KILL_SWITCH"
+            ],
+            "title": "Command Type",
+            "type": "string"
+          },
+          "completed_at": {
+            "format": "date-time",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "correlation_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "desired_state": {
+            "enum": [
+              "PAPER",
+              "KILL_SWITCH_ACTIVE",
+              "KILL_SWITCH_INACTIVE"
+            ],
+            "title": "Desired State",
+            "type": "string"
+          },
+          "expected_state_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected State Sha256"
+          },
+          "idempotency_key_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Idempotency Key Sha256",
+            "type": "string"
+          },
+          "intent_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Intent Sha256",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "APPLIED",
+              "NO_CHANGE",
+              "RECOVERED_APPLIED"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "outcome_code": {
+            "title": "Outcome Code",
+            "type": "string"
+          },
+          "prior_state_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Prior State Sha256",
+            "type": "string"
+          },
+          "reason_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Sha256"
+          },
+          "receipt_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receipt Sha256",
+            "type": "string"
+          },
+          "request_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Request Sha256",
+            "type": "string"
+          },
+          "resulting_state_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Resulting State Sha256",
+            "type": "string"
+          },
+          "safety_evidence_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safety Evidence Sha256"
+          },
+          "schema_version": {
+            "const": "operator-command-receipt-v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "command_id",
+          "idempotency_key_sha256",
+          "correlation_id",
+          "request_sha256",
+          "actor",
+          "command_type",
+          "desired_state",
+          "prior_state_sha256",
+          "expected_state_sha256",
+          "safety_evidence_sha256",
+          "reason_sha256",
+          "accepted_at",
+          "applied_at",
+          "completed_at",
+          "outcome",
+          "outcome_code",
+          "resulting_state_sha256",
+          "intent_sha256",
+          "applied_sha256",
+          "receipt_sha256"
+        ],
+        "title": "CommandReceiptV1",
+        "type": "object"
+      },
+      "OperatorActorV1": {
+        "additionalProperties": false,
+        "properties": {
+          "interface": {
+            "enum": [
+              "WEB",
+              "CLI"
+            ],
+            "title": "Interface",
+            "type": "string"
+          },
+          "principal_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Principal Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "operator-actor-v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "principal_id",
+          "interface"
+        ],
+        "title": "OperatorActorV1",
+        "type": "object"
+      },
+      "OperatorApiError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "title": "OperatorApiError",
+        "type": "object"
+      },
+      "OperatorApiErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/OperatorApiError"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "error"
+        ],
+        "title": "OperatorApiErrorEnvelope",
+        "type": "object"
+      },
+      "OperatorCommandData": {
+        "additionalProperties": false,
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/CommandExecutionResultV1"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "OperatorCommandData",
+        "type": "object"
+      },
+      "OperatorCommandEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OperatorCommandData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "OperatorCommandEnvelope",
+        "type": "object"
+      },
+      "OperatorHealthData": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "UP",
+              "READY",
+              "NOT_READY"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "OperatorHealthData",
+        "type": "object"
+      },
+      "OperatorHealthEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OperatorHealthData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "OperatorHealthEnvelope",
+        "type": "object"
+      },
+      "OperatorSourceStateV1": {
+        "additionalProperties": false,
+        "properties": {
+          "kill_switch_activated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kill Switch Activated At"
+          },
+          "kill_switch_file_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kill Switch File Sha256"
+          },
+          "kill_switch_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kill Switch Reason"
+          },
+          "kill_switch_state": {
+            "enum": [
+              "ACTIVE",
+              "INACTIVE",
+              "UNKNOWN"
+            ],
+            "title": "Kill Switch State",
+            "type": "string"
+          },
+          "mode_file_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode File Sha256"
+          },
+          "requested_mode": {
+            "enum": [
+              "PAPER",
+              "DRYRUN",
+              "LIVE",
+              "UNKNOWN"
+            ],
+            "title": "Requested Mode",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "operator-source-state-v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "state_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "State Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "requested_mode",
+          "kill_switch_state",
+          "kill_switch_activated_at",
+          "kill_switch_reason",
+          "mode_file_sha256",
+          "kill_switch_file_sha256",
+          "state_sha256"
+        ],
+        "title": "OperatorSourceStateV1",
+        "type": "object"
+      },
+      "OperatorStateData": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/OperatorSourceStateV1"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "OperatorStateData",
+        "type": "object"
+      },
+      "OperatorStateEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/OperatorStateData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "OperatorStateEnvelope",
+        "type": "object"
+      },
+      "SetKillSwitchV1": {
+        "additionalProperties": false,
+        "properties": {
+          "command_type": {
+            "const": "SET_KILL_SWITCH",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "desired_state": {
+            "enum": [
+              "ACTIVE",
+              "INACTIVE"
+            ],
+            "title": "Desired State",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "command_type",
+          "desired_state",
+          "reason"
+        ],
+        "title": "SetKillSwitchV1",
+        "type": "object"
+      },
+      "SetRequestedModeV1": {
+        "additionalProperties": false,
+        "properties": {
+          "command_type": {
+            "const": "SET_REQUESTED_MODE",
+            "title": "Command Type",
+            "type": "string"
+          },
+          "desired_mode": {
+            "enum": [
+              "PAPER",
+              "DRYRUN",
+              "LIVE"
+            ],
+            "title": "Desired Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_type",
+          "desired_mode"
+        ],
+        "title": "SetRequestedModeV1",
+        "type": "object"
+      },
+      "SubmitOperatorCommandV1": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "discriminator": {
+              "mapping": {
+                "SET_KILL_SWITCH": "#/components/schemas/SetKillSwitchV1",
+                "SET_REQUESTED_MODE": "#/components/schemas/SetRequestedModeV1"
+              },
+              "propertyName": "command_type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SetRequestedModeV1"
+              },
+              {
+                "$ref": "#/components/schemas/SetKillSwitchV1"
+              }
+            ],
+            "title": "Command"
+          },
+          "command_id": {
+            "pattern": "^cmd_[0-9a-f]{32}$",
+            "title": "Command Id",
+            "type": "string"
+          },
+          "correlation_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "expected_state_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected State Sha256"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "submit-operator-command-v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "command_id",
+          "idempotency_key",
+          "correlation_id",
+          "expected_state_sha256",
+          "command"
+        ],
+        "title": "SubmitOperatorCommandV1",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "OperatorBearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Trading Agent Operator API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "health_live_health_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorHealthEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          }
+        },
+        "summary": "Health Live"
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "health_ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorHealthEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          }
+        },
+        "summary": "Health Ready"
+      }
+    },
+    "/v1/commands": {
+      "post": {
+        "operationId": "submit_command_v1_commands_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitOperatorCommandV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorCommandEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Operator authentication is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "The authenticated principal lacks this capability."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "The command conflicts with current durable state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request data is invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Operator authority or command outcome is unavailable."
+          }
+        },
+        "security": [
+          {
+            "OperatorBearerAuth": []
+          }
+        ],
+        "summary": "Submit Command",
+        "x-operator-interfaces": [
+          "WEB",
+          "CLI"
+        ]
+      }
+    },
+    "/v1/state": {
+      "get": {
+        "operationId": "operator_state_v1_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorStateEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Operator authentication is required."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "The authenticated principal lacks this capability."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Operator authority or command outcome is unavailable."
+          }
+        },
+        "security": [
+          {
+            "OperatorBearerAuth": []
+          }
+        ],
+        "summary": "Operator State",
+        "x-operator-interfaces": [
+          "CLI"
+        ]
+      }
+    }
+  }
+}

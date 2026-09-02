@@ -172,7 +172,7 @@ Scope is every `git ls-files '*.py'` path, parsed with Python `ast` in repo-rela
 
 <!-- P9_BROAD_HANDLER_INVENTORY_START -->
 ```text
-apps/control_api/control_api/repositories/status.py|41|Exception|PRODUCTION_CRITICAL|RETURN
+apps/control_api/control_api/repositories/status.py|40|Exception|PRODUCTION_CRITICAL|RETURN
 apps/control_api/trading_control/phase3b_writer.py|424|Exception|PRODUCTION_CRITICAL|RAISE
 apps/control_api/trading_control/real_import.py|938|Exception|PRODUCTION_CRITICAL|RAISE
 apps/control_api/trading_control/writer.py|425|Exception|PRODUCTION_CRITICAL|RAISE
@@ -185,6 +185,7 @@ apps/job_api/app.py|440|Exception|PRODUCTION_CRITICAL|RETURN
 apps/job_api/app.py|455|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
+apps/operator_api/middleware.py|117|Exception|PRODUCTION_CRITICAL|OTHER
 engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_backtest.py|513|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -469,6 +470,7 @@ packages/data_normalization.py|79|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/operator_control/credentials.py|60|Exception|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|891|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|970|Exception|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|1424|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -780,6 +782,7 @@ services/job_worker/worker.py|783|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE
+services/operator_control/protected_fs.py|117|Exception|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|885|BaseException|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|954|BaseException|PRODUCTION_CRITICAL|OTHER
 services/paper_runtime/controller.py|977|BaseException|PRODUCTION_CRITICAL|OTHER

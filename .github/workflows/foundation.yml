@@ -18,6 +18,9 @@ jobs:
     name: verify-${{ github.event_name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      contents: read
+      attestations: read
     env:
       CI: "true"
       LIVE_EXECUTION_ENABLED: "false"
@@ -55,6 +58,21 @@ jobs:
 
       - name: Run canonical local and CI gate
         run: make ci-portable NONINTERACTIVE=1
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Generate protected-main HWC portable evidence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: set -euo pipefail; headless="${RUNNER_TEMP:?}/hwc-portable/${GITHUB_SHA}/hwc-headless-portable-evidence-v1.json"; uv run python scripts/qualify_hwc_headless.py --output "$headless"; uv run python scripts/record_hwc_portable_receipt.py --headless "$headless" --output "${RUNNER_TEMP:?}/hwc-portable/${GITHUB_SHA}/hwc-portable-qualified-v1.json"
+
+      - name: Publish protected-main HWC portable evidence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwc-portable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hwc-portable/${{ github.sha }}/*.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Generate protected-main promotion provenance
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json') != ''
@@ -78,3 +96,25 @@ jobs:
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
+
+  attest-hwc:
+    name: attest-hwc-protected-main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download protected-main HWC portable evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: hwc-portable-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hwc-attestation
+
+      - name: Attest protected-main HWC portable receipt
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/hwc-attestation/hwc-portable-qualified-v1.json

@@ -7,15 +7,10 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COMPONENTS = path.join(ROOT, 'src/components/trading');
 
-test('stop-loss refresh records the completed portfolio fetch time', () => {
+test('portfolio presents stop-loss state without a local mutation path', () => {
   const source = fs.readFileSync(path.join(COMPONENTS, 'portfolio-card.tsx'), 'utf8');
-  const saveStop = source.slice(source.indexOf('async function saveStop'), source.indexOf('function cancelEdit'));
-
-  assert.doesNotMatch(saveStop, /setDataFetchedAt\(null\)/);
-  assert.match(
-    saveStop,
-    /await refresh\.json\(\)\.then\([\s\S]*fetchedAt: Date\.now\(\)[\s\S]*setData\(json\);\s*setDataFetchedAt\(fetchedAt\)/,
-  );
+  assert.match(source, /Stop mutation unavailable/);
+  assert.doesNotMatch(source, /saveStop|startEditStop|\/api\/trading\/update-stop/);
 });
 
 test('ticker flashes only the original strip without remounting on same-direction updates', async () => {

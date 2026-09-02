@@ -1,0 +1,33 @@
+{
+  "schema_version": "hwc-closure-matrix-v1",
+  "authority": {
+    "broker": false,
+    "live": false,
+    "network": false,
+    "production": false
+  },
+  "gates": [
+    {"gate": "HWC_ARCHITECTURE_FROZEN", "evidence": "docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md", "test": "tests/hwc/test_hwc_policy.py", "source_only": true},
+    {"gate": "HWC_BOUNDARIES_ENFORCED", "evidence": "scripts/check_hwc_boundaries.py", "test": "tests/hwc/test_hwc_boundaries.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_CONTRACTS", "evidence": "packages/operator_control", "test": "tests/hwc/test_operator_contracts.py + tests/hwc/test_operator_policy.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_JOURNAL", "evidence": "services/operator_control", "test": "tests/hwc/test_operator_protected_fs.py + tests/hwc/test_operator_journal.py + tests/hwc/test_operator_recovery.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_SERVICE", "evidence": "services/operator_control/service.py", "test": "tests/hwc/test_operator_service.py", "source_only": true},
+    {"gate": "HWC_CREDENTIAL_BOUNDARY", "evidence": "apps/operator_api/auth.py", "test": "tests/hwc/test_operator_api_auth.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_API", "evidence": "apps/operator_api/app.py + generated/operator-api", "test": "tests/hwc/test_operator_api.py + tests/hwc/test_operator_api_auth.py + tests/hwc/test_operator_contract_generation.py", "source_only": true},
+    {"gate": "ARCH_CONTRACT_READY", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc/test_hwc_status.py + tests/governance/test_pre_p3_qualifier.py + tests/governance/test_project_status.py", "source_only": true},
+    {"gate": "HWC_DASHBOARD_AUTHORITY_REMOVED", "evidence": "scripts/check_hwc_boundaries.py --final", "test": "apps/dashboard/tests/mutation-policy.test.mjs", "source_only": true},
+    {"gate": "HWC_OPERATOR_CLI", "evidence": "apps/operator_cli", "test": "tests/hwc/test_operator_cli.py", "source_only": true},
+    {"gate": "HWC_PORTABLE_HEADLESS_PROOF", "evidence": "scripts/qualify_hwc_headless.py + scripts/record_hwc_portable_receipt.py + .github/workflows/foundation.yml", "test": "tests/hwc/test_headless_portable.py + tests/hwc/test_hwc_receipt.py", "source_only": true},
+    {"gate": "HWC_COMMAND_RECOVERY_PROOF", "evidence": "scripts/qualify_hwc_headless.py", "test": "tests/hwc/test_operator_recovery_subprocess.py", "source_only": true},
+    {"gate": "HWC_SOURCE_COMPLETE", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc", "source_only": true},
+    {"gate": "HWC_PORTABLE_QUALIFIED", "evidence": "docs/implementation/hwc/receipts/hwc-portable-qualified-v1.json", "test": "tests/hwc/test_hwc_receipt.py", "source_only": true},
+    {"gate": "HWC_SOURCE_READY", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc/test_hwc_status.py", "source_only": true}
+  ],
+  "topology": "docs/operations/hwc-process-topology.md",
+  "deployment": {
+    "host_qualified": "HELD",
+    "release_v2_integrated": "HELD",
+    "runtime_active": "HELD",
+    "systemd_source": "HELD"
+  }
+}

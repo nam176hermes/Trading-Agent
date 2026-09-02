@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { Wallet, X, ChevronDown, ChevronUp, Edit3, Download } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Wallet, X, ChevronDown, ChevronUp, Download } from 'lucide-react';
 import { subscribePrices, extractPrice, PricePayload } from '@/lib/trading/price-stream';
 
 interface Position {
@@ -51,13 +51,9 @@ interface PortfolioData {
 export function PortfolioCard() {
   const [data, setData] = useState<PortfolioData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
   const [expanded, setExpanded] = useState(true);
-  const [corrData, setCorrData] = useState<{ symbols: string[]; matrix: number[][] } | null>(null);
-  const [editingStop, setEditingStop] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
-  const [savingStop, setSavingStop] = useState<string | null>(null);
   const [dataFetchedAt, setDataFetchedAt] = useState<number | null>(null);
-  const editInputRef = useRef<HTMLInputElement>(null);
 
   // SSE-based live prices
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
@@ -86,29 +82,19 @@ export function PortfolioCard() {
               }));
             }
             setData(json);
+            setUnavailable(false);
             setDataFetchedAt(Date.now());
           }
+        } else if (alive) {
+          setUnavailable(true);
         }
       } catch {
-        // keep existing (may be aborted)
+        if (alive && !controller.signal.aborted) setUnavailable(true);
       } finally {
         if (alive) setLoading(false);
       }
     }
-    async function fetchCorrelation() {
-      try {
-        const res = await fetch('/api/trading/correlation', { signal: controller.signal });
-        if (res.ok && alive) {
-          const json = await res.json();
-          if (json.symbols && json.matrix) {
-            setCorrData({ symbols: json.symbols, matrix: json.matrix });
-          }
-        }
-      } catch { /* ignore */ }
-    }
-
     fetchData();
-    fetchCorrelation();
 
     // Subscribe to shared SSE singleton (avoids opening a new connection per component)
     const unsubPrices = subscribePrices((payload: PricePayload) => {
@@ -127,7 +113,6 @@ export function PortfolioCard() {
     // Polling fallback for portfolio data (every 60s)
     const pollInterval = setInterval(() => {
       fetchData();
-      fetchCorrelation();
     }, 60_000);
 
     return () => {
@@ -137,66 +122,6 @@ export function PortfolioCard() {
       clearInterval(pollInterval);
     };
   }, []);
-
-  // Focus input when editing starts
-  useEffect(() => {
-    if (editingStop && editInputRef.current) {
-      editInputRef.current.focus();
-      editInputRef.current.select();
-    }
-  }, [editingStop]);
-
-  function startEditStop(symbol: string, currentStop: number) {
-    setEditingStop(symbol);
-    setEditValue(Number.isFinite(Number(currentStop)) ? Number(currentStop).toFixed(2) : '—');
-  }
-
-  async function saveStop(symbol: string) {
-    const newStop = parseFloat(editValue);
-    if (isNaN(newStop) || newStop <= 0) {
-      alert('Please enter a valid positive stop-loss price.');
-      return;
-    }
-
-    setSavingStop(symbol);
-    try {
-      const res = await fetch('/api/trading/update-stop', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol, stopLoss: newStop }),
-      });
-      const result = await res.json();
-      if (result.success) {
-        // Refresh data
-        const refresh = await fetch('/api/trading/portfolio');
-        if (refresh.ok) {
-          const { json, fetchedAt } = await refresh.json().then(json => ({
-            json,
-            fetchedAt: Date.now(),
-          }));
-          if (json.positions) {
-            json.positions = json.positions.map((p: Position) => ({
-              ...p,
-              manualStop: p.symbol === symbol ? true : (p.manualStop ?? false),
-            }));
-          }
-          setData(json);
-          setDataFetchedAt(fetchedAt);
-        }
-        setEditingStop(null);
-      } else {
-        alert(`Failed to update stop: ${result.error || 'Unknown error'}`);
-      }
-    } catch {
-      alert('Failed to update stop: network error');
-    } finally {
-      setSavingStop(null);
-    }
-  }
-
-  function cancelEdit() {
-    setEditingStop(null);
-  }
 
   function exportCsv() {
     window.open('/api/trading/export?format=csv', '_blank');
@@ -213,6 +138,17 @@ export function PortfolioCard() {
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="h-4 animate-pulse rounded bg-zinc-800" style={{ width: `${80 - i * 10}%` }} />
           ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+        <div className="flex items-center gap-2 text-amber-300">
+          <Wallet className="h-4 w-4" />
+          <span className="text-sm">Canonical paper portfolio is unavailable. Stop mutation unavailable.</span>
         </div>
       </div>
     );
@@ -333,7 +269,10 @@ export function PortfolioCard() {
           {/* Positions Table */}
           {data.positions.length > 0 && (
             <div>
-              <p className="text-[10px] font-semibold text-zinc-500 mb-2">POSITIONS</p>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[10px] font-semibold text-zinc-500">POSITIONS</p>
+                <p className="text-[9px] text-amber-400">Stop mutation unavailable</p>
+              </div>
               <div className="space-y-1">
                 {data.positions.map((pos, i) => {
                   const currentPrice = getCurrentPrice(pos.symbol, pos.currentPrice);
@@ -345,9 +284,6 @@ export function PortfolioCard() {
                   const upnlColor = unrealizedPnl != null
                     ? (unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400')
                     : 'text-zinc-600';
-                  const isEditing = editingStop === pos.symbol;
-                  const isSaving = savingStop === pos.symbol;
-
                   return (
                     <div key={i} className="group flex items-center justify-between text-xs rounded bg-zinc-800/30 px-2 py-1.5 flex-wrap gap-x-1 gap-y-0.5">
                       <span className="font-mono text-zinc-300 w-14 shrink-0">{pos.symbol}</span>
@@ -361,48 +297,12 @@ export function PortfolioCard() {
                           ? <>{unrealizedPnl >= 0 ? '+' : ''}${Number.isFinite(Number(unrealizedPnl)) ? Number(unrealizedPnl).toFixed(2) : '—'} ({Number(unrealizedPnlPct) >= 0 ? '+' : ''}{Number.isFinite(Number(unrealizedPnlPct)) ? Number(unrealizedPnlPct).toFixed(1) : '—'}%)</>
                           : <span className="text-zinc-600">—</span>}
                       </span>
-                      <span className="font-mono text-zinc-400 text-right shrink-0 flex items-center gap-1">
-                        {isEditing ? (
-                          <span className="flex items-center gap-1">
-                            <input
-                              ref={editInputRef}
-                              type="number"
-                              step="0.01"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') saveStop(pos.symbol);
-                                if (e.key === 'Escape') cancelEdit();
-                              }}
-                              className="w-16 bg-zinc-800 border border-zinc-600 rounded px-1 py-0 text-[11px] font-mono text-zinc-100 focus:outline-none focus:border-green-500"
-                              disabled={isSaving}
-                            />
-                            {isSaving ? (
-                              <span className="inline-block w-3 h-3 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
-                            ) : (
-                              <>
-                                <button onClick={() => saveStop(pos.symbol)} className="text-green-400 hover:text-green-300" title="Save">✓</button>
-                                <button onClick={cancelEdit} className="text-red-400 hover:text-red-300" title="Cancel">✕</button>
-                              </>
-                            )}
-                          </span>
-                        ) : (
-                          <>
-                            SL:<span className={`${distPct < 5 ? 'text-red-400' : 'text-zinc-500'} cursor-pointer hover:underline`}
-                              onClick={() => startEditStop(pos.symbol, pos.stopLoss)}>
-                              {Number.isFinite(Number(pos.stopLoss)) ? Number(pos.stopLoss).toFixed(2) : '—'}
-                            </span>
-                            {pos.manualStop && (
-                              <span className="rounded bg-amber-500/20 px-1 py-0 text-[8px] text-amber-400 font-bold" title="Manual override">MANUAL</span>
-                            )}
-                            <button
-                              onClick={(e) => { e.stopPropagation(); startEditStop(pos.symbol, pos.stopLoss); }}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-600 hover:text-zinc-300"
-                              title="Edit stop-loss"
-                            >
-                              <Edit3 className="h-2.5 w-2.5" />
-                            </button>
-                          </>
+                      <span className="flex shrink-0 items-center gap-1 text-right font-mono text-zinc-400">
+                        SL:<span className={distPct < 5 ? 'text-red-400' : 'text-zinc-500'}>
+                          {Number.isFinite(Number(pos.stopLoss)) ? Number(pos.stopLoss).toFixed(2) : '—'}
+                        </span>
+                        {pos.manualStop && (
+                          <span className="rounded bg-amber-500/20 px-1 py-0 text-[8px] font-bold text-amber-400" title="Recorded manual override">MANUAL</span>
                         )}
                       </span>
                       {pos.trailActivated && pos.highestPrice != null && (
@@ -432,72 +332,6 @@ export function PortfolioCard() {
               <span>Exposure: <span className="text-zinc-300">{Number.isFinite(Number(data.exposure)) ? Number(data.exposure).toFixed(1) : '—'}%</span> / 50% cap</span>
             </div>
           )}
-
-          {/* Correlation Heatmap — only if 2+ positions and data available */}
-          {data.positions.length >= 2 && corrData && corrData.symbols.length >= 2 && (() => {
-            const posSymbols = new Set(data.positions.map(p => p.symbol));
-            const relevantSymbols = corrData.symbols.filter(s => posSymbols.has(s));
-            if (relevantSymbols.length < 2) return null;
-            const topN = relevantSymbols.slice(0, Math.min(6, relevantSymbols.length));
-            const symIdx: Record<string, number> = {};
-            corrData.symbols.forEach((s, i) => { symIdx[s] = i; });
-
-            return (
-              <div>
-                <p className="text-[10px] font-semibold text-zinc-500 mb-2">CORRELATION HEATMAP</p>
-                <div className="overflow-x-auto">
-                  <div className="min-w-fit">
-                    {/* Header */}
-                    <div className="flex gap-1 mb-1">
-                      <div className="w-7 h-6 sm:w-10 sm:h-7" />
-                      {topN.map(s => (
-                        <div key={s} className="w-7 h-6 sm:w-10 sm:h-7 flex items-center justify-center text-[8px] sm:text-[9px] font-mono font-bold text-zinc-500 truncate" title={s}>
-                          {s}
-                        </div>
-                      ))}
-                    </div>
-                    {/* Rows */}
-                    {topN.map(symA => (
-                      <div key={symA} className="flex gap-1 mb-1">
-                        <div className="w-7 h-6 sm:w-10 sm:h-7 flex items-center justify-center text-[8px] sm:text-[9px] font-mono font-bold text-zinc-500 truncate" title={symA}>
-                          {symA}
-                        </div>
-                        {topN.map(symB => {
-                          const i = symIdx[symA];
-                          const j = symIdx[symB];
-                          const corr = corrData.matrix[i]?.[j] ?? 0;
-                          const isDiagonal = symA === symB;
-                          const absCorr = Math.abs(corr);
-                          const isPositive = corr >= 0;
-
-                          let bgClass = 'bg-zinc-800';
-                          if (!isDiagonal) {
-                            if (absCorr >= 0.85) bgClass = isPositive ? 'bg-red-500/80' : 'bg-green-500/80';
-                            else if (absCorr >= 0.7) bgClass = isPositive ? 'bg-orange-500/70' : 'bg-blue-500/70';
-                            else if (absCorr >= 0.4) bgClass = isPositive ? 'bg-yellow-500/50' : 'bg-cyan-500/50';
-                            else if (absCorr >= 0.2) bgClass = isPositive ? 'bg-yellow-500/20' : 'bg-cyan-500/20';
-                          }
-
-                          return (
-                            <div
-                              key={symB}
-                              className={`w-7 h-6 sm:w-10 sm:h-7 flex items-center justify-center text-[8px] sm:text-[9px] font-mono font-bold ${
-                                isDiagonal ? 'bg-zinc-700 text-zinc-600' : absCorr >= 0.4 ? 'text-white' : 'text-zinc-500'
-                              } ${bgClass} rounded-sm`}
-                              title={`${symA} ↔ ${symB}: ${Number.isFinite(Number(corr)) ? Number(corr).toFixed(3) : '—'}`}
-                            >
-                              {isDiagonal ? '—' : Number.isFinite(Number(corr)) ? Number(corr).toFixed(2) : '—'}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <p className="text-[9px] text-zinc-600 mt-1">Red = positive, Green = negative correlation</p>
-              </div>
-            );
-          })()}
 
           {/* Recent Orders */}
           {data.recentOrders.length > 0 && (

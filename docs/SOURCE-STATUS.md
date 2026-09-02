@@ -46,7 +46,7 @@ installation, PostgreSQL recovery or migration, service changes, scheduler
 changes, paper-production promotion and live trading remain separate,
 approval-gated operations.
 
-## Current source status (2026-09-01)
+## Current source status (2026-09-02)
 
 The checkout contains paper-only source through migration
 `0019_p2_security_master`, P1/P1-H/P2 qualification tooling, and Pre-P3
@@ -71,3 +71,20 @@ Dashboard ownership is recorded in
 [the route inventory](production/dashboard-route-inventory.md). The inventory
 is a static source map; an endpoint marked `typed unavailable` is deliberately
 not a canonical data source.
+
+## HWC source candidate
+
+The HWC headless architecture, operator contracts/journal/service, fixed
+credential boundary, Operator API, read-only dashboard migration, independent
+CLI, dashboard-kill/restart proof, and three-pass command-recovery campaign are
+implemented. Derived HWC status reports `HWC_SOURCE_COMPLETE=PASS` with zero
+dashboard trading-state grandfather debt.
+
+`HWC_PORTABLE_QUALIFIED` and `HWC_SOURCE_READY` remain `HELD`. They require an
+exact protected-main `Foundation` push receipt for the final committed source;
+feature-branch tests or locally invented GitHub run identity cannot satisfy
+that contract. Final Pre-P3 candidate-v2 certification and derived P3 alpha
+authorization now mechanically require `HWC_SOURCE_READY=PASS`; architecture
+readiness alone cannot authorize either boundary. Host qualification, Release
+Authority v2 integration, systemd source, runtime activation, broker access,
+and live authority also remain held.

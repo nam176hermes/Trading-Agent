@@ -1,5 +1,5 @@
 .PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
-	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
+	audit-dependencies-dev audit-dependencies generate-contracts check-contracts check-hwc-boundaries check-hwc-status \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres test-p2-runtime-postgres \
@@ -97,6 +97,10 @@ check-project-status:
 	$(PYTHON) scripts/derive_project_status.py \
 		--check docs/implementation/project-status.json
 
+check-hwc-status:
+	$(PYTHON) scripts/derive_hwc_status.py \
+		--check docs/implementation/hwc/hwc-source-status.json
+
 qualify-p2-source:
 	@test -n "$(PRE_P3_RECEIPT_DIR)"
 	$(PYTHON) scripts/qualify_pre_p3.py p2-source \
@@ -184,7 +188,7 @@ audit-release:
 
 audit-python-source:
 	uvx --from bandit==1.9.4 bandit -q -lll -r \
-		apps/control_api packages services legacy/research-backend scripts \
+		apps/control_api apps/operator_api packages services legacy/research-backend scripts \
 		-x '*/tests/*,*/.venv/*'
 
 audit-dependencies-production:
@@ -218,9 +222,13 @@ audit-dependencies: audit-dependencies-production audit-dependencies-dev
 generate-contracts:
 	uv run python scripts/generate_contracts.py
 
-check-contracts: check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory
+check-contracts: check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory check-hwc-status
 	uv run python scripts/generate_contracts.py --check
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+	$(PYTHON) scripts/check_hwc_boundaries.py
+
+check-hwc-boundaries: check-hwc-status
+	$(PYTHON) scripts/check_hwc_boundaries.py
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py

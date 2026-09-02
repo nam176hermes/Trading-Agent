@@ -610,7 +610,9 @@ def _expected_step_contracts(
     ]
 
 
-def _workflow_common(lines: tuple[_YamlLine, ...]) -> tuple[dict[str, str], tuple[_YamlLine, ...]]:
+def _workflow_common(
+    lines: tuple[_YamlLine, ...], expected_jobs: tuple[str, ...]
+) -> tuple[dict[str, str], tuple[_YamlLine, ...]]:
     top = _direct_map(lines, 0)
     if not {"name", "on", "permissions", "jobs"} <= set(top) or set(top) - {
         "name", "on", "permissions", "concurrency", "jobs",
@@ -629,7 +631,7 @@ def _workflow_common(lines: tuple[_YamlLine, ...]) -> tuple[dict[str, str], tupl
         raise ValueError("forbidden")
     jobs = _block(lines, 0, "jobs")
     job_ids = [line.text[:-1] for line in jobs if line.indent == 2 and line.text.endswith(":")]
-    if len(job_ids) != 1:
+    if job_ids != list(expected_jobs):
         raise ValueError("jobs")
     return top, tuple(jobs)
 
@@ -637,7 +639,7 @@ def _workflow_common(lines: tuple[_YamlLine, ...]) -> tuple[dict[str, str], tupl
 def _foundation_workflow_valid(raw: bytes) -> bool:
     try:
         lines = _yaml_lines(raw)
-        _workflow_common(lines)
+        _workflow_common(lines, ("verify", "attest-hwc"))
         triggers = _direct_map(_block(lines, 0, "on"), 2)
         if triggers != {"push": "", "pull_request": "", "workflow_dispatch": ""}:
             return False
@@ -650,7 +652,12 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         if direct != {
             "name": "verify-${{ github.event_name }}",
             "runs-on": "ubuntu-24.04", "timeout-minutes": "45",
-            "env": "", "steps": "",
+            "permissions": "", "env": "", "steps": "",
+        }:
+            return False
+        if _direct_map(_block(job, 4, "permissions"), 6) != {
+            "contents": "read",
+            "attestations": "read",
         }:
             return False
         env = _direct_map(_block(job, 4, "env"), 6)
@@ -669,8 +676,34 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
                 {},
             ),
             (
-                {"name": "Run canonical local and CI gate", "run": "make ci-portable NONINTERACTIVE=1"},
+                {
+                    "name": "Run canonical local and CI gate",
+                    "run": "make ci-portable NONINTERACTIVE=1",
+                    "env": "",
+                },
                 {},
+            ),
+            (
+                {
+                    "name": "Generate protected-main HWC portable evidence",
+                    "if": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                    "run": 'set -euo pipefail; headless="${RUNNER_TEMP:?}/hwc-portable/${GITHUB_SHA}/hwc-headless-portable-evidence-v1.json"; uv run python scripts/qualify_hwc_headless.py --output "$headless"; uv run python scripts/record_hwc_portable_receipt.py --headless "$headless" --output "${RUNNER_TEMP:?}/hwc-portable/${GITHUB_SHA}/hwc-portable-qualified-v1.json"',
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Publish protected-main HWC portable evidence",
+                    "if": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+                    "uses": "actions/upload-artifact@v4",
+                    "with": "",
+                },
+                {
+                    "name": "hwc-portable-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/hwc-portable/${{ github.sha }}/*.json",
+                    "if-no-files-found": "error",
+                    "retention-days": "14",
+                },
             ),
             (
                 {
@@ -707,7 +740,54 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
                 },
             ),
         ]
-        return [_step_contract(step) for step in _steps(job)] == _expected_step_contracts(expected)
+        verify_steps = _steps(job)
+        if [_step_contract(step) for step in verify_steps] != _expected_step_contracts(expected):
+            return False
+        if _direct_map(_block(verify_steps[7], 8, "env"), 10) != {
+            "GH_TOKEN": "${{ github.token }}"
+        }:
+            return False
+        attestation_job = _block(lines, 2, "attest-hwc")
+        if _direct_map(attestation_job, 4) != {
+            "name": "attest-hwc-protected-main",
+            "if": "github.event_name == 'push' && github.ref == 'refs/heads/main'",
+            "needs": "verify",
+            "runs-on": "ubuntu-24.04",
+            "permissions": "",
+            "steps": "",
+        }:
+            return False
+        if _direct_map(_block(attestation_job, 4, "permissions"), 6) != {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+            "artifact-metadata": "write",
+        }:
+            return False
+        attestation_steps = [
+            (
+                {
+                    "name": "Download protected-main HWC portable evidence",
+                    "uses": "actions/download-artifact@v4",
+                    "with": "",
+                },
+                {
+                    "name": "hwc-portable-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/hwc-attestation",
+                },
+            ),
+            (
+                {
+                    "name": "Attest protected-main HWC portable receipt",
+                    "uses": "actions/attest@v4",
+                    "with": "",
+                },
+                {
+                    "subject-path": "${{ runner.temp }}/hwc-attestation/hwc-portable-qualified-v1.json",
+                },
+            ),
+        ]
+        return [_step_contract(step) for step in _steps(attestation_job)] == _expected_step_contracts(attestation_steps)
     except (ClosureError, ValueError):
         return False
 
@@ -715,7 +795,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
 def _host_workflow_valid(raw: bytes) -> bool:
     try:
         lines = _yaml_lines(raw)
-        _workflow_common(lines)
+        _workflow_common(lines, ("qualify",))
         triggers = _direct_map(_block(lines, 0, "on"), 2)
         if triggers != {"workflow_dispatch": ""}:
             return False
@@ -1196,6 +1276,8 @@ def _validate(context: _ValidationContext, *, require_complete: bool) -> str:
             _fail("P0_CLOSURE_END_STATE_BINDING_INVALID")
     if identifiers != list(REQUIREMENTS) or len(set(identifiers)) != len(identifiers):
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
+    if not _reachable(graph, "ci-portable", "check-hwc-status"):
+        _fail("P0_CLOSURE_HWC_STATUS_UNREACHABLE")
 
     if state == "P0_SOURCE_COMPLETE":
         _fail("P0_CLOSURE_COMPLETION_MODE_INVALID")

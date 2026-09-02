@@ -20,11 +20,16 @@ export function ModeToggle() {
 
   return (
     <div
-      title={operator.controlsEnabled ? 'Canonical operator mode' : 'Operator controls disabled'}
-      className={`flex min-h-[44px] items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${classes}`}
+      title="Canonical operator modes are read-only"
+      className={`flex min-h-[44px] items-center gap-2 rounded-lg border px-3 py-2 text-xs ${classes}`}
     >
       {icon}
-      {operator.mode} · {operator.controlsEnabled ? 'CANONICAL' : 'CONTROLS DISABLED'}
+      <span>
+        <span className="font-bold">Requested {operator.requestedMode}</span>
+        {' · '}
+        <span className="font-bold">Effective {operator.mode}</span>
+        <span className="block text-[10px] font-normal">Change mode via CLI</span>
+      </span>
     </div>
   );
 }

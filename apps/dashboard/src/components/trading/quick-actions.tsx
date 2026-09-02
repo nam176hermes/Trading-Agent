@@ -20,7 +20,6 @@ export function QuickActions() {
   const {
     availability,
     controlsEnabled,
-    invalidateSafetyState,
     killSwitchState,
     refresh,
     safetyRevision,
@@ -30,6 +29,7 @@ export function QuickActions() {
   const [killSwitchLoading, setKillSwitchLoading] = useState(false);
   const [killIntent, setKillIntent] = useState<KillSwitchIntent | null>(null);
   const [killReason, setKillReason] = useState('');
+  const [submittedKillReason, setSubmittedKillReason] = useState<string | null>(null);
   const pendingPipelineCommands = useRef<Partial<Record<PipelineKind, PipelineCommand>>>({});
 
   const killSwitchKnown = killSwitchState === 'ACTIVE' || killSwitchState === 'INACTIVE';
@@ -40,11 +40,26 @@ export function QuickActions() {
     && !killSwitchLoading;
 
   function handleToggleKillSwitch() {
-    if (!controlsEnabled || !killSwitchKnown) return;
+    if (!controlsEnabled || killSwitchState !== 'INACTIVE') return;
     const intent = createKillSwitchIntent(killSwitchState, safetyRevision);
     if (intent === null) return;
-    if (intent.action === 'on') setKillReason('');
+    setKillReason('');
+    setSubmittedKillReason(null);
     setKillIntent(intent);
+  }
+
+  function cancelKillSwitch() {
+    setKillIntent(null);
+    setKillReason('');
+    setSubmittedKillReason(null);
+  }
+
+  function changeKillReason(value: string) {
+    if (submittedKillReason !== null && value.trim() !== submittedKillReason) {
+      setKillIntent(createKillSwitchIntent(killSwitchState, safetyRevision));
+      setSubmittedKillReason(null);
+    }
+    setKillReason(value);
   }
 
   async function confirmKillSwitch() {
@@ -55,19 +70,17 @@ export function QuickActions() {
       killReason,
     );
     if (!controlsEnabled || !killSwitchKnown || request === null) {
-      setKillIntent(null);
       setMessage({ type: 'error', text: 'Kill-switch authority changed; reopen the dialog' });
       return;
     }
-    setKillIntent(null);
+    setSubmittedKillReason(request.reason);
     setKillSwitchLoading(true);
     setMessage(null);
-    invalidateSafetyState();
 
     try {
       const res = await fetch('/api/trading/kill-switch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
         body: JSON.stringify(request),
       });
 
@@ -75,12 +88,13 @@ export function QuickActions() {
         setMessage({ type: 'error', text: 'Kill-switch request was rejected' });
         return;
       }
-    } catch {
-      setMessage({ type: 'error', text: 'Kill-switch state could not be verified' });
-    } finally {
+      cancelKillSwitch();
+      setMessage({ type: 'success', text: 'Kill-switch activation was accepted' });
       await refresh();
+    } catch {
+      setMessage({ type: 'error', text: 'Operator API unavailable; retry will reuse this operation' });
+    } finally {
       setKillSwitchLoading(false);
-      setKillReason('');
     }
   }
 
@@ -137,13 +151,9 @@ export function QuickActions() {
             <ShieldOff className="h-4 w-4 text-red-400" />
             <span className="text-sm font-semibold text-red-400">TRADING HALTED</span>
           </div>
-          <button
-            onClick={handleToggleKillSwitch}
-            disabled={!controlsEnabled || killSwitchLoading}
-            className="rounded-md bg-red-600 px-3 py-1 text-xs font-medium text-zinc-100 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {killSwitchLoading ? 'Resuming...' : 'Resume'}
-          </button>
+          <span className="rounded-md border border-red-500/40 px-3 py-1 text-xs font-medium text-red-300">
+            Clear via CLI
+          </span>
         </div>
       )}
 
@@ -178,20 +188,19 @@ export function QuickActions() {
           </span>
         )}
 
-        <button
-          onClick={handleToggleKillSwitch}
-          disabled={!controlsEnabled || !killSwitchKnown || killSwitchLoading}
-          className={`rounded-md px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-            killSwitchActive
-              ? 'bg-red-600 text-zinc-100 hover:bg-red-700'
-              : 'bg-zinc-700 text-zinc-300 hover:bg-zinc-600'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <ShieldOff className="h-4 w-4" />
-            {killLabel}
+        {killSwitchActive ? (
+          <span className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-zinc-100">
+            <span className="flex items-center gap-2"><ShieldOff className="h-4 w-4" />{killLabel}</span>
           </span>
-        </button>
+        ) : (
+          <button
+            onClick={handleToggleKillSwitch}
+            disabled={!controlsEnabled || !killSwitchKnown || killSwitchLoading}
+            className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="flex items-center gap-2"><ShieldOff className="h-4 w-4" />{killLabel}</span>
+          </button>
+        )}
       </div>
 
       {message && (
@@ -207,39 +216,33 @@ export function QuickActions() {
       {killIntent !== null && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => setKillIntent(null)}
+          onClick={cancelKillSwitch}
         >
           <div
             className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-6 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 className="mb-2 text-lg font-semibold text-zinc-100">
-              {killIntent.action === 'off' ? 'Resume Trading?' : 'Activate Kill Switch'}
-            </h3>
+            <h3 className="mb-2 text-lg font-semibold text-zinc-100">Activate Kill Switch</h3>
             <p className="mb-4 text-sm text-zinc-400">
-              {killIntent.action === 'off'
-                ? 'This requests removal of the current trading halt.'
-                : 'This requests an immediate halt of trading activity.'}
+              This requests an immediate halt of trading activity.
             </p>
 
-            {killIntent.action === 'on' && (
-              <div className="mb-4">
-                <label className="mb-1 block text-xs font-medium text-zinc-400">
-                  Reason (optional)
-                </label>
-                <input
-                  type="text"
-                  value={killReason}
-                  onChange={(event) => setKillReason(event.target.value)}
-                  placeholder="e.g., Market volatility, system maintenance"
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:border-red-500 focus:outline-none"
-                />
-              </div>
-            )}
+            <div className="mb-4">
+              <label className="mb-1 block text-xs font-medium text-zinc-400">Reason</label>
+              <input
+                type="text"
+                value={killReason}
+                maxLength={256}
+                required
+                onChange={(event) => changeKillReason(event.target.value)}
+                placeholder="e.g., Market volatility, system maintenance"
+                className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:border-red-500 focus:outline-none"
+              />
+            </div>
 
             <div className="flex justify-end gap-3">
               <button
-                onClick={() => setKillIntent(null)}
+                onClick={cancelKillSwitch}
                 className="rounded-md border border-zinc-600 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
               >
                 Cancel
@@ -249,18 +252,11 @@ export function QuickActions() {
                 disabled={!controlsEnabled
                   || !killSwitchKnown
                   || killSwitchLoading
-                  || validKillIntent === null}
-                className={`rounded-md px-4 py-2 text-sm font-medium text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 ${
-                  killIntent.action === 'off'
-                    ? 'bg-green-600 hover:bg-green-700'
-                    : 'bg-red-600 hover:bg-red-700'
-                }`}
+                  || validKillIntent === null
+                  || killSwitchRequest(validKillIntent, killSwitchState, safetyRevision, killReason) === null}
+                className="rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-zinc-100 hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {validKillIntent === null
-                  ? 'Authority Changed'
-                  : killIntent.action === 'off'
-                    ? 'Resume Trading'
-                    : 'Halt Trading'}
+                {validKillIntent === null ? 'Authority Changed' : 'Halt Trading'}
               </button>
             </div>
           </div>

@@ -45,6 +45,7 @@ _TRANSIENT_ARTIFACT_PATTERNS = (
 _SEALED_PYTHON_SOURCES = (
     "packages/domain", "packages/event_ledger", "services/job_worker",
     "packages/job_contracts", "packages/job_authority", "services/job_store",
+    "apps/operator_api", "packages.operator_control.credentials",
 )
 _SEALED_PYTEST_PATHS = (
     "tests/domain", "tests/event_ledger", "tests/jobs/test_state_machine.py",
@@ -57,6 +58,8 @@ _SEALED_PYTEST_PATHS = (
     "tests/jobs/test_repository_transactions.py", "tests/jobs/test_worker_leases.py",
     "tests/jobs/test_worker_lifecycle.py",
     "tests/jobs/test_p1_parity_composition.py::test_worker_repository_persists_only_closed_p1_receipts",
+    "tests/hwc/test_operator_api.py", "tests/hwc/test_operator_api_auth.py",
+    "tests/hwc/test_operator_contract_generation.py",
 )
 _SEALED_PYTHON_UNITS = {
     "packages/domain": (("packages/domain/",), (), (), (665, 699), (173, 198)),
@@ -65,6 +68,13 @@ _SEALED_PYTHON_UNITS = {
     "job state machine": ((), ("packages/job_contracts/enums.py", "packages/job_contracts/transitions.py"), (), (67, 67), (16, 16)),
     "transition authority": (("packages/job_authority/",), (), (), (209, 242), (72, 92)),
     "transition repositories": ((), ("services/job_store/repository.py", "services/job_store/worker_repository.py"), (), (251, 427), (34, 118)),
+    "operator API": (
+        ("apps/operator_api/",),
+        ("packages/operator_control/credentials.py",),
+        (),
+        (363, 376),
+        (45, 58),
+    ),
 }
 _SEALED_DASHBOARD_FILES = (
     "src/lib/trading/access-policy.ts", "src/lib/trading/auth.ts",
@@ -148,6 +158,10 @@ _SEALED_REQUIRED_CASES = {
         "apps/dashboard/tests/browser-auth-source.test.mjs::auth guard stays fail-closed on timeout and network errors",
         "apps/dashboard/tests/api-access-boundary.test.mjs::rejects absent and cross-origin mutation origins",
         "apps/dashboard/tests/dashboard-request-hardening.test.mjs::shared reader rejects declared, chunked, and invalid UTF-8 request bodies",
+    ),
+    "operator API capability and body-size failures": (
+        "tests/hwc/test_operator_api.py::test_state_is_cli_only_and_identity_headers_cannot_widen_access",
+        "tests/hwc/test_operator_api.py::test_body_cap_runs_before_json_parser_and_service",
     ),
 }
 
