@@ -185,6 +185,25 @@ test('unsafe audit storage fails closed before sensitive and low-risk handlers r
   assert.equal(fs.existsSync(path.join(auditTarget, 'watchlist.json')), false);
 });
 
+test('authorized mode mutation requires CLI and never touches local mode state', async () => {
+  const [{ issueSession }, modeRoute] = await Promise.all([
+    import('../src/lib/trading/session.ts'),
+    import('../src/app/api/trading/mode/route.ts'),
+  ]);
+  const target = path.join(researchDirectory, '.mode');
+  fs.writeFileSync(target, 'paper\n', { mode: 0o600 });
+
+  const response = await modeRoute.POST(new Request('https://dashboard.test/api/trading/mode', {
+    method: 'POST',
+    headers: { cookie: `trading_session=${issueSession('admin')}` },
+    body: '{not parsed',
+  }));
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, 'CLI_REQUIRED');
+  assert.equal(fs.readFileSync(target, 'utf8'), 'paper\n');
+});
+
 test('malformed persisted audit evidence fails closed without overwriting it', async () => {
   const [{ authorizeMutation }, { issueSession }] = await Promise.all([
     import('../src/lib/trading/auth.ts'),

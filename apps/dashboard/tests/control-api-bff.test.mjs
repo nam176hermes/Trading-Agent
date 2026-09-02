@@ -292,7 +292,18 @@ test('legacy dashboard adapters do not fabricate unavailable operational values'
   assert.doesNotMatch(data, /new Date\(0\)/);
   assert.match(status, /llmWorking: null/);
   assert.doesNotMatch(meta, /process\.cwd\(\)/);
-  assert.match(mode, /PAPER_ONLY_RELEASE/);
-  assert.match(mode, /updatePrivateLocalStateFile/);
+  assert.match(mode, /CLI_REQUIRED/);
+  assert.doesNotMatch(mode, /updatePrivateLocalStateFile|modeFile|request-body/);
   assert.doesNotMatch(mode, /from ['"](?:fs|path)['"]/);
+
+  const modeToggle = fs.readFileSync(
+    path.join(root, 'src/components/trading/mode-toggle.tsx'), 'utf8',
+  );
+  const settings = fs.readFileSync(
+    path.join(root, 'src/app/dashboard/settings/page.tsx'), 'utf8',
+  );
+  assert.match(modeToggle, /Requested.*Effective/s);
+  assert.match(modeToggle, /Change mode via CLI/);
+  assert.match(settings, /Change mode via CLI/);
+  assert.doesNotMatch(settings, /\(\['paper', 'dryrun', 'live'\]/);
 });

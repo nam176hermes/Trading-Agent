@@ -43,7 +43,7 @@
     {"route": "/market", "classification": "CANONICAL_QUERY", "canonical_owner": "CONTROL_API"},
     {"route": "/memory", "classification": "TYPED_UNAVAILABLE", "canonical_owner": null},
     {"route": "/meta", "classification": "CANONICAL_QUERY", "canonical_owner": "CONTROL_API"},
-    {"route": "/mode", "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE", "canonical_owner": "DASHBOARD_COMPATIBILITY"},
+    {"route": "/mode", "classification": "CANONICAL_QUERY", "canonical_owner": "CONTROL_API"},
     {"route": "/modules", "classification": "PRESENTATION_ONLY", "canonical_owner": null},
     {"route": "/news", "classification": "TYPED_UNAVAILABLE", "canonical_owner": null},
     {"route": "/optimizer", "classification": "TYPED_UNAVAILABLE", "canonical_owner": null},
@@ -77,7 +77,7 @@
   "authorities": [
     {"capability": "control_queries", "classification": "CANONICAL_QUERY", "canonical_owner": "CONTROL_API", "source": "apps/control_api"},
     {"capability": "durable_jobs", "classification": "CANONICAL_DURABLE_COMMAND", "canonical_owner": "JOB_API", "source": "apps/job_api"},
-    {"capability": "requested_mode", "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE", "canonical_owner": "DASHBOARD_COMPATIBILITY", "source": "apps/dashboard/src/app/api/trading/mode/route.ts"},
+    {"capability": "requested_mode", "classification": "OPERATOR_COMMAND", "canonical_owner": "OPERATOR_API", "source": "apps/operator_api"},
     {"capability": "kill_switch", "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE", "canonical_owner": "DASHBOARD_COMPATIBILITY", "source": "apps/dashboard/src/lib/trading/kill-switch.ts"},
     {"capability": "trailing_stop_override", "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE", "canonical_owner": "DASHBOARD_COMPATIBILITY", "source": "apps/dashboard/src/app/api/trading/update-stop/route.ts"},
     {"capability": "watchlist_override", "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE", "canonical_owner": "DASHBOARD_COMPATIBILITY", "source": "apps/dashboard/src/app/api/trading/watchlist/route.ts"},

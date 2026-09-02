@@ -86,7 +86,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/market` | GET / reader | Control API canonical P10 snapshot/freshness envelope or typed unavailable | `market-ticker` | canonical |
 | `/memory` | GET / reader | None; `SOURCE_UNAVAILABLE` | `memory-context` | typed unavailable |
 | `/meta` | GET / reader | Control API deployment metadata JSON | `operator-state` | canonical |
-| `/mode` | GET / reader; POST / admin | Control status plus protected local mode; structured mode/error JSON | `operator-state` (GET); no static POST caller | compatibility |
+| `/mode` | GET / reader; POST / admin | Control status query; POST returns `403 CLI_REQUIRED` without parsing or local state access | `operator-state` (GET); no static POST caller | canonical read / CLI-only command |
 | `/modules` | GET / reader | Static module catalog; JSON array | none found | compatibility |
 | `/news` | GET / reader | None; `SOURCE_UNAVAILABLE` | `news-feed` | typed unavailable |
 | `/optimizer` | GET / reader | None; `SOURCE_UNAVAILABLE` | `benchmark-comparison` | typed unavailable |

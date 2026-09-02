@@ -125,13 +125,13 @@ paper_status=$(curl -sS -o "$WORK/paper.json" -w '%{http_code}' \
   -H 'x-forwarded-proto: http' \
   -H 'content-type: application/json' \
   --data '{"mode":"paper"}')
-if [[ "$paper_status" != '200' ]]; then
+if [[ "$paper_status" != '403' ]]; then
   sed -n '1,80p' "$WORK/paper.json" >&2
 fi
-expect_status "$paper_status" 200 'authorized paper-mode mutation'
-grep -q '"effective_mode":"paper"' "$WORK/paper.json" \
-  || fail 'paper-mode mutation did not report paper mode'
-grep -q '^paper$' "$MODE_FILE" || fail 'paper-mode mutation did not write paper mode'
+expect_status "$paper_status" 403 'authorized paper-mode mutation'
+grep -q '"code":"CLI_REQUIRED"' "$WORK/paper.json" \
+  || fail 'paper-mode mutation did not require CLI'
+grep -q '^paper$' "$MODE_FILE" || fail 'rejected paper mutation changed mode state'
 
 live_status=$(curl -sS -o "$WORK/live.json" -w '%{http_code}' \
   -X POST "$BASE_URL/api/trading/mode" \
@@ -142,8 +142,8 @@ live_status=$(curl -sS -o "$WORK/live.json" -w '%{http_code}' \
   -H 'content-type: application/json' \
   --data '{"mode":"live"}')
 expect_status "$live_status" 403 'authorized live-mode mutation'
-grep -q '"code":"LIVE_EXECUTION_DISABLED"' "$WORK/live.json" \
-  || fail 'live-mode mutation did not fail with LIVE_EXECUTION_DISABLED'
+grep -q '"code":"CLI_REQUIRED"' "$WORK/live.json" \
+  || fail 'live-mode mutation did not require CLI'
 grep -q '^paper$' "$MODE_FILE" || fail 'rejected live mutation changed paper mode'
 
 kill_on_status=$(curl -sS -o "$WORK/kill-on.json" -w '%{http_code}' \

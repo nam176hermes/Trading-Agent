@@ -186,12 +186,14 @@ test('mutation DTOs reject extras, Infinity, and unsafe symbols while valid requ
     query: 'synthetic query', keywords: ['Risk'],
   }))).status, 200);
 
-  assert.equal((await mode.POST(await authorizedRequest('https://dashboard.test/api/trading/mode', 'admin', {
-    mode: 'paper', extra: true,
-  }))).status, 400);
-  assert.equal((await mode.POST(await authorizedRequest('https://dashboard.test/api/trading/mode', 'admin', {
-    mode: 'paper',
-  }))).status, 200);
+  for (const body of [{ mode: 'paper', extra: true }, { mode: 'paper' }]) {
+    const response = await mode.POST(await authorizedRequest(
+      'https://dashboard.test/api/trading/mode', 'admin', body,
+    ));
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, 'CLI_REQUIRED');
+  }
+  assert.equal(fs.existsSync(path.join(dataRoot, '.mode')), false);
 
   assert.equal((await killSwitch.POST(await authorizedRequest('https://dashboard.test/api/trading/kill-switch', 'admin', {
     action: 'off', reason: 'not allowed for off',
@@ -291,7 +293,7 @@ test('local state updater creates missing private state after validating absence
   assert.equal(fs.statSync(target).mode & 0o777, 0o600);
 });
 
-test('mode route rejects malformed persisted state without deleting evidence', async () => {
+test('mode route ignores persisted state and preserves it while requiring CLI', async () => {
   const mode = await import('../src/app/api/trading/mode/route.ts');
   const target = path.join(dataRoot, '.mode');
   const malformed = 'paper\nunknown\n';
@@ -301,8 +303,8 @@ test('mode route rejects malformed persisted state without deleting evidence', a
     'https://dashboard.test/api/trading/mode', 'admin', { mode: 'paper' },
   ));
 
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { ok: false, code: 'MODE_STATE_UNAVAILABLE' });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).code, 'CLI_REQUIRED');
   assert.equal(fs.readFileSync(target, 'utf8'), malformed);
   assert.equal(fs.readdirSync(dataRoot).some((entry) => entry.startsWith('..mode.tmp.')), false);
 });
@@ -391,7 +393,6 @@ test('all JSON routes use the shared bounded reader instead of request.json', ()
     'src/app/api/auth/session/route.ts',
     'src/app/api/trading/update-stop/route.ts',
     'src/app/api/trading/plan/route.ts',
-    'src/app/api/trading/mode/route.ts',
     'src/app/api/trading/kill-switch/route.ts',
     'src/app/api/trading/watchlist/route.ts',
   ];
@@ -400,6 +401,10 @@ test('all JSON routes use the shared bounded reader instead of request.json', ()
     assert.doesNotMatch(source, /request\.json\(/, route);
     assert.match(source, /request-body/, route);
   }
+  const mode = fs.readFileSync(
+    path.join(ROOT, 'src/app/api/trading/mode/route.ts'), 'utf8',
+  );
+  assert.doesNotMatch(mode, /request-body|request\.json\(/);
 });
 
 test('local state accepts a sticky mapped-owner system ancestor', async () => {

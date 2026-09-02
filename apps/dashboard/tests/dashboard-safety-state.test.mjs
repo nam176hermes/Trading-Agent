@@ -13,7 +13,6 @@ import {
 import {
   exchangeConfigurationPresentation,
   parseExchangeConfigPayload,
-  settingsModeControlTitle,
 } from '../src/lib/trading/settings-state.ts';
 import {
   INITIAL_DATA_SOURCES_STATE,
@@ -216,9 +215,6 @@ test('exchange configuration preserves and presents authoritative configured fal
     exchanges: { coinbase: { configured: false, debug: true } },
   }), null);
 
-  const unknownTitle = settingsModeControlTitle('UNAVAILABLE', 'UNKNOWN', 'paper');
-  assert.equal(unknownTitle.includes('UNKNOWN'), true);
-  assert.equal(unknownTitle.includes('current immutable release mode'), false);
 });
 
 test('settings operator status stays unknown unless canonical state is authoritative', () => {

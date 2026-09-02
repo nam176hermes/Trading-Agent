@@ -17,7 +17,6 @@ import {
   loadAgentsState,
   loadCostsState,
   parseExchangeConfigPayload,
-  settingsModeControlTitle,
   settingsOperatorStatus,
   summarizeAgentsState,
   type AgentsState,
@@ -166,7 +165,6 @@ export default function SettingsPage() {
     );
   };
 
-  const currentMode = operator.mode;
   const operatorStatus = settingsOperatorStatus({
     availability: operator.availability,
     mode: operator.mode,
@@ -192,43 +190,19 @@ export default function SettingsPage() {
             <span className="text-xs font-bold text-zinc-200">Trading Mode</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[10px] text-zinc-500">Current:</span>
-            {modeBadge(currentMode)}
+            <span className="text-[10px] text-zinc-500">Requested:</span>
+            {modeBadge(operator.requestedMode)}
+            <span className="text-[10px] text-zinc-500">Effective:</span>
+            {modeBadge(operator.mode)}
           </div>
-        </div>
-        <div className="flex gap-2">
-          {(['paper', 'dryrun', 'live'] as const).map((mode) => (
-            <button
-              key={mode}
-              disabled
-              title={settingsModeControlTitle(operator.availability, currentMode, mode)}
-              className={`rounded px-4 py-2 text-xs font-bold uppercase transition-colors ${
-                currentMode === mode.toUpperCase()
-                  ? 'ring-1 ring-white/20 ' +
-                    (mode === 'live'
-                      ? 'bg-red-500/20 text-red-300 border border-red-500/40'
-                      : mode === 'dryrun'
-                      ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/40'
-                      : 'bg-blue-500/20 text-blue-300 border border-blue-500/40')
-                  : mode === 'live'
-                  ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30'
-                  : mode === 'dryrun'
-                  ? 'bg-yellow-500/10 text-yellow-400 hover:bg-yellow-500/20 border border-yellow-500/30'
-                  : 'bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 border border-blue-500/30'
-              } cursor-not-allowed ${currentMode === mode.toUpperCase() ? '' : 'opacity-40'}`}
-            >
-              {mode === 'live' ? '🔴 Live' : mode === 'dryrun' ? '🟡 Dry Run' : '📝 Paper'}
-            </button>
-          ))}
         </div>
         <p className="mt-2 text-[10px] text-zinc-500">
           {operator.availability === 'AVAILABLE'
-            ? 'Mode is reported by the canonical operator-state boundary.'
+            ? 'Requested and effective modes are reported by the canonical operator-state boundary.'
             : 'Canonical operator mode is unavailable; current mode remains UNKNOWN.'}
         </p>
-        <p className="text-[10px] text-zinc-600 mt-1">
-          Phase 4B policy rejects dry-run and live transitions; this policy is not evidence of
-          the current operator state.
+        <p className="mt-1 text-[10px] font-medium text-amber-400">
+          Change mode via CLI
         </p>
       </div>
 
