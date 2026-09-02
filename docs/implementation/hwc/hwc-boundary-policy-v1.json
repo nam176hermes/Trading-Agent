@@ -1,0 +1,65 @@
+{
+  "schema_version": "hwc-boundary-policy-v1",
+  "route_inventory": "docs/implementation/hwc/hwc-authority-inventory-v1.json",
+  "allowed_dashboard_local_write": "apps/dashboard/src/lib/trading/auth.ts",
+  "grandfathered_state_writes": [
+    {
+      "path": "apps/dashboard/src/app/api/trading/mode/route.ts",
+      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
+      "git_blob_sha": "3c11081cd0045bd51bcfc53091f685de5a41b7c1",
+      "source_sha256": "3b90dd456b3707ce792b6248042e26758fff527935b9d35a2d1066a404d66a21",
+      "owner": "DASHBOARD_COMPATIBILITY",
+      "authority": "REQUESTED_MODE_WRITE",
+      "migration_task": "T-HWC-200A",
+      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
+    },
+    {
+      "path": "apps/dashboard/src/lib/trading/kill-switch.ts",
+      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
+      "git_blob_sha": "35629f0ae6a75d3beca94d721f10c67b8a93bf46",
+      "source_sha256": "f50e5170db70392dfe3611688d41cef84e91791b98c2a601679b6fd8f653cb87",
+      "owner": "DASHBOARD_COMPATIBILITY",
+      "authority": "KILL_SWITCH_WRITE_CLEAR",
+      "migration_task": "T-HWC-200B",
+      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
+    },
+    {
+      "path": "apps/dashboard/src/app/api/trading/update-stop/route.ts",
+      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
+      "git_blob_sha": "b6a07bf404dfa55a80982d2ea079979c6047b84f",
+      "source_sha256": "e13f440a871fc2a7eb53121448e9278af28920b12b9ab46d3dbd46ae0ff13348",
+      "owner": "DASHBOARD_COMPATIBILITY",
+      "authority": "TRAILING_STOP_OVERRIDE_WRITE",
+      "migration_task": "T-HWC-200C",
+      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
+    },
+    {
+      "path": "apps/dashboard/src/app/api/trading/watchlist/route.ts",
+      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
+      "git_blob_sha": "99de572c2e1efbc9f5664b97214db95a69a8a0db",
+      "source_sha256": "b3e568c595bd9a8603b37ce20be6899771c0b4a5b33930b44cda94c3a97ac15b",
+      "owner": "DASHBOARD_COMPATIBILITY",
+      "authority": "WATCHLIST_OVERRIDE_WRITE",
+      "migration_task": "T-HWC-200C",
+      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
+    }
+  ],
+  "python_interface_import_forbidden": [
+    "packages/domain",
+    "packages/engine_contracts",
+    "packages/event_ledger",
+    "packages/alpha_lifecycle",
+    "services/paper_runtime"
+  ],
+  "operator_cli_forbidden_import_prefixes": [
+    "apps.dashboard",
+    "services",
+    "engines.nautilus",
+    "psycopg",
+    "sqlalchemy"
+  ],
+  "dashboard_forbidden_patterns": [
+    "node:child_process",
+    "child_process"
+  ]
+}

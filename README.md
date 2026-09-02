@@ -198,3 +198,9 @@ See `docs/production/release-authority-v2.md` for exact stop conditions.
 
 Neither plan enables live trading. Any root, production, runtime, remote, or
 cutover mutation requires explicit operator approval.
+
+The accepted HWC architecture keeps the trading core headless. Control API is
+the read authority, Job API owns durable research jobs, and the bounded
+Operator API is the sole target for operator state commands. Dashboard and CLI
+are replaceable clients; this source architecture grants no deployment or live
+authority. See `docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md`.

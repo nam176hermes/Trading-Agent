@@ -1,6 +1,6 @@
 # Dashboard route inventory
 
-**Snapshot:** 2026-08-03. This static source inventory covers every
+**Snapshot:** 2026-09-02. This static source inventory covers every
 `apps/dashboard/src/app/api/trading/**/route.ts` handler. It neither probes a
 runtime nor authorizes an endpoint. A frontend caller is a source-level match
 outside a handler; `none found` is not caller-removal proof.
@@ -11,6 +11,11 @@ the handler's `authorizeMutation` call. `typed unavailable` means the
 fail-closed `503` `SOURCE_UNAVAILABLE` envelope, unless a row says otherwise.
 No handler is classified `dead`: removal requires caller proof and replacement
 tests.
+
+The machine-readable HWC inventory and exact-byte migration debt live under
+`docs/implementation/hwc/`. Compatibility writers are temporary source debt;
+they grant no runtime authority and must be removed before
+`HWC_DASHBOARD_AUTHORITY_REMOVED` can pass.
 
 ## Phase 4 vertical-slice disposition
 
