@@ -69,22 +69,28 @@ def test_runtime_runner_advances_deterministically_without_dashboard(tmp_path: P
         process.wait(timeout=5)
 
 
-def test_actual_dashboard_restart_preserves_headless_runtime_and_operator_state() -> None:
-    from scripts.qualify_hwc_headless import qualify, validate_receipt
+def test_actual_dashboard_restart_preserves_headless_runtime_and_operator_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import qualify_hwc_headless as qualifier
 
-    receipt = qualify(require_clean=False, build_dashboard=False)
+    monkeypatch.setattr(qualifier, "_recovery_campaign", lambda *_: "a" * 64)
+    receipt = qualifier.qualify(require_clean=False, build_dashboard=False)
 
-    assert validate_receipt(receipt) == receipt
+    assert qualifier.validate_receipt(receipt) == receipt
     assert receipt["processes"]["dashboard_initial_pid"] != receipt["processes"]["dashboard_restart_pid"]
     assert receipt["evidence"]["batch_a"]["event_sha256"] != receipt["evidence"]["batch_b"]["event_sha256"]
 
 
-def test_headless_receipt_validation_is_fail_closed() -> None:
-    from scripts.qualify_hwc_headless import HeadlessQualificationError, qualify, validate_receipt
+def test_headless_receipt_validation_is_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import qualify_hwc_headless as qualifier
 
-    with pytest.raises(HeadlessQualificationError):
-        validate_receipt({"verdict": "PASS"})
-    valid = qualify(require_clean=False, build_dashboard=False)
+    monkeypatch.setattr(qualifier, "_recovery_campaign", lambda *_: "a" * 64)
+    with pytest.raises(qualifier.HeadlessQualificationError):
+        qualifier.validate_receipt({"verdict": "PASS"})
+    valid = qualifier.qualify(require_clean=False, build_dashboard=False)
     for mutation in (
         lambda value: value["authority"].update({"live": True}),
         lambda value: value["observations"].update({"cleanup_complete": False}),
@@ -93,16 +99,19 @@ def test_headless_receipt_validation_is_fail_closed() -> None:
     ):
         candidate = deepcopy(valid)
         mutation(candidate)
-        with pytest.raises(HeadlessQualificationError):
-            validate_receipt(candidate)
+        with pytest.raises(qualifier.HeadlessQualificationError):
+            qualifier.validate_receipt(candidate)
 
 
 @pytest.mark.parametrize(
     "fault",
     ["dashboard_startup", "port_collision", "runtime_exit", "partial_evidence", "cleanup_failure"],
 )
-def test_headless_failure_injections_never_pass(fault: str) -> None:
-    from scripts.qualify_hwc_headless import HeadlessQualificationError, qualify
+def test_headless_failure_injections_never_pass(
+    fault: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import qualify_hwc_headless as qualifier
 
-    with pytest.raises(HeadlessQualificationError):
-        qualify(require_clean=False, build_dashboard=False, _fault=fault)
+    monkeypatch.setattr(qualifier, "_recovery_campaign", lambda *_: "a" * 64)
+    with pytest.raises(qualifier.HeadlessQualificationError):
+        qualifier.qualify(require_clean=False, build_dashboard=False, _fault=fault)

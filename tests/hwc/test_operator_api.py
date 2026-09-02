@@ -19,6 +19,7 @@ from packages.operator_control.contracts import (
     SubmitOperatorCommandV1,
 )
 from packages.operator_control.policy import OperatorCommandRejected
+from services.operator_control.journal import CommandJournalError
 from services.operator_control.protected_fs import ProtectedFilesystemError
 from services.operator_control.state_store import RecoveryError
 
@@ -334,6 +335,7 @@ def test_invalid_json_and_model_are_typed_422(boundary) -> None:
             503,
             "OPERATOR_AUTHORITY_UNAVAILABLE",
         ),
+        (CommandJournalError("unsafe"), 503, "COMMAND_JOURNAL_UNSAFE"),
         (RecoveryError("COMMAND_OUTCOME_UNKNOWN"), 503, "COMMAND_OUTCOME_UNKNOWN"),
         (RuntimeError("secret reason"), 500, "INTERNAL_ERROR"),
     ),

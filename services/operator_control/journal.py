@@ -39,6 +39,8 @@ _Model = TypeVar("_Model", bound=BaseModel)
 class CommandJournalError(ValueError):
     """Journal evidence is absent, conflicting, malformed, or unsafe."""
 
+    code = "COMMAND_JOURNAL_UNSAFE"
+
 
 @dataclass(frozen=True, slots=True)
 class JournalSnapshot:

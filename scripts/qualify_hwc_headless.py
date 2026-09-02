@@ -38,6 +38,15 @@ AUTHORITY = {"broker": False, "live": False, "network": False, "production": Fal
 RUNNER = ROOT / "tests/hwc/fixtures/headless_runtime_runner.py"
 CLOSURE_MATRIX = ROOT / "docs/implementation/hwc/hwc-closure-matrix-v1.json"
 DASHBOARD = ROOT / "apps/dashboard"
+RECOVERY_FIXTURE = "tests.hwc.fixtures.operator_state"
+RECOVERY_FAILPOINTS = (
+    "AFTER_INTENT_FSYNC",
+    "BEFORE_STATE_APPLY",
+    "AFTER_STATE_APPLY",
+    "AFTER_APPLIED_FSYNC",
+    "BEFORE_RECEIPT_FSYNC",
+    "AFTER_RECEIPT_FSYNC",
+)
 _HEX = set("0123456789abcdef")
 
 
@@ -206,6 +215,45 @@ def _build_dashboard(environment: dict[str, str], log: Any) -> None:
         raise HeadlessQualificationError("dashboard build failed")
 
 
+def _recovery_campaign(root: Path, environment: dict[str, str]) -> str:
+    campaign_digests = []
+    for campaign in range(3):
+        receipts = []
+        for scenario in ("paper", "activate", "clear"):
+            for failpoint in RECOVERY_FAILPOINTS:
+                case = root / str(campaign) / scenario / failpoint.lower()
+                base = [
+                    sys.executable, "-m", RECOVERY_FIXTURE, "--root", str(case),
+                    "--scenario", scenario,
+                ]
+                crashed = subprocess.run(
+                    [*base, "--crash-at", failpoint], cwd=ROOT, env=environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                recovered = subprocess.run(
+                    [*base, "--retry"], cwd=ROOT, env=environment,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                )
+                try:
+                    result = json.loads(recovered.stdout)
+                    receipt = result["receipt"]
+                except (KeyError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise HeadlessQualificationError("recovery campaign evidence is invalid") from exc
+                expected = "RECOVERED_APPLIED" if failpoint == "AFTER_STATE_APPLY" else "APPLIED"
+                if (
+                    crashed.returncode != 77
+                    or recovered.returncode != 0
+                    or result.get("deduplicated") is not True
+                    or receipt.get("outcome") != expected
+                ):
+                    raise HeadlessQualificationError("recovery campaign failed")
+                receipts.append(receipt["receipt_sha256"])
+        campaign_digests.append(_sha(receipts))
+    if len(set(campaign_digests)) != 1:
+        raise HeadlessQualificationError("recovery campaign is nondeterministic")
+    return campaign_digests[0]
+
+
 def _dashboard_command(port: int) -> list[str]:
     return [str(DASHBOARD / "node_modules/.bin/next"), "start", "-H", "127.0.0.1", "-p", str(port)]
 
@@ -236,7 +284,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
         or source.get("closure_schema_version") != SOURCE_CLOSURE_SCHEMA
         or source.get("closure_policy_sha256") != SOURCE_CLOSURE_POLICY_SHA256
         or not isinstance(evidence, dict)
-        or set(evidence) != {"closure_matrix_sha256", "runtime_fixture_sha256", "dashboard_build_sha256", "batch_a", "batch_b", "dashboard_before_sha256", "dashboard_after_sha256", "operator_before_sha256", "operator_after_sha256"}
+        or set(evidence) != {"closure_matrix_sha256", "runtime_fixture_sha256", "dashboard_build_sha256", "recovery_campaign_sha256", "batch_a", "batch_b", "dashboard_before_sha256", "dashboard_after_sha256", "operator_before_sha256", "operator_after_sha256"}
         or not isinstance(processes, dict)
         or set(processes) != {"runtime_pid", "runtime_session_id", "control_api_pid", "operator_api_pid", "dashboard_initial_pid", "dashboard_restart_pid"}
         or not all(type(processes[key]) is int and processes[key] > 0 for key in processes if key.endswith("_pid"))
@@ -251,7 +299,7 @@ def validate_receipt(payload: object) -> dict[str, Any]:
         raise HeadlessQualificationError("headless receipt evidence is invalid")
     digests: list[object] = [
         source.get("closure_sha256"), source.get("closure_policy_sha256"),
-        *[evidence.get(key) for key in ("closure_matrix_sha256", "runtime_fixture_sha256", "dashboard_build_sha256", "dashboard_before_sha256", "dashboard_after_sha256", "operator_before_sha256", "operator_after_sha256")],
+        *[evidence.get(key) for key in ("closure_matrix_sha256", "runtime_fixture_sha256", "dashboard_build_sha256", "recovery_campaign_sha256", "dashboard_before_sha256", "dashboard_after_sha256", "operator_before_sha256", "operator_after_sha256")],
     ]
     for batch_name in ("batch_a", "batch_b"):
         batch = evidence.get(batch_name)
@@ -391,6 +439,7 @@ def qualify(
             "fixture": _file_sha(ROOT / "tests/fixtures/paper_runtime.py"),
             "runner": _file_sha(RUNNER),
         })
+        recovery_digest = _recovery_campaign(work / "recovery", environment)
         def batch_evidence(request: dict[str, str], result: dict[str, Any]) -> dict[str, str]:
             return {
                 "input_sha256": _sha(request),
@@ -406,6 +455,7 @@ def qualify(
                 "closure_matrix_sha256": _file_sha(CLOSURE_MATRIX),
                 "runtime_fixture_sha256": fixture_digest,
                 "dashboard_build_sha256": _tree_sha(DASHBOARD / ".next"),
+                "recovery_campaign_sha256": recovery_digest,
                 "batch_a": batch_evidence(batch_a_request, batch_a),
                 "batch_b": batch_evidence(batch_b_request, batch_b),
                 "dashboard_before_sha256": _sha(before_view),

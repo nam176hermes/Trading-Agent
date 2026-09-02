@@ -221,9 +221,10 @@ def test_journal_lock_open_errors_are_typed(tmp_path: Path) -> None:
     lock = paths.command_root / "lock"
     lock.unlink()
     lock.symlink_to("/dev/null")
-    with pytest.raises(CommandJournalError, match="unsafe"):
+    with pytest.raises(CommandJournalError, match="unsafe") as raised:
         with CommandJournal(paths).locked():
             pytest.fail("unsafe lock was accepted")
+    assert raised.value.code == "COMMAND_JOURNAL_UNSAFE"
 
 
 def test_journal_record_key_must_match_loaded_path(tmp_path: Path) -> None:

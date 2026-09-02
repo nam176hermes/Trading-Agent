@@ -65,6 +65,7 @@ def _message(code: str) -> str:
         "KILL_SWITCH_NOT_ACTIVE": "The kill switch is not active.",
         "SAFETY_EVIDENCE_CHANGED": "Safety evidence changed before application.",
         "COMMAND_OUTCOME_UNKNOWN": "The command outcome is unknown.",
+        "COMMAND_JOURNAL_UNSAFE": "The command journal is unsafe.",
     }.get(code, "Operator authority is unavailable.")
 
 
@@ -107,6 +108,14 @@ def create_app(
             request, 503, "COMMAND_OUTCOME_UNKNOWN", _message("COMMAND_OUTCOME_UNKNOWN")
         )
 
+    @app.exception_handler(CommandJournalError)
+    async def handle_unsafe_journal(
+        request: Request, error: CommandJournalError
+    ) -> JSONResponse:
+        return _error_response(
+            request, 503, error.code, _message(error.code)
+        )
+
     async def handle_authority_unavailable(
         request: Request, error: Exception
     ) -> JSONResponse:
@@ -118,7 +127,6 @@ def create_app(
         )
 
     for error_type in (
-        CommandJournalError,
         ProtectedFilesystemError,
         SafetyBlockedError,
         ProtectedAuthorityError,
