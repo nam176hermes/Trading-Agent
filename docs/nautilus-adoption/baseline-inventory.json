@@ -15,7 +15,7 @@
       "component": "core-control-plane",
       "runtime": "Python >=3.11,<3.12",
       "manifest": "pyproject.toml",
-      "manifest_sha256": "db57fb3141f74e404bc2c40eeaa602f18fe2c675140d1543f6a9a84c648ed285",
+      "manifest_sha256": "d1b0bafbd78465a5c0d8468876a8390c702fe221fd240dc9ac4578148bb02f6d",
       "lockfile": "uv.lock",
       "lockfile_sha256": "82bafbf69fa3aea14d2beae426136f7c8b983c615faef1ba21f448d42f6af258"
     },
@@ -31,9 +31,9 @@
       "component": "dashboard",
       "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
       "manifest": "apps/dashboard/package.json",
-      "manifest_sha256": "4e9a878b6bdee8404c4f218f230071d0758b270e13f2932ee9a3ffadc525abe9",
+      "manifest_sha256": "39b60be65dd9d85d3095898c4de6a59e3a95ca6120bda9cc410735d9a3f7a7db",
       "lockfile": "apps/dashboard/package-lock.json",
-      "lockfile_sha256": "cc3ea6862ccf0c3acbd72c668ea3952554389b3a1214719a27d52efe7a5938b8"
+      "lockfile_sha256": "7648edbd858b45d5bf3570f6fe4128a59fd92f9a36214e01235a93bd37947c56"
     },
     {
       "component": "sealed-paper-release",
