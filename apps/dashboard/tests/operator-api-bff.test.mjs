@@ -224,6 +224,26 @@ test('kill-switch activation uses the exact loopback command contract and preser
   })));
 });
 
+test('operator client accepts only a literal loopback test origin', async () => {
+  const { submitKillSwitchActivation } = await import('../src/lib/trading/operator-api.ts');
+  process.env.OPERATOR_API_WEB_TOKEN_FILE = privateToken('u'.repeat(32));
+  process.env.TRADING_OPERATOR_API_ORIGIN = 'http://127.0.0.1:49124';
+  const requested = [];
+  const fetcher = async (input) => {
+    requested.push(String(input));
+    return jsonResponse(operatorEnvelope());
+  };
+  await submitKillSwitchActivation({ operationId: OPERATION_ID, reason: 'drill' }, fetcher);
+  assert.deepEqual(requested, ['http://127.0.0.1:49124/v1/commands']);
+
+  process.env.TRADING_OPERATOR_API_ORIGIN = 'http://example.test:49124';
+  await assert.rejects(
+    submitKillSwitchActivation({ operationId: OPERATION_ID, reason: 'drill' }, fetcher),
+    /Operator API is unavailable/,
+  );
+  assert.equal(requested.length, 1);
+});
+
 test('operator client fails closed on invalid commands and untrusted responses', async (t) => {
   const { submitKillSwitchActivation } = await import('../src/lib/trading/operator-api.ts');
   process.env.OPERATOR_API_WEB_TOKEN_FILE = privateToken('z'.repeat(32));

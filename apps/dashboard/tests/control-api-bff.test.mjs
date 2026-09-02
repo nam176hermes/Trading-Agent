@@ -30,9 +30,11 @@ registerHooks({
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const originalFetch = globalThis.fetch;
+const originalEnvironment = { ...process.env };
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  process.env = { ...originalEnvironment };
 });
 
 function statusEnvelope(extra = {}) {
@@ -126,6 +128,22 @@ test('Control API client uses one fixed loopback origin and validates a strict s
   assert.equal(response.data.effective_mode, 'PAPER');
   assert.equal(response.data.orders_count, null);
   assert.equal(response.data.trades_count, null);
+});
+
+test('Control API client accepts only a literal loopback test origin', async () => {
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return Response.json(statusEnvelope());
+  };
+  const { ControlApiClientError, getControlStatus } = await import('../src/lib/trading/control-api.ts');
+  process.env.TRADING_CONTROL_API_ORIGIN = 'http://127.0.0.1:49123';
+  await getControlStatus();
+  assert.deepEqual(requested, ['http://127.0.0.1:49123/v1/system/status']);
+
+  process.env.TRADING_CONTROL_API_ORIGIN = 'http://example.test:49123';
+  await assert.rejects(getControlStatus(), (error) => error instanceof ControlApiClientError);
+  assert.equal(requested.length, 1);
 });
 
 test('Control API client rejects extra contract fields without a filesystem fallback', async () => {

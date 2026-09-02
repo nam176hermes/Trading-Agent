@@ -113,6 +113,8 @@ _REQUIRED_FILES = {
     ),
     "HWC_PORTABLE_HEADLESS_PROOF": (
         "scripts/qualify_hwc_headless.py",
+        "tests/fixtures/paper_runtime.py",
+        "tests/hwc/fixtures/headless_runtime_runner.py",
         "tests/hwc/test_headless_portable.py",
     ),
     "HWC_COMMAND_RECOVERY_PROOF": (

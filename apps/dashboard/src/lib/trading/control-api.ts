@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { components } from '../../../../../generated/dashboard/api-types';
 
-const CONTROL_API_ORIGIN = 'http://127.0.0.1:8400';
+const DEFAULT_CONTROL_API_ORIGIN = 'http://127.0.0.1:8400';
 const CONTROL_API_SCHEMA_VERSION = '2.0.0';
 const CONTROL_API_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_BODY_BYTES = 512 * 1024;
@@ -216,6 +216,16 @@ export class ControlApiClientError extends Error {
     super('Control API is unavailable.');
     this.name = 'ControlApiClientError';
   }
+}
+
+function controlApiOrigin(): string {
+  const value = process.env.TRADING_CONTROL_API_ORIGIN ?? DEFAULT_CONTROL_API_ORIGIN;
+  let url: URL;
+  try { url = new URL(value); } catch { throw new ControlApiClientError(); }
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
+    || url.username || url.password || url.pathname !== '/' || url.search || url.hash
+    || value !== `http://127.0.0.1:${url.port}`) throw new ControlApiClientError();
+  return value;
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -608,9 +618,10 @@ async function readBoundedBody(response: Response): Promise<string | null> {
 }
 
 async function requestControlApi<T>(pathname: string, parser: Parser<T>): Promise<ControlEnvelope<T>> {
+  const origin = controlApiOrigin();
   let url: URL;
-  try { url = new URL(pathname, CONTROL_API_ORIGIN); } catch { throw new ControlApiClientError(); }
-  if (url.origin !== CONTROL_API_ORIGIN || !url.pathname.startsWith('/v1/')) throw new ControlApiClientError();
+  try { url = new URL(pathname, origin); } catch { throw new ControlApiClientError(); }
+  if (url.origin !== origin || !url.pathname.startsWith('/v1/')) throw new ControlApiClientError();
   try {
     const response = await fetch(url, {
       method: 'GET',

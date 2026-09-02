@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { components } from '../../generated/operator-api-types';
 import { readBoundedUtf8Body } from './request-body';
 
-const OPERATOR_API_ORIGIN = 'http://127.0.0.1:8402';
+const DEFAULT_OPERATOR_API_ORIGIN = 'http://127.0.0.1:8402';
 const OPERATOR_API_TIMEOUT_MS = 5_000;
 const MAX_UPSTREAM_BODY_BYTES = 256 * 1024;
 const MAX_TOKEN_BYTES = 4_096;
@@ -30,6 +30,16 @@ export class OperatorApiClientError extends Error {
 
 function unavailable(): never {
   throw new OperatorApiClientError();
+}
+
+function operatorApiOrigin(): string {
+  const value = process.env.TRADING_OPERATOR_API_ORIGIN ?? DEFAULT_OPERATOR_API_ORIGIN;
+  let url: URL;
+  try { url = new URL(value); } catch { return unavailable(); }
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
+    || url.username || url.password || url.pathname !== '/' || url.search || url.hash
+    || value !== `http://127.0.0.1:${url.port}`) unavailable();
+  return value;
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -164,6 +174,7 @@ export async function submitKillSwitchActivation(
   if (!/^op_[0-9a-f]{32}$/.test(activation.operationId)
     || reason.length < 1 || reason.length > 256 || /[\r\n]/.test(reason)) unavailable();
   const operationHex = activation.operationId.slice(3);
+  const origin = operatorApiOrigin();
   const token = loadOperatorWebToken();
   const body = {
     schema_version: 'submit-operator-command-v1',
@@ -178,7 +189,7 @@ export async function submitKillSwitchActivation(
     },
   } as const;
   try {
-    const response = await fetcher(`${OPERATOR_API_ORIGIN}/v1/commands`, {
+    const response = await fetcher(`${origin}/v1/commands`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${token}`,
@@ -192,7 +203,7 @@ export async function submitKillSwitchActivation(
     });
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok || response.redirected
-      || (response.url && new URL(response.url).origin !== OPERATOR_API_ORIGIN)
+      || (response.url && new URL(response.url).origin !== origin)
       || !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(contentType)) unavailable();
     const bounded = await readBoundedUtf8Body(response, MAX_UPSTREAM_BODY_BYTES);
     if (!bounded.ok) unavailable();
