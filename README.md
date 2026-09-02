@@ -220,3 +220,8 @@ The future process layout, protected state and credential ownership, ordering,
 rollback rules, and explicit held deployment verdicts are recorded in
 `docs/operations/hwc-process-topology.md`. It is documentation only and does not
 install or activate services.
+
+Current derived status is `HWC_SOURCE_COMPLETE=PASS` and
+`HWC_SOURCE_READY=HELD`: the remaining source-readiness evidence is the exact
+protected-main Foundation receipt, which cannot be replaced by feature-branch
+or local evidence. All deployment and live authorities remain held.
