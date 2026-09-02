@@ -75,7 +75,7 @@ class OperatorControlService:
             )
             intent = self._intent(actor, request, key, accepted_at, plan)
             self.journal.create_intent(intent)
-            return self._apply(key, intent, plan, deduplicated=False)
+            return self._apply(key, intent, request, plan, deduplicated=False)
 
     def _resume(
         self,
@@ -118,21 +118,30 @@ class OperatorControlService:
             safety=safety,
         )
         self._require_same_plan(intent, plan)
-        return self._apply(key, intent, plan, deduplicated=True)
+        return self._apply(key, intent, request, plan, deduplicated=True)
 
     def _apply(
         self,
         key: str,
         intent: CommandIntentV1,
+        request: SubmitOperatorCommandV1,
         plan: OperatorMutationPlan,
         *,
         deduplicated: bool,
     ) -> CommandExecutionResultV1:
+        current = self.state_store.read_state()
         if intent.safety_evidence_sha256 is not None:
             fresh = self.safety_provider()
             if fresh.evidence_sha256 != intent.safety_evidence_sha256:
                 raise OperatorCommandRejected("SAFETY_EVIDENCE_CHANGED", 409)
-        current = self.state_store.read_state()
+            current_plan = decide_operator_command(
+                actor=intent.actor,
+                request=request,
+                current=current,
+                accepted_at=self._now(),
+                safety=fresh,
+            )
+            self._require_same_plan(intent, current_plan)
         if current.state_sha256 != intent.prior_state_sha256:
             raise RecoveryError("COMMAND_OUTCOME_UNKNOWN")
 

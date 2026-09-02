@@ -203,6 +203,34 @@ def test_clear_rejects_safety_drift_after_durable_intent(tmp_path: Path) -> None
     assert snapshot.intent is not None and snapshot.applied is None
 
 
+def test_clear_retry_rejects_safety_that_expired_after_durable_intent(
+    tmp_path: Path,
+) -> None:
+    paths = provision_operator_state(tmp_path)
+    write_private(paths.mode_path, b"paper\n")
+    write_private(paths.kill_switch_path, b"2026-09-02T11:59:59Z: incident\n")
+    current = OperatorStateStore(paths).read_state()
+    clear = request(
+        SetKillSwitchV1(
+            command_type="SET_KILL_SWITCH", desired_state="INACTIVE", reason=None
+        ),
+        expected_state_sha256=current.state_sha256,
+    )
+
+    def crash(name: str) -> None:
+        if name == "AFTER_INTENT_FSYNC":
+            raise RuntimeError("synthetic crash")
+
+    interrupted = service_for(paths, journal=CommandJournal(paths, failpoint=crash))
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        interrupted.execute(actor(), clear)
+
+    expired = service_for(paths, clock=lambda: NOW + timedelta(seconds=6))
+    with pytest.raises(OperatorCommandRejected, match="KILL_SWITCH_CLEAR_UNSAFE"):
+        expired.execute(actor(), clear)
+    assert paths.kill_switch_path.exists()
+
+
 def test_retry_recovers_mutation_interrupted_before_applied_record(
     tmp_path: Path,
 ) -> None:

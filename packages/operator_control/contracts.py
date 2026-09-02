@@ -19,6 +19,7 @@ SourceMode: TypeAlias = Literal["PAPER", "DRYRUN", "LIVE", "UNKNOWN"]
 KillSwitchDesiredState: TypeAlias = Literal["ACTIVE", "INACTIVE"]
 KillSwitchSourceState: TypeAlias = Literal["ACTIVE", "INACTIVE", "UNKNOWN"]
 CommandId = Annotated[str, Field(pattern=r"^cmd_[0-9a-f]{32}$")]
+_MAX_KILL_SWITCH_REASON_BYTES = 994  # 1024-byte sentinel minus timestamp and delimiter.
 
 
 class OperatorModel(BaseModel):
@@ -49,14 +50,15 @@ class SetKillSwitchV1(OperatorModel):
             if self.reason is not None:
                 raise ValueError("reason must be None when clearing the kill switch")
             return self
+        reason = self.reason.strip() if self.reason is not None else ""
         if (
-            self.reason is None
-            or not (1 <= len(self.reason.strip()) <= 256)
-            or "\n" in self.reason
-            or "\r" in self.reason
+            not (1 <= len(reason) <= 256)
+            or len(reason.encode("utf-8")) > _MAX_KILL_SWITCH_REASON_BYTES
+            or "\n" in reason
+            or "\r" in reason
         ):
             raise ValueError("reason must contain 1..256 characters after trim")
-        object.__setattr__(self, "reason", self.reason.strip())
+        object.__setattr__(self, "reason", reason)
         return self
 
 

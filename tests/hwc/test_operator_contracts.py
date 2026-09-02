@@ -124,6 +124,15 @@ def test_kill_activation_requires_a_bounded_trimmed_reason(reason: str | None) -
         )
 
 
+def test_kill_activation_reason_must_fit_the_protected_sentinel() -> None:
+    with pytest.raises(ValidationError, match="reason"):
+        SetKillSwitchV1(
+            command_type="SET_KILL_SWITCH",
+            desired_state="ACTIVE",
+            reason="\U0001f6d1" * 256,
+        )
+
+
 def test_kill_clear_forbids_reason() -> None:
     clear = SetKillSwitchV1(
         command_type="SET_KILL_SWITCH", desired_state="INACTIVE", reason=None
