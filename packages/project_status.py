@@ -11,6 +11,7 @@ import stat
 from typing import Any
 
 from packages.engine_contracts.serialization import canonical_json_bytes
+from packages.hwc_status import derive_hwc_source_status
 from packages.pre_p3_provenance import (
     PROMOTION_ROOT,
     ProvenanceError,
@@ -276,9 +277,11 @@ def derive_project_status(root: Path) -> dict[str, Any]:
         p0_status = "HELD"
         blockers.append("P0: P0_SOURCE_COMPLETE absent")
     pre_p3 = evaluate_pre_p3_provenance(root)
+    hwc = derive_hwc_source_status(root)
     gates = pre_p3["gates"]
     latest.update(pre_p3["latest_receipts"])
     blockers.extend(pre_p3["blockers"])
+    blockers.extend(hwc["blockers"])
 
     p1_complete_path = root / policy["bindings"]["p1_complete_receipt"]["path"]
     p1_complete = (
@@ -290,6 +293,7 @@ def derive_project_status(root: Path) -> dict[str, Any]:
         p0_status == "P0_SOURCE_COMPLETE"
         and p1_complete
         and pre_p3["pre_p3_ready"] == "PASS"
+        and hwc["gates"]["ARCH_CONTRACT_READY"] == "PASS"
     )
     active = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ACTIVE")
     rollback = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ROLLBACK")
@@ -308,6 +312,7 @@ def derive_project_status(root: Path) -> dict[str, Any]:
             "P0": p0_status,
             "P1_COMPLETE": "PASS" if p1_complete else "HELD",
             **gates,
+            **hwc["gates"],
             "PRE_P3_READY": pre_p3["pre_p3_ready"],
             "PROJECT_STATUS_AUTHORITY": "PASS",
         },

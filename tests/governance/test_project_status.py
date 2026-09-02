@@ -99,6 +99,7 @@ def test_status_is_derived_and_never_promotes_live_authority() -> None:
     assert status["execution_scope"] == "PAPER_LOCAL_ONLY"
     assert status["p3_alpha_development_allowed"] is (
         status["gates"]["PRE_P3_READY"] == "PASS"
+        and status["gates"]["ARCH_CONTRACT_READY"] == "PASS"
     )
     assert status["live_eligible"] is False
     assert status["live_enabled"] is False

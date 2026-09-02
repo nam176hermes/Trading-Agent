@@ -1196,6 +1196,8 @@ def _validate(context: _ValidationContext, *, require_complete: bool) -> str:
             _fail("P0_CLOSURE_END_STATE_BINDING_INVALID")
     if identifiers != list(REQUIREMENTS) or len(set(identifiers)) != len(identifiers):
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
+    if not _reachable(graph, "ci-portable", "check-hwc-status"):
+        _fail("P0_CLOSURE_HWC_STATUS_UNREACHABLE")
 
     if state == "P0_SOURCE_COMPLETE":
         _fail("P0_CLOSURE_COMPLETION_MODE_INVALID")

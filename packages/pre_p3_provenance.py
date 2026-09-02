@@ -19,6 +19,10 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 
 SOURCE_CLOSURE_SCHEMA = "trading-agent-source-closure-v1"
 PROJECT_STATUS_PATH = "docs/implementation/project-status.json"
+HWC_STATUS_PATH = "docs/implementation/hwc/hwc-source-status.json"
+HWC_PORTABLE_RECEIPT_PATH = (
+    "docs/implementation/hwc/receipts/hwc-portable-qualified-v1.json"
+)
 RECEIPT_ROOT = "docs/implementation/pre-p3/receipts"
 PROMOTION_ROOT = "docs/implementation/pre-p3/promotions"
 _V1_RECEIPTS = frozenset(
@@ -61,6 +65,8 @@ _V1_GATE_BY_NAME = {
 }
 _POLICY = {
     "excluded_exact_paths": [PROJECT_STATUS_PATH],
+    "excluded_hwc_status": HWC_STATUS_PATH,
+    "excluded_hwc_portable_receipt": HWC_PORTABLE_RECEIPT_PATH,
     "excluded_legacy_receipts": sorted(_V1_RECEIPTS),
     "excluded_v2_receipts": sorted(_V2_RECEIPTS | {_CANDIDATE_NAME}),
     "promotion_receipt_pattern": f"{PROMOTION_ROOT}/<promoted-commit-sha>-v1.json",
@@ -226,9 +232,30 @@ def _valid_legacy_receipt(raw: bytes) -> bool:
     )
 
 
+def _valid_hwc_portable_source(raw: bytes) -> dict[str, str] | None:
+    from packages.hwc_status import HwcStatusError, validate_hwc_portable_receipt
+
+    try:
+        payload = validate_hwc_portable_receipt(json.loads(raw))
+    except (UnicodeError, json.JSONDecodeError, HwcStatusError):
+        return None
+    source = payload["source"]
+    return {key: str(value) for key, value in source.items()}
+
+
 def _excluded_output(path: str, mode: str, raw: bytes) -> bool:
     if path == PROJECT_STATUS_PATH:
         return mode == "100644"
+    if path == HWC_STATUS_PATH:
+        from packages.hwc_status import HwcStatusError, validate_hwc_source_status
+
+        try:
+            validate_hwc_source_status(json.loads(raw))
+        except (UnicodeError, json.JSONDecodeError, HwcStatusError):
+            return False
+        return mode == "100644"
+    if path == HWC_PORTABLE_RECEIPT_PATH:
+        return mode == "100644" and _valid_hwc_portable_source(raw) is not None
     parent, _, name = path.rpartition("/")
     if parent == RECEIPT_ROOT and name in _V1_RECEIPTS:
         return mode == "100644" and _valid_legacy_receipt(raw)
@@ -253,6 +280,29 @@ def _excluded_output(path: str, mode: str, raw: bytes) -> bool:
     return False
 
 
+def _closure_digest(
+    entries: list[tuple[str, str, bytes]],
+    blobs: list[bytes],
+    *,
+    include_hwc_receipt: bool = False,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"trading-agent-source-closure/v1\0")
+    digest.update(bytes.fromhex(SOURCE_CLOSURE_POLICY_SHA256))
+    for (mode, _, path_raw), blob in zip(entries, blobs, strict=True):
+        path = path_raw.decode("utf-8")
+        if not (
+            include_hwc_receipt and path == HWC_PORTABLE_RECEIPT_PATH
+        ) and _excluded_output(path, mode, blob):
+            continue
+        digest.update(mode.encode("ascii") + b"\0")
+        digest.update(struct.pack(">Q", len(path_raw)))
+        digest.update(path_raw)
+        digest.update(struct.pack(">Q", len(blob)))
+        digest.update(blob)
+    return digest.hexdigest()
+
+
 def canonical_source_identity(root: Path, revision: str = "HEAD") -> dict[str, str]:
     """Return deterministic semantic identity for one committed source closure."""
     root = root.resolve()
@@ -264,22 +314,41 @@ def canonical_source_identity(root: Path, revision: str = "HEAD") -> dict[str, s
         raise ProvenanceError("Git revision identity is invalid")
     entries = _parse_tree(_git(root, "ls-tree", "-rz", "--full-tree", commit_sha))
     blobs = _read_blobs(root, entries)
-    digest = hashlib.sha256()
-    digest.update(b"trading-agent-source-closure/v1\0")
-    digest.update(bytes.fromhex(SOURCE_CLOSURE_POLICY_SHA256))
+    closure_sha256 = _closure_digest(entries, blobs)
+    portable_source: dict[str, str] | None = None
     for (mode, _, path_raw), blob in zip(entries, blobs, strict=True):
         path = path_raw.decode("utf-8")
-        if _excluded_output(path, mode, blob):
-            continue
-        digest.update(mode.encode("ascii") + b"\0")
-        digest.update(struct.pack(">Q", len(path_raw)))
-        digest.update(path_raw)
-        digest.update(struct.pack(">Q", len(blob)))
-        digest.update(blob)
+        if path == HWC_PORTABLE_RECEIPT_PATH and mode == "100644":
+            portable_source = _valid_hwc_portable_source(blob)
+            break
+    portable_source_bound = False
+    if portable_source is not None:
+        try:
+            _git(
+                root,
+                "merge-base",
+                "--is-ancestor",
+                portable_source["commit_sha"],
+                commit_sha,
+            )
+            portable_source_bound = (
+                canonical_source_identity(root, portable_source["commit_sha"])
+                == portable_source
+            )
+        except (KeyError, ProvenanceError):
+            portable_source_bound = False
+    if portable_source is not None and (
+        not portable_source_bound
+        or portable_source.get("closure_schema_version") != SOURCE_CLOSURE_SCHEMA
+        or portable_source.get("closure_policy_sha256")
+        != SOURCE_CLOSURE_POLICY_SHA256
+        or portable_source.get("closure_sha256") != closure_sha256
+    ):
+        closure_sha256 = _closure_digest(entries, blobs, include_hwc_receipt=True)
     return {
         "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
         "closure_schema_version": SOURCE_CLOSURE_SCHEMA,
-        "closure_sha256": digest.hexdigest(),
+        "closure_sha256": closure_sha256,
         "commit_sha": commit_sha,
         "tree_sha": tree_sha,
     }

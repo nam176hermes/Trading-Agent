@@ -160,6 +160,22 @@ def test_noncanonical_matrix_bytes_fail_closed(context: closure._ValidationConte
     _error(context, "P0_CLOSURE_JSON_NONCANONICAL")
 
 
+def test_portable_ci_cannot_bypass_hwc_status(context: closure._ValidationContext) -> None:
+    """Break caught: portable qualification omits the canonical HWC projection."""
+    makefile = context.root / "Makefile"
+    raw = makefile.read_bytes()
+    makefile.write_bytes(
+        b"\n".join(
+            line.replace(b" check-hwc-status", b"")
+            if line.startswith(b"check-contracts:")
+            else line
+            for line in raw.split(b"\n")
+        )
+    )
+
+    _error(context, "P0_CLOSURE_HWC_STATUS_UNREACHABLE")
+
+
 def test_end_state_ids_cannot_exchange_truthful_but_wrong_proofs(context: closure._ValidationContext) -> None:
     """Break caught: E01 ancestry silently points at E02 date-authority proof."""
     document = _document(context)

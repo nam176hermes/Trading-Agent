@@ -17,6 +17,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.engine_contracts.serialization import canonical_json_bytes
+from packages.hwc_status import (
+    HWC_STATUS_PATH,
+    derive_hwc_source_status,
+    validate_hwc_source_status,
+)
 from packages.pre_p3_provenance import (
     canonical_source_identity,
     make_candidate_certificate,
@@ -193,6 +198,24 @@ def _source_v2() -> dict[str, str]:
         return canonical_source_identity(ROOT, "HEAD")
     except ValueError as exc:
         raise QualificationError("canonical source identity is unavailable") from exc
+
+
+def _require_hwc_arch_contract() -> None:
+    path = ROOT / HWC_STATUS_PATH
+    try:
+        if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
+            raise QualificationError("tracked HWC source status is unavailable")
+        tracked = validate_hwc_source_status(json.loads(path.read_bytes()))
+        derived = derive_hwc_source_status(ROOT)
+    except QualificationError:
+        raise
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise QualificationError("tracked HWC source status is invalid") from exc
+    if (
+        canonical_json_bytes(tracked) != canonical_json_bytes(derived)
+        or derived["gates"]["ARCH_CONTRACT_READY"] != "PASS"
+    ):
+        raise QualificationError("tracked HWC ARCH_CONTRACT_READY is stale or held")
 
 
 def issue_p2_fixture(
@@ -1022,6 +1045,7 @@ def candidate_v2(
     promotion_type: str,
     qualification: dict[str, str],
 ) -> None:
+    _require_hwc_arch_contract()
     receipts = {
         gate: _load_v2(receipt_dir / name, gate) for gate, name in RECEIPTS.items()
     }

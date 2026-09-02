@@ -97,7 +97,7 @@ def test_portable_make_routes_cannot_bypass_hwc_boundaries() -> None:
     """Break caught: portable CI can omit the executable HWC boundary gate."""
     source = (ROOT / "Makefile").read_text(encoding="utf-8")
     assert re.search(
-        r"^check-hwc-boundaries:\n\t\$\(PYTHON\) scripts/check_hwc_boundaries.py$",
+        r"^check-hwc-boundaries: check-hwc-status\n\t\$\(PYTHON\) scripts/check_hwc_boundaries.py$",
         source,
         re.MULTILINE,
     )
