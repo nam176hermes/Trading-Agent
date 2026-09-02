@@ -45,7 +45,7 @@ _TRANSIENT_ARTIFACT_PATTERNS = (
 _SEALED_PYTHON_SOURCES = (
     "packages/domain", "packages/event_ledger", "services/job_worker",
     "packages/job_contracts", "packages/job_authority", "services/job_store",
-    "apps/operator_api",
+    "apps/operator_api", "packages.operator_control.credentials",
 )
 _SEALED_PYTEST_PATHS = (
     "tests/domain", "tests/event_ledger", "tests/jobs/test_state_machine.py",
@@ -68,7 +68,13 @@ _SEALED_PYTHON_UNITS = {
     "job state machine": ((), ("packages/job_contracts/enums.py", "packages/job_contracts/transitions.py"), (), (67, 67), (16, 16)),
     "transition authority": (("packages/job_authority/",), (), (), (209, 242), (72, 92)),
     "transition repositories": ((), ("services/job_store/repository.py", "services/job_store/worker_repository.py"), (), (251, 427), (34, 118)),
-    "operator API": (("apps/operator_api/",), (), (), (363, 376), (45, 58)),
+    "operator API": (
+        ("apps/operator_api/",),
+        ("packages/operator_control/credentials.py",),
+        (),
+        (363, 376),
+        (45, 58),
+    ),
 }
 _SEALED_DASHBOARD_FILES = (
     "src/lib/trading/access-policy.ts", "src/lib/trading/auth.ts",

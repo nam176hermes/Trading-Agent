@@ -13,7 +13,8 @@
       "packages/job_contracts",
       "packages/job_authority",
       "services/job_store",
-      "apps/operator_api"
+      "apps/operator_api",
+      "packages.operator_control.credentials"
     ],
     "pytest_paths": [
       "tests/domain",
@@ -105,6 +106,7 @@
       {
         "name": "operator API",
         "prefixes": ["apps/operator_api/"],
+        "files": ["packages/operator_control/credentials.py"],
         "line_minimum": {"covered": 363, "total": 376},
         "branch_minimum": {"covered": 45, "total": 58},
         "line_goal_percent": 95,
