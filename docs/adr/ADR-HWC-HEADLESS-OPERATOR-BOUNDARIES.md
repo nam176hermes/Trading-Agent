@@ -1,6 +1,6 @@
 # ADR: Headless core and operator boundaries
 
-**Status:** Accepted source architecture; runtime deployment held  
+**Status:** Accepted source architecture; runtime deployment held
 **Date:** 2026-09-02
 
 ## Decision
