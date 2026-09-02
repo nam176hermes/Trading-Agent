@@ -9,6 +9,7 @@ HWC = ROOT / "docs" / "implementation" / "hwc"
 INVENTORY = HWC / "hwc-authority-inventory-v1.json"
 POLICY = HWC / "hwc-boundary-policy-v1.json"
 CLOSURE = HWC / "hwc-closure-matrix-v1.json"
+TOPOLOGY = ROOT / "docs/operations/hwc-process-topology.md"
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -68,3 +69,28 @@ def test_hwc_policy_freezes_every_current_route_and_authority_limit() -> None:
         "production": False,
     }
     assert all(gate["source_only"] is True for gate in closure["gates"])
+
+
+def test_future_hwc_topology_is_specific_and_all_deployment_authority_is_held() -> None:
+    topology = TOPOLOGY.read_text(encoding="utf-8")
+    closure = _load(CLOSURE)
+    for required in (
+        "trading-control-api      127.0.0.1:8400",
+        "trading-job-api          127.0.0.1:8401",
+        "trading-operator-api     127.0.0.1:8402",
+        "SYSTEMD_SOURCE=HELD",
+        "RELEASE_V2_INTEGRATION=HELD",
+        "HOST_QUALIFICATION=HELD",
+        "RUNTIME_ACTIVATION=HELD",
+        "/home/thenam176/.hermes/crypto-research/.operator-commands",
+        "same filesystem",
+        "must not be a parent",
+    ):
+        assert required in topology
+    assert closure["topology"] == "docs/operations/hwc-process-topology.md"
+    assert closure["deployment"] == {
+        "host_qualified": "HELD",
+        "release_v2_integrated": "HELD",
+        "runtime_active": "HELD",
+        "systemd_source": "HELD",
+    }

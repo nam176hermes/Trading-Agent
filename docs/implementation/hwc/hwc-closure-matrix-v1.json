@@ -23,6 +23,7 @@
     {"gate": "HWC_PORTABLE_QUALIFIED", "evidence": "docs/implementation/hwc/receipts/hwc-portable-qualified-v1.json", "test": "tests/hwc/test_hwc_receipt.py", "source_only": true},
     {"gate": "HWC_SOURCE_READY", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc/test_hwc_status.py", "source_only": true}
   ],
+  "topology": "docs/operations/hwc-process-topology.md",
   "deployment": {
     "host_qualified": "HELD",
     "release_v2_integrated": "HELD",

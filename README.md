@@ -215,3 +215,8 @@ the read authority, Job API owns durable research jobs, and the bounded
 Operator API is the sole target for operator state commands. Dashboard and CLI
 are replaceable clients; this source architecture grants no deployment or live
 authority. See `docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md`.
+
+The future process layout, protected state and credential ownership, ordering,
+rollback rules, and explicit held deployment verdicts are recorded in
+`docs/operations/hwc-process-topology.md`. It is documentation only and does not
+install or activate services.
