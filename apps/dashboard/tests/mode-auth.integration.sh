@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CANONICAL_ROOT=$(cd "$ROOT/../.." && pwd)
-BACKEND_ROOT="$CANONICAL_ROOT/legacy/research-backend"
 WORK=$(mktemp -d)
 APP="$WORK/apps/dashboard"
 DATA_ROOT="$WORK/runtime"
@@ -146,23 +145,6 @@ grep -q '"code":"CLI_REQUIRED"' "$WORK/live.json" \
   || fail 'live-mode mutation did not require CLI'
 grep -q '^paper$' "$MODE_FILE" || fail 'rejected live mutation changed paper mode'
 
-kill_on_status=$(curl -sS -o "$WORK/kill-on.json" -w '%{http_code}' \
-  -X POST "$BASE_URL/api/trading/kill-switch" \
-  -b "$COOKIE_JAR" \
-  -H "origin: $BASE_URL" \
-  -H "x-forwarded-host: localhost:$PORT" \
-  -H 'x-forwarded-proto: http' \
-  -H 'content-type: application/json' \
-  --data '{"action":"on","reason":"temporary integration drill"}')
-expect_status "$kill_on_status" 200 'kill-switch activation'
-grep -q '"state":"ACTIVE"' "$WORK/kill-on.json" \
-  || fail 'kill-switch activation did not report ACTIVE'
-[[ -f "$KILL_SWITCH_FILE" ]] || fail 'kill-switch activation did not create state file'
-TRADING_DATA_ROOT="$DATA_ROOT" TRADING_MODE_FILE="$MODE_FILE" \
-TRADING_KILL_SWITCH_PATH="$KILL_SWITCH_FILE" PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH="$BACKEND_ROOT" python3 -c \
-  'from kill_switch import read_kill_switch_state; assert read_kill_switch_state().state.value == "ACTIVE"'
-
 kill_off_status=$(curl -sS -o "$WORK/kill-off.json" -w '%{http_code}' \
   -X POST "$BASE_URL/api/trading/kill-switch" \
   -b "$COOKIE_JAR" \
@@ -171,14 +153,10 @@ kill_off_status=$(curl -sS -o "$WORK/kill-off.json" -w '%{http_code}' \
   -H 'x-forwarded-proto: http' \
   -H 'content-type: application/json' \
   --data '{"action":"off"}')
-expect_status "$kill_off_status" 200 'kill-switch deactivation'
-grep -q '"state":"INACTIVE"' "$WORK/kill-off.json" \
-  || fail 'kill-switch deactivation did not report INACTIVE'
-[[ ! -e "$KILL_SWITCH_FILE" ]] || fail 'kill-switch deactivation left state file behind'
-TRADING_DATA_ROOT="$DATA_ROOT" TRADING_MODE_FILE="$MODE_FILE" \
-TRADING_KILL_SWITCH_PATH="$KILL_SWITCH_FILE" PYTHONDONTWRITEBYTECODE=1 \
-PYTHONPATH="$BACKEND_ROOT" python3 -c \
-  'from kill_switch import read_kill_switch_state; assert read_kill_switch_state().state.value == "INACTIVE"'
+expect_status "$kill_off_status" 403 'kill-switch deactivation'
+grep -q '"code":"CLI_REQUIRED"' "$WORK/kill-off.json" \
+  || fail 'kill-switch deactivation did not require CLI'
+[[ ! -e "$KILL_SWITCH_FILE" ]] || fail 'rejected kill-switch clear changed local state'
 
 [[ -s "$DATA_ROOT/memory/dashboard_mutation_audit.jsonl" ]] \
   || fail 'mutation audit log was not written'

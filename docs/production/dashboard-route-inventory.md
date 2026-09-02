@@ -80,7 +80,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/jobs/:id` | GET / reader | Job API detail v1 envelope | `pipeline-status`, `run-pipeline-button` | canonical |
 | `/jobs/:id/cancel` | POST / operator | Job API cancel v1 envelope or disabled-command 503 | none found (dynamic caller) | canonical |
 | `/keys` | GET, POST / admin | No credential-management upstream; authenticated typed 503 | `settings/page` | typed unavailable |
-| `/kill-switch` | GET / reader; POST / admin | Control status plus protected local switch; structured state/error JSON | `quick-actions`, `halt-banner` | compatibility |
+| `/kill-switch` | GET / reader; POST / admin | Control status query; activation is a strict Operator API WEB command; clear returns local `403 CLI_REQUIRED` | `quick-actions` | canonical read / Operator API command |
 | `/live-positions` | GET / reader | None; `SOURCE_UNAVAILABLE` | `live-positions-card` | typed unavailable |
 | `/macro` | GET / reader | None; `SOURCE_UNAVAILABLE` | `macro-dashboard` | typed unavailable |
 | `/market` | GET / reader | Control API canonical P10 snapshot/freshness envelope or typed unavailable | `market-ticker` | canonical |

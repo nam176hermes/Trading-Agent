@@ -166,18 +166,15 @@ test('pipeline submission rejects non-OK, null, malformed, and mismatched 2xx re
 
 test('kill-switch intent binds authority revision and rejects an ABA state cycle', () => {
   const halt = createKillSwitchIntent('INACTIVE', 1);
-  const resume = createKillSwitchIntent('ACTIVE', 2);
 
   assert.deepEqual(halt, {
     observedState: 'INACTIVE',
     observedRevision: 1,
     action: 'on',
+    operationId: halt.operationId,
   });
-  assert.deepEqual(resume, {
-    observedState: 'ACTIVE',
-    observedRevision: 2,
-    action: 'off',
-  });
+  assert.match(halt.operationId, /^op_[0-9a-f]{32}$/);
+  assert.equal(createKillSwitchIntent('ACTIVE', 2), null);
   assert.equal(createKillSwitchIntent('UNKNOWN', 1), null);
   assert.deepEqual(validateKillSwitchIntent(halt, 'INACTIVE', 1), halt);
   assert.equal(validateKillSwitchIntent(halt, 'ACTIVE', 2), null);
@@ -186,10 +183,13 @@ test('kill-switch intent binds authority revision and rejects an ABA state cycle
   assert.deepEqual(killSwitchRequest(halt, 'INACTIVE', 1, ' volatility '), {
     action: 'on',
     reason: 'volatility',
+    operation_id: halt.operationId,
   });
   assert.equal(killSwitchRequest(halt, 'ACTIVE', 2, 'volatility'), null);
   assert.equal(killSwitchRequest(halt, 'INACTIVE', 3, 'volatility'), null);
-  assert.deepEqual(killSwitchRequest(resume, 'ACTIVE', 2, ''), { action: 'off' });
+  assert.equal(killSwitchRequest(halt, 'INACTIVE', 1, ''), null);
+  assert.equal(killSwitchRequest(halt, 'INACTIVE', 1, 'x'.repeat(257)), null);
+  assert.equal(killSwitchRequest(halt, 'INACTIVE', 1, 'line\nbreak'), null);
 });
 
 test('exchange configuration preserves and presents authoritative configured false', () => {

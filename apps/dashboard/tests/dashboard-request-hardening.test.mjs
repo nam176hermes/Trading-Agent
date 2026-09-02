@@ -197,10 +197,10 @@ test('mutation DTOs reject extras, Infinity, and unsafe symbols while valid requ
 
   assert.equal((await killSwitch.POST(await authorizedRequest('https://dashboard.test/api/trading/kill-switch', 'admin', {
     action: 'off', reason: 'not allowed for off',
-  }))).status, 400);
+  }))).status, 403);
   assert.equal((await killSwitch.POST(await authorizedRequest('https://dashboard.test/api/trading/kill-switch', 'admin', {
     action: 'on', reason: 'synthetic safety drill',
-  }))).status, 200);
+  }))).status, 400);
 
   assert.equal((await watchlist.POST(await authorizedRequest('https://dashboard.test/api/trading/watchlist', 'operator', {
     action: 'add', symbol: 'constructor', extra: true,
@@ -451,10 +451,10 @@ test('watchlist rejects additions at the persisted symbol limit without corrupti
   assert.equal(fs.readFileSync(target, 'utf8'), original);
 });
 
-test('halt banner uses the strict kill-switch-off request contract', () => {
+test('halt banner requires CLI for kill-switch clear', () => {
   const source = fs.readFileSync(path.join(
     ROOT, 'src/components/trading/halt-banner.tsx',
   ), 'utf8');
-  assert.match(source, /JSON\.stringify\(\{ action: 'off' \}\)/);
-  assert.doesNotMatch(source, /action: 'off', reason:/);
+  assert.match(source, /Clear via CLI/);
+  assert.doesNotMatch(source, /fetch\('\/api\/trading\/kill-switch'|action: 'off'|Override/);
 });
