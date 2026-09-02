@@ -83,5 +83,8 @@ dashboard trading-state grandfather debt.
 `HWC_PORTABLE_QUALIFIED` and `HWC_SOURCE_READY` remain `HELD`. They require an
 exact protected-main `Foundation` push receipt for the final committed source;
 feature-branch tests or locally invented GitHub run identity cannot satisfy
-that contract. Host qualification, Release Authority v2 integration, systemd
-source, runtime activation, broker access, and live authority also remain held.
+that contract. Final Pre-P3 candidate-v2 certification and derived P3 alpha
+authorization now mechanically require `HWC_SOURCE_READY=PASS`; architecture
+readiness alone cannot authorize either boundary. Host qualification, Release
+Authority v2 integration, systemd source, runtime activation, broker access,
+and live authority also remain held.

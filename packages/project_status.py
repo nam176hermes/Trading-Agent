@@ -294,6 +294,7 @@ def derive_project_status(root: Path) -> dict[str, Any]:
         and p1_complete
         and pre_p3["pre_p3_ready"] == "PASS"
         and hwc["gates"]["ARCH_CONTRACT_READY"] == "PASS"
+        and hwc["gates"]["HWC_SOURCE_READY"] == "PASS"
     )
     active = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ACTIVE")
     rollback = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ROLLBACK")

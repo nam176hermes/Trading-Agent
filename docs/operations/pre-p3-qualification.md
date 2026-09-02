@@ -11,7 +11,29 @@ Do not invent `GITHUB_RUN_ID` or `GITHUB_RUN_ATTEMPT`. V2 issuance requires the
 real values supplied by the protected qualification or Foundation workflow.
 Keep private/native evidence outside Git.
 
-## 1. Qualify one clean candidate commit
+Before issuing any final candidate-v2 certificate, protected main must already
+contain the reviewed, attested HWC portable receipt and the canonical HWC
+projection must derive both `ARCH_CONTRACT_READY=PASS` and
+`HWC_SOURCE_READY=PASS`. Intermediate P1-H/P2/P3-foundation receipts do not
+require HWC source readiness; this final candidate boundary does.
+
+## 1. Close HWC source readiness on protected main
+
+Run the protected-main Foundation workflow for the exact HWC source, require
+`verify-push` and `attest-hwc-protected-main` to pass, verify the attestation,
+then import `hwc-portable-qualified-v1.json` through a reviewed receipt-only
+pull request. Regenerate the canonical HWC and project projections. Continue
+only when they report:
+
+```text
+HWC_SOURCE_COMPLETE=PASS
+HWC_PORTABLE_QUALIFIED=PASS
+HWC_SOURCE_READY=PASS
+```
+
+This step does not depend on any Pre-P3 candidate receipt.
+
+## 2. Qualify one clean candidate commit
 
 Run from the clean committed candidate `Q`. Keep outputs in a private external
 directory until review:
@@ -41,7 +63,7 @@ P1-H remains held until all exact external proofs exist. `DEFERRED`,
 `UNAVAILABLE`, missing, malformed, mixed-source, or authority-bearing evidence
 never becomes PASS.
 
-## 2. Run the separately approved P2 runtime proof
+## 3. Run the separately approved P2 runtime proof
 
 Only after the protected GREEN fixture plan grants the exact operation
 `p2-security-master-runtime-green-v1`:
@@ -71,11 +93,13 @@ Git with mode `0600`. Start the self-hosted runner from the shell that exports
 the two paths above; the P1 lane explicitly removes them and the P2 lane alone
 consumes them. Missing or invalid approval produces no runtime receipt.
 
-## 3. Certify the candidate, without granting P3
+## 4. Certify the candidate, without granting P3
 
 Record the protected-main base and intended promotion mechanism. The legacy
 directory is read only to preserve hashes of the original v1 evidence; those
-receipts are not re-attributed to `Q`.
+receipts are not re-attributed to `Q`. Candidate issuance independently derives
+the current HWC projection and rejects missing, stale, malformed, symlinked, or
+held `HWC_SOURCE_READY` authority before creating an output.
 
 ```bash
 uv run python scripts/qualify_pre_p3.py candidate-v2 \
@@ -101,7 +125,7 @@ At this stage the eight component gates may be PASS, but `PRE_P3_READY` and
 `p3_alpha_development_allowed` must remain `HELD`/`false` because protected
 main has not yet been proven.
 
-## 4. Promote and capture protected-main provenance
+## 5. Promote and capture protected-main provenance
 
 Candidate pull-request CI must pass under the distinct
 `verify-pull_request` context. Promote through the reviewed mechanism. On the
@@ -117,7 +141,7 @@ must also match the observed `GITHUB_REPOSITORY`, `GITHUB_REF`, `GITHUB_SHA`,
 `GITHUB_WORKFLOW_REF`, and `GITHUB_WORKFLOW_SHA`; a fork or branch artifact is
 not interchangeable with protected-main evidence.
 
-## 5. Record the reviewed promotion and derive final status
+## 6. Record the reviewed promotion and derive final status
 
 Review the artifact, then add it through a separate receipt-only pull request
 at this exact path:
@@ -137,6 +161,7 @@ make ci
 
 Final protected main is acceptable only when canonical derivation reports
 `P1_H_COMPLETE`, `P1_LTS_READY`, `P2_RUNTIME_QUALIFIED`, `P2_QUALIFIED`, and
-`PRE_P3_READY` as PASS, with `p3_alpha_development_allowed=true`.
+`PRE_P3_READY` as PASS, with `ARCH_CONTRACT_READY=PASS`,
+`HWC_SOURCE_READY=PASS`, and `p3_alpha_development_allowed=true`.
 `LIVE_ELIGIBLE`, `LIVE_ENABLED`, network, broker, and production authority must
 remain false.

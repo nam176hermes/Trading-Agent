@@ -200,7 +200,7 @@ def _source_v2() -> dict[str, str]:
         raise QualificationError("canonical source identity is unavailable") from exc
 
 
-def _require_hwc_arch_contract() -> None:
+def _require_hwc_arch_contract() -> dict[str, Any]:
     path = ROOT / HWC_STATUS_PATH
     try:
         if path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
@@ -216,6 +216,13 @@ def _require_hwc_arch_contract() -> None:
         or derived["gates"]["ARCH_CONTRACT_READY"] != "PASS"
     ):
         raise QualificationError("tracked HWC ARCH_CONTRACT_READY is stale or held")
+    return derived
+
+
+def _require_hwc_source_ready() -> None:
+    status = _require_hwc_arch_contract()
+    if status["gates"]["HWC_SOURCE_READY"] != "PASS":
+        raise QualificationError("tracked HWC_SOURCE_READY is held")
 
 
 def issue_p2_fixture(
@@ -1045,7 +1052,7 @@ def candidate_v2(
     promotion_type: str,
     qualification: dict[str, str],
 ) -> None:
-    _require_hwc_arch_contract()
+    _require_hwc_source_ready()
     receipts = {
         gate: _load_v2(receipt_dir / name, gate) for gate, name in RECEIPTS.items()
     }

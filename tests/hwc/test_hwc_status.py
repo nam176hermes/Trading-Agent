@@ -113,6 +113,124 @@ def test_candidate_issuance_rejects_missing_or_stale_hwc_projection(
         qualify_pre_p3._require_hwc_arch_contract()
 
 
+def _source_ready_status() -> dict:
+    status = json.loads(json.dumps(derive_hwc_source_status(ROOT)))
+    status["gates"]["HWC_PORTABLE_QUALIFIED"] = "PASS"
+    status["gates"]["HWC_SOURCE_READY"] = "PASS"
+    status["blockers"] = []
+    status["status_sha256"] = status_sha256(status)
+    return validate_hwc_source_status(status)
+
+
+def test_final_candidate_requirement_rejects_held_hwc_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GOV-HWC-005: final candidate issuance stops before creating output."""
+    held = derive_hwc_source_status(ROOT)
+    status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_bytes(canonical_json_bytes(held) + b"\n")
+    output = tmp_path / "candidate.json"
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", tmp_path)
+    monkeypatch.setattr(qualify_pre_p3, "derive_hwc_source_status", lambda root: held)
+
+    with pytest.raises(qualify_pre_p3.QualificationError, match="HWC_SOURCE_READY"):
+        qualify_pre_p3.candidate_v2(
+            tmp_path / "receipts",
+            tmp_path / "legacy",
+            output,
+            base_sha="0" * 40,
+            promotion_type="SQUASH",
+            qualification={
+                "completed_at_utc": "2026-09-02T00:00:00Z",
+                "producer": "scripts/qualify_pre_p3.py",
+                "run_attempt": "1",
+                "run_id": "1",
+            },
+        )
+
+    assert not output.exists()
+
+
+def test_final_candidate_requirement_accepts_matching_ready_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GOV-HWC-006: matching canonical source-ready status passes the guard."""
+    ready = _source_ready_status()
+    status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_bytes(canonical_json_bytes(ready) + b"\n")
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", tmp_path)
+    monkeypatch.setattr(qualify_pre_p3, "derive_hwc_source_status", lambda root: ready)
+
+    qualify_pre_p3._require_hwc_source_ready()
+
+
+def test_final_candidate_requirement_rejects_forged_ready_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GOV-HWC-007: tracked PASS cannot override independently derived HELD."""
+    held = derive_hwc_source_status(ROOT)
+    status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.write_bytes(canonical_json_bytes(_source_ready_status()) + b"\n")
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", tmp_path)
+    monkeypatch.setattr(qualify_pre_p3, "derive_hwc_source_status", lambda root: held)
+
+    with pytest.raises(qualify_pre_p3.QualificationError, match="HWC"):
+        qualify_pre_p3._require_hwc_source_ready()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("malformed", "stale", "digest", "extra", "missing"),
+)
+def test_final_candidate_requirement_rejects_invalid_status_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    """GOV-HWC-008: malformed or non-canonical projections fail closed."""
+    ready = _source_ready_status()
+    status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    if mutation == "malformed":
+        status_path.write_bytes(b"{not-json\n")
+    else:
+        payload = json.loads(json.dumps(ready))
+        if mutation == "stale":
+            payload["gates"]["HWC_SOURCE_READY"] = "HELD"
+            payload["blockers"] = ["HWC_SOURCE_READY: HELD"]
+            payload["status_sha256"] = status_sha256(payload)
+        elif mutation == "digest":
+            payload["status_sha256"] = "0" * 64
+        elif mutation == "extra":
+            payload["unexpected"] = True
+        else:
+            del payload["deployment"]
+        status_path.write_bytes(canonical_json_bytes(payload) + b"\n")
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", tmp_path)
+    monkeypatch.setattr(qualify_pre_p3, "derive_hwc_source_status", lambda root: ready)
+
+    with pytest.raises(qualify_pre_p3.QualificationError, match="HWC"):
+        qualify_pre_p3._require_hwc_source_ready()
+
+
+def test_final_candidate_requirement_rejects_symlinked_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GOV-HWC-008: a symlink cannot supply canonical HWC authority."""
+    ready = _source_ready_status()
+    target = tmp_path / "status-target.json"
+    target.write_bytes(canonical_json_bytes(ready) + b"\n")
+    status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
+    status_path.parent.mkdir(parents=True)
+    status_path.symlink_to(target)
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", tmp_path)
+    monkeypatch.setattr(qualify_pre_p3, "derive_hwc_source_status", lambda root: ready)
+
+    with pytest.raises(qualify_pre_p3.QualificationError, match="HWC"):
+        qualify_pre_p3._require_hwc_source_ready()
+
+
 def test_hwc_status_cli_writes_checks_and_rejects_leaf_symlink(tmp_path: Path) -> None:
     output = tmp_path / "status.json"
     written = subprocess.run(

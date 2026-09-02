@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from packages import project_status
 from packages.project_status import (
     ProjectStatusError,
     derive_project_status,
@@ -18,6 +19,47 @@ from packages.project_status import (
 
 
 ROOT = Path(__file__).parents[2]
+
+
+@pytest.mark.parametrize(
+    ("pre_p3_ready", "arch_ready", "hwc_ready", "allowed"),
+    (
+        pytest.param("PASS", "PASS", "HELD", False, id="GOV-HWC-001"),
+        pytest.param("PASS", "PASS", "PASS", True, id="GOV-HWC-002"),
+        pytest.param("HELD", "PASS", "PASS", False, id="GOV-HWC-003"),
+        pytest.param("PASS", "HELD", "PASS", False, id="GOV-HWC-004"),
+    ),
+)
+def test_p3_authority_requires_pre_p3_arch_and_hwc_source_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    pre_p3_ready: str,
+    arch_ready: str,
+    hwc_ready: str,
+    allowed: bool,
+) -> None:
+    hwc = project_status.derive_hwc_source_status(ROOT)
+    hwc["gates"]["ARCH_CONTRACT_READY"] = arch_ready
+    hwc["gates"]["HWC_SOURCE_READY"] = hwc_ready
+    monkeypatch.setattr(project_status, "derive_hwc_source_status", lambda root: hwc)
+    monkeypatch.setattr(
+        project_status,
+        "evaluate_pre_p3_provenance",
+        lambda root: {
+            "blockers": [],
+            "gates": {},
+            "latest_receipts": {},
+            "legacy_receipts": {},
+            "pre_p3_ready": pre_p3_ready,
+            "provenance": {},
+        },
+    )
+
+    status = derive_project_status(ROOT)
+
+    assert status["p3_alpha_development_allowed"] is allowed
+    assert status["current_phase"] == (
+        "P3_ALPHA_DEVELOPMENT" if allowed else "PRE_P3_CLOSURE"
+    )
 
 
 def test_p0_receipt_binds_the_published_promotion_dossier() -> None:
@@ -100,6 +142,7 @@ def test_status_is_derived_and_never_promotes_live_authority() -> None:
     assert status["p3_alpha_development_allowed"] is (
         status["gates"]["PRE_P3_READY"] == "PASS"
         and status["gates"]["ARCH_CONTRACT_READY"] == "PASS"
+        and status["gates"]["HWC_SOURCE_READY"] == "PASS"
     )
     assert status["live_eligible"] is False
     assert status["live_enabled"] is False
@@ -213,3 +256,32 @@ def test_status_cli_rejects_symlinked_projection_paths(tmp_path: Path) -> None:
     assert written.returncode == 2
     assert checked.returncode == 1
     assert target.read_bytes() == b"preserve\n"
+
+
+def test_project_status_check_rejects_manually_enabled_p3(tmp_path: Path) -> None:
+    """GOV-HWC-009: generated authority cannot be asserted by hand."""
+    forged = derive_project_status(ROOT)
+    forged["p3_alpha_development_allowed"] = True
+    forged["current_phase"] = "P3_ALPHA_DEVELOPMENT"
+    path = tmp_path / "project-status.json"
+    path.write_bytes(
+        json.dumps(forged, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+    )
+
+    checked = subprocess.run(
+        [sys.executable, "scripts/derive_project_status.py", "--check", str(path)],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+
+    assert checked.returncode == 1
+
+
+def test_legacy_receipts_cannot_authorize_p3_without_hwc_source_ready() -> None:
+    """GOV-HWC-010: historical v1 receipts never bypass current HWC readiness."""
+    status = derive_project_status(ROOT)
+
+    assert status["legacy_receipts"]
+    assert status["gates"]["HWC_SOURCE_READY"] == "HELD"
+    assert status["p3_alpha_development_allowed"] is False
