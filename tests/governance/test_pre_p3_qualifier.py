@@ -428,7 +428,7 @@ def test_p2_fixture_issuer_rejects_git_metadata_destination() -> None:
         ).stdout.strip()
     )
 
-    with pytest.raises(QualificationError, match="Git metadata"):
+    with pytest.raises(QualificationError, match="outside (source checkout|Git metadata)"):
         qualify_pre_p3.issue_p2_fixture(
             git_common_dir / "pre-p3-authority",
             operator="nam176hermes",
