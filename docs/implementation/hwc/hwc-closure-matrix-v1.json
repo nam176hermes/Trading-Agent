@@ -10,7 +10,7 @@
     {"gate": "HWC_ARCHITECTURE_FROZEN", "evidence": "docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md", "test": "tests/hwc/test_hwc_policy.py", "source_only": true},
     {"gate": "HWC_BOUNDARIES_ENFORCED", "evidence": "scripts/check_hwc_boundaries.py", "test": "tests/hwc/test_hwc_boundaries.py", "source_only": true},
     {"gate": "HWC_OPERATOR_CONTRACTS", "evidence": "packages/operator_control", "test": "tests/hwc/test_operator_contracts.py + tests/hwc/test_operator_policy.py", "source_only": true},
-    {"gate": "HWC_OPERATOR_JOURNAL", "evidence": "services/operator_control", "test": "tests/hwc/test_operator_journal.py", "source_only": true},
+    {"gate": "HWC_OPERATOR_JOURNAL", "evidence": "services/operator_control", "test": "tests/hwc/test_operator_protected_fs.py + tests/hwc/test_operator_journal.py + tests/hwc/test_operator_recovery.py", "source_only": true},
     {"gate": "HWC_OPERATOR_SERVICE", "evidence": "services/operator_control/service.py", "test": "tests/hwc/test_operator_service.py", "source_only": true},
     {"gate": "HWC_CREDENTIAL_BOUNDARY", "evidence": "apps/operator_api/auth.py", "test": "tests/hwc/test_operator_api_auth.py", "source_only": true},
     {"gate": "HWC_OPERATOR_API", "evidence": "apps/operator_api/app.py", "test": "tests/hwc/test_operator_api.py", "source_only": true},

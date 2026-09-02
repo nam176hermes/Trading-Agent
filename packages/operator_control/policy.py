@@ -66,6 +66,7 @@ def _plan(
     reason_digest: str | None = None,
     mode_bytes: bytes | None = None,
     kill_bytes: bytes | None = None,
+    desired_digest: str | None = None,
 ) -> OperatorMutationPlan:
     desired = mode_bytes if mode_bytes is not None else kill_bytes
     return OperatorMutationPlan(
@@ -78,7 +79,7 @@ def _plan(
         reason_sha256=reason_digest,
         desired_mode_bytes=mode_bytes,
         desired_kill_switch_bytes=kill_bytes,
-        desired_file_sha256=_file_digest(desired),
+        desired_file_sha256=desired_digest or _file_digest(desired),
     )
 
 
@@ -160,6 +161,8 @@ def _decide_kill_switch(
 
     if current.kill_switch_state != "ACTIVE":
         _reject("KILL_SWITCH_NOT_ACTIVE", 409)
+    if current.kill_switch_file_sha256 is None:
+        _reject("SOURCE_STATE_UNKNOWN", 503)
     if safety is None:
         _reject("SAFETY_EVIDENCE_REQUIRED", 503)
     age = accepted_at - safety.observed_at
@@ -180,6 +183,7 @@ def _decide_kill_switch(
         operation="CLEAR_KILL_SWITCH",
         outcome_code="KILL_SWITCH_CLEARED",
         safety=safety,
+        desired_digest=current.kill_switch_file_sha256,
     )
 
 

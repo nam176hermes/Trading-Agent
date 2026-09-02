@@ -252,6 +252,23 @@ def test_clear_requires_safety_evidence() -> None:
     )
 
 
+def test_clear_binds_the_expected_tombstone_digest() -> None:
+    clear = {
+        "command_type": "SET_KILL_SWITCH",
+        "desired_state": "INACTIVE",
+        "reason": None,
+    }
+    plan = decide("CLI", clear, state(kill="ACTIVE"), safety=safety())
+    assert plan.desired_file_sha256 == SHA
+    malformed = state(kill="ACTIVE").model_copy(
+        update={"kill_switch_file_sha256": None}
+    )
+    assert (
+        rejection_code(lambda: decide("CLI", clear, malformed, safety=safety()))
+        == "SOURCE_STATE_UNKNOWN"
+    )
+
+
 def test_policy_module_has_no_io_or_runtime_imports() -> None:
     source = inspect.getsource(policy)
     for forbidden in (
