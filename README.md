@@ -28,6 +28,8 @@ trading-agent/
 ├── apps/
 │   ├── control_api/              read-only Control API
 │   ├── job_api/                  job API and contract boundary
+│   ├── operator_api/             protected operator command boundary
+│   ├── operator_cli/             dashboard-independent operator client
 │   └── dashboard/                Next.js UI, own package-lock.json
 ├── services/                     control-plane services
 ├── packages/                     shared control-plane packages
@@ -132,6 +134,15 @@ the mutable legacy dataset against the reviewed PostgreSQL snapshot, so legacy
 data drift cannot misreport the database as unavailable. Neither target is part
 of the non-mutating source gate.
 `make audit-release` additionally requires a clean index and worktree.
+
+## Headless operator CLI
+
+The installed `trading-agent` command talks directly to the loopback Control,
+Job, and Operator APIs; it does not require the dashboard. Read commands include
+`status`, `capabilities`, `jobs list`, `jobs show`, and `kill-switch status`.
+Operator mutations require a caller-selected `--idempotency-key`; use
+`mode paper`, `kill-switch activate`, or `kill-switch clear`. Configuration and
+examples are in [`docs/operations/hwc-operator-api.md`](docs/operations/hwc-operator-api.md).
 
 ## Foundation status
 

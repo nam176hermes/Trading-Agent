@@ -82,6 +82,7 @@
     {"capability": "trailing_stop_override", "classification": "UNAVAILABLE", "canonical_owner": null, "source": null},
     {"capability": "watchlist_override", "classification": "UNAVAILABLE", "canonical_owner": null, "source": null},
     {"capability": "dashboard_authorization_audit", "classification": "PRESENTATION_ONLY", "canonical_owner": "DASHBOARD_BFF", "source": "apps/dashboard/src/lib/trading/auth.ts"},
+    {"capability": "operator_cli", "classification": "CLIENT_ONLY", "canonical_owner": null, "source": "apps/operator_cli"},
     {"capability": "risk_decision", "classification": "RUNTIME", "canonical_owner": "DETERMINISTIC_RISK", "source": "packages/domain"},
     {"capability": "execution_semantics", "classification": "RUNTIME", "canonical_owner": "NAUTILUS_ENGINE", "source": "engines/nautilus"},
     {"capability": "event_history", "classification": "RUNTIME", "canonical_owner": "EVENT_LEDGER", "source": "packages/event_ledger"},

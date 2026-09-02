@@ -47,3 +47,46 @@ The versioned OpenAPI and JSON Schema artifacts live under
 `generated/operator-api/`. The dashboard consumer type is generated at
 `apps/dashboard/src/generated/operator-api-types.ts`; it grants no browser
 access to credentials or protected state.
+
+## Independent CLI
+
+Install the root project from its lockfile, then use `trading-agent` without a
+dashboard process. The three origins default to their literal loopback ports
+and may be changed only to another literal `http://127.0.0.1:<port>` endpoint:
+
+```text
+TRADING_CONTROL_API_ORIGIN=http://127.0.0.1:8400
+TRADING_JOB_API_ORIGIN=http://127.0.0.1:8401
+TRADING_OPERATOR_API_ORIGIN=http://127.0.0.1:8402
+TRADING_JOB_API_TOKEN
+OPERATOR_API_CLI_TOKEN_FILE
+```
+
+The Job API token is read from the environment used by the local service. The
+Operator API token is read from the same protected CLI credential file used by
+the service; there is no token command-line flag. The CLI does not print either
+credential.
+
+```bash
+trading-agent status
+trading-agent capabilities
+trading-agent jobs list --limit 50 --offset 0
+trading-agent jobs show JOB_ID
+trading-agent jobs cancel JOB_ID
+trading-agent mode paper --idempotency-key OPERATOR_SELECTED_KEY
+trading-agent kill-switch status
+trading-agent kill-switch activate --reason "operator safety action" --idempotency-key OPERATOR_SELECTED_KEY
+trading-agent kill-switch clear --idempotency-key OPERATOR_SELECTED_KEY
+```
+
+Every invocation generates one correlation ID. Every Operator API command also
+generates one command ID. Mutation requests are serialized canonically and are
+never retried automatically. Retrying an ambiguous outcome is an explicit
+operator action and must reuse the same idempotency key; the API journal is the
+outcome authority. Clear first reads raw Operator API state, requires an active
+kill switch, and submits the exact observed `state_sha256`.
+
+Exit codes are stable: `0` success, `2` command usage, `3` local configuration,
+and `4` upstream or command failure. Standard output contains JSON only on
+success. Standard error contains a sanitized JSON error code and never includes
+tokens, paths, request bodies, reasons, or receipts.

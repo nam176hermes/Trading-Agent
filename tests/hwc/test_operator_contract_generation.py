@@ -42,13 +42,17 @@ def test_operator_openapi_is_exact_and_binds_auth_capabilities() -> None:
     }
 
 
-def test_wheel_packages_operator_api_without_premature_cli_entrypoint() -> None:
+def test_wheel_packages_operator_api_and_independent_cli_entrypoint() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     force_include = project["tool"]["hatch"]["build"]["targets"]["wheel"][
         "force-include"
     ]
     assert force_include["apps/operator_api"] == "apps/operator_api"
-    assert set(project["project"]["scripts"]) == {"trading-agent-nautilus"}
+    assert force_include["apps/operator_cli"] == "apps/operator_cli"
+    assert project["project"]["scripts"] == {
+        "trading-agent": "apps.operator_cli.cli:main",
+        "trading-agent-nautilus": "packages.nautilus_engine_cli.cli:main",
+    }
 
 
 def test_operator_contract_artifacts_render_reproducibly(tmp_path: Path) -> None:
