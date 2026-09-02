@@ -2,28 +2,7 @@
   "schema_version": "hwc-boundary-policy-v1",
   "route_inventory": "docs/implementation/hwc/hwc-authority-inventory-v1.json",
   "allowed_dashboard_local_write": "apps/dashboard/src/lib/trading/auth.ts",
-  "grandfathered_state_writes": [
-    {
-      "path": "apps/dashboard/src/app/api/trading/update-stop/route.ts",
-      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
-      "git_blob_sha": "b6a07bf404dfa55a80982d2ea079979c6047b84f",
-      "source_sha256": "e13f440a871fc2a7eb53121448e9278af28920b12b9ab46d3dbd46ae0ff13348",
-      "owner": "DASHBOARD_COMPATIBILITY",
-      "authority": "TRAILING_STOP_OVERRIDE_WRITE",
-      "migration_task": "T-HWC-200C",
-      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
-    },
-    {
-      "path": "apps/dashboard/src/app/api/trading/watchlist/route.ts",
-      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
-      "git_blob_sha": "99de572c2e1efbc9f5664b97214db95a69a8a0db",
-      "source_sha256": "b3e568c595bd9a8603b37ce20be6899771c0b4a5b33930b44cda94c3a97ac15b",
-      "owner": "DASHBOARD_COMPATIBILITY",
-      "authority": "WATCHLIST_OVERRIDE_WRITE",
-      "migration_task": "T-HWC-200C",
-      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
-    }
-  ],
+  "grandfathered_state_writes": [],
   "python_interface_import_forbidden": [
     "packages/domain",
     "packages/engine_contracts",

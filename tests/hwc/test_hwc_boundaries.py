@@ -20,8 +20,8 @@ def _codes(root: Path, *, final: bool = False) -> set[str]:
 def test_current_tree_passes_only_with_declared_debt() -> None:
     report = evaluate_hwc_boundaries(ROOT)
     assert report.passed is True
-    assert report.grandfathered_debt == 2
-    assert _codes(ROOT, final=True) == {"HWC_E_GRANDFATHER_REMAINS_FINAL"}
+    assert report.grandfathered_debt == 0
+    assert _codes(ROOT, final=True) == set()
 
 
 def test_fixture_baseline_and_final_gate(tmp_path: Path) -> None:

@@ -43,7 +43,7 @@ def test_hwc_policy_freezes_every_current_route_and_authority_limit() -> None:
     assert all(item["classification"] != "dead" for item in authorities)
 
     grandfathered = policy["grandfathered_state_writes"]
-    assert isinstance(grandfathered, list) and grandfathered
+    assert isinstance(grandfathered, list)
     for item in grandfathered:
         assert set(item) == {
             "path",

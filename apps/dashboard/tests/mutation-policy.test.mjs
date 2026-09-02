@@ -268,7 +268,8 @@ test('authorization evidence does not claim mutation completion', async () => {
     body: JSON.stringify({}),
   }));
 
-  assert.equal(response.status, 400);
+  assert.equal(response.status, 503);
+  assert.equal((await response.clone().json()).error.code, 'COMMAND_UNAVAILABLE');
   assert.equal(auditEvents().at(-1)?.event, 'dashboard_mutation_authorization');
   assert.equal(auditEvents().at(-1)?.authorization_outcome, 'GRANTED');
   assert.equal(Object.hasOwn(auditEvents().at(-1), 'mutation_outcome'), false);

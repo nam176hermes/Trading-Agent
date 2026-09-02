@@ -26,9 +26,8 @@ unavailable` row is **RETAIN_TYPED_UNAVAILABLE_WITH_CLEAR_UX** until its
 canonical upstream contract exists. This explicitly includes portfolio,
 performance, balances, positions, orders, PnL, and exports: none may be
 represented by fabricated empty or healthy values. `compatibility` rows remain
-bounded local-state or alias behavior, not a hidden upstream fallback. No row
-is selected for **REMOVE_AFTER_CALLER_PROOF_AND_REPLACEMENT_TESTS** in this
-phase.
+bounded alias behavior, not a hidden upstream fallback. Dashboard-owned
+trading-state writes have been removed.
 
 ## Mutation authorization audit policy
 
@@ -37,7 +36,7 @@ and `MUTATION_LOW_RISK` — requires a protected authorization-audit write after
 session and role authorization, before the mutation handler runs. An unsafe,
 malformed, over-bound, or unavailable audit file returns the bounded
 `503 AUDIT_UNAVAILABLE` response and the handler is not called. This includes
-the low-risk watchlist mutation because it persists a protected local override.
+disabled low-risk command routes so authorization remains explicit.
 
 The `dashboard_mutation_authorization` record contains only the `event`
 discriminator, action, classification, authenticated role, timestamp, and
@@ -62,7 +61,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/capability` | GET / reader | Control API capability envelope or typed unavailable | none found | canonical |
 | `/circuit-breaker` | GET / reader | None; `SOURCE_UNAVAILABLE` | `halt-banner`, `circuit-breaker-status` | typed unavailable |
 | `/close-position` | POST / operator | No command upstream; `COMMAND_UNAVAILABLE` 503 | none found | typed unavailable |
-| `/correlation` | GET / reader | In-process correlation JSON | `portfolio-card`, `correlation-matrix` | compatibility |
+| `/correlation` | GET / reader | No canonical correlation source; `SOURCE_UNAVAILABLE` | `correlation-matrix` | typed unavailable |
 | `/costs` | GET / reader | Control API cost envelope or typed unavailable | `settings-state` | canonical |
 | `/data-sources` | GET / reader | None; `SOURCE_UNAVAILABLE` | `data-source-state` | typed unavailable |
 | `/decisions` | GET / reader | Control API decision page or typed unavailable | `history/page`, `risk-asset-list` | canonical |
@@ -94,7 +93,7 @@ only to the granted path because only that path can reach a mutation handler.
 | `/performance-export` | GET / reader | No export upstream; authenticated typed 503 | `performance/page` | typed unavailable |
 | `/performance` | GET / reader | No performance upstream; authenticated typed 503 | `performance/page` | typed unavailable |
 | `/pipeline-status` | GET / reader | Job API list v1 envelope | `pipeline-status` | canonical |
-| `/plan` | POST / operator | Deterministic local plan; validated JSON or typed input error | `plan-builder` | compatibility |
+| `/plan` | POST / operator | No canonical planning command; `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 | `/pnl` | GET / reader | None; `SOURCE_UNAVAILABLE` | `pnl-tracker-card` | typed unavailable |
 | `/portfolio` | GET / reader | None; `SOURCE_UNAVAILABLE` | `exposure-gauge`, `portfolio-card` | typed unavailable |
 | `/position-sizing` | GET / reader | None; `SOURCE_UNAVAILABLE` | `position-sizing-calculator` | typed unavailable |
@@ -113,9 +112,9 @@ only to the granted path because only that path can reach a mutation handler.
 | `/status` | GET / reader | Control API system/report JSON or typed unavailable | none found | canonical |
 | `/summary` | GET / reader | Control API market/decision JSON or typed unavailable | none found | canonical |
 | `/ta-validation` | GET / reader | None; `SOURCE_UNAVAILABLE` | none found | typed unavailable |
-| `/update-stop` | POST / operator | Protected local trailing-stop state; validated JSON/error | `portfolio-card` | compatibility |
+| `/update-stop` | POST / operator | No canonical stop command; `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 | `/walk-forward` | GET / reader | None; `SOURCE_UNAVAILABLE` | none found | typed unavailable |
-| `/watchlist` | GET / reader; POST / operator | GET is unavailable; POST uses protected local override JSON | `watchlist-editor` | compatibility |
+| `/watchlist` | GET / reader; POST / operator | `SOURCE_UNAVAILABLE` / `COMMAND_UNAVAILABLE` | no static caller | typed unavailable |
 
 ## Ownership rules
 
