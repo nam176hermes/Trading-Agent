@@ -19,6 +19,11 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.operator_control.policy import OperatorCommandRejected
 from packages.pre_p3_provenance import (
@@ -29,7 +34,6 @@ from packages.pre_p3_provenance import (
 from services.operator_control.state_store import OperatorStatePaths, OperatorStateStore
 
 
-ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = {"broker": False, "live": False, "network": False, "production": False}
 RUNNER = ROOT / "tests/hwc/fixtures/headless_runtime_runner.py"
 CLOSURE_MATRIX = ROOT / "docs/implementation/hwc/hwc-closure-matrix-v1.json"
