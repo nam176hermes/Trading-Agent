@@ -36,8 +36,8 @@ class BoundedJsonHttpClient:
         *,
         token: str | None = None,
         correlation_id: str | None = None,
-        timeout_seconds: float = 5.0,
-        max_response_bytes: int = 256 * 1024,
+        timeout_seconds: float = 10.0,
+        max_response_bytes: int = 2 * 1024 * 1024,
         opener: Any = None,
     ) -> None:
         parsed = urlsplit(origin)

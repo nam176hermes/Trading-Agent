@@ -86,7 +86,17 @@ def test_post_emits_canonical_json_bytes_and_bearer_authentication() -> None:
     assert request.get_header("Authorization") == "Bearer cli-token"
     assert request.get_header("Content-type") == "application/json"
     assert request.get_header("X-trace-id") == "corr_0123456789abcdef0123456789abcdef"
-    assert timeout == 5.0
+    assert timeout == 10.0
+
+
+def test_client_default_response_bound_is_two_mibibytes() -> None:
+    body = b'{"value":"' + b"x" * (256 * 1024) + b'"}'
+    client = BoundedJsonHttpClient(
+        "http://127.0.0.1:8400",
+        opener=_Opener(_Response(body)),
+    )
+
+    assert len(client.get("/v1/system/status")["value"]) == 256 * 1024
 
 
 @pytest.mark.parametrize(
@@ -100,7 +110,9 @@ def test_post_emits_canonical_json_bytes_and_bearer_authentication() -> None:
         (socket.timeout(), "TIMEOUT"),
     ],
 )
-def test_client_fails_closed_for_untrusted_responses(response: object, code: str) -> None:
+def test_client_fails_closed_for_untrusted_responses(
+    response: object, code: str
+) -> None:
     """Break caught: malformed or redirected upstream data is treated as trusted JSON."""
     client = BoundedJsonHttpClient(
         "http://127.0.0.1:8400",
@@ -119,7 +131,11 @@ def test_client_preserves_sanitized_upstream_error_code() -> None:
             "schema_version": "1.0.0",
             "trace_id": "trace_test",
             "generated_at": "2026-09-01T00:00:00Z",
-            "error": {"code": "EXPECTED_STATE_CONFLICT", "message": "state changed", "details": {}},
+            "error": {
+                "code": "EXPECTED_STATE_CONFLICT",
+                "message": "state changed",
+                "details": {},
+            },
         }
     ).encode()
     headers = Message()
@@ -140,7 +156,9 @@ def test_client_preserves_sanitized_upstream_error_code() -> None:
 
 def test_client_rejects_absolute_or_non_v1_request_paths() -> None:
     """Break caught: a caller can escape its configured API origin or call an unversioned route."""
-    client = BoundedJsonHttpClient("http://127.0.0.1:8400", opener=_Opener(_Response(b"{}")))
+    client = BoundedJsonHttpClient(
+        "http://127.0.0.1:8400", opener=_Opener(_Response(b"{}"))
+    )
     for path in (
         "http://127.0.0.1:8401/v1/jobs",
         "//127.0.0.1:8401/v1/jobs",

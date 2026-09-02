@@ -12,14 +12,17 @@ from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlencode
 
-from apps.operator_api.auth import load_private_token
+from packages.operator_control.credentials import PrivateTokenError, load_private_token
 
 from .http import BoundedJsonHttpClient, HttpClientError
 
 
 EXIT_OK = 0
-EXIT_CONFIGURATION = 3
-EXIT_API = 4
+EXIT_CONFIGURATION = 2
+EXIT_AUTH = 3
+EXIT_UNAVAILABLE = 4
+EXIT_CONFLICT = 5
+EXIT_PROTOCOL = 6
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
@@ -33,6 +36,15 @@ class CliCommandError(RuntimeError):
         self.code = code
 
 
+class CliUsageError(ValueError):
+    pass
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise CliUsageError(message)
+
+
 def _bounded_integer(value: str, lower: int, upper: int) -> int:
     try:
         number = int(value)
@@ -44,7 +56,7 @@ def _bounded_integer(value: str, lower: int, upper: int) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="trading-agent")
+    parser = JsonArgumentParser(prog="trading-agent")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
     commands.add_parser("capabilities")
@@ -97,27 +109,14 @@ def _origin(environment: Mapping[str, str], key: str, default: str) -> str:
     return value
 
 
-def _job_token(environment: Mapping[str, str]) -> str:
-    token = environment.get("TRADING_JOB_API_TOKEN")
-    if (
-        token is None
-        or not token
-        or token.strip() != token
-        or not token.isascii()
-        or any(ord(character) < 0x21 for character in token)
-    ):
-        raise CliConfigurationError("job API credential is unavailable")
-    return token
-
-
-def _operator_token(environment: Mapping[str, str]) -> str:
-    raw_path = environment.get("OPERATOR_API_CLI_TOKEN_FILE")
+def _token(environment: Mapping[str, str], key: str) -> str:
+    raw_path = environment.get(key)
     if raw_path is None:
-        raise CliConfigurationError("operator API credential is unavailable")
+        raise CliConfigurationError("API credential is unavailable")
     try:
         return load_private_token(Path(raw_path)).decode("ascii")
-    except Exception:
-        raise CliConfigurationError("operator API credential is unavailable") from None
+    except (PrivateTokenError, UnicodeError):
+        raise CliConfigurationError("API credential is unavailable") from None
 
 
 def _identity(value: str, name: str) -> str:
@@ -157,7 +156,7 @@ def _run(
     correlation_id = f"corr_{secrets.token_hex(16)}"
     if options.command in {"status", "capabilities"}:
         client = BoundedJsonHttpClient(
-            _origin(environment, "TRADING_CONTROL_API_ORIGIN", "http://127.0.0.1:8400"),
+            _origin(environment, "TRADING_CONTROL_API_URL", "http://127.0.0.1:8400"),
             correlation_id=correlation_id,
         )
         return client.get(
@@ -165,8 +164,8 @@ def _run(
         )
     if options.command == "jobs":
         client = BoundedJsonHttpClient(
-            _origin(environment, "TRADING_JOB_API_ORIGIN", "http://127.0.0.1:8401"),
-            token=_job_token(environment),
+            _origin(environment, "TRADING_JOB_API_URL", "http://127.0.0.1:8401"),
+            token=_token(environment, "TRADING_JOB_API_TOKEN_FILE"),
             correlation_id=correlation_id,
         )
         if options.jobs_command == "list":
@@ -178,8 +177,8 @@ def _run(
         return client.post(f"/v1/jobs/{job_id}/cancel", {})
 
     client = BoundedJsonHttpClient(
-        _origin(environment, "TRADING_OPERATOR_API_ORIGIN", "http://127.0.0.1:8402"),
-        token=_operator_token(environment),
+        _origin(environment, "TRADING_OPERATOR_API_URL", "http://127.0.0.1:8402"),
+        token=_token(environment, "TRADING_OPERATOR_API_CLI_TOKEN_FILE"),
         correlation_id=correlation_id,
     )
     if options.command == "mode":
@@ -238,9 +237,22 @@ def _print_error(code: str) -> None:
     )
 
 
+def _http_exit(error: HttpClientError) -> int:
+    if error.status in {401, 403}:
+        return EXIT_AUTH
+    if error.status == 409:
+        return EXIT_CONFLICT
+    if error.status == 503 or error.code in {"API_UNAVAILABLE", "TIMEOUT"}:
+        return EXIT_UNAVAILABLE
+    return EXIT_PROTOCOL
+
+
 def main(arguments: list[str] | None = None) -> int:
     try:
         options = _parser().parse_args(arguments)
+    except CliUsageError:
+        _print_error("USAGE_ERROR")
+        return EXIT_CONFIGURATION
     except SystemExit as error:
         return int(error.code)
     try:
@@ -250,10 +262,12 @@ def main(arguments: list[str] | None = None) -> int:
         return EXIT_CONFIGURATION
     except CliCommandError as error:
         _print_error(error.code)
-        return EXIT_API
+        return (
+            EXIT_CONFLICT if error.code == "KILL_SWITCH_NOT_ACTIVE" else EXIT_PROTOCOL
+        )
     except HttpClientError as error:
         _print_error(error.code)
-        return EXIT_API
+        return _http_exit(error)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return EXIT_OK
 

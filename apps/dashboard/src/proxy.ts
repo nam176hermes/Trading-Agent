@@ -18,6 +18,8 @@ function mutationOriginAllowed(request: NextRequest): boolean {
   if (request.method === 'GET' || request.method === 'HEAD') return true;
   const origin = request.headers.get('origin');
   if (origin !== null) return origin === request.nextUrl.origin;
+  if (request.headers.get('x-trading-same-origin') === '1') return true;
+  if (request.headers.get('sec-fetch-site') === 'same-origin') return true;
   return process.env.TRADING_DASHBOARD_NON_BROWSER_TEST_MODE === '1'
     && process.env.NODE_ENV === 'test';
 }

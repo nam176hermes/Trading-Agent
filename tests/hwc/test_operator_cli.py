@@ -28,7 +28,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
         )
         status, payload = type(self).responses.get(
             (self.command, self.path),
-            (404, {"error": {"code": "NOT_FOUND", "message": "missing", "details": {}}}),
+            (
+                404,
+                {"error": {"code": "NOT_FOUND", "message": "missing", "details": {}}},
+            ),
         )
         raw = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
@@ -45,8 +48,12 @@ class _ApiHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def _api(responses: dict[tuple[str, str], tuple[int, dict[str, object]]]) -> Iterator[str]:
-    handler = type("IsolatedApiHandler", (_ApiHandler,), {"requests": [], "responses": responses})
+def _api(
+    responses: dict[tuple[str, str], tuple[int, dict[str, object]]],
+) -> Iterator[str]:
+    handler = type(
+        "IsolatedApiHandler", (_ApiHandler,), {"requests": [], "responses": responses}
+    )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -86,15 +93,28 @@ def _state(active: bool) -> dict[str, object]:
 
 
 def _receipt() -> dict[str, object]:
-    return _success({"result": {"schema_version": "operator-command-execution-result-v1", "receipt": {}, "deduplicated": False}})
+    return _success(
+        {
+            "result": {
+                "schema_version": "operator-command-execution-result-v1",
+                "receipt": {},
+                "deduplicated": False,
+            }
+        }
+    )
 
 
-def _environment(monkeypatch: pytest.MonkeyPatch, origin: str, token_file: Path) -> None:
-    monkeypatch.setenv("TRADING_CONTROL_API_ORIGIN", origin)
-    monkeypatch.setenv("TRADING_JOB_API_ORIGIN", origin)
-    monkeypatch.setenv("TRADING_OPERATOR_API_ORIGIN", origin)
-    monkeypatch.setenv("TRADING_JOB_API_TOKEN", "job-token")
-    monkeypatch.setenv("OPERATOR_API_CLI_TOKEN_FILE", str(token_file))
+def _environment(
+    monkeypatch: pytest.MonkeyPatch, origin: str, token_file: Path
+) -> None:
+    job_token_file = token_file.with_name("job-token")
+    job_token_file.write_text("job-token".ljust(32, "j"), encoding="ascii")
+    job_token_file.chmod(0o600)
+    monkeypatch.setenv("TRADING_CONTROL_API_URL", origin)
+    monkeypatch.setenv("TRADING_JOB_API_URL", origin)
+    monkeypatch.setenv("TRADING_OPERATOR_API_URL", origin)
+    monkeypatch.setenv("TRADING_JOB_API_TOKEN_FILE", str(job_token_file))
+    monkeypatch.setenv("TRADING_OPERATOR_API_CLI_TOKEN_FILE", str(token_file))
 
 
 def test_read_commands_work_with_dashboard_absent(
@@ -107,7 +127,10 @@ def test_read_commands_work_with_dashboard_absent(
     responses = {
         ("GET", "/v1/system/status"): (200, _success({"system": {"status": "READY"}})),
         ("GET", "/v1/capabilities"): (200, _success({"items": [], "total": 0})),
-        ("GET", "/v1/jobs?limit=7&offset=2"): (200, _success({"items": [], "limit": 7, "offset": 2})),
+        ("GET", "/v1/jobs?limit=7&offset=2"): (
+            200,
+            _success({"items": [], "limit": 7, "offset": 2}),
+        ),
         ("GET", "/v1/jobs/job_123"): (200, _success({"job": {"job_id": "job_123"}})),
         ("GET", "/v1/state"): (200, _state(False)),
     }
@@ -125,9 +148,15 @@ def test_read_commands_work_with_dashboard_absent(
             assert json.loads(capsys.readouterr().out)["schema_version"] == "1.0.0"
 
     assert all("apps.dashboard" not in name for name in os.sys.modules)
-    authenticated = [request for request in _ApiHandler.requests if request[1].startswith("/v1/jobs") or request[1] == "/v1/state"]
+    authenticated = [
+        request
+        for request in _ApiHandler.requests
+        if request[1].startswith("/v1/jobs") or request[1] == "/v1/state"
+    ]
     assert [headers.get("Authorization") for _, _, headers, _ in authenticated] == [
-        "Bearer job-token", "Bearer job-token", f"Bearer {'c' * 32}",
+        f"Bearer {'job-token'.ljust(32, 'j')}",
+        f"Bearer {'job-token'.ljust(32, 'j')}",
+        f"Bearer {'c' * 32}",
     ]
 
 
@@ -146,9 +175,19 @@ def test_operator_mutations_emit_exact_identity_and_request_bytes(
         _environment(monkeypatch, origin, token_file)
         assert cli.main(["mode", "paper", "--idempotency-key", "idem.mode"]) == 0
         capsys.readouterr()
-        assert cli.main([
-            "kill-switch", "activate", "--reason", "operator drill", "--idempotency-key", "idem.kill",
-        ]) == 0
+        assert (
+            cli.main(
+                [
+                    "kill-switch",
+                    "activate",
+                    "--reason",
+                    "operator drill",
+                    "--idempotency-key",
+                    "idem.kill",
+                ]
+            )
+            == 0
+        )
         capsys.readouterr()
 
     posts = [request for request in _ApiHandler.requests if request[0] == "POST"]
@@ -182,16 +221,21 @@ def test_kill_switch_clear_reads_active_state_and_binds_its_digest(
 
     with _api(responses) as origin:
         _environment(monkeypatch, origin, token_file)
-        assert cli.main(["kill-switch", "clear", "--idempotency-key", "idem.clear"]) == 0
+        assert (
+            cli.main(["kill-switch", "clear", "--idempotency-key", "idem.clear"]) == 0
+        )
         capsys.readouterr()
 
     assert [(method, path) for method, path, _, _ in _ApiHandler.requests] == [
-        ("GET", "/v1/state"), ("POST", "/v1/commands"),
+        ("GET", "/v1/state"),
+        ("POST", "/v1/commands"),
     ]
     payload = json.loads(_ApiHandler.requests[1][3])
     assert payload["expected_state_sha256"] == SHA
     assert payload["command"] == {
-        "command_type": "SET_KILL_SWITCH", "desired_state": "INACTIVE", "reason": None,
+        "command_type": "SET_KILL_SWITCH",
+        "desired_state": "INACTIVE",
+        "reason": None,
     }
 
 
@@ -204,7 +248,9 @@ def test_kill_switch_clear_refuses_inactive_state_without_posting(
     token_file.chmod(0o600)
     with _api({("GET", "/v1/state"): (200, _state(False))}) as origin:
         _environment(monkeypatch, origin, token_file)
-        assert cli.main(["kill-switch", "clear", "--idempotency-key", "idem.clear"]) == 4
+        assert (
+            cli.main(["kill-switch", "clear", "--idempotency-key", "idem.clear"]) == 5
+        )
     captured = capsys.readouterr()
     assert captured.out == ""
     assert json.loads(captured.err) == {"code": "KILL_SWITCH_NOT_ACTIVE"}
@@ -218,7 +264,9 @@ def test_job_cancel_posts_only_the_job_api_contract(
     token_file = tmp_path / "cli-token"
     token_file.write_text("g" * 32, encoding="ascii")
     token_file.chmod(0o600)
-    responses = {("POST", "/v1/jobs/job_123/cancel"): (200, _success({"job_id": "job_123"}))}
+    responses = {
+        ("POST", "/v1/jobs/job_123/cancel"): (200, _success({"job_id": "job_123"}))
+    }
     with _api(responses) as origin:
         _environment(monkeypatch, origin, token_file)
         assert cli.main(["jobs", "cancel", "job_123"]) == 0
@@ -231,17 +279,33 @@ def test_cli_has_stable_configuration_and_upstream_exit_codes(
 ) -> None:
     """Break caught: automation cannot distinguish local configuration from API failure."""
     for key in (
-        "TRADING_JOB_API_TOKEN", "OPERATOR_API_CLI_TOKEN_FILE", "TRADING_CONTROL_API_ORIGIN",
-        "TRADING_JOB_API_ORIGIN", "TRADING_OPERATOR_API_ORIGIN",
+        "TRADING_JOB_API_TOKEN_FILE",
+        "TRADING_OPERATOR_API_CLI_TOKEN_FILE",
+        "TRADING_CONTROL_API_URL",
+        "TRADING_JOB_API_URL",
+        "TRADING_OPERATOR_API_URL",
     ):
         monkeypatch.delenv(key, raising=False)
-    assert cli.main(["jobs", "list"]) == 3
+    assert cli.main(["jobs", "list"]) == 2
     assert json.loads(capsys.readouterr().err) == {"code": "CONFIGURATION_ERROR"}
 
     token_file = tmp_path / "cli-token"
     token_file.write_text("h" * 32, encoding="ascii")
     token_file.chmod(0o600)
-    with _api({("GET", "/v1/system/status"): (503, {"error": {"code": "SOURCE_UNAVAILABLE", "message": "held", "details": {}}})}) as origin:
+    with _api(
+        {
+            ("GET", "/v1/system/status"): (
+                503,
+                {
+                    "error": {
+                        "code": "SOURCE_UNAVAILABLE",
+                        "message": "held",
+                        "details": {},
+                    }
+                },
+            )
+        }
+    ) as origin:
         _environment(monkeypatch, origin, token_file)
         assert cli.main(["status"]) == 4
     assert json.loads(capsys.readouterr().err) == {"code": "SOURCE_UNAVAILABLE"}
@@ -256,8 +320,11 @@ def test_cli_treats_malformed_job_token_as_configuration_error(
     token_file.chmod(0o600)
     with _api({}) as origin:
         _environment(monkeypatch, origin, token_file)
-        monkeypatch.setenv("TRADING_JOB_API_TOKEN", " padded-secret")
-        assert cli.main(["jobs", "list"]) == 3
+        job_token = tmp_path / "job-token"
+        job_token.write_text(" padded-secret".ljust(32, "x"), encoding="ascii")
+        job_token.chmod(0o600)
+        monkeypatch.setenv("TRADING_JOB_API_TOKEN_FILE", str(job_token))
+        assert cli.main(["jobs", "list"]) == 2
     assert json.loads(capsys.readouterr().err) == {"code": "CONFIGURATION_ERROR"}
     assert _ApiHandler.requests == []
 
@@ -273,6 +340,16 @@ def test_jobs_list_help_is_bounded_and_names_numeric_ranges(
     assert "0..1000000" in output
 
 
+def test_usage_errors_are_sanitized_json_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["jobs", "list", "--limit", "0"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"code": "USAGE_ERROR"}
+    assert captured.err.count("\n") == 1
+
+
 def test_mutation_transport_failure_is_not_automatically_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -280,9 +357,49 @@ def test_mutation_transport_failure_is_not_automatically_retried(
     token_file = tmp_path / "cli-token"
     token_file.write_text("i" * 32, encoding="ascii")
     token_file.chmod(0o600)
-    responses = {("POST", "/v1/commands"): (503, {"error": {"code": "COMMAND_OUTCOME_UNKNOWN", "message": "unknown", "details": {}}})}
+    responses = {
+        ("POST", "/v1/commands"): (
+            503,
+            {
+                "error": {
+                    "code": "COMMAND_OUTCOME_UNKNOWN",
+                    "message": "unknown",
+                    "details": {},
+                }
+            },
+        )
+    }
     with _api(responses) as origin:
         _environment(monkeypatch, origin, token_file)
         assert cli.main(["mode", "paper", "--idempotency-key", "idem.same"]) == 4
     assert json.loads(capsys.readouterr().err) == {"code": "COMMAND_OUTCOME_UNKNOWN"}
     assert len(_ApiHandler.requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "exit_code"),
+    (
+        (401, "AUTHENTICATION_REQUIRED", 3),
+        (403, "CAPABILITY_FORBIDDEN", 3),
+        (409, "IDEMPOTENCY_CONFLICT", 5),
+        (503, "OPERATOR_AUTHORITY_UNAVAILABLE", 4),
+        (503, "COMMAND_OUTCOME_UNKNOWN", 4),
+        (500, "INTERNAL_ERROR", 6),
+    ),
+)
+def test_cli_maps_typed_api_failures_to_the_frozen_exit_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    status: int,
+    code: str,
+    exit_code: int,
+) -> None:
+    token_file = tmp_path / "cli-token"
+    token_file.write_text("k" * 32, encoding="ascii")
+    token_file.chmod(0o600)
+    response = {"error": {"code": code, "message": "held", "details": {}}}
+    with _api({("GET", "/v1/state"): (status, response)}) as origin:
+        _environment(monkeypatch, origin, token_file)
+        assert cli.main(["kill-switch", "status"]) == exit_code
+    assert json.loads(capsys.readouterr().err) == {"code": code}

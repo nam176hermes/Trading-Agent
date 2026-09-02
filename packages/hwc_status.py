@@ -7,6 +7,7 @@ from importlib import import_module
 import json
 import re
 import stat
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -93,6 +94,7 @@ _REQUIRED_FILES = {
         "apps/operator_api/auth.py",
         "apps/operator_api/config.py",
         "apps/operator_api/errors.py",
+        "packages/operator_control/credentials.py",
         "tests/hwc/test_operator_api_auth.py",
     ),
     "HWC_OPERATOR_API": (
@@ -108,14 +110,18 @@ _REQUIRED_FILES = {
     "HWC_OPERATOR_CLI": (
         "apps/operator_cli/http.py",
         "apps/operator_cli/cli.py",
+        "packages/operator_control/credentials.py",
         "tests/hwc/test_operator_cli.py",
         "tests/hwc/test_operator_cli_http.py",
     ),
     "HWC_PORTABLE_HEADLESS_PROOF": (
+        ".github/workflows/foundation.yml",
+        "scripts/record_hwc_portable_receipt.py",
         "scripts/qualify_hwc_headless.py",
         "tests/fixtures/paper_runtime.py",
         "tests/hwc/fixtures/headless_runtime_runner.py",
         "tests/hwc/test_headless_portable.py",
+        "tests/hwc/test_hwc_receipt.py",
     ),
     "HWC_COMMAND_RECOVERY_PROOF": (
         "scripts/qualify_hwc_headless.py",
@@ -159,7 +165,9 @@ def _files_present(root: Path, gate: str) -> bool:
 def _architecture_valid(root: Path) -> bool:
     try:
         inventory = json.loads(
-            (root / "docs/implementation/hwc/hwc-authority-inventory-v1.json").read_bytes()
+            (
+                root / "docs/implementation/hwc/hwc-authority-inventory-v1.json"
+            ).read_bytes()
         )
         policy = json.loads(
             (root / "docs/implementation/hwc/hwc-boundary-policy-v1.json").read_bytes()
@@ -175,7 +183,8 @@ def _architecture_valid(root: Path) -> bool:
             == "docs/implementation/hwc/hwc-authority-inventory-v1.json"
             and closure.get("schema_version") == "hwc-closure-matrix-v1"
             and closure.get("authority") == _AUTHORITY
-            and [item.get("gate") for item in closure.get("gates", ())] == list(HWC_GATES)
+            and [item.get("gate") for item in closure.get("gates", ())]
+            == list(HWC_GATES)
         )
     except (OSError, AttributeError, TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -192,8 +201,7 @@ def _api_contract_valid(root: Path) -> bool:
             "force-include"
         ]
         return (
-            set(paths)
-            == {"/health/live", "/health/ready", "/v1/state", "/v1/commands"}
+            set(paths) == {"/health/live", "/health/ready", "/v1/state", "/v1/commands"}
             and paths["/v1/state"]["get"].get("x-operator-interfaces") == ["CLI"]
             and paths["/v1/commands"]["post"].get("x-operator-interfaces")
             == ["WEB", "CLI"]
@@ -217,8 +225,7 @@ def derive_hwc_source_status(root: Path) -> dict[str, Any]:
     gates = {gate: "HELD" for gate in HWC_GATES}
     gates["HWC_ARCHITECTURE_FROZEN"] = (
         "PASS"
-        if _files_present(root, "HWC_ARCHITECTURE_FROZEN")
-        and _architecture_valid(root)
+        if _files_present(root, "HWC_ARCHITECTURE_FROZEN") and _architecture_valid(root)
         else "HELD"
     )
     gates["HWC_BOUNDARIES_ENFORCED"] = (
@@ -241,7 +248,9 @@ def derive_hwc_source_status(root: Path) -> dict[str, Any]:
         "PASS" if all(gates[gate] == "PASS" for gate in architecture_gates) else "HELD"
     )
     gates["HWC_DASHBOARD_AUTHORITY_REMOVED"] = (
-        "PASS" if final_report.passed and final_report.grandfathered_debt == 0 else "HELD"
+        "PASS"
+        if final_report.passed and final_report.grandfathered_debt == 0
+        else "HELD"
     )
     for gate in (
         "HWC_OPERATOR_CLI",
@@ -327,6 +336,42 @@ def validate_hwc_source_status(payload: object) -> dict[str, Any]:
     return payload
 
 
+def _verify_github_attestation(root: Path, receipt_path: Path, source_sha: str) -> None:
+    try:
+        verification = subprocess.run(
+            [
+                "gh",
+                "attestation",
+                "verify",
+                str(receipt_path),
+                "--repo",
+                "nam176hermes/Trading-Agent",
+                "--signer-workflow",
+                "nam176hermes/Trading-Agent/.github/workflows/foundation.yml",
+                "--source-ref",
+                "refs/heads/main",
+                "--source-digest",
+                source_sha,
+                "--signer-digest",
+                source_sha,
+                "--deny-self-hosted-runners",
+                "--format",
+                "json",
+            ],
+            cwd=root,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        verified = json.loads(verification.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise HwcStatusError(
+            "HWC portable receipt protected attestation is unavailable"
+        ) from exc
+    if not isinstance(verified, list) or not verified:
+        raise HwcStatusError("HWC portable receipt protected attestation is invalid")
+
+
 def validate_hwc_portable_receipt(
     payload: object, *, root: Path | None = None
 ) -> dict[str, Any]:
@@ -367,6 +412,7 @@ def validate_hwc_portable_receipt(
     if not isinstance(run, dict) or set(run) != {
         "repository",
         "workflow",
+        "workflow_ref",
         "event",
         "ref",
         "sha",
@@ -378,6 +424,8 @@ def validate_hwc_portable_receipt(
     if (
         run.get("repository") != "nam176hermes/Trading-Agent"
         or run.get("workflow") != "Foundation"
+        or run.get("workflow_ref")
+        != "nam176hermes/Trading-Agent/.github/workflows/foundation.yml@refs/heads/main"
         or run.get("event") != "push"
         or run.get("ref") != "refs/heads/main"
         or run.get("sha") != source["commit_sha"]
@@ -387,22 +435,80 @@ def validate_hwc_portable_receipt(
     ):
         raise HwcStatusError("HWC portable receipt protected run is invalid")
     evidence = payload.get("evidence")
-    if not isinstance(evidence, dict) or set(evidence) != {
-        "headless_receipt_sha256",
-        "recovery_campaign_sha256",
-        "hwc_boundary_report_sha256",
-        "generated_contract_report_sha256",
-    } or any(not _HEX64.fullmatch(str(value)) for value in evidence.values()):
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence)
+        != {
+            "headless_receipt_sha256",
+            "recovery_campaign_sha256",
+            "hwc_boundary_report_sha256",
+            "generated_contract_report_sha256",
+        }
+        or any(not _HEX64.fullmatch(str(value)) for value in evidence.values())
+    ):
         raise HwcStatusError("HWC portable receipt evidence is invalid")
     if payload.get("receipt_sha256") != receipt_sha256(payload):
         raise HwcStatusError("HWC portable receipt digest is invalid")
     if root is not None:
         try:
+            receipt_path = root / HWC_PORTABLE_RECEIPT_PATH
+            receipt_raw = receipt_path.read_bytes()
+            receipt_info = receipt_path.lstat()
+            if (
+                stat.S_ISLNK(receipt_info.st_mode)
+                or not stat.S_ISREG(receipt_info.st_mode)
+                or receipt_info.st_nlink != 1
+                or receipt_raw != canonical_json_bytes(payload) + b"\n"
+            ):
+                raise HwcStatusError(
+                    "HWC portable receipt attestation subject is invalid"
+                )
             actual = provenance.canonical_source_identity(root, source["commit_sha"])
+            remote_url = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=root,
+                capture_output=True,
+                check=True,
+                text=True,
+            ).stdout.strip()
+            remote_main = subprocess.run(
+                ["git", "rev-parse", "refs/remotes/origin/main^{commit}"],
+                cwd=root,
+                capture_output=True,
+                check=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                [
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    source["commit_sha"],
+                    remote_main,
+                ],
+                cwd=root,
+                capture_output=True,
+                check=True,
+            )
+            remote_source = provenance.canonical_source_identity(root, remote_main)
         except ValueError as exc:
             raise HwcStatusError("HWC portable receipt source is unavailable") from exc
-        if actual != source or not provenance.source_matches_current(root, source):
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HwcStatusError(
+                "HWC portable receipt protected main is unavailable"
+            ) from exc
+        if (
+            remote_url
+            not in {
+                "git@github.com:nam176hermes/Trading-Agent.git",
+                "https://github.com/nam176hermes/Trading-Agent.git",
+            }
+            or actual != source
+            or not provenance.source_matches_current(root, source)
+            or remote_source["closure_sha256"] != source["closure_sha256"]
+        ):
             raise HwcStatusError("HWC portable receipt source is stale")
+        _verify_github_attestation(root, receipt_path, source["commit_sha"])
     return payload
 
 

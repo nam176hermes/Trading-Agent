@@ -66,6 +66,31 @@ def _private_json(path: Path, payload: dict[str, object]) -> None:
     path.chmod(0o600)
 
 
+def test_qualifier_starts_all_concurrent_workers_before_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import qualify_hwc_headless as qualifier
+
+    started: list[object] = []
+
+    class Process:
+        returncode = 0
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            started.append(self)
+
+        def communicate(self, timeout: int) -> tuple[bytes, bytes]:
+            assert timeout == 10
+            assert len(started) == 2
+            return b"{}", b""
+
+    monkeypatch.setattr(qualifier.subprocess, "Popen", Process)
+    assert qualifier._run_concurrently([["first"], ["second"]], {}) == [
+        (0, {}),
+        (0, {}),
+    ]
+
+
 def _campaign(root: Path, scenario: str, failpoint: str) -> dict[str, object]:
     crashed = _run(root, scenario, "--crash-at", failpoint)
     assert crashed.returncode == 77, crashed.stderr
@@ -100,11 +125,66 @@ def test_completed_recovery_replays_the_exact_receipt(
 def test_recovery_campaign_digest_is_stable(tmp_path: Path) -> None:
     from scripts.qualify_hwc_headless import _recovery_campaign
 
-    digest = _recovery_campaign(tmp_path, dict(os.environ))
+    campaign = _recovery_campaign(tmp_path, dict(os.environ))
+    assert campaign["case_count"] == 124
+    assert campaign["repetitions"] == 3
+    digest = campaign["campaign_sha256"]
     assert len(digest) == 64 and not set(digest) - set("0123456789abcdef")
+    assert {record["case"] for record in campaign["records"]} == {
+        "clear_reactivated",
+        "completed_replay",
+        "concurrent_conflict",
+        "concurrent_same",
+        "crash_retry",
+        "external_state_change",
+        "idempotency_conflict",
+        "stale_expected_state",
+        "unsafe_journal",
+    }
+    full_matrix = {
+        (scenario, failpoint)
+        for scenario in ("paper", "activate", "clear")
+        for failpoint in FAILPOINTS
+    }
+    for case in (
+        "crash_retry",
+        "completed_replay",
+        "concurrent_conflict",
+        "concurrent_same",
+        "idempotency_conflict",
+        "unsafe_journal",
+    ):
+        assert {
+            (record["scenario"], record["failpoint"])
+            for record in campaign["records"]
+            if record["case"] == case
+        } == full_matrix
+    assert {
+        (record["scenario"], record["failpoint"])
+        for record in campaign["records"]
+        if record["case"] == "external_state_change"
+    } == {
+        (scenario, failpoint)
+        for scenario in ("paper", "activate", "clear")
+        for failpoint in FAILPOINTS[:3]
+    }
+    assert {
+        record["failpoint"]
+        for record in campaign["records"]
+        if record["case"] == "stale_expected_state"
+    } == set(FAILPOINTS)
+    conflict = next(
+        record
+        for record in campaign["records"]
+        if record["case"] == "concurrent_conflict"
+    )
+    assert len(conflict["winner_request_sha256"]) == 64
+    assert len(conflict["receipt_sha256"]) == 64
 
 
-def test_concurrent_same_and_conflicting_requests_are_serialized(tmp_path: Path) -> None:
+def test_concurrent_same_and_conflicting_requests_are_serialized(
+    tmp_path: Path,
+) -> None:
     same_root = tmp_path / "same"
     assert _run(same_root, "paper", "--prepare").returncode == 0
     same = [_popen(same_root, "paper", "--retry") for _ in range(2)]
@@ -128,7 +208,9 @@ def test_concurrent_same_and_conflicting_requests_are_serialized(tmp_path: Path)
     _private_json(alternate_path, alternate)
     conflicting = [
         _popen(conflict_root, "paper", "--retry"),
-        _popen(conflict_root, "paper", "--retry", "--request-file", str(alternate_path)),
+        _popen(
+            conflict_root, "paper", "--retry", "--request-file", str(alternate_path)
+        ),
     ]
     outcomes = []
     for process in conflicting:
@@ -156,7 +238,9 @@ def test_stale_expected_state_and_ambiguous_external_changes_never_succeed(
     )
 
     changed_root = tmp_path / "changed"
-    assert _run(changed_root, "paper", "--crash-at", "AFTER_INTENT_FSYNC").returncode == 77
+    assert (
+        _run(changed_root, "paper", "--crash-at", "AFTER_INTENT_FSYNC").returncode == 77
+    )
     mode = changed_root / "operator-data/.mode"
     mode.write_bytes(b"live\n")
     mode.chmod(0o600)

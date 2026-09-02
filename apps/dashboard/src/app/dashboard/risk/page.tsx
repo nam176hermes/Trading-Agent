@@ -14,7 +14,13 @@ import { getRiskColor } from '@/lib/trading/utils';
 
 const PAGE_SIZE = 10;
 export default async function RiskDashboard() {
-  const report = await getLatestReport();
+  let report: Awaited<ReturnType<typeof getLatestReport>> = null;
+  let sourceUnavailable = false;
+  try {
+    report = await getLatestReport();
+  } catch {
+    sourceUnavailable = true;
+  }
   const allAssets = report?.assets ?? [];
 
   const riskLevels = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as const;
@@ -30,7 +36,11 @@ export default async function RiskDashboard() {
           <p className="text-sm text-zinc-400">3-way risk debate · Aggressive / Conservative / Neutral · Position sizing</p>
         </div>
 
-        {allAssets.length > 0 ? (
+        {sourceUnavailable ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-center">
+            <p className="text-xs font-mono text-amber-300">Canonical risk source is unavailable.</p>
+          </div>
+        ) : allAssets.length > 0 ? (
           <div className="space-y-8">
             <PipelineTracker completedStages={[]} />
 
@@ -78,15 +88,6 @@ export default async function RiskDashboard() {
               <PositionSizingCalculator />
             </div>
 
-            {/* Correlation & Sector Risk */}
-            <div className="space-y-4">
-              <h2 className="text-lg font-bold text-zinc-100">Correlation &amp; Sector Risk</h2>
-              <p className="text-xs text-zinc-500">
-                Assets with high correlation (≥0.7) amplify drawdowns. Sector exposure limits prevent over-concentration.
-              </p>
-              <CorrelationMatrix />
-            </div>
-
             {/* Macro Context */}
             <div className="space-y-4">
               <h2 className="text-lg font-bold text-zinc-100">Macro Regime Context</h2>
@@ -104,6 +105,14 @@ export default async function RiskDashboard() {
             <p className="text-zinc-400">Run the trading agent with risk assessment to generate risk data.</p>
           </div>
         )}
+
+        <div className="mt-8 space-y-4">
+          <h2 className="text-lg font-bold text-zinc-100">Correlation &amp; Sector Risk</h2>
+          <p className="text-xs text-zinc-500">
+            Assets with high correlation (≥0.7) amplify drawdowns. Sector exposure limits prevent over-concentration.
+          </p>
+          <CorrelationMatrix />
+        </div>
       </div>
     </div>
   );

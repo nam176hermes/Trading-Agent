@@ -80,7 +80,7 @@ export function QuickActions() {
     try {
       const res = await fetch('/api/trading/kill-switch', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
         body: JSON.stringify(request),
       });
 

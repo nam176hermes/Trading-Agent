@@ -472,6 +472,8 @@ def test_make_execution_semantic_mutations_fail_closed(
         ("foundation.yml", b'name: verify-${{ github.event_name }}', b'name: verify', "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"contents: read", b"contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"    timeout-minutes: 45", b"    timeout-minutes: 45\n    permissions:\n      contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"      attestations: read", b"      attestations: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"          GH_TOKEN: ${{ github.token }}", b"          GH_TOKEN: untrusted", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"  pull_request:\n", b"  schedule:\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"include-hidden-files: true", b"include-hidden-files: false", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b'git archive "$base_sha"', b'git archive "$GITHUB_SHA"', "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
@@ -497,7 +499,7 @@ def test_make_execution_semantic_mutations_fail_closed(
             "P0_CLOSURE_HOST_WORKFLOW_INVALID",
         ),
     ],
-    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route", "host-operation", "host-timeout", "host-runtime", "host-artifact-path"],
+    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "attestation-read", "gate-token", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route", "host-operation", "host-timeout", "host-runtime", "host-artifact-path"],
 )
 def test_structural_workflow_contract_attacks_fail_closed(context: closure._ValidationContext, workflow: str, old: bytes, new: bytes, code: str) -> None:
     """Break caught: workflow authority, route, runner or artifact custody drifts."""

@@ -101,7 +101,7 @@ export function RunPipelineButton() {
     try {
       const response = await fetch('/api/trading/run', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', 'x-trading-same-origin': '1' },
         body: JSON.stringify(command),
       });
       const payload = await response.json() as CreateEnvelope & { message?: string };

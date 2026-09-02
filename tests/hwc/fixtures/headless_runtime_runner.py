@@ -40,9 +40,11 @@ def main() -> int:
             request = json.loads(raw)
             if request == {"command": "shutdown"}:
                 return 0
-            _emit(json.loads(runtime.port.exchange(canonical_json_bytes(request))))
+            _emit(json.loads(runtime.exchange(canonical_json_bytes(request))))
         except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
-            _emit({"schema_version": "hwc-headless-runtime-error-v1", "error": str(exc)})
+            _emit(
+                {"schema_version": "hwc-headless-runtime-error-v1", "error": str(exc)}
+            )
     return 0
 
 

@@ -100,7 +100,7 @@ export default function SettingsPage() {
     try {
       const res = await fetch('/api/trading/keys', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
         body: JSON.stringify(form),
       });
       const data = await res.json();
@@ -129,7 +129,7 @@ export default function SettingsPage() {
     try {
       const response = await fetch('/api/trading/service', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
         body: JSON.stringify({ action }),
       });
       if (!response.ok) throw new Error('Service control unavailable');

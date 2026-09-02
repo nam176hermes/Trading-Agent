@@ -132,7 +132,7 @@ export async function submitPipelineCommand(
   try {
     const response = await fetcher('/api/trading/run', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Trading-Same-Origin': '1' },
       body: JSON.stringify(command),
     });
     if (!response.ok) return null;

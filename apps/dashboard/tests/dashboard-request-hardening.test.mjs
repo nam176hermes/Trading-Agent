@@ -365,6 +365,16 @@ test('retired compatibility UI names canonical unavailability and has no mutatio
   assert.match(sources.plan, /Canonical research planning is unavailable/);
   assert.match(sources.correlation, /Canonical correlation source is unavailable/);
   assert.match(sources.portfolio, /Stop mutation unavailable/);
+  assert.match(sources.portfolio, /Canonical paper portfolio is unavailable/);
   assert.match(sources.watchlist, /Canonical watchlist is unavailable/);
   assert.doesNotMatch(Object.values(sources).join('\n'), /fetch\('\/api\/trading\/(?:plan|correlation|update-stop|watchlist)/);
+});
+
+test('risk page catches unavailable market source and still renders typed correlation state', () => {
+  const source = fs.readFileSync(path.join(
+    ROOT, 'src/app/dashboard/risk/page.tsx',
+  ), 'utf8');
+  assert.match(source, /Canonical risk source is unavailable/);
+  assert.match(source, /catch/);
+  assert.match(source, /<CorrelationMatrix \/>/);
 });

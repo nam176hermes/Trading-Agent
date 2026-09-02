@@ -16,6 +16,7 @@ from apps.operator_api.config import (
     OperatorApiSettings,
 )
 from apps.operator_api.errors import OperatorApiError
+from packages.operator_control import credentials as credential_module
 
 
 WEB_TOKEN = b"w" * 32
@@ -53,9 +54,7 @@ def scope(*headers: tuple[bytes, bytes]) -> dict[str, object]:
         "OPERATOR_API_CLI_PRINCIPAL_ID",
     ),
 )
-def test_settings_require_every_credential_field(
-    tmp_path: Path, missing: str
-) -> None:
+def test_settings_require_every_credential_field(tmp_path: Path, missing: str) -> None:
     environment = env_for(tmp_path)
     del environment[missing]
     with pytest.raises(OperatorApiConfigurationError, match="invalid"):
@@ -154,7 +153,7 @@ def test_token_loader_rejects_unsafe_mode_owner_and_ancestor(
         load_private_token(target)
 
     target.chmod(0o600)
-    monkeypatch.setattr(auth_module.os, "geteuid", lambda: os.getuid() + 1)
+    monkeypatch.setattr(credential_module.os, "geteuid", lambda: os.getuid() + 1)
     with pytest.raises(OperatorApiConfigurationError):
         load_private_token(target)
     monkeypatch.undo()

@@ -65,7 +65,6 @@ def _message(code: str) -> str:
         "KILL_SWITCH_NOT_ACTIVE": "The kill switch is not active.",
         "SAFETY_EVIDENCE_CHANGED": "Safety evidence changed before application.",
         "COMMAND_OUTCOME_UNKNOWN": "The command outcome is unknown.",
-        "COMMAND_JOURNAL_UNSAFE": "The command journal is unsafe.",
     }.get(code, "Operator authority is unavailable.")
 
 
@@ -113,7 +112,10 @@ def create_app(
         request: Request, error: CommandJournalError
     ) -> JSONResponse:
         return _error_response(
-            request, 503, error.code, _message(error.code)
+            request,
+            503,
+            "OPERATOR_AUTHORITY_UNAVAILABLE",
+            _message("OPERATOR_AUTHORITY_UNAVAILABLE"),
         )
 
     async def handle_authority_unavailable(

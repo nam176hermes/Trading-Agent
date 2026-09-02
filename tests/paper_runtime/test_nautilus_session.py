@@ -75,7 +75,10 @@ from services.paper_runtime.controller import (
     _custodian_authority_sha256,
     issue_engine_session_port,
 )
-from services.paper_runtime.custodian_client import CustodianAttestation, CustodianClient
+from services.paper_runtime.custodian_client import (
+    CustodianAttestation,
+    CustodianClient,
+)
 from services.paper_runtime.nautilus_checkpoint import ZERO_CHECKPOINT_SHA256
 from services.paper_runtime.nautilus_session import (
     EngineSessionPort,
@@ -84,6 +87,13 @@ from services.paper_runtime.nautilus_session import (
     _issue_engine_session_port,
 )
 from services.paper_runtime import nautilus_process as process_module
+from tests.fixtures.paper_runtime import (
+    _Child,
+    _authority,
+    _commands,
+    _request,
+    _safety,
+)
 
 
 NOW = datetime(2026, 8, 30, 12, tzinfo=UTC)
@@ -157,374 +167,6 @@ def test_live_process_with_unreadable_authority_is_not_reported_gone(
 
     with pytest.raises(ValueError, match="liveness cannot be proven"):
         process.is_running()
-
-
-def _money(value: str) -> Money:
-    return Money(Decimal(value), Currency.USDT)
-
-
-def _catalog() -> P1InstrumentCatalogV1:
-    return P1InstrumentCatalogV1(
-        schema_version="nautilus-p1-instrument-catalog-v1",
-        instrument_id="BTCUSDT.BINANCE",
-        product_type="crypto_spot",
-        symbol="BTCUSDT",
-        base_currency="BTC",
-        quote_currency="USDT",
-        venue="BINANCE",
-        price_precision=2,
-        size_precision=6,
-        tick_size=Decimal("0.01"),
-        step_size=Decimal("0.000001"),
-        min_quantity=Decimal("0.000001"),
-        min_notional=Decimal("0.01"),
-        provenance_sha256="d" * 64,
-    )
-
-
-def _authority() -> ProjectionAuthority:
-    catalog = _catalog()
-    zero = _money("0")
-    return ProjectionAuthority(
-        request_message_id=OWNER,
-        catalog=catalog,
-        instrument=InstrumentDefinition(
-            instrument_id=InstrumentId(
-                "BTCUSDT", ProductType.CRYPTO_SPOT, "BINANCE"
-            ),
-            raw_symbol="BTCUSDT",
-            asset_class=AssetClass.CRYPTO,
-            base_currency=Currency.BTC,
-            quote_currency=Currency.USDT,
-            settlement_currency=Currency.USDT,
-            tick_size=Price(Decimal("0.01"), Currency.USDT),
-            size_increment=OrderQuantity(Decimal("0.000001"), 6),
-            minimum_quantity=OrderQuantity(Decimal("0.000001"), 6),
-            maximum_quantity=OrderQuantity(Decimal("1000000"), 6),
-            minimum_notional=_money("0.01"),
-            maximum_notional=_money("100000000"),
-            multiplier=Decimal(1),
-            margin=None,
-            session_calendar="24X7",
-            provenance=InstrumentProvenance("P1CATALOG", "d" * 32, NOW),
-        ),
-        opening=PortfolioOpeningEntry(
-            account_id="account-1",
-            reporting_currency=Currency.USDT,
-            balances=(
-                AccountBalanceSnapshot(
-                    account_id="account-1",
-                    currency=Currency.USDT,
-                    cash=_money("1000"),
-                    locked_funds=zero,
-                    margin_used=zero,
-                    realized_pnl=zero,
-                    unrealized_pnl=zero,
-                    fees=zero,
-                    funding=zero,
-                    observed_at=NOW,
-                    schema_version="balance-v1",
-                ),
-            ),
-            source_id="p1-opening",
-            source_revision="r1",
-            effective_at=NOW,
-            schema_version="portfolio-entry-v1",
-        ),
-        strategy_id="strategy-1",
-        liquidity_side=LiquiditySide.TAKER,
-        reconciliation_source=ReconciliationSource.VENUE,
-    )
-
-
-def _request() -> EngineCommandEnvelope:
-    refs = {
-        "engine_configuration": ArtifactReference(
-            artifact_id=UUID("60000000-0000-4000-8000-000000000001"),
-            sha256="f" * 64,
-            media_type="application/json",
-        ),
-        "instrument_catalog": ArtifactReference(
-            artifact_id=UUID("70000000-0000-4000-8000-000000000001"),
-            sha256=catalog_digest(_catalog()),
-            media_type="application/json",
-        ),
-        "strategy_configuration": ArtifactReference(
-            artifact_id=UUID("80000000-0000-4000-8000-000000000001"),
-            sha256="e" * 64,
-            media_type="application/json",
-        ),
-        "market_data": ArtifactReference(
-            artifact_id=UUID("90000000-0000-4000-8000-000000000001"),
-            sha256="1" * 64,
-            media_type="application/jsonl",
-        ),
-    }
-    payload = RunBacktest(
-        command_type="RunBacktest",
-        **refs,
-        start_time=NOW,
-        end_time=NOW + timedelta(minutes=1),
-    )
-    return EngineCommandEnvelope(
-        message_id=OWNER,
-        correlation_id=CORRELATION,
-        causation_id=OWNER,
-        engine_run_id=SESSION,
-        stream_sequence=1,
-        event_time=NOW,
-        initialization_time=NOW,
-        schema_version="1.0.0",
-        producer_identity="p1-paper-test",
-        source_commit="0123456789abcdef0123456789abcdef01234567",
-        config_digest="f" * 64,
-        payload_digest=payload_digest(payload),
-        payload=payload,
-    )
-
-
-def _events(closure: str = CLOSURE) -> tuple[object, ...]:
-    values: tuple[object, ...] = (
-        P1RunStarted(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="RunStarted",
-            origin="CONTROL_PLANE",
-            native_type=None,
-            sequence=2,
-            simulation_time=NOW,
-            runtime_family="cython-v1",
-            engine_version="1.231.0",
-            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
-            closure_digest=closure,
-            config_digest="f" * 64,
-            catalog_digest=catalog_digest(_catalog()),
-            data_digest="1" * 64,
-        ),
-        P1TargetAccepted(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="TargetAccepted",
-            origin="CONTROL_PLANE",
-            native_type=None,
-            sequence=3,
-            simulation_time=NOW,
-            target_id=str(TARGET),
-            source_signal_ids=(str(SIGNAL),),
-            target_weight=Decimal(0),
-        ),
-        P1TargetQuantityPlanned(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="TargetQuantityPlanned",
-            origin="CONTROL_PLANE",
-            native_type=None,
-            sequence=4,
-            simulation_time=NOW,
-            target_id=str(TARGET),
-            quantity=Decimal(0),
-        ),
-        P1PositionObserved(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="PositionObserved",
-            origin="NAUTILUS_CACHE_OBSERVATION",
-            native_type="Position",
-            sequence=5,
-            simulation_time=NOW,
-            quantity=Decimal(0),
-            average_entry_price=Decimal(0),
-            realized_pnl=Decimal(0),
-            unrealized_pnl=Decimal(0),
-        ),
-        P1AccountObserved(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="AccountObserved",
-            origin="NAUTILUS_CACHE_OBSERVATION",
-            native_type="Account",
-            sequence=6,
-            simulation_time=NOW,
-            cash_balance=Decimal(1000),
-            fees=Decimal(0),
-            realized_pnl=Decimal(0),
-            unrealized_pnl=Decimal(0),
-        ),
-        P1RunCompleted(
-            schema_version="nautilus-p1-event-stream-v1",
-            event_type="RunCompleted",
-            origin="CONTROL_PLANE",
-            native_type=None,
-            sequence=7,
-            simulation_time=NOW,
-            runtime_family="cython-v1",
-            engine_version="1.231.0",
-            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
-            closure_digest=closure,
-            target_count=1,
-            order_count=0,
-            fill_count=0,
-            final_cash=Decimal(1000),
-            final_position=Decimal(0),
-            fees=Decimal(0),
-            realized_pnl=Decimal(0),
-            unrealized_pnl=Decimal(0),
-            semantic_digest="0" * 64,
-        ),
-    )
-    return values[:-1] + (
-        values[-1].model_copy(update={"semantic_digest": semantic_digest(values)}),
-    )
-
-
-def _commands(request: EngineCommandEnvelope) -> tuple[bytes, ...]:
-    target = EngineTargetPortfolio(
-        target_id=TARGET,
-        positions=(
-            EngineTargetPosition(
-                instrument=EngineInstrumentId(
-                    product_type=ProductType.CRYPTO_SPOT,
-                    symbol="BTCUSDT",
-                    venue="BINANCE",
-                ),
-                target_weight=Decimal(0),
-            ),
-        ),
-        source_signal_ids=(SIGNAL,),
-        effective_at=NOW,
-        schema_version="1.0.0",
-    )
-    payloads = (
-        StartPaperEngine(
-            command_type="StartPaperEngine",
-            engine_configuration=request.payload.engine_configuration,
-            instrument_catalog=request.payload.instrument_catalog,
-            strategy_configuration=request.payload.strategy_configuration,
-        ),
-        SubmitTargetPortfolio(
-            command_type="SubmitTargetPortfolio", target_portfolio=target
-        ),
-        StopPaperEngine(
-            command_type="StopPaperEngine", target_engine_run_id=SESSION
-        ),
-    )
-    return tuple(
-        canonical_json_bytes(
-            PaperCommandFrame(
-                schema_version=PAPER_PROTOCOL_SCHEMA,
-                frame_type="COMMAND",
-                session_id=SESSION,
-                owner_id=OWNER,
-                request_id=paper_request_id(SESSION, sequence),
-                command_sequence=sequence,
-                command_digest=payload_digest(command),
-                command=command,
-            )
-        )
-        for sequence, command in enumerate(payloads, start=1)
-    )
-
-
-class _Child:
-    def __init__(
-        self,
-        *,
-        closure: str = CLOSURE,
-        identity: str = CHILD,
-        event_closure: str | None = None,
-    ) -> None:
-        self.journal = PaperSessionJournal(session_id=SESSION, owner_id=OWNER)
-        self.events = _events(closure if event_closure is None else event_closure)
-        self.closure = closure
-        self.identity = identity
-        self.calls = 0
-        self.aborted = False
-
-    def exchange(self, raw: bytes) -> bytes:
-        command = self.journal.accept_command(raw)
-        self.calls += 1
-        state = "RUNNING" if command.command_sequence < 3 else "STOPPING"
-        acknowledgement = canonical_json_bytes(
-            {
-                "accepted": True,
-                "command_digest": command.command_digest,
-                "command_sequence": command.command_sequence,
-                "frame_type": "ACK",
-                "owner_id": str(OWNER),
-                "reason_code": "ACCEPTED",
-                "request_id": str(command.request_id),
-                "schema_version": PAPER_PROTOCOL_SCHEMA,
-                "session_id": str(SESSION),
-                "state": state,
-            }
-        )
-        self.journal.record_ack(acknowledgement)
-        selected = (
-            self.events[:1]
-            if command.command_sequence == 1
-            else self.events[1:3]
-            if command.command_sequence == 2
-            else self.events[3:]
-        )
-        frames = [framed_document(__import__("json").loads(acknowledgement))]
-        for event in selected:
-            event_raw = canonical_json_bytes(event)
-            raw_frame = canonical_json_bytes(
-                {
-                    "event": event.model_dump(mode="json"),
-                    "event_digest": hashlib.sha256(event_raw).hexdigest(),
-                    "event_sequence": event.sequence,
-                    "frame_type": "EVENT",
-                    "owner_id": str(OWNER),
-                    "request_id": str(command.request_id),
-                    "schema_version": PAPER_PROTOCOL_SCHEMA,
-                    "session_id": str(SESSION),
-                }
-            )
-            self.journal.record_event(raw_frame)
-            frames.append(framed_document(__import__("json").loads(raw_frame)))
-        checkpoint = self.journal.checkpoint(
-            semantic_state_hash=f"{command.command_sequence:064x}",
-            child_identity=self.identity,
-            closure_digest=self.closure,
-            portfolio_state_hash=f"{command.command_sequence + 10:064x}",
-        )
-        document = checkpoint.model_dump(mode="json")
-        frames.append(
-            framed_document(
-                {
-                    "checkpoint": document,
-                    "checkpoint_sha256": hashlib.sha256(
-                        canonical_json_bytes(document)
-                    ).hexdigest(),
-                    "frame_type": "CHECKPOINT",
-                    "schema_version": PAPER_PROTOCOL_SCHEMA,
-                }
-            )
-        )
-        return b"".join(frames)
-
-    def close(self) -> int:
-        self.journal.end_of_input()
-        return 0
-
-    def abort(self) -> None:
-        self.aborted = True
-
-    def is_running(self) -> bool:
-        return not self.aborted
-
-
-def _safety(
-    now: datetime = NOW,
-    *,
-    kill_switch: CanonicalKillSwitchState = CanonicalKillSwitchState.INACTIVE,
-) -> SafetyEvidence:
-    return SafetyEvidence(
-        requested_mode=SafetyMode.PAPER,
-        effective_mode=SafetyMode.PAPER,
-        live_execution_enabled=False,
-        live_trading_approved=False,
-        kill_switch_state=kill_switch,
-        snapshot_sha256="a" * 64,
-        generated_at=now,
-        expires_at=now + timedelta(seconds=6),
-    )
 
 
 def _controller_authority(
@@ -622,9 +264,7 @@ def _session(
             paper_schema="nautilus-paper-session-v2",
         ),
         capability_sha256=capability.approval_sha256,
-        custodian_authority_sha256=_custodian_authority_sha256(
-            client.attestation
-        ),
+        custodian_authority_sha256=_custodian_authority_sha256(client.attestation),
         process_authority_sha256=authority_identity,
         paper_source_sha256=P1_PAPER_SOURCE_SHA256,
         session_id=SESSION,
@@ -668,7 +308,9 @@ def test_session_persists_exact_events_and_reducer_parity(
     assert completed.event_receipt.batch_sha256 == completed.parity_receipt.batch_sha256
     assert completed.parity_receipt.terminal_cash == Decimal(1000)
     assert completed.parity_receipt.terminal_position == Decimal(0)
-    assert completed.checkpoint.event_batch_sha256 == completed.event_receipt.batch_sha256
+    assert (
+        completed.checkpoint.event_batch_sha256 == completed.event_receipt.batch_sha256
+    )
     assert session.state == "STOPPED"
     assert child.calls == 3
 

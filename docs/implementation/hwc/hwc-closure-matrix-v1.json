@@ -17,7 +17,7 @@
     {"gate": "ARCH_CONTRACT_READY", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc/test_hwc_status.py + tests/governance/test_pre_p3_qualifier.py + tests/governance/test_project_status.py", "source_only": true},
     {"gate": "HWC_DASHBOARD_AUTHORITY_REMOVED", "evidence": "scripts/check_hwc_boundaries.py --final", "test": "apps/dashboard/tests/mutation-policy.test.mjs", "source_only": true},
     {"gate": "HWC_OPERATOR_CLI", "evidence": "apps/operator_cli", "test": "tests/hwc/test_operator_cli.py", "source_only": true},
-    {"gate": "HWC_PORTABLE_HEADLESS_PROOF", "evidence": "scripts/qualify_hwc_headless.py", "test": "tests/hwc/test_headless_portable.py", "source_only": true},
+    {"gate": "HWC_PORTABLE_HEADLESS_PROOF", "evidence": "scripts/qualify_hwc_headless.py + scripts/record_hwc_portable_receipt.py + .github/workflows/foundation.yml", "test": "tests/hwc/test_headless_portable.py + tests/hwc/test_hwc_receipt.py", "source_only": true},
     {"gate": "HWC_COMMAND_RECOVERY_PROOF", "evidence": "scripts/qualify_hwc_headless.py", "test": "tests/hwc/test_operator_recovery_subprocess.py", "source_only": true},
     {"gate": "HWC_SOURCE_COMPLETE", "evidence": "docs/implementation/hwc/hwc-source-status.json", "test": "tests/hwc", "source_only": true},
     {"gate": "HWC_PORTABLE_QUALIFIED", "evidence": "docs/implementation/hwc/receipts/hwc-portable-qualified-v1.json", "test": "tests/hwc/test_hwc_receipt.py", "source_only": true},

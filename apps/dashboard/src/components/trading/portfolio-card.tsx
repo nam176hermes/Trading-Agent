@@ -51,6 +51,7 @@ interface PortfolioData {
 export function PortfolioCard() {
   const [data, setData] = useState<PortfolioData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
   const [expanded, setExpanded] = useState(true);
   const [dataFetchedAt, setDataFetchedAt] = useState<number | null>(null);
 
@@ -81,11 +82,14 @@ export function PortfolioCard() {
               }));
             }
             setData(json);
+            setUnavailable(false);
             setDataFetchedAt(Date.now());
           }
+        } else if (alive) {
+          setUnavailable(true);
         }
       } catch {
-        // keep existing (may be aborted)
+        if (alive && !controller.signal.aborted) setUnavailable(true);
       } finally {
         if (alive) setLoading(false);
       }
@@ -134,6 +138,17 @@ export function PortfolioCard() {
           {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="h-4 animate-pulse rounded bg-zinc-800" style={{ width: `${80 - i * 10}%` }} />
           ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (unavailable) {
+    return (
+      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+        <div className="flex items-center gap-2 text-amber-300">
+          <Wallet className="h-4 w-4" />
+          <span className="text-sm">Canonical paper portfolio is unavailable. Stop mutation unavailable.</span>
         </div>
       </div>
     );

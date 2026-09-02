@@ -33,7 +33,7 @@ function unavailable(): never {
 }
 
 function operatorApiOrigin(): string {
-  const value = process.env.TRADING_OPERATOR_API_ORIGIN ?? DEFAULT_OPERATOR_API_ORIGIN;
+  const value = process.env.TRADING_OPERATOR_API_URL ?? DEFAULT_OPERATOR_API_ORIGIN;
   let url: URL;
   try { url = new URL(value); } catch { return unavailable(); }
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port
@@ -130,7 +130,9 @@ function safeDirectory(target: string): boolean {
 }
 
 /** Loads the Operator API WEB bearer without accepting aliases or unsafe metadata. */
-export function loadOperatorWebToken(rawPath = process.env.OPERATOR_API_WEB_TOKEN_FILE): string {
+export function loadOperatorWebToken(
+  rawPath = process.env.TRADING_OPERATOR_API_WEB_TOKEN_FILE,
+): string {
   let descriptor: number | undefined;
   try {
     if (typeof rawPath !== 'string' || !path.isAbsolute(rawPath) || rawPath === '/'

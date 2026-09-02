@@ -122,9 +122,7 @@ class CommandJournal:
                     )
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
                 root.recheck()
-                named = os.stat(
-                    "lock", dir_fd=root.descriptor, follow_symlinks=False
-                )
+                named = os.stat("lock", dir_fd=root.descriptor, follow_symlinks=False)
                 require_private_regular_file(named, max_bytes=0)
                 if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
                     raise ProtectedFilesystemError(
@@ -132,9 +130,7 @@ class CommandJournal:
                     )
                 yield
                 root.recheck()
-                named = os.stat(
-                    "lock", dir_fd=root.descriptor, follow_symlinks=False
-                )
+                named = os.stat("lock", dir_fd=root.descriptor, follow_symlinks=False)
                 require_private_regular_file(named, max_bytes=0)
                 if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
                     raise ProtectedFilesystemError(
@@ -255,6 +251,20 @@ class CommandJournal:
         )
         if receipt.outcome != expected_outcome:
             raise CommandJournalError("command journal outcome is unsafe")
+        expected_code = (
+            {
+                "PAPER": "MODE_ALREADY_PAPER",
+                "KILL_SWITCH_ACTIVE": "KILL_SWITCH_ALREADY_ACTIVE",
+            }.get(intent.desired_state)
+            if applied.application_kind == "NO_CHANGE"
+            else {
+                "PAPER": "MODE_SET_PAPER",
+                "KILL_SWITCH_ACTIVE": "KILL_SWITCH_ACTIVATED",
+                "KILL_SWITCH_INACTIVE": "KILL_SWITCH_CLEARED",
+            }[intent.desired_state]
+        )
+        if receipt.outcome_code != expected_code:
+            raise CommandJournalError("command journal outcome code is unsafe")
 
     @staticmethod
     def _validate_intent(intent: CommandIntentV1) -> None:

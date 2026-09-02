@@ -117,6 +117,27 @@ def test_journal_rejects_receipt_that_conflicts_with_applied_record(
         journal.load(intent.idempotency_key_sha256)
 
 
+def test_journal_rejects_receipt_with_wrong_outcome_code(tmp_path: Path) -> None:
+    paths = provision_operator_state(tmp_path)
+    store = OperatorStateStore(paths)
+    intent = intent_for(store.read_state())
+    journal = CommandJournal(paths)
+    journal.create_intent(intent)
+    resulting = store.apply_mode(intent)
+    applied = applied_for(intent, resulting)
+    journal.create_applied(intent.idempotency_key_sha256, applied)
+    receipt = receipt_for(intent, applied).model_copy(
+        update={"outcome_code": "KILL_SWITCH_CLEARED"}
+    )
+    receipt = receipt.model_copy(
+        update={"receipt_sha256": journal_sha256(receipt, "receipt_sha256")}
+    )
+    journal.create_receipt(receipt)
+
+    with pytest.raises(CommandJournalError, match="unsafe"):
+        journal.load(intent.idempotency_key_sha256)
+
+
 def test_mode_activation_and_clear_use_intent_bound_exact_bytes(tmp_path: Path) -> None:
     paths = provision_operator_state(tmp_path)
     store = OperatorStateStore(paths)
