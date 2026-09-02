@@ -1,5 +1,5 @@
 .PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
-	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
+	audit-dependencies-dev audit-dependencies generate-contracts check-contracts check-hwc-boundaries \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres test-p2-runtime-postgres \
@@ -221,6 +221,10 @@ generate-contracts:
 check-contracts: check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory
 	uv run python scripts/generate_contracts.py --check
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+	$(PYTHON) scripts/check_hwc_boundaries.py
+
+check-hwc-boundaries:
+	$(PYTHON) scripts/check_hwc_boundaries.py
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py

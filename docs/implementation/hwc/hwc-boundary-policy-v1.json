@@ -24,6 +24,16 @@
       "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
     },
     {
+      "path": "apps/dashboard/src/app/api/trading/kill-switch/route.ts",
+      "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
+      "git_blob_sha": "ebef2ad1d8d4346be6cb47953c8dd763536cd581",
+      "source_sha256": "3ae529b466b00732967ae56cc79ff540a84fdb9ed953118dbb6651d08877b0f9",
+      "owner": "DASHBOARD_COMPATIBILITY",
+      "authority": "KILL_SWITCH_COMMAND_WRAPPER",
+      "migration_task": "T-HWC-200B",
+      "expires_at_gate": "HWC_DASHBOARD_AUTHORITY_REMOVED"
+    },
+    {
       "path": "apps/dashboard/src/app/api/trading/update-stop/route.ts",
       "classification": "TEMPORARY_GRANDFATHERED_STATE_WRITE",
       "git_blob_sha": "b6a07bf404dfa55a80982d2ea079979c6047b84f",
