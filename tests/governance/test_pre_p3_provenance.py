@@ -671,6 +671,82 @@ def test_promotion_receipt_rejects_source_drift_forgery_and_replay(tmp_path: Pat
         )
 
 
+def test_promotion_v1_skips_only_a_valid_stale_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    candidate_path, _, _ = _candidate_state(root)
+    (root / "packages/core.py").write_text("VALUE = 9\n")
+    promoted = _commit(root, "new source closure")
+    output = tmp_path / "promotion.json"
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", root)
+
+    assert not qualify_pre_p3.promotion_v1(
+        candidate_path,
+        output,
+        promoted_revision=promoted,
+        skip_stale_candidate=True,
+    )
+    assert not output.exists()
+
+    candidate_path.write_text("{}\n")
+    _commit(root, "malformed candidate")
+    with pytest.raises(qualify_pre_p3.QualificationError, match="candidate"):
+        qualify_pre_p3.promotion_v1(
+            candidate_path,
+            output,
+            promoted_revision=promoted,
+            skip_stale_candidate=True,
+        )
+    assert not output.exists()
+
+
+def test_promotion_v1_skips_a_candidate_from_an_obsolete_closure_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    candidate_path, _, _ = _candidate_state(root)
+    candidate = json.loads(candidate_path.read_text())
+    candidate["source"]["closure_policy_sha256"] = "f" * 64
+    candidate["receipt_sha256"] = payload_sha256(candidate)
+    candidate_path.write_bytes(canonical_json_bytes(candidate) + b"\n")
+    promoted = _commit(root, "obsolete candidate policy")
+    output = tmp_path / "promotion.json"
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", root)
+
+    assert not qualify_pre_p3.promotion_v1(
+        candidate_path,
+        output,
+        promoted_revision=promoted,
+        skip_stale_candidate=True,
+    )
+    assert not output.exists()
+
+
+def test_promotion_v1_still_generates_for_the_current_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    candidate_path, _, _ = _candidate_state(root)
+    promoted = _git(root, "rev-parse", "HEAD")
+    output = tmp_path / "promotion.json"
+    monkeypatch.setattr(qualify_pre_p3, "ROOT", root)
+    run = _promotion_run(promoted)
+    for name, value in run.items():
+        variable = "GITHUB_EVENT_NAME" if name == "event" else f"GITHUB_{name.upper()}"
+        monkeypatch.setenv(variable, value)
+
+    assert qualify_pre_p3.promotion_v1(
+        candidate_path,
+        output,
+        promoted_revision=promoted,
+        skip_stale_candidate=True,
+    )
+    assert json.loads(output.read_text())["status"] == (
+        "PRE_P3_PROMOTION_PROVENANCE_VALID"
+    )
+
+
 def _candidate_state(root: Path) -> tuple[Path, str, str]:
     qualified_commit = _git(root, "rev-parse", "HEAD")
     base_sha = _git(root, "rev-parse", "HEAD^")

@@ -75,11 +75,12 @@ jobs:
           retention-days: 14
 
       - name: Generate protected-main promotion provenance
+        id: pre-p3-promotion
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json') != ''
-        run: uv run python scripts/qualify_pre_p3.py promotion-v1 --candidate docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json --promoted-revision "$GITHUB_SHA" --output "${RUNNER_TEMP:?}/pre-p3-promotion/${GITHUB_SHA}-v1.json"
+        run: set -euo pipefail; output="${RUNNER_TEMP:?}/pre-p3-promotion/${GITHUB_SHA}-v1.json"; uv run python scripts/qualify_pre_p3.py promotion-v1 --candidate docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json --promoted-revision "$GITHUB_SHA" --output "$output" --skip-stale-candidate; if test -f "$output"; then echo 'generated=true' >> "$GITHUB_OUTPUT"; else echo 'generated=false' >> "$GITHUB_OUTPUT"; fi
 
       - name: Publish protected-main promotion provenance
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json') != ''
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.pre-p3-promotion.outputs.generated == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pre-p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}
