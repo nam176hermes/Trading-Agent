@@ -191,6 +191,9 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert "decision.get(\"disposition\") == \"HELD\"" in foundation
     assert "Generate protected-main promotion provenance" in foundation
     assert "scripts/qualify_pre_p3.py promotion-v1" in foundation
+    assert "--skip-stale-candidate" in foundation
+    assert "id: pre-p3-promotion" in foundation
+    assert "steps.pre-p3-promotion.outputs.generated == 'true'" in foundation
     assert "github.event_name == 'push'" in foundation
     assert "github.ref == 'refs/heads/main'" in foundation
     assert "Publish protected-main promotion provenance" in foundation

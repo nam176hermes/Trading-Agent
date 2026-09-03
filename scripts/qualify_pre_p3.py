@@ -23,11 +23,14 @@ from packages.hwc_status import (
     validate_hwc_source_status,
 )
 from packages.pre_p3_provenance import (
+    SOURCE_CLOSURE_POLICY_SHA256,
+    SOURCE_CLOSURE_SCHEMA,
     canonical_source_identity,
     make_candidate_certificate,
     make_promotion_receipt,
     make_v2_gate_receipt,
     source_matches_current,
+    validate_candidate_certificate,
     validate_v2_gate_receipt,
 )
 from packages.project_status import (
@@ -1088,9 +1091,37 @@ def promotion_v1(
     output: Path,
     *,
     promoted_revision: str,
-) -> None:
+    skip_stale_candidate: bool = False,
+) -> bool:
     if _git("status", "--porcelain"):
         raise QualificationError("promotion requires a clean source tree")
+    if skip_stale_candidate:
+        try:
+            raw_candidate = json.loads(_read_receipt(candidate_path))
+            source = raw_candidate.get("source", {})
+            if isinstance(source, dict) and set(source) == {
+                "closure_policy_sha256",
+                "closure_schema_version",
+                "closure_sha256",
+                "commit_sha",
+                "tree_sha",
+            } and (
+                source.get("closure_schema_version") != SOURCE_CLOSURE_SCHEMA
+                or source.get("closure_policy_sha256")
+                != SOURCE_CLOSURE_POLICY_SHA256
+            ):
+                return False
+            candidate = validate_candidate_certificate(
+                raw_candidate,
+                root=ROOT,
+                receipt_dir=candidate_path.parent,
+            )
+        except QualificationError:
+            raise
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise QualificationError("promotion candidate is invalid") from exc
+        if not source_matches_current(ROOT, candidate["source"], promoted_revision):
+            return False
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
     if not run_id.isdigit() or run_id.startswith("0") or not run_attempt.isdigit() or run_attempt.startswith("0"):
@@ -1115,6 +1146,7 @@ def promotion_v1(
     except ValueError as exc:
         raise QualificationError("promotion provenance validation failed") from exc
     _write(output, payload)
+    return True
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -1171,6 +1203,7 @@ def main(arguments: list[str] | None = None) -> int:
     promotion.add_argument("--candidate", type=Path, required=True)
     promotion.add_argument("--output", type=Path, required=True)
     promotion.add_argument("--promoted-revision", default="HEAD")
+    promotion.add_argument("--skip-stale-candidate", action="store_true")
     args = parser.parse_args(arguments)
     try:
         if args.command == "p2-source":
@@ -1232,6 +1265,7 @@ def main(arguments: list[str] | None = None) -> int:
                 args.candidate,
                 args.output,
                 promoted_revision=args.promoted_revision,
+                skip_stale_candidate=args.skip_stale_candidate,
             )
     except QualificationError as exc:
         print(f"HELD: {exc}", file=sys.stderr)
