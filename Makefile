@@ -593,7 +593,7 @@ ci-host-authority-private:
 
 # Pre-P3 P1 evidence deliberately excludes disposable PostgreSQL authority;
 # P2 qualifies that boundary separately with its own disposable fixture.
-ci-pre-p3-host-authority: check-p0-baseline
+ci-pre-p3-host-authority: check-p0-baseline build-dashboard
 	@set -eu; \
 		foundation_context_path=$$(uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$(TEST_EVIDENCE_DIR)"); \
 		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
