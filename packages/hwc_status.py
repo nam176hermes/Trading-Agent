@@ -501,6 +501,7 @@ def validate_hwc_portable_receipt(
             remote_url
             not in {
                 "git@github.com:nam176hermes/Trading-Agent.git",
+                "https://github.com/nam176hermes/Trading-Agent",
                 "https://github.com/nam176hermes/Trading-Agent.git",
             }
             or actual != source
