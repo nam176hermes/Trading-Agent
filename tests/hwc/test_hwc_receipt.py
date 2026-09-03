@@ -210,6 +210,14 @@ def test_portable_receipt_exclusion_requires_protected_run_and_current_closure(
         "packages.hwc_status._verify_github_attestation", lambda *_: None
     )
     validate_hwc_portable_receipt(receipt, root=root)
+    git(
+        root,
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/nam176hermes/Trading-Agent",
+    )
+    validate_hwc_portable_receipt(receipt, root=root)
 
     stale = json.loads(json.dumps(receipt))
     stale["source"]["closure_sha256"] = "0" * 64
