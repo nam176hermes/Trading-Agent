@@ -278,8 +278,15 @@ def test_project_status_check_rejects_manually_enabled_p3(tmp_path: Path) -> Non
     assert checked.returncode == 1
 
 
-def test_legacy_receipts_cannot_authorize_p3_without_hwc_source_ready() -> None:
+def test_legacy_receipts_cannot_authorize_p3_without_hwc_source_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """GOV-HWC-010: historical v1 receipts never bypass current HWC readiness."""
+    hwc = project_status.derive_hwc_source_status(ROOT)
+    hwc["gates"]["HWC_PORTABLE_QUALIFIED"] = "HELD"
+    hwc["gates"]["HWC_SOURCE_READY"] = "HELD"
+    monkeypatch.setattr(project_status, "derive_hwc_source_status", lambda root: hwc)
+
     status = derive_project_status(ROOT)
 
     assert status["legacy_receipts"]

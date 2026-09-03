@@ -22,7 +22,7 @@ from scripts import qualify_pre_p3
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_current_source_derives_arch_contract_without_later_authority() -> None:
+def test_current_source_derives_valid_hwc_status() -> None:
     status = derive_hwc_source_status(ROOT)
 
     assert validate_hwc_source_status(status) == status
@@ -31,7 +31,10 @@ def test_current_source_derives_arch_contract_without_later_authority() -> None:
         status["gates"][gate] == "PASS"
         for gate in HWC_GATES[: HWC_GATES.index("ARCH_CONTRACT_READY") + 1]
     )
-    assert status["gates"]["HWC_SOURCE_READY"] == "HELD"
+    assert status["gates"]["HWC_SOURCE_COMPLETE"] == "PASS"
+    assert status["gates"]["HWC_SOURCE_READY"] == (
+        "PASS" if status["gates"]["HWC_PORTABLE_QUALIFIED"] == "PASS" else "HELD"
+    )
     assert status["status_sha256"] == status_sha256(status)
     assert status["blockers"] == sorted(status["blockers"])
     assert set(status["authority"].values()) == {False}
@@ -42,7 +45,7 @@ def test_current_source_derives_arch_contract_without_later_authority() -> None:
     ("mutation", "message"),
     (
         (lambda value: value["authority"].update({"live": True}), "authority"),
-        (lambda value: value["blockers"].reverse(), "blockers"),
+        (lambda value: value["blockers"].append("forged"), "blockers"),
         (
             lambda value: value["gates"].update({"ARCH_CONTRACT_READY": "HELD"}),
             "gate",
@@ -108,9 +111,23 @@ def test_candidate_issuance_rejects_missing_or_stale_hwc_projection(
 
     status_path.write_bytes(canonical_json_bytes(expected) + b"\n")
     qualify_pre_p3._require_hwc_arch_contract()
-    status_path.write_bytes(canonical_json_bytes(expected | {"blockers": []}) + b"\n")
+    stale = json.loads(json.dumps(expected))
+    stale["blockers"] = ["forged"]
+    stale["status_sha256"] = status_sha256(stale)
+    status_path.write_bytes(canonical_json_bytes(stale) + b"\n")
     with pytest.raises(qualify_pre_p3.QualificationError, match="HWC"):
         qualify_pre_p3._require_hwc_arch_contract()
+
+
+def _held_source_status() -> dict:
+    status = json.loads(json.dumps(derive_hwc_source_status(ROOT)))
+    status["gates"]["HWC_PORTABLE_QUALIFIED"] = "HELD"
+    status["gates"]["HWC_SOURCE_READY"] = "HELD"
+    status["blockers"] = sorted(
+        f"{gate}: HELD" for gate, value in status["gates"].items() if value == "HELD"
+    )
+    status["status_sha256"] = status_sha256(status)
+    return validate_hwc_source_status(status)
 
 
 def _source_ready_status() -> dict:
@@ -126,7 +143,7 @@ def test_final_candidate_requirement_rejects_held_hwc_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """GOV-HWC-005: final candidate issuance stops before creating output."""
-    held = derive_hwc_source_status(ROOT)
+    held = _held_source_status()
     status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
     status_path.parent.mkdir(parents=True)
     status_path.write_bytes(canonical_json_bytes(held) + b"\n")
@@ -170,7 +187,7 @@ def test_final_candidate_requirement_rejects_forged_ready_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """GOV-HWC-007: tracked PASS cannot override independently derived HELD."""
-    held = derive_hwc_source_status(ROOT)
+    held = _held_source_status()
     status_path = tmp_path / "docs/implementation/hwc/hwc-source-status.json"
     status_path.parent.mkdir(parents=True)
     status_path.write_bytes(canonical_json_bytes(_source_ready_status()) + b"\n")
