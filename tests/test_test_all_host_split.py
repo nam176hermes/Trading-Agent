@@ -85,6 +85,13 @@ def test_portable_and_host_routes_have_distinct_required_semantics() -> None:
     assert "DISPOSABLE_PG_GREEN_FIXTURE_PLAN" in pre_p3_recipe
 
 
+def test_pre_p3_host_authority_builds_dashboard_before_headless_tests() -> None:
+    """Break caught: a clean host checkout has no Next.js production build."""
+    targets = _make_targets()
+
+    assert "build-dashboard" in _reachable(targets, "ci-pre-p3-host-authority")
+
+
 def test_portable_route_uses_topology_once_without_repeating_its_root_universe() -> None:
     """Break caught: the common source route reruns portable root nodes beside topology."""
     counts = _route_multiplicity(_make_targets(), "ci-portable")
