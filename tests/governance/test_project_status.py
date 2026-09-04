@@ -258,11 +258,14 @@ def test_status_cli_rejects_symlinked_projection_paths(tmp_path: Path) -> None:
     assert target.read_bytes() == b"preserve\n"
 
 
-def test_project_status_check_rejects_manually_enabled_p3(tmp_path: Path) -> None:
-    """GOV-HWC-009: generated authority cannot be asserted by hand."""
+def test_project_status_check_rejects_manually_changed_p3_authority(
+    tmp_path: Path,
+) -> None:
+    """GOV-HWC-009: generated authority cannot be changed by hand."""
     forged = derive_project_status(ROOT)
-    forged["p3_alpha_development_allowed"] = True
-    forged["current_phase"] = "P3_ALPHA_DEVELOPMENT"
+    forged["p3_alpha_development_allowed"] = not forged[
+        "p3_alpha_development_allowed"
+    ]
     path = tmp_path / "project-status.json"
     path.write_bytes(
         json.dumps(forged, separators=(",", ":"), sort_keys=True).encode() + b"\n"
