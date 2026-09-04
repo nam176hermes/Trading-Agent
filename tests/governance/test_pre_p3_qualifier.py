@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import subprocess
@@ -394,6 +394,54 @@ def test_p2_runtime_environment_requires_external_fixture_and_rejects_runtime_ds
         name not in environment
         for name in ("DATABASE_URL", "POSTGRES_URL", "TRADING_DATABASE_URL")
     )
+
+
+@pytest.mark.parametrize("drift", ("validity", "root", "port"))
+def test_p2_runtime_environment_rejects_broader_than_issued_authority(
+    drift: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = {
+        "closure_policy_sha256": SOURCE_CLOSURE_POLICY_SHA256,
+        "closure_schema_version": "trading-agent-source-closure-v1",
+        "closure_sha256": "c" * 64,
+        "commit_sha": SHA,
+        "tree_sha": TREE,
+    }
+    approved_at = datetime(2026, 9, 1, 23, 30, tzinfo=UTC)
+    monkeypatch.setattr(qualify_pre_p3, "_source_v2", lambda: source)
+    approval_path, plan_path = qualify_pre_p3.issue_p2_fixture(
+        tmp_path / "authority",
+        operator="nam176hermes",
+        reviewer="codex-governance-auditor",
+        approved_at=approved_at,
+    )
+    approval = json.loads(approval_path.read_bytes())
+    plan = json.loads(plan_path.read_bytes())
+    if drift == "validity":
+        expiry = approved_at + timedelta(hours=23)
+        approval["validity"]["expires_at_utc"] = expiry.isoformat().replace(
+            "+00:00", "Z"
+        )
+        approval["canonical_record_sha256"] = qualify_pre_p3.approval_record_sha256(
+            approval
+        )
+        plan["validity"] = dict(approval["validity"])
+        plan["approval_record_sha256"] = approval["canonical_record_sha256"]
+    elif drift == "root":
+        plan["slots"][0]["root"] = "/tmp/phase4-postgres-broader-than-issued"
+        plan["slots"][0]["pgdata"] = (
+            "/tmp/phase4-postgres-broader-than-issued/data"
+        )
+    else:
+        plan["slots"][0]["port"] = 49153
+    plan["canonical_record_sha256"] = qualify_pre_p3.fixture_plan_sha256(plan)
+    _write(approval_path, approval)
+    _write(plan_path, plan)
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_APPROVAL_RECORD", str(approval_path))
+    monkeypatch.setenv("DISPOSABLE_PG_GREEN_FIXTURE_PLAN", str(plan_path))
+
+    with pytest.raises(QualificationError, match="exact Pre-P3 envelope"):
+        qualify_pre_p3.p2_runtime_environment(now=approved_at)
 
 
 def test_p2_fixture_issuer_rejects_source_checkout_destination(
