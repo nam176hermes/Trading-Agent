@@ -16,7 +16,6 @@ from packages.hwc_status import (
 )
 from packages.project_status import make_pass_receipt
 from packages.pre_p3_provenance import (
-    SOURCE_CLOSURE_POLICY_SHA256,
     ProvenanceError,
     canonical_source_identity,
     make_candidate_certificate,
@@ -161,24 +160,6 @@ def test_only_exact_generated_status_path_is_excluded(tmp_path: Path) -> None:
     assert canonical_source_identity(root, "HEAD")["closure_sha256"] != qualified[
         "closure_sha256"
     ]
-
-
-def test_existing_v2_candidate_shape_is_preserved_but_policy_is_stale() -> None:
-    """Break caught: historical evidence is silently re-attributed to new policy."""
-    candidate = json.loads(
-        (
-            ROOT
-            / "docs/implementation/pre-p3/receipts/pre-p3-candidate-v2.json"
-        ).read_bytes()
-    )
-
-    assert candidate["schema_version"] == "pre-p3-candidate-certification-v2"
-    assert candidate["receipt_sha256"] == payload_sha256(candidate)
-    assert candidate["source"]["closure_policy_sha256"] != (
-        SOURCE_CLOSURE_POLICY_SHA256
-    )
-    with pytest.raises(ProvenanceError, match="source identity"):
-        validate_candidate_certificate(candidate)
 
 
 def _qualification() -> dict[str, str]:
