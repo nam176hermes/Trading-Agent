@@ -66,6 +66,8 @@ from scripts.validate_disposable_postgres_fixture_plan import (
 ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = {"broker": False, "live": False, "network": False, "production": False}
 P1_QUALIFICATION_OPERATION = "p2-security-master-runtime-green-v1"
+_P2_FIXTURE_VALIDITY = timedelta(hours=2)
+_P2_FIXTURE_PORT = 49152
 _P1_EXTERNAL_OUTCOMES = {
     "EXT-DISPOSABLE-PG-GREEN": "DEFERRED",
     "EXT-DISPOSABLE-PG-RED": "DEFERRED",
@@ -251,7 +253,7 @@ def issue_p2_fixture(
     if approved_at.tzinfo is None or approved_at.utcoffset() is None:
         raise QualificationError("P2 fixture approval time must be timezone-aware")
     approved_at = approved_at.astimezone(timezone.utc).replace(microsecond=0)
-    expires_at = approved_at + timedelta(hours=2)
+    expires_at = approved_at + _P2_FIXTURE_VALIDITY
     approved_timestamp = approved_at.isoformat().replace("+00:00", "Z")
     expires_timestamp = expires_at.isoformat().replace("+00:00", "Z")
     operation = {
@@ -328,7 +330,7 @@ def issue_p2_fixture(
                 "ordinal": 1,
                 "root": slot_root,
                 "pgdata": f"{slot_root}/data",
-                "port": 49152,
+                "port": _P2_FIXTURE_PORT,
             }
         ],
         "canonical_record_sha256": "0" * 64,
@@ -410,14 +412,27 @@ def p2_runtime_environment(
         "tests/security_master/test_postgres_runtime.py",
         P1_QUALIFICATION_OPERATION,
     )
+    validity = approval["validity"]
+    approved_at = datetime.fromisoformat(
+        validity["approved_at_utc"].replace("Z", "+00:00")
+    )
+    expires_at = datetime.fromisoformat(
+        validity["expires_at_utc"].replace("Z", "+00:00")
+    )
+    expected_root = f"/tmp/phase4-postgres-pre-p3-{source['commit_sha'][:12]}"
     if (
         approval.get("approved_operations")
         != [{"test_path": expected_pair[0], "operation_id": expected_pair[1]}]
         or len(slots) != 1
         or (slots[0].test_path, slots[0].operation_id, slots[0].ordinal)
         != (*expected_pair, 1)
+        or expires_at - approved_at != _P2_FIXTURE_VALIDITY
+        or slots[0].root != expected_root
+        or slots[0].port != _P2_FIXTURE_PORT
     ):
-        raise QualificationError("external P2 disposable PostgreSQL authority is not narrow")
+        raise QualificationError(
+            "external P2 disposable PostgreSQL authority exceeds the exact Pre-P3 envelope"
+        )
     environment = {
         name: value
         for name, value in os.environ.items()
