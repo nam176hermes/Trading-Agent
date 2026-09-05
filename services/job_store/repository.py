@@ -132,6 +132,18 @@ class JobRepository:
                     "Job API is authorized only for SNAPSHOT or exact engine "
                     "BACKTEST jobs"
                 )
+        elif job_type is JobType.ALPHA_CAMPAIGN:
+            from packages.job_contracts import AlphaCampaignPayload
+
+            if type(payload) is AlphaCampaignPayload:
+                statement = """
+                    SELECT job_id, outcome
+                    FROM job_plane.api_enqueue_alpha_campaign(
+                        %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """
+            else:  # pragma: no cover - parse_payload owns the closed dispatch
+                raise ValueError("Job API alpha campaign payload is invalid")
         else:
             raise ValueError(
                 "Job API is authorized only for SNAPSHOT or exact engine BACKTEST jobs"

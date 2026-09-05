@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Mapping
 
 from packages.job_contracts import ReplayPayload
+from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata
 
 MAX_RESULT_CANDIDATES = 64
 MAX_RESULT_ENTRIES = 10_000
@@ -69,6 +70,12 @@ class ValidatedResult:
     truncated: bool
     validator_id: str
     validation_metadata: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedP3Publication:
+    request: object
+    entries: tuple[object, ...]
 
 
 def _directory_flags() -> int:
@@ -178,6 +185,82 @@ class ResultValidator:
         else:
             raise ResultValidationError("result validator is not allowlisted")
         return self._seal(job, raw, validator_id, extra)
+
+    def validate_p3(
+        self,
+        validator_id: str,
+        job: object,
+        *,
+        stream: ArtifactMetadata,
+        exit_code: int,
+    ) -> ValidatedResult | ValidatedP3Publication:
+        """Validate the bounded stdout of an explicitly composed P3 worker."""
+
+        if exit_code != 0:
+            raise ResultValidationError("child exit code was not zero")
+        from .command_registry import p3_command_spec
+
+        spec = p3_command_spec(getattr(job, "payload", None))
+        if validator_id != spec.result_validator_id:
+            raise ResultValidationError("P3 result validator differs from fixed operation")
+        raw = self._read_p3_stream(job, stream)
+        result = validate_p3_result_bytes(validator_id, raw)
+        from services.job_store.p3_sql import PublicationProposal
+        if isinstance(result, PublicationProposal):
+            if result.request.job_id != getattr(job, "job_id", None):
+                raise ResultValidationError("P3 publication job identity differs")
+            return ValidatedP3Publication(result.request, result.entries)
+        return self._seal(
+            job,
+            raw,
+            validator_id,
+            {
+                "operation": getattr(getattr(job, "payload", None), "logical_trial_id"),
+                "result_digest": result.digest,
+            },
+        )
+
+    def _read_p3_stream(self, job: object, stream: ArtifactMetadata) -> bytes:
+        expected = f"{getattr(job, 'job_id', '')}/{getattr(job, 'attempt_id', '')}/stdout.log"
+        if (
+            not isinstance(stream, ArtifactMetadata)
+            or stream.artifact_type != "stdout"
+            or stream.relative_ref != expected
+            or stream.truncated
+            or stream.validator_id != "bounded-stream-v1"
+            or not 1 <= stream.size_bytes <= MAX_STREAM_BYTES
+            or _SHA256.fullmatch(stream.sha256) is None
+        ):
+            raise ResultValidationError("P3 stdout artifact identity is invalid")
+        root_fd = _open_directory_chain(self._artifact_root)
+        job_fd = attempt_fd = descriptor = -1
+        try:
+            job_fd = os.open(str(getattr(job, "job_id")), _directory_flags(), dir_fd=root_fd)
+            attempt_fd = os.open(str(getattr(job, "attempt_id")), _directory_flags(), dir_fd=job_fd)
+            descriptor = os.open(
+                "stdout.log",
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=attempt_fd,
+            )
+            info = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o600
+                or info.st_nlink != 1
+                or info.st_size != stream.size_bytes
+            ):
+                raise ResultValidationError("P3 stdout artifact changed")
+            raw = os.read(descriptor, stream.size_bytes + 1)
+            if len(raw) != stream.size_bytes or not secrets.compare_digest(
+                hashlib.sha256(raw).hexdigest(), stream.sha256
+            ):
+                raise ResultValidationError("P3 stdout artifact digest differs")
+            return raw
+        except OSError as exc:
+            raise ResultValidationError("P3 stdout artifact is unavailable") from exc
+        finally:
+            _close_descriptors(descriptor, attempt_fd, job_fd, root_fd)
 
     def _candidates(
         self, root: Path, prefix: str, progress: Callable[[], None],
@@ -504,8 +587,55 @@ class ResultValidator:
         return ValidatedResult("result", relative, digest, len(raw), "application/json", False, validator_id, {**extra, "validator_id": validator_id})
 
 
+def validate_p3_result_bytes(validator_id: str, raw: bytes):
+    """Parse one operation-specific terminal P3 result contract."""
+
+    from packages.alpha_lifecycle.contracts.authority import (
+        IntegrationReceipt,
+        PrimarySelection,
+    )
+    from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
+    from packages.alpha_lifecycle.contracts.results import (
+        BaselineSelection,
+        HoldoutEvaluationResult,
+        ParityResult,
+        QualificationBundle,
+    )
+    from packages.p3_provenance import PhaseExitReceipt
+    from services.job_store.p3_sql import PublicationProposal
+
+    models = {
+        "p3-integration-qualified-v1": IntegrationReceipt,
+        "p3-baseline-selection-v1": BaselineSelection,
+        "p3-registration-proof-v1": RegistrationProof,
+        "p3-qualification-bundle-v1": QualificationBundle,
+        "p3-primary-selection-v1": PrimarySelection,
+        "p3-holdout-evaluation-result-v1": HoldoutEvaluationResult,
+        "p3-parity-result-v1": ParityResult,
+        "p3-phase-exit-v1": PhaseExitReceipt,
+    }
+    try:
+        publication_stages = {
+            "p3-publication-register-v1": "REGISTER",
+            "p3-publication-research-v1": "RESEARCH_DECISION",
+            "p3-publication-exit-v1": "EXIT_DECISION",
+        }
+        if validator_id in publication_stages:
+            proposal = PublicationProposal.model_validate_json(raw)
+            if proposal.request.stage != publication_stages[validator_id]:
+                raise ValueError("publication stage differs from fixed operation")
+            return proposal
+        model = models[validator_id]
+        return model.model_validate_json(raw)
+    except KeyError as exc:
+        raise ResultValidationError("P3 result validator is not allowlisted") from exc
+    except Exception as exc:
+        raise ResultValidationError("P3 result contract is invalid") from exc
+
+
 __all__ = [
     "MAX_REPLAY_EVENTS", "MAX_REPORT_ASSETS", "MAX_RESULT_BYTES", "MAX_RESULT_CANDIDATES",
     "MAX_RESULT_ENTRIES", "ResultValidationError", "ResultValidator",
+    "validate_p3_result_bytes", "ValidatedP3Publication",
     "ValidatedResult",
 ]

@@ -184,4 +184,122 @@ def calculate_performance_metrics(
     )
 
 
-__all__ = ["CostModelV1", "calculate_performance_metrics"]
+def calculate_aggregate_performance_metrics(
+    folds: tuple[tuple[tuple[DailyCloseV1, ...], tuple[Decimal, ...]], ...],
+    costs: CostModelV1,
+) -> PerformanceMetricsV1:
+    """Recompute metrics over concatenated V1 samples while preserving fold resets."""
+    if not folds:
+        raise ValueError("aggregate metrics require at least one fold")
+    model = CostModelV1.model_validate(costs)
+    with localcontext() as context:
+        context.prec = 50
+        context.rounding = ROUND_HALF_EVEN
+        transaction_rate = Decimal(
+            model.fee_bps + model.spread_bps + model.slippage_bps
+        ) / Decimal(10_000)
+        funding_rate = Decimal(model.funding_bps) / Decimal(3_650_000)
+        borrow_rate = Decimal(model.borrow_bps) / Decimal(3_650_000)
+        carry_rate = funding_rate + borrow_rate
+        samples: list[Decimal] = []
+        turnover = Decimal(0)
+        trade_count = 0
+        exposure_days = Decimal(0)
+        holding_runs: list[int] = []
+        elapsed_seconds = Decimal(0)
+        for raw_rows, weights in folds:
+            rows = tuple(DailyCloseV1.model_validate(item) for item in raw_rows)
+            if len(rows) < 2 or len(rows) != len(weights):
+                raise ValueError("aggregate fold rows and weights must align")
+            if any(weight not in {Decimal(0), Decimal(1)} for weight in weights):
+                raise ValueError("aggregate weights must be long or flat")
+            entry = abs(weights[0]) * transaction_rate
+            fold_samples = [-entry]
+            for index in range(1, len(rows)):
+                market = rows[index].close / rows[index - 1].close - 1
+                change = abs(weights[index] - weights[index - 1])
+                fold_samples.append(
+                    weights[index - 1] * market
+                    - change * transaction_rate
+                    - weights[index - 1] * carry_rate
+                )
+            exit_cost = abs(weights[-1]) * transaction_rate
+            fold_samples[-1] = (1 + fold_samples[-1]) * (1 - exit_cost) - 1
+            samples.extend(fold_samples)
+            turnover += abs(weights[0]) + sum(
+                abs(current - previous)
+                for previous, current in zip(weights, weights[1:])
+            ) + abs(weights[-1])
+            trade_count += int(weights[0] != 0) + sum(
+                current != previous for previous, current in zip(weights, weights[1:])
+            ) + int(weights[-1] != 0)
+            exposure_days += sum(weights[:-1], Decimal(0))
+            current_run = 0
+            for weight in weights:
+                if weight == 1:
+                    current_run += 1
+                elif current_run:
+                    holding_runs.append(current_run)
+                    current_run = 0
+            if current_run:
+                holding_runs.append(current_run)
+            elapsed_seconds += Decimal((rows[-1].closed_at - rows[0].closed_at).total_seconds())
+
+        daily = tuple(samples)
+        equity = Decimal(1)
+        curve = []
+        for sample in daily:
+            equity *= 1 + sample
+            curve.append(equity)
+        total_return = equity - 1
+        years = elapsed_seconds / Decimal("31557600")
+        cagr = Decimal(-1) if total_return <= -1 else ((1 + total_return).ln() / years).exp() - 1
+        mean = sum(daily, Decimal(0)) / Decimal(len(daily))
+        variance = sum((item - mean) ** 2 for item in daily) / Decimal(len(daily) - 1)
+        annualizer = Decimal(365).sqrt()
+        volatility = variance.sqrt() * annualizer
+        downside = (
+            sum(min(item, Decimal(0)) ** 2 for item in daily) / Decimal(len(daily))
+        ).sqrt() * annualizer
+        annual_return = mean * Decimal(365)
+        failures: list[str] = []
+        sharpe = None if volatility == 0 else annual_return / volatility
+        sortino = None if downside == 0 else annual_return / downside
+        if sharpe is None:
+            failures.append("E_SHARPE_UNDEFINED")
+        if sortino is None:
+            failures.append("E_SORTINO_UNDEFINED")
+        peak = curve[0]
+        max_drawdown = Decimal(0)
+        for item in curve:
+            peak = max(peak, item)
+            max_drawdown = max(max_drawdown, 1 - item / peak)
+        calmar = None if max_drawdown == 0 else cagr / max_drawdown
+        if calmar is None:
+            failures.append("E_CALMAR_UNDEFINED")
+        ordered = sorted(daily)
+        tail_count = max(1, ceil(len(ordered) * 0.05))
+        expected_shortfall = sum(ordered[:tail_count], Decimal(0)) / Decimal(tail_count)
+
+    return PerformanceMetricsV1(
+        total_return=_q(total_return), cagr=_q(cagr), volatility=_q(volatility),
+        max_drawdown=_q(max_drawdown), downside_risk=_q(downside),
+        sharpe=None if sharpe is None else _q(sharpe),
+        sortino=None if sortino is None else _q(sortino),
+        calmar=None if calmar is None else _q(calmar), trade_count=trade_count,
+        turnover=_q(turnover),
+        average_holding_days=None if not holding_runs else _q(Decimal(sum(holding_runs)) / Decimal(len(holding_runs))),
+        fees=_q(turnover * Decimal(model.fee_bps) / Decimal(10_000)),
+        spread=_q(turnover * Decimal(model.spread_bps) / Decimal(10_000)),
+        slippage=_q(turnover * Decimal(model.slippage_bps) / Decimal(10_000)),
+        funding=_q(exposure_days * funding_rate), borrow_cost=_q(exposure_days * borrow_rate),
+        worst_day=_q(min(daily)), worst_week=_q(_rolling_worst(daily, 7)),
+        worst_month=_q(_rolling_worst(daily, 30)), expected_shortfall_5=_q(expected_shortfall),
+        failure_codes=tuple(sorted(failures)),
+    )
+
+
+__all__ = [
+    "CostModelV1", "calculate_aggregate_performance_metrics",
+    "calculate_performance_metrics",
+]

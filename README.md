@@ -12,10 +12,11 @@ broker, account, order endpoint, or active production mutation route.
 `make ci` is source-safe and aliases portable CI. `make ci-host-authority` is
 an explicit operator-managed authority lane: DEFERRED or UNAVAILABLE host
 evidence is never PASS. P0-11 supplies an executable source closure matrix,
-not final qualification. P1/P1-H and P2 source work exist, but canonical
-Pre-P3 readiness remains fail-closed until v2 candidate evidence and a
-protected-main promotion receipt validate. Production authority and
-live-trading authority remain false or unavailable.
+not final qualification. P1/P1-H and P2 source work exist. Canonical Pre-P3
+and P3 status are derived from `docs/implementation/project-status.json` and
+`docs/implementation/p3/p3-source-status.json`. P3 V2.1 source development is
+separate from disposable SQL/native qualification and official research.
+Production authority and live-trading authority remain false or unavailable.
 
 ## Project map
 
@@ -36,7 +37,7 @@ trading-agent/
 │   ├── domain/                   D0 typed domain contracts and fixed precision
 │   └── event_ledger/             deterministic replay and ledger contracts
 ├── legacy/research-backend/      preserved flat backend, own uv.lock
-├── alembic/versions/              PostgreSQL source migrations through 0019
+├── alembic/versions/              PostgreSQL source migrations through source-only 0020
 ├── generated/                    generated contracts
 ├── ops/consolidation/            source authority and import manifests
 ├── scripts/                      audit and contract tooling

@@ -46,20 +46,23 @@ installation, PostgreSQL recovery or migration, service changes, scheduler
 changes, paper-production promotion and live trading remain separate,
 approval-gated operations.
 
-## Current source status (2026-09-02)
+## Current source status (2026-09-05)
 
-The checkout contains paper-only source through migration
-`0019_p2_security_master`, P1/P1-H/P2 qualification tooling, and Pre-P3
-governance. Canonical project status is derived from immutable receipts rather
-than asserted manually. Legacy v1 receipts remain historical evidence but do
-not authorize Pre-P3 readiness after history-rewriting promotion.
+The checkout contains the P3 V2.1 M1 source candidate, including source-only
+migration `0020_p3_alpha_campaign_authority`, fixed contracts, deterministic
+research code, publication fencing, and prebuilt provenance/status consumers.
+Canonical project status remains derived from immutable receipts rather than
+asserted manually. The P3 projection is
+`docs/implementation/p3/p3-source-status.json`.
 
 The v2 design binds qualification to a deterministic source-closure digest and
 retains the original commit/tree/run evidence. A candidate can retain semantic
 qualification across squash, rebase, cherry-pick, or a controlled release only
 when the current closure is identical. `PRE_P3_READY` remains `HELD` until the
 candidate receipt set and a separate protected-main promotion receipt both
-validate. Only then may the derived status permit P3 alpha development.
+validate. P3 phase completion additionally requires externally attested phase
+exit and exact protected-main promotion receipts. Source tests do not satisfy
+the disposable PostgreSQL/native fixture gate or authorize official research.
 
 No source change creates runtime or live authority. In particular, this does
 not build or activate Release Authority v2, modify the historical production

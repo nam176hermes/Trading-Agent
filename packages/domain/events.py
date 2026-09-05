@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from .clock import require_utc
+from .alpha_events import AlphaRegistryTransitionRecordedV1
 from .orders import FillEvent, OrderEvent, OrderIntent, validate_fill_report_batch
 from .portfolio import TargetPortfolio
 from .portfolio_events import (
@@ -44,6 +45,7 @@ NonEmptyText = Annotated[str, Field(min_length=1)]
 PayloadT = TypeVar("PayloadT")
 
 EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
+    AlphaRegistryTransitionRecordedV1: "AlphaRegistryTransitionRecordedV1",
     SignalProposal: "SignalProposal",
     TargetPortfolio: "TargetPortfolio",
     RiskDecision: "RiskDecision",

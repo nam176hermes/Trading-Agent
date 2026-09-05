@@ -18,7 +18,7 @@
 	qualify-p1-engine-lts-local qualify-p1-engine-lts-report \
 	qualify-p1-engine-lts-source-ready qualify-p1-engine-lts-final \
 	check-project-status qualify-p2-source qualify-p2-runtime qualify-p2-final \
-	qualify-p3-foundation certify-pre-p3
+	qualify-p3-foundation certify-pre-p3 test-p3-source check-p3-status
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 PYTHON ?= uv run python
@@ -96,6 +96,14 @@ qualify-p1-engine-lts-final:
 check-project-status:
 	$(PYTHON) scripts/derive_project_status.py \
 		--check docs/implementation/project-status.json
+
+check-p3-status:
+	$(PYTHON) scripts/derive_p3_status.py \
+		--check docs/implementation/p3/p3-source-status.json
+
+test-p3-source:
+	uv run --frozen pytest -q tests/p3 tests/governance/test_p3_status.py \
+		tests/governance/test_p3_source_outputs.py tests/governance/test_p3_workflow.py
 
 check-hwc-status:
 	$(PYTHON) scripts/derive_hwc_status.py \

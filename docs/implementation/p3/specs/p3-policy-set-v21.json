@@ -1,0 +1,480 @@
+{
+  "acquisition": {
+    "actual_data_download_performed_in_plan_authoring": false,
+    "checksum_max_bytes": 4096,
+    "from_2025_unit": "MICROSECONDS",
+    "host": "data.binance.vision",
+    "http_timeout_seconds": 20,
+    "max_inflate_ratio": 100,
+    "member_count": 1,
+    "member_max_bytes": 8388608,
+    "path_prefix": "/data/spot/daily/klines/BTCUSDT/1d/",
+    "pre_2025_unit": "MILLISECONDS",
+    "redirects_allowed": false,
+    "retry_attempts": 3,
+    "retry_delay_seconds": [
+      1,
+      2,
+      4
+    ],
+    "timestamp_boundary": "NORMALIZE_END_EXCLUSIVE_AND_PRESERVE_RAW_CLOSE_TIME",
+    "zip_max_bytes": 1048576
+  },
+  "authority": {
+    "broker": false,
+    "live": false,
+    "network": false,
+    "production": false
+  },
+  "authority_scope_note": "False network means no external market/trading runtime capability. Acquisition explicit allowlisted HTTPS; outer host may use loopback research PostgreSQL and GitHub control plane. Children no network.",
+  "baseline": {
+    "commit_sha": "9b625aa766688a087b26cd581e07545a1dfd5009",
+    "tree_sha": "b7f6c964989966a6875ff16633fbbfbb441d7c2b"
+  },
+  "baseline_selection": {
+    "locked_before_registry": true,
+    "metric": "AGGREGATE_NET_OOS_TOTAL_RETURN",
+    "required": [
+      "B0_CASH",
+      "B1_BUY_AND_HOLD",
+      "B2_EQUAL_WEIGHT",
+      "B3_SIMPLE_MOMENTUM",
+      "B4_SIMPLE_MEAN_REVERSION"
+    ],
+    "tie_order": [
+      "B0_CASH",
+      "B1_BUY_AND_HOLD",
+      "B2_EQUAL_WEIGHT",
+      "B3_SIMPLE_MOMENTUM",
+      "B4_SIMPLE_MEAN_REVERSION"
+    ]
+  },
+  "campaign": {
+    "calendar": "UTC_24X7",
+    "contract_precedence": "This policy set and full V2.1 docs supersede V2; no silent fallback",
+    "daily_close_api_timestamp": "CLOSED_AT_EXCLUSIVE_MINUS_1_MICROSECOND",
+    "epoch_id": "p3-btc-d1-e1",
+    "family_order": [
+      "a0.donchian-20-10-close-confirm",
+      "a1.dual-sma-50-200",
+      "a2.zscore-20-long-reversion",
+      "a3.tsmom-21-63-126"
+    ],
+    "instrument": "BTCUSDT.BINANCE",
+    "minimum_research_closes": 750,
+    "missing_day_policy": "REJECT",
+    "position_values": [
+      0,
+      1
+    ],
+    "quote_currency": "USDT",
+    "research_end": "2025-08-31",
+    "research_nav_quote": "100000",
+    "research_start": "2018-01-01"
+  },
+  "candidates": [
+    {
+      "alpha_id": "a0.donchian-20-10-close-confirm",
+      "family": "DONCHIAN",
+      "minimum_base_observations": 21,
+      "parameters": {
+        "entry": 20,
+        "exit": 10
+      },
+      "perturbations": [
+        {
+          "id": "P01",
+          "parameters": {
+            "entry": 18,
+            "exit": 10
+          }
+        },
+        {
+          "id": "P02",
+          "parameters": {
+            "entry": 22,
+            "exit": 10
+          }
+        },
+        {
+          "id": "P03",
+          "parameters": {
+            "entry": 20,
+            "exit": 9
+          }
+        },
+        {
+          "id": "P04",
+          "parameters": {
+            "entry": 20,
+            "exit": 11
+          }
+        }
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "alpha_id": "a1.dual-sma-50-200",
+      "family": "DUAL_SMA",
+      "minimum_base_observations": 200,
+      "parameters": {
+        "fast": 50,
+        "slow": 200
+      },
+      "perturbations": [
+        {
+          "id": "P01",
+          "parameters": {
+            "fast": 45,
+            "slow": 200
+          }
+        },
+        {
+          "id": "P02",
+          "parameters": {
+            "fast": 55,
+            "slow": 200
+          }
+        },
+        {
+          "id": "P03",
+          "parameters": {
+            "fast": 50,
+            "slow": 180
+          }
+        },
+        {
+          "id": "P04",
+          "parameters": {
+            "fast": 50,
+            "slow": 220
+          }
+        }
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "alpha_id": "a2.zscore-20-long-reversion",
+      "family": "ZSCORE",
+      "minimum_base_observations": 20,
+      "parameters": {
+        "entry": "-2",
+        "exit": "0",
+        "window": 20
+      },
+      "perturbations": [
+        {
+          "id": "P01",
+          "parameters": {
+            "entry": "-2",
+            "exit": "0",
+            "window": 18
+          }
+        },
+        {
+          "id": "P02",
+          "parameters": {
+            "entry": "-2",
+            "exit": "0",
+            "window": 22
+          }
+        },
+        {
+          "id": "P03",
+          "parameters": {
+            "entry": "-1.8",
+            "exit": "0",
+            "window": 20
+          }
+        },
+        {
+          "id": "P04",
+          "parameters": {
+            "entry": "-2.2",
+            "exit": "0",
+            "window": 20
+          }
+        }
+      ],
+      "version": "1.0.0"
+    },
+    {
+      "alpha_id": "a3.tsmom-21-63-126",
+      "family": "TSMOM",
+      "minimum_base_observations": 127,
+      "parameters": {
+        "horizons": [
+          21,
+          63,
+          126
+        ],
+        "positive_votes": 2
+      },
+      "perturbations": [
+        {
+          "id": "P01",
+          "parameters": {
+            "horizons": [
+              19,
+              57,
+              113
+            ],
+            "positive_votes": 2
+          }
+        },
+        {
+          "id": "P02",
+          "parameters": {
+            "horizons": [
+              23,
+              69,
+              139
+            ],
+            "positive_votes": 2
+          }
+        },
+        {
+          "id": "P03",
+          "parameters": {
+            "horizons": [
+              21,
+              63,
+              126
+            ],
+            "positive_votes": 1
+          }
+        },
+        {
+          "id": "P04",
+          "parameters": {
+            "horizons": [
+              21,
+              63,
+              126
+            ],
+            "positive_votes": 3
+          }
+        }
+      ],
+      "version": "1.0.0"
+    }
+  ],
+  "capacity": {
+    "denominator": "QUOTE_ASSET_VOLUME",
+    "denominator_date": "EFFECTIVE_RETURN_END_DATE",
+    "empty_sample": "ZERO_WITH_NO_TRADES_DIAGNOSTIC",
+    "include_forced_exit": true,
+    "invalid_volume": "BLOCK_E_VOLUME",
+    "label": "EX_POST_DAILY_VOLUME_SCREEN_NOT_FILL_PROOF",
+    "median_max": "0.02",
+    "nav_quote": "100000",
+    "peak_max": "0.10",
+    "quantity": "ABS_DELTA_WEIGHT_TIMES_FIXED_NAV",
+    "sample_set": "NONZERO_EXECUTED_TRANSITIONS_ONLY"
+  },
+  "costs": {
+    "base": {
+      "borrow_bps": 0,
+      "fee_bps": 10,
+      "funding_bps": 0,
+      "slippage_bps": 5,
+      "spread_bps": 5
+    },
+    "double": {
+      "borrow_bps": 0,
+      "fee_bps": 20,
+      "funding_bps": 0,
+      "slippage_bps": 10,
+      "spread_bps": 10
+    }
+  },
+  "decision_status": "PROPOSED_EXACT_VALUES_REQUIRE_OPERATOR_ACCEPTANCE",
+  "document_id": "TA-P3-IMPLEMENTATION-V2.1",
+  "epoch": {
+    "first_historical_epoch": "RETROSPECTIVE_RESEARCH_NOT_STATISTICAL_SIGNIFICANCE",
+    "holdout_after_exposed_source_change": "CONTAMINATED_NOT_REUSABLE_FOR_PHASE_EXIT",
+    "outcome_guided_new_family": "PRIOR_OOS_DOWNGRADED_TO_DEVELOPMENT",
+    "prior_exposure": "DISCLOSE_BEFORE_SOURCE_FREEZE",
+    "prospective_extension": "NEW_APPROVED_EPOCH_STARTS_NEXT_UTC_DAY_AFTER_FREEZE_365_DAYS",
+    "retry_same_candidate": "SAME_LOGICAL_TRIAL_NO_NEW_ECONOMIC_SELECTION"
+  },
+  "fixture_bootstrap": "Protected-main integration-fixture operation does not require its own IntegrationReceipt or official research authorization; official InputSet requires the resulting receipt.",
+  "folds": {
+    "aggregate_sample_policy": "CONCATENATE_FOLD_V1_SAMPLES",
+    "context_returns_counted": false,
+    "embargo": [
+      "2022-08-31",
+      "2022-08-31"
+    ],
+    "entry_sample": "KEEP_SEPARATE_V1_COMPATIBILITY_SAMPLE",
+    "indicator_context_closes": 300,
+    "initial_position": "FLAT",
+    "last_execution_weight": "COPY_PREVIOUS_WEIGHT",
+    "oos_return_end_ranges": [
+      [
+        "2022-09-01",
+        "2023-08-31"
+      ],
+      [
+        "2023-09-01",
+        "2024-08-31"
+      ],
+      [
+        "2024-09-01",
+        "2025-08-31"
+      ]
+    ],
+    "purge": [
+      "2022-08-30",
+      "2022-08-30"
+    ],
+    "terminal_new_signal": "SUPPRESS",
+    "training": [
+      "2018-01-01",
+      "2021-08-31"
+    ],
+    "validation": [
+      "2021-09-01",
+      "2022-08-29"
+    ]
+  },
+  "holdout": {
+    "baseline_excess_gte": "0.02",
+    "capacity_median_lte": "0.02",
+    "capacity_peak_lte": "0.10",
+    "classification": "HISTORICAL_ACCESS_CONTROLLED_NOT_INFORMATIONALLY_BLIND",
+    "context_rows": 300,
+    "delayed_return_gt": "0",
+    "deterministic_replicates": 3,
+    "double_cost_return_gt": "0",
+    "end": "2026-08-31",
+    "failed_primary": "P3_EXIT_HELD_NO_FALLBACK",
+    "max_drawdown_lte": "0.25",
+    "native_baseline_excess_gte": "0.02",
+    "native_max_drawdown_lte": "0.25",
+    "native_return_gt": "0",
+    "one_logical_experiment": true,
+    "prospective_claim_allowed": false,
+    "research_cutoff_exclusive": "2025-09-01",
+    "start": "2025-09-01",
+    "terminal_buffer": [
+      "2026-09-01",
+      "OPEN_ONLY"
+    ],
+    "total_return_gt": "0"
+  },
+  "metrics": {
+    "annualizer_days": 365,
+    "cagr_seconds_per_year": 31557600,
+    "cash_failures": [
+      "E_CALMAR_UNDEFINED",
+      "E_SHARPE_UNDEFINED",
+      "E_SORTINO_UNDEFINED"
+    ],
+    "downside_denominator": "ALL_SAMPLES",
+    "include_initial_equity_before_entry_in_drawdown": false,
+    "no_new_terminal_signal": true,
+    "output_quantum": "0.000000000001",
+    "precision": 50,
+    "rounding": "ROUND_HALF_EVEN",
+    "sample_variance_ddof": 1,
+    "trade_count": "TRANSITIONS_INCLUDING_ENTRY_EXIT"
+  },
+  "parity": {
+    "absolute_equity_tolerance_quote_quanta": 2,
+    "absolute_fee_tolerance_quote_quanta": 1,
+    "absolute_price_tolerance_ticks": 0,
+    "absolute_quantity_tolerance_steps": 0,
+    "buy_adverse_bps": 10,
+    "buy_price_rounding": "CEIL_TO_TICK",
+    "engine_version": "1.231.0",
+    "fee_bps": 10,
+    "fee_currency": "USDT",
+    "fee_rounding": "ROUND_HALF_EVEN_TO_QUOTE_QUANTUM",
+    "initial_cash": "100000",
+    "instrument_rules": "SOURCE_BOUND_RESEARCH_SECURITY_MASTER_SPEC_NOT_UNVERIFIED_CURRENT_EXCHANGE_RULES",
+    "market_fill_claim": "NONE_SYNTHETIC_ACCOUNTING_PARITY_ONLY",
+    "matching_mode": "EXPLICIT_SYNTHETIC_QUOTE_TICKS_NOT_DEFAULT_BAR_EXECUTION",
+    "minimum_notional_failure": "BLOCK_NOT_SKIP",
+    "nav_source": "CURRENT_SIMULATED_CASH_NOT_FIXED_NAV_PER_ENTRY",
+    "policy_id": "SYNTHETIC_NEXT_OPEN_LEDGER_PARITY_V1",
+    "quantity_formula": "floor((cash*(1-reserve_rate))/(ask*(1+fee_rate))/size_increment)*size_increment",
+    "quantity_rounding": "FLOOR_TO_SIZE_INCREMENT",
+    "rebalance_while_long": false,
+    "relative_equity_tolerance": "0",
+    "replays": 3,
+    "research_instrument_assumptions": {
+      "classification": "APPROVED_RESEARCH_ASSUMPTION_NOT_CURRENT_OR_HISTORICAL_VENUE_FILTER",
+      "minimum_notional": "10",
+      "price_increment": "0.01",
+      "quote_quantum": "0.01",
+      "size_increment": "0.00001"
+    },
+    "reserve_bps": 25,
+    "sell_adverse_bps": 10,
+    "sell_price_rounding": "FLOOR_TO_TICK",
+    "terminal_action": "SELL_ALL_AT_BUFFER_OPEN",
+    "timing_tolerance_ns": 0
+  },
+  "primary_selection": {
+    "count": 1,
+    "eligible": "ALL_C01_C16_PASS",
+    "fallback_after_holdout_failure": false,
+    "ranking": [
+      "MEDIAN_FOLD_EXCESS_DESC",
+      "AGGREGATE_BASELINE_EXCESS_DESC",
+      "MAX_DRAWDOWN_ASC",
+      "ALPHA_ID_ASC"
+    ],
+    "secondary_holdout_runs": false
+  },
+  "publication": {
+    "event_type": "AlphaRegistryTransitionRecordedV1",
+    "lock_timeout_ms": 2000,
+    "max_outbox_bytes": 65536,
+    "max_transaction_retries": 3,
+    "max_transport_bytes": 1048576,
+    "maximum_event_batch": 8,
+    "statement_timeout_ms": 5000,
+    "stream_uuid_namespace": "5d3f7ad6-7372-5cb7-80a7-68a179f1fdb2"
+  },
+  "regimes": {
+    "aggregation": "COMPOUND_ASSIGNED_TRACE_SAMPLES_NO_REINITIALIZATION",
+    "bear_if": "NOT_HIGH_VOL_AND_TREND_LE_ZERO",
+    "bull_if": "NOT_HIGH_VOL_AND_TREND_GT_ZERO",
+    "empty_regime": "PIPELINE_BLOCKED_E_REGIME_COVERAGE",
+    "entry_cost_regime": "FIRST_DECISION_REGIME",
+    "high_vol_if": "VOL_GT_THRESHOLD",
+    "high_vol_train_quantile": "0.75",
+    "ids": [
+      "BULL_LOW_VOL",
+      "BEAR_LOW_VOL",
+      "HIGH_VOL"
+    ],
+    "quantile_method": "NEAREST_RANK_CEIL",
+    "terminal_cost_regime": "LAST_EARNED_RETURN_REGIME",
+    "training_window_first_valid": "AFTER_63_PRIOR_CLOSES_WITHIN_TRAINING",
+    "trend_lookback": 63,
+    "variance_ddof": 0,
+    "volatility_annualized": false,
+    "volatility_return_count": 20
+  },
+  "sandbox": {
+    "LC_ALL": "C.UTF-8",
+    "PYTHONHASHSEED": "0",
+    "TZ": "UTC",
+    "backend": "BUBBLEWRAP_REQUIRED_FOR_OFFICIAL_RUN",
+    "child_cpu_seconds": 240,
+    "child_memory_bytes": 2147483648,
+    "child_open_files": 256,
+    "child_output_bytes": 268435456,
+    "child_process_count": 16,
+    "child_wall_seconds": 300,
+    "network": "UNSHARE_NET_NO_SOCKET_IN_CHILD",
+    "required_replicates": 3,
+    "same_uid_custody_claim": "NOT_PERMITTED",
+    "threads": 1,
+    "user_home_mounted": false
+  },
+  "schema_version": "p3-policy-set-v1"
+}

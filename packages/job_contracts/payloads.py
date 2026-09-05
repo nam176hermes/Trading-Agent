@@ -19,9 +19,11 @@ from pydantic import (
 
 from packages.domain.clock import require_utc
 from packages.engine_contracts import ArtifactReference, CanonicalUtcDateTime
+from packages.alpha_lifecycle.contracts.base import SourceIdentity, Token
+from packages.data_contracts import ArtifactRefV1
 
 from .asset_registry import APPROVED_ASSET_SYMBOLS
-from .enums import JobType
+from .enums import AlphaCampaignOperation, JobType
 from .fingerprint import validate_canonical_input_size
 
 _SAFE_SYMBOL = re.compile(r"^[A-Za-z0-9]{1,16}$", re.ASCII)
@@ -195,11 +197,20 @@ class EngineBacktestSimulationPayload(StrictPayload):
     engine_backtest_simulation: EngineBacktestSimulationInput
 
 
+class AlphaCampaignPayload(StrictPayload):
+    schema_version: Literal["p3-alpha-campaign-payload-v1"]
+    operation: AlphaCampaignOperation
+    manifest_ref: ArtifactRefV1
+    authorization_ref: ArtifactRefV1
+    expected_source: SourceIdentity
+    logical_trial_id: Token
+
+
 BacktestJobPayload: TypeAlias = (
     BacktestPayload | EngineBacktestPayload | EngineBacktestSimulationPayload
 )
 JobPayload: TypeAlias = (
-    SnapshotPayload | DebatePayload | ReplayPayload | BacktestJobPayload
+    SnapshotPayload | DebatePayload | ReplayPayload | BacktestJobPayload | AlphaCampaignPayload
 )
 
 _PAYLOAD_MODELS: dict[JobType, type[StrictPayload]] = {
@@ -207,6 +218,7 @@ _PAYLOAD_MODELS: dict[JobType, type[StrictPayload]] = {
     JobType.DEBATE: DebatePayload,
     JobType.REPLAY: ReplayPayload,
     JobType.BACKTEST: BacktestPayload,
+    JobType.ALPHA_CAMPAIGN: AlphaCampaignPayload,
 }
 _BACKTEST_PAYLOAD_ADAPTER = TypeAdapter(BacktestJobPayload)
 
@@ -226,4 +238,14 @@ def parse_payload(job_type: JobType | str, value: Mapping[str, Any]) -> JobPaylo
         return _BACKTEST_PAYLOAD_ADAPTER.validate_json(
             json.dumps(plain_value, allow_nan=False, separators=(",", ":"))
         )
+    if selected_type is JobType.ALPHA_CAMPAIGN:
+        return AlphaCampaignPayload.model_validate_json(
+            json.dumps(plain_value, allow_nan=False, separators=(",", ":"))
+        )
     return _PAYLOAD_MODELS[selected_type].model_validate(plain_value)
+
+
+def parse_alpha_campaign_payload(raw: bytes) -> AlphaCampaignPayload:
+    if not isinstance(raw, bytes) or len(raw) > 16 * 1024:
+        raise ValueError("alpha campaign payload exceeds 16 KiB")
+    return AlphaCampaignPayload.model_validate_json(raw)

@@ -32,6 +32,55 @@
         "title": "ActorType",
         "type": "string"
       },
+      "AlphaCampaignOperation": {
+        "enum": [
+          "BASELINES",
+          "REGISTER_FAMILY",
+          "OOS",
+          "HOLDOUT",
+          "PARITY",
+          "PHASE_EXIT"
+        ],
+        "title": "AlphaCampaignOperation",
+        "type": "string"
+      },
+      "AlphaCampaignPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "authorization_ref": {
+            "$ref": "#/components/schemas/ArtifactRefV1"
+          },
+          "expected_source": {
+            "$ref": "#/components/schemas/SourceIdentity"
+          },
+          "logical_trial_id": {
+            "pattern": "^[a-z][a-z0-9._-]{0,127}$",
+            "title": "Logical Trial Id",
+            "type": "string"
+          },
+          "manifest_ref": {
+            "$ref": "#/components/schemas/ArtifactRefV1"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/AlphaCampaignOperation"
+          },
+          "schema_version": {
+            "const": "p3-alpha-campaign-payload-v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "operation",
+          "manifest_ref",
+          "authorization_ref",
+          "expected_source",
+          "logical_trial_id"
+        ],
+        "title": "AlphaCampaignPayload",
+        "type": "object"
+      },
       "ArtifactMetadata": {
         "additionalProperties": false,
         "properties": {
@@ -87,6 +136,43 @@
           "created_at"
         ],
         "title": "ArtifactMetadata",
+        "type": "object"
+      },
+      "ArtifactRefV1": {
+        "additionalProperties": false,
+        "properties": {
+          "content_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "locator": {
+            "maxLength": 69,
+            "minLength": 69,
+            "pattern": "^[0-9a-f]{64}\\.blob$",
+            "title": "Locator",
+            "type": "string"
+          },
+          "media_type": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Media Type",
+            "type": "string"
+          },
+          "size_bytes": {
+            "maximum": 1099511627776.0,
+            "minimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "content_sha256",
+          "size_bytes",
+          "media_type",
+          "locator"
+        ],
+        "title": "ArtifactRefV1",
         "type": "object"
       },
       "ArtifactReference": {
@@ -584,6 +670,42 @@
               "idempotency_key"
             ],
             "title": "BacktestJobBody",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "not": {
+                  "pattern": "^schedule:"
+                },
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "title": "Idempotency Key",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "ALPHA_CAMPAIGN",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/AlphaCampaignPayload"
+              },
+              "priority": {
+                "default": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "idempotency_key"
+            ],
+            "title": "Alpha_CampaignJobBody",
             "type": "object"
           }
         ],
@@ -1451,6 +1573,95 @@
             ],
             "title": "BacktestJobMetadata",
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/ActorIdentity"
+              },
+              "attempt_count": {
+                "minimum": 0.0,
+                "title": "Attempt Count",
+                "type": "integer"
+              },
+              "job_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Job Id",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "ALPHA_CAMPAIGN",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/AlphaCampaignPayload"
+              },
+              "payload_fingerprint": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Payload Fingerprint",
+                "type": "string"
+              },
+              "priority": {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason Code"
+              },
+              "requested_at": {
+                "format": "date-time",
+                "title": "Requested At",
+                "type": "string"
+              },
+              "result_hash": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Result Hash"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "title": "Updated At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "job_id",
+              "state",
+              "payload_fingerprint",
+              "actor",
+              "priority",
+              "requested_at",
+              "updated_at",
+              "attempt_count"
+            ],
+            "title": "Alpha_CampaignJobMetadata",
+            "type": "object"
           }
         ],
         "title": "JobMetadata"
@@ -1475,7 +1686,8 @@
           "SNAPSHOT",
           "DEBATE",
           "REPLAY",
-          "BACKTEST"
+          "BACKTEST",
+          "ALPHA_CAMPAIGN"
         ],
         "title": "JobType",
         "type": "string"
@@ -1572,6 +1784,46 @@
           "requested_as_of"
         ],
         "title": "SnapshotPayload",
+        "type": "object"
+      },
+      "SourceIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "closure_policy_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Closure Policy Sha256",
+            "type": "string"
+          },
+          "closure_schema_version": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Closure Schema Version",
+            "type": "string"
+          },
+          "closure_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Closure Sha256",
+            "type": "string"
+          },
+          "commit_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Commit Sha",
+            "type": "string"
+          },
+          "tree_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "title": "Tree Sha",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit_sha",
+          "tree_sha",
+          "closure_schema_version",
+          "closure_policy_sha256",
+          "closure_sha256"
+        ],
+        "title": "SourceIdentity",
         "type": "object"
       }
     },

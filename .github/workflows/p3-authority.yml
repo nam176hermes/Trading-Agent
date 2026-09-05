@@ -1,0 +1,55 @@
+name: P3 Authority
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        required: true
+        type: choice
+        options:
+          - p3-integration-fixture-v1
+          - p3-baselines-v1
+          - p3-register-family-v1
+          - p3-oos-a0-v1
+          - p3-oos-a1-v1
+          - p3-oos-a2-v1
+          - p3-oos-a3-v1
+          - p3-select-primary-v1
+          - p3-holdout-primary-v1
+          - p3-native-parity-v1
+          - p3-phase-exit-v1
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, p3-authority]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Validate fixed protected request
+        env:
+          P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
+          P3_JOB_API_TOKEN_FILE: ${{ secrets.P3_JOB_API_TOKEN_FILE }}
+          P3_OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.repository }}" != "nam176hermes/Trading-Agent" ]]; then exit 64; fi
+          if [[ "${{ github.ref }}" != 'refs/heads/main' ]]; then exit 64; fi
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          case "$P3_OPERATION" in
+            p3-integration-fixture-v1|p3-baselines-v1|p3-register-family-v1|p3-oos-a0-v1|p3-oos-a1-v1|p3-oos-a2-v1|p3-oos-a3-v1|p3-select-primary-v1|p3-holdout-primary-v1|p3-native-parity-v1|p3-phase-exit-v1) ;;
+            *) exit 64 ;;
+          esac
+          uv run --frozen python scripts/p3_authority.py dispatch --request-file "$P3_AUTHORITY_REQUEST_FILE" --token-file "$P3_JOB_API_TOKEN_FILE" --output-dir "$RUNNER_TEMP/p3-preflight" --operation "$P3_OPERATION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p3-preflight
+          if-no-files-found: error
+          retention-days: 30

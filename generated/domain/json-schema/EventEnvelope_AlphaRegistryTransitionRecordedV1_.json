@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "AlphaRegistryTransitionRecordedV1": {
+      "additionalProperties": false,
+      "properties": {
+        "alpha_id": {
+          "pattern": "^[a-z][a-z0-9._-]{0,63}$",
+          "title": "Alpha Id",
+          "type": "string"
+        },
+        "alpha_version": {
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "title": "Alpha Version",
+          "type": "string"
+        },
+        "epoch_id": {
+          "pattern": "^[a-z][a-z0-9._-]{0,127}$",
+          "title": "Epoch Id",
+          "type": "string"
+        },
+        "evidence_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Sha256",
+          "type": "string"
+        },
+        "predecessor_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Predecessor Sha256"
+        },
+        "registry_event_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Registry Event Sha256",
+          "type": "string"
+        },
+        "registry_event_text": {
+          "maxLength": 262144,
+          "minLength": 2,
+          "title": "Registry Event Text",
+          "type": "string"
+        },
+        "registry_sequence": {
+          "minimum": 1,
+          "title": "Registry Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "alpha-registry-transition-recorded-v1",
+          "default": "alpha-registry-transition-recorded-v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "epoch_id",
+        "alpha_id",
+        "alpha_version",
+        "registry_sequence",
+        "predecessor_sha256",
+        "registry_event_sha256",
+        "registry_event_text",
+        "evidence_sha256"
+      ],
+      "title": "AlphaRegistryTransitionRecordedV1",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "AlphaRegistryTransitionRecordedV1",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/AlphaRegistryTransitionRecordedV1"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
+    "observed_at",
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
+  ],
+  "title": "EventEnvelope[AlphaRegistryTransitionRecordedV1]",
+  "type": "object"
+}

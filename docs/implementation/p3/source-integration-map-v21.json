@@ -1,0 +1,24 @@
+{
+  "source_commit": "9b625aa766688a087b26cd581e07545a1dfd5009",
+  "source_tree": "b7f6c964989966a6875ff16633fbbfbb441d7c2b",
+  "baseline_migration_head": "0019_p2_security_master",
+  "pack_file_sha256": "4ba951a2ac6a155f30b3990344e87a39eae53519474b513fa7ea96a78a09f0b7",
+  "verification": "Copied from the verified P3 V2.1 pack and reconciled against the exact planning base before M1.",
+  "entries": [
+    {"capability":"data_snapshot","decision":"CALL_EXISTING","path":"packages/data_catalog/v3.py","signature":"(*,dataset,query,schema,partitions)->DatasetSnapshotV3","symbol":"build_snapshot_v3","test_target":"tests/data_catalog"},
+    {"capability":"data_partition","decision":"CALL_EXISTING","path":"packages/data_catalog/v3.py","signature":"(table,*,schema,store,partition_id,dataset,partition_key,partition_spec_version,source_available_at,system_observed_at,ingested_at,raw_evidence_sha256s,transform_receipt_sha256,quality_receipt_sha256,revision_series_id,revision_ordinal,supersedes_partition_id=None,supersedes_manifest_sha256=None)","symbol":"materialize_arrow_partition_v3","test_target":"tests/data_catalog"},
+    {"capability":"baselines","decision":"PRESERVE_AND_ADD_EXPLICIT_CONTEXT_RESET_HELPER","path":"packages/alpha_lifecycle/baselines.py","signature":"(baseline_id,rows)->tuple[Decimal,...]","symbol":"baseline_weights","test_target":"tests/alpha_lifecycle/test_baselines.py"},
+    {"capability":"metrics","decision":"PRESERVE_COMPATIBILITY_WITH_TRACE_GOLDENS","path":"packages/alpha_lifecycle/metrics.py","signature":"(rows,weights,costs)->PerformanceMetricsV1","symbol":"calculate_performance_metrics","test_target":"tests/alpha_lifecycle/test_metrics.py"},
+    {"capability":"qualification","decision":"CALL_UNCHANGED","path":"packages/alpha_lifecycle/protocol.py","signature":"(evidence:AlphaQualificationEvidenceV1)->AlphaQualificationResultV1","symbol":"evaluate_alpha_qualification","test_target":"tests/alpha_lifecycle/test_protocol.py"},
+    {"capability":"registry","decision":"REPLAY_CANDIDATE_STATE_WITH_CANONICAL_OWNER","path":"packages/alpha_lifecycle/registry.py","signature":"(record,*,predecessor_sha256)->AlphaRegistryEventV1","symbol":"AlphaRegistry.append","test_target":"tests/alpha_lifecycle/test_registry.py"},
+    {"capability":"job_enqueue","decision":"ADD_CLOSED_P3_SQL_BRANCH","path":"services/job_store/repository.py","signature":"(connection,*,request,trace_id)","symbol":"JobRepository._enqueue","test_target":"tests/p3/test_sql_authority.py (new)"},
+    {"capability":"job_fence","decision":"ADD_P3_PROFILE_NOT_PRODUCTION_DEFAULT","path":"services/job_store/worker_repository.py","signature":"job_id,attempt_id,worker_id,lease_token,lease_expires_at","symbol":"ClaimedJob / WorkerRepository.claim_next","test_target":"tests/p3/test_worker_profile.py (new)"},
+    {"capability":"event_append","decision":"CALL_WITHIN_NEW_FENCED_P3_SQL_WRAPPER","path":"packages/event_ledger/repository.py","signature":"event envelope + outbox; stream sequence in one SQL transaction","symbol":"PostgresLedgerSql.APPEND_EVENT_AND_OUTBOX / public.append_domain_event","test_target":"tests/p3/test_publication_sql.py (new)"},
+    {"capability":"domain_payload","decision":"ADD_ALPHA_REGISTRY_TRANSITION_PAYLOAD","path":"packages/domain/events.py","signature":"closed pure payload registration","symbol":"EVENT_TYPE_BY_PAYLOAD","test_target":"tests/p3/test_domain_event.py (new)"},
+    {"capability":"db_revision","decision":"PRESERVE_ADD_P3_DISPOSABLE_0020_PROFILE","path":"services/job_store/config.py","signature":"0011 / 0018","symbol":"CANONICAL_DATABASE_REVISION / P1_DISPOSABLE_DATABASE_REVISION","test_target":"tests/p3/test_database_profile.py (new)"},
+    {"capability":"source_closure","decision":"ADD_EXACT_STRUCTURAL_P3_OUTPUT_POLICY_BEFORE_FREEZE","path":"packages/pre_p3_provenance.py","signature":"(root,revision=HEAD)->source identity","symbol":"canonical_source_identity / _excluded_output","test_target":"tests/governance/test_p3_source_outputs.py (new)"},
+    {"capability":"p3_authorization","decision":"PRESERVE_P3_ALLOWED_FORMULA_ADD_SEPARATE_PHASE_EXIT_PROJECTION","path":"packages/project_status.py","signature":"(root)->dict","symbol":"derive_project_status","test_target":"tests/governance/test_p3_status.py (new)"},
+    {"capability":"protected_evidence","decision":"ADD_P3_ATTEST_PROMOTION_ONLY_PRE_M1","path":".github/workflows/foundation.yml","signature":"push main + fixed SHA","symbol":"verify / attest-hwc","test_target":"tests/governance/test_p3_workflow.py (new)"},
+    {"capability":"job_api","decision":"ADD_TEST_OWNED_P3_PROFILE_NO_DEPLOYMENT","path":"apps/job_api/app.py","signature":"protected mutation plus exact db revision","symbol":"_create_app / _require_mutation_authority","test_target":"tests/p3/test_job_api.py (new)"}
+  ]
+}

@@ -244,6 +244,25 @@ def _valid_hwc_portable_source(raw: bytes) -> dict[str, str] | None:
 
 
 def _excluded_output(path: str, mode: str, raw: bytes) -> bool:
+    if path == "docs/implementation/p3/receipts/p3-phase-exit-v1.json":
+        from packages.p3_provenance import valid_phase_exit_output
+
+        return mode == "100644" and valid_phase_exit_output(raw)
+    if path == "docs/implementation/p3/p3-source-status.json":
+        from packages.p3_status import valid_status_output
+
+        return mode == "100644" and valid_status_output(raw)
+    p3_promotion = re.fullmatch(
+        r"docs/implementation/p3/promotions/([0-9a-f]{40})-v1\.json", path
+    )
+    if p3_promotion is not None:
+        from packages.p3_provenance import PromotionReceipt
+
+        try:
+            value = PromotionReceipt.model_validate_json(raw)
+        except Exception:
+            return False
+        return mode == "100644" and value.promoted_source.commit_sha == p3_promotion.group(1)
     if path == PROJECT_STATUS_PATH:
         return mode == "100644"
     if path == HWC_STATUS_PATH:
