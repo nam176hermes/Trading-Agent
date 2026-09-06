@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 from pathlib import Path
 from uuid import UUID
 
@@ -12,6 +13,29 @@ from services.job_worker.results import validate_p3_result_bytes
 
 ROOT = Path(__file__).parents[2]
 MIGRATION = ROOT / "alembic/versions/0020_p3_alpha_campaign_authority.py"
+
+
+def test_migration_routes_plpgsql_percent_tokens_through_alembic_execute(
+    monkeypatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "p3_alpha_campaign_migration", MIGRATION
+    )
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    class Recorder:
+        statement = ""
+
+        def execute(self, statement: str) -> None:
+            self.statement = statement
+
+    recorder = Recorder()
+    monkeypatch.setattr(migration, "op", recorder)
+    migration.upgrade()
+
+    assert "%ROWTYPE" in recorder.statement
 
 
 def test_migration_closes_p3_publication_behind_narrow_capabilities() -> None:

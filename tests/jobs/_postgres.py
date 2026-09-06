@@ -242,9 +242,9 @@ def _upgrade_to_revision(settings: DatabaseSettings, revision: str) -> None:
 
 
 def upgrade_to_head(settings: DatabaseSettings) -> None:
-    """Upgrade only the caller-provided disposable database."""
+    """Upgrade only the caller-provided disposable database to the P2 head."""
 
-    _upgrade_to_revision(settings, "head")
+    _upgrade_to_revision(settings, "0019_p2_security_master")
 
 
 def _provision_base_roles(session: object) -> None:

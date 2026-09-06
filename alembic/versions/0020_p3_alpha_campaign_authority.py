@@ -17,7 +17,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.get_bind().exec_driver_sql(
+    op.execute(
         r"""
         DO $p3_preflight$
         BEGIN
