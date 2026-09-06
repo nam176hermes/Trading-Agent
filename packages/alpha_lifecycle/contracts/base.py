@@ -151,7 +151,7 @@ def parse_contract(type_name: str, raw: bytes) -> BaseModel:
         model = _contract_types()[type_name]
     except KeyError as error:
         raise ContractError(f"unknown contract type: {type_name}") from error
-    value = model.model_validate(payload)
+    value = model.model_validate_json(raw)
     from packages.data_contracts import ArtifactRefV1
 
     if isinstance(value, ArtifactRefV1) and value.locator != f"{value.content_sha256}.blob":

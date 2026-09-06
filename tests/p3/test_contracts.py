@@ -174,3 +174,13 @@ def test_contract_modules_expose_every_catalog_owned_type(
     """Break caught: a catalog type cannot be imported by its declared owner."""
     module = import_module(f"packages.alpha_lifecycle.contracts.{module_name}")
     assert all(hasattr(module, name) for name in type_names)
+
+
+def test_run_authorization_parser_accepts_valid_json_wire_types() -> None:
+    from tests.p3.test_authority import _request
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+
+    request, _ = _request("2026-01-01T01:00:00Z")
+    raw = json.dumps(request["authorization"]).encode()
+    expected = RunAuthorization.model_validate_json(raw)
+    assert _base().parse_contract("RunAuthorization", raw) == expected
