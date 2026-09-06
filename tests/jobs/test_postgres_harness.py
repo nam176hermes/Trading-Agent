@@ -83,6 +83,20 @@ EXPECTED_OPERATION_SCOPES = {
 }
 
 
+def test_default_disposable_upgrade_stops_at_p2_head(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        _postgres,
+        "_upgrade_to_revision",
+        lambda settings, revision: calls.append((settings, revision)),
+    )
+    settings = object()
+
+    _postgres.upgrade_to_head(settings)
+
+    assert calls == [(settings, "0019_p2_security_master")]
+
+
 @pytest.fixture
 def protected_record_dir():
     with tempfile.TemporaryDirectory(
