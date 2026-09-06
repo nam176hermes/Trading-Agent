@@ -453,6 +453,7 @@ ops/phase4b/verify-release.py|91|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1271|Exception|PRODUCTION_CRITICAL|RETURN
+packages/alpha_lifecycle/authority.py|87|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|102|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|244|Exception|PRODUCTION_CRITICAL|RAISE
@@ -471,6 +472,11 @@ packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/operator_control/credentials.py|60|Exception|PRODUCTION_CRITICAL|RAISE
+packages/p3_provenance.py|45|Exception|PRODUCTION_CRITICAL|RETURN
+packages/p3_provenance.py|53|Exception|PRODUCTION_CRITICAL|RETURN
+packages/p3_status.py|63|Exception|PRODUCTION_CRITICAL|RETURN
+packages/p3_status.py|98|Exception|PRODUCTION_CRITICAL|OTHER
+packages/p3_status.py|105|Exception|PRODUCTION_CRITICAL|CONTINUE
 packages/pre_p3_provenance.py|263|Exception|PRODUCTION_CRITICAL|RETURN
 packages/research_validation/producers.py|891|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|970|Exception|PRODUCTION_CRITICAL|RAISE
@@ -677,6 +683,8 @@ scripts/nautilus_pin_inventory/git_source.py|5403|BaseException|TOOLING_MIGRATIO
 scripts/nautilus_pin_inventory/git_source.py|5502|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5567|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATION|OTHER
+scripts/p3_authority.py|141|Exception|TOOLING_MIGRATION|RAISE
+scripts/p3_authority.py|150|Exception|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
 scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
