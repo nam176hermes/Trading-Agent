@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from packages.job_contracts import (
     APPROVED_ASSET_SYMBOLS,
+    AlphaCampaignPayload,
     BacktestPayload,
     ActorIdentity,
     ActorType,
@@ -88,6 +89,10 @@ def _engine_backtest_wire_payload() -> dict[str, object]:
 
 
 def _job_payload_wire_forms() -> tuple[tuple[JobType, dict[str, object]], ...]:
+    ref = {
+        "content_sha256": "a" * 64, "size_bytes": 1,
+        "media_type": "application/json", "locator": f"{'a' * 64}.blob",
+    }
     return (
         (
             JobType.SNAPSHOT,
@@ -105,6 +110,17 @@ def _job_payload_wire_forms() -> tuple[tuple[JobType, dict[str, object]], ...]:
             },
         ),
         (JobType.BACKTEST, _engine_backtest_wire_payload()),
+        (JobType.ALPHA_CAMPAIGN, {
+            "schema_version": "p3-alpha-campaign-payload-v1",
+            "operation": "BASELINES", "manifest_ref": ref,
+            "authorization_ref": ref,
+            "expected_source": {
+                "commit_sha": "b" * 40, "tree_sha": "c" * 40,
+                "closure_schema_version": "pre-p3-source-closure-v1",
+                "closure_policy_sha256": "d" * 64, "closure_sha256": "e" * 64,
+            },
+            "logical_trial_id": "p3-baselines-001",
+        }),
     )
 
 
@@ -782,6 +798,7 @@ def test_generated_openapi_responses_enforce_every_job_payload_pair() -> None:
             JobType.DEBATE: DebatePayload,
             JobType.REPLAY: ReplayPayload,
             JobType.BACKTEST: BacktestPayload,
+            JobType.ALPHA_CAMPAIGN: AlphaCampaignPayload,
         }[job_type]
         is not type(payload)
     ],

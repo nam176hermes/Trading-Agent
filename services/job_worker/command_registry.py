@@ -20,7 +20,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping
 
-from packages.job_contracts import JobType, SnapshotPayload, parse_payload
+from packages.job_contracts import (
+    AlphaCampaignOperation,
+    JobType,
+    SnapshotPayload,
+    parse_payload,
+)
 from packages.runtime_release import (
     ReleasePolicy,
     load_runtime_authority as _load_runtime_authority,
@@ -747,6 +752,43 @@ COMMAND_REGISTRY: Mapping[JobType, CommandSpec] = MappingProxyType({
 })
 
 
+def _p3_spec(script: str, timeout: int, validator: str) -> CommandSpec:
+    return CommandSpec(("-I", "-B", script), timeout, 1, validator)
+
+
+_P3_CAMPAIGN = "scripts/run_p3_alpha_campaign.py"
+_P3_NATIVE = "scripts/run_p3_nautilus_parity.py"
+_P3_COMMANDS: Mapping[str, tuple[AlphaCampaignOperation, CommandSpec]] = MappingProxyType({
+    "p3-integration-fixture-v1": (AlphaCampaignOperation.PARITY, _p3_spec(_P3_NATIVE, 900, "p3-integration-qualified-v1")),
+    "p3-baselines-v1": (AlphaCampaignOperation.BASELINES, _p3_spec(_P3_CAMPAIGN, 900, "p3-baseline-selection-v1")),
+    "p3-register-family-v1": (AlphaCampaignOperation.REGISTER_FAMILY, _p3_spec(_P3_CAMPAIGN, 300, "p3-publication-register-v1")),
+    "p3-oos-a0-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
+    "p3-oos-a1-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
+    "p3-oos-a2-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
+    "p3-oos-a3-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
+    "p3-select-primary-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 300, "p3-primary-selection-v1")),
+    "p3-holdout-primary-v1": (AlphaCampaignOperation.HOLDOUT, _p3_spec(_P3_CAMPAIGN, 900, "p3-holdout-evaluation-result-v1")),
+    "p3-native-parity-v1": (AlphaCampaignOperation.PARITY, _p3_spec(_P3_NATIVE, 900, "p3-parity-result-v1")),
+    "p3-phase-exit-v1": (AlphaCampaignOperation.PHASE_EXIT, _p3_spec(_P3_CAMPAIGN, 300, "p3-publication-exit-v1")),
+})
+
+
+def p3_command_spec(payload: object) -> CommandSpec:
+    """Resolve only the fixed P3 workflow operation encoded in a closed payload."""
+
+    try:
+        workflow_operation = getattr(payload, "logical_trial_id")
+        operation = AlphaCampaignOperation(getattr(payload, "operation"))
+        expected_operation, spec = _P3_COMMANDS[workflow_operation]
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise CommandRegistryError(
+            "COMMAND_PAYLOAD_INVALID", "P3 workflow operation is not allowlisted"
+        ) from exc
+    if operation is not expected_operation:
+        _blocked("COMMAND_PAYLOAD_INVALID", "P3 workflow operation and payload differ")
+    return spec
+
+
 def _validated_payload(job_type: JobType, value: object):
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
@@ -847,6 +889,6 @@ __all__ = [
     "PRESPAWN_FULL_REATTESTATION_COUNT", "PreparedSpawn",
     "ValidatedCommandCapability", "WorkerRuntimeAuthority", "attest_command_capability",
     "attest_worker_runtime_authority", "build_command",
-    "consume_prepared_spawn", "prepare_immediate_spawn",
+    "consume_prepared_spawn", "p3_command_spec", "prepare_immediate_spawn",
     "refresh_staging_worker_runtime_authority",
 ]

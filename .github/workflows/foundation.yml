@@ -21,6 +21,8 @@ jobs:
     permissions:
       contents: read
       attestations: read
+    outputs:
+      p3-promotion-generated: ${{ steps.p3-promotion.outputs.generated }}
     env:
       CI: "true"
       LIVE_EXECUTION_ENABLED: "false"
@@ -88,6 +90,20 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Generate protected-main P3 promotion provenance
+        id: p3-promotion
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/p3/receipts/p3-phase-exit-v1.json') != ''
+        run: set -euo pipefail; output="${RUNNER_TEMP:?}/p3-promotion/${GITHUB_SHA}-v1.json"; install -d -m 0700 -- "$(dirname "$output")"; uv run --frozen python scripts/record_p3_promotion.py --output "$output"; echo 'generated=true' >> "$GITHUB_OUTPUT"
+
+      - name: Publish protected-main P3 promotion provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.p3-promotion.outputs.generated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p3-promotion/*.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Publish sealed portable evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -119,3 +135,25 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ runner.temp }}/hwc-attestation/hwc-portable-qualified-v1.json
+
+  attest-p3-promotion:
+    name: attest-p3-promotion
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.verify.outputs.p3-promotion-generated == 'true'
+    needs: verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download protected-main P3 promotion provenance
+        uses: actions/download-artifact@v4
+        with:
+          name: p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p3-promotion-attestation
+
+      - name: Attest protected-main P3 promotion receipt
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/p3-promotion-attestation/${{ github.sha }}-v1.json

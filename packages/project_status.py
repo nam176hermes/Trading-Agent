@@ -298,6 +298,9 @@ def derive_project_status(root: Path) -> dict[str, Any]:
     )
     active = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ACTIVE")
     rollback = next(item for item in policy["engine_registry"] if item["lifecycle"] == "ROLLBACK")
+    from packages.p3_status import derive_p3_status
+
+    p3_status = derive_p3_status(root)
     return {
         "authority": {"broker": False, "live": False, "network": False, "production": False},
         "blockers": sorted(blockers),
@@ -324,6 +327,7 @@ def derive_project_status(root: Path) -> dict[str, Any]:
         "migration_head": "0019_p2_security_master",
         "p2_source_status": "IMPLEMENTED",
         "p3_alpha_development_allowed": p3_allowed,
+        "p3_phase_status": p3_status.model_dump(mode="json"),
         "qualification_provenance": pre_p3["provenance"],
         "schema_version": "trading-agent-project-status-v2",
     }

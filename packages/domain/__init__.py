@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .clock import FixedUtcClock, SystemUtcClock, require_utc
+from .alpha_events import AlphaRegistryTransitionRecordedV1
 from .instruments import (
     AssetClass,
     InstrumentConstraints,
@@ -119,6 +120,7 @@ from .signals import (
 )
 
 __all__ = [
+    "AlphaRegistryTransitionRecordedV1",
     "CANONICAL_DECIMAL_POLICY_VERSION",
     "AssetClass",
     "AccountBalanceSnapshot",

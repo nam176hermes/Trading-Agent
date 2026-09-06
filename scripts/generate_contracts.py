@@ -43,6 +43,7 @@ from packages.job_contracts import (
     ArtifactMetadata,
     AttemptMetadata,
     BacktestPayload,
+    AlphaCampaignPayload,
     DebatePayload,
     EngineBacktestInput,
     EngineBacktestPayload,
@@ -56,6 +57,7 @@ from packages.job_contracts import (
     SnapshotPayload,
 )
 from packages.domain import (
+    AlphaRegistryTransitionRecordedV1,
     AccountBalanceSnapshot,
     AccountPortfolioSnapshot,
     AccountPositionSnapshot,
@@ -165,6 +167,7 @@ JOB_SCHEMA_MODELS = (
     EngineBacktestPayload,
     EngineBacktestSimulationInput,
     EngineBacktestSimulationPayload,
+    AlphaCampaignPayload,
     EnqueueJobRequest,
     JobMetadata,
     AttemptMetadata,
@@ -173,6 +176,7 @@ JOB_SCHEMA_MODELS = (
     JobDetail,
 )
 DOMAIN_SCHEMA_MODELS = (
+    AlphaRegistryTransitionRecordedV1,
     MarketCandle,
     MarketDataProvenance,
     MarketSnapshot,
@@ -228,6 +232,7 @@ DOMAIN_SCHEMA_MODELS = (
     EventEnvelope[SubmitPermitPrepared],
     EventEnvelope[SubmitPermitConsumed],
     EventEnvelope[SandboxRecoveryCheckpointRecorded],
+    EventEnvelope[AlphaRegistryTransitionRecordedV1],
     StoredEvent,
     ReplayIssue,
     AppliedEvent,

@@ -16,7 +16,7 @@ from .api import (
     JobMetadata,
     JobResponse,
 )
-from .enums import ActorType, JobState, JobType
+from .enums import ActorType, AlphaCampaignOperation, JobState, JobType
 from .fingerprint import (
     MAX_CANONICAL_PAYLOAD_BYTES,
     PayloadTooLarge,
@@ -24,6 +24,7 @@ from .fingerprint import (
     payload_fingerprint,
 )
 from .payloads import (
+    AlphaCampaignPayload,
     BacktestJobPayload,
     BacktestPayload,
     DebatePayload,
@@ -36,6 +37,7 @@ from .payloads import (
     ReplayPayload,
     SnapshotPayload,
     parse_payload,
+    parse_alpha_campaign_payload,
 )
 from .transitions import (
     ORDINARY_TRANSITIONS,
@@ -51,6 +53,8 @@ __all__ = [
     "APPROVED_ASSET_SYMBOLS",
     "ActorIdentity",
     "ActorType",
+    "AlphaCampaignOperation",
+    "AlphaCampaignPayload",
     "ArtifactMetadata",
     "AttemptMetadata",
     "BacktestJobPayload",
@@ -86,6 +90,7 @@ __all__ = [
     "cancel_target",
     "canonical_payload_json",
     "parse_payload",
+    "parse_alpha_campaign_payload",
     "payload_fingerprint",
     "validate_transition",
 ]

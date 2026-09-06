@@ -43,6 +43,7 @@ _PAYLOAD_SCHEMA_JOB_TYPES = (
     JobType.BACKTEST,
     JobType.BACKTEST,
     JobType.BACKTEST,
+    JobType.ALPHA_CAMPAIGN,
 )
 
 

@@ -1,0 +1,15 @@
+{
+  "schema_version": "p3-decision-record-v21",
+  "decision_id": "P3_PLAN_ACCEPTED",
+  "operator_decision": "ACCEPTED_IMPLEMENT_M1",
+  "recorded_on": "2026-09-05",
+  "authority_basis": "Operator requested 'Bắt đầu implement plan' after the P3 V2.1 preflight in this task.",
+  "planning_base": {"commit_sha":"9b625aa766688a087b26cd581e07545a1dfd5009","tree_sha":"b7f6c964989966a6875ff16633fbbfbb441d7c2b"},
+  "pack_zip_sha256": "a637afda6e6c65950a44c65101fb4fe663af1cf3cf9d6c993a16b2d7c0ee75bb",
+  "policy_file": "specs/p3-policy-set-v21.json",
+  "policy_file_sha256": "75a9030d017df1de47c5c42aeb95b612f50fd34630c99f82ffd8d200da506336",
+  "policy_canonical_json_sha256": "39cb77a93f583889ab7d8f5a9be6ad16a8b4c98890a7f89754b1553db51909fb",
+  "scope": "M1_SOURCE_AND_TEST_PACKETS_ONLY",
+  "authority": {"broker":false,"live":false,"network":false,"production":false},
+  "excluded_actions": ["database mutation","retained research-store provisioning","dataset download","official OOS","holdout","runtime activation","remote write","merge","broker action","live action"]
+}

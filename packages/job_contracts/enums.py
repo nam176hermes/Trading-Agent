@@ -8,6 +8,16 @@ class JobType(StrEnum):
     DEBATE = "DEBATE"
     REPLAY = "REPLAY"
     BACKTEST = "BACKTEST"
+    ALPHA_CAMPAIGN = "ALPHA_CAMPAIGN"
+
+
+class AlphaCampaignOperation(StrEnum):
+    BASELINES = "BASELINES"
+    REGISTER_FAMILY = "REGISTER_FAMILY"
+    OOS = "OOS"
+    HOLDOUT = "HOLDOUT"
+    PARITY = "PARITY"
+    PHASE_EXIT = "PHASE_EXIT"
 
 
 class JobState(StrEnum):

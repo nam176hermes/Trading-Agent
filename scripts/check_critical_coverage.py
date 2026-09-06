@@ -48,7 +48,7 @@ _SEALED_PYTHON_SOURCES = (
     "apps/operator_api", "packages.operator_control.credentials",
 )
 _SEALED_PYTEST_PATHS = (
-    "tests/domain", "tests/event_ledger", "tests/jobs/test_state_machine.py",
+    "tests/domain", "tests/p3", "tests/event_ledger", "tests/jobs/test_state_machine.py",
     "tests/jobs/test_worker_safety.py", "tests/jobs/test_safety_state.py",
     "tests/jobs/test_child_environment.py",
     "tests/jobs/test_job_authority_verifier.py",

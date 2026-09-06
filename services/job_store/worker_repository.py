@@ -22,6 +22,7 @@ from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 from .config import (
     CANONICAL_DATABASE_REVISION,
     P1_DISPOSABLE_DATABASE_REVISION,
+    P3_DISPOSABLE_DATABASE_REVISION,
     JobStoreSettings,
 )
 from .errors import InvalidTraceId
@@ -115,6 +116,13 @@ class WorkerRepository:
 
         return PostgresEngineEventLedger(self._pool)
 
+    def alpha_publication_repository(self, store):
+        """Bind P3 publication to this worker's protected database pool."""
+
+        from .p3_publication_repository import P3PublicationRepository
+
+        return P3PublicationRepository(self._pool, store)
+
     def assert_runtime_identity(
         self, *, expected_user: str, expected_revision: str,
     ) -> None:
@@ -131,6 +139,13 @@ class WorkerRepository:
 
         self._assert_database_identity(
             "trading_job_worker", P1_DISPOSABLE_DATABASE_REVISION
+        )
+
+    def assert_p3_runtime_identity(self) -> None:
+        """Require the dedicated disposable P3 worker role and 0020 head."""
+
+        self._assert_database_identity(
+            "trading_job_worker", P3_DISPOSABLE_DATABASE_REVISION
         )
 
     def _assert_database_identity(
@@ -232,19 +247,62 @@ class WorkerRepository:
                     max_attempts=row["max_attempts"],
                 )
 
-    def start_attempt(self, job_id: str, attempt_id: str, worker_id: str, lease_token: str, identity: ProcessIdentity, trace_id: str) -> bool:
+    def claim_next_alpha_campaign(
+        self, worker_id: str, lease_seconds: int, trace_id: str
+    ) -> ClaimedJob | None:
+        """Claim only from the explicit disposable P3 capability."""
+
+        self._validate_worker(worker_id)
+        self._validate_lease_seconds(lease_seconds)
+        self._validate_trace(trace_id)
+        attempt_id = self._new_id("attempt")
+        lease_token = secrets.token_urlsafe(48)
+        with self._pool.connection() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """
+                    SELECT job_id,job_type,payload,attempt_number,max_attempts,
+                           lease_expires_at
+                    FROM job_plane.worker_claim_alpha_campaign(
+                        %s,%s,%s,%s,%s,%s
+                    )
+                    """,
+                    (
+                        attempt_id, worker_id, lease_token, lease_seconds,
+                        trace_id, self._new_id("event"),
+                    ),
+                ).fetchone()
+        if row is None:
+            return None
+        return ClaimedJob(
+            job_id=row["job_id"], job_type=JobType(row["job_type"]),
+            payload=parse_payload(row["job_type"], row["payload"]),
+            attempt_id=attempt_id, attempt_number=row["attempt_number"],
+            worker_id=worker_id, lease_token=lease_token,
+            lease_expires_at=row["lease_expires_at"], max_attempts=row["max_attempts"],
+        )
+
+    def start_attempt(
+        self, job_id: str, attempt_id: str, worker_id: str, lease_token: str,
+        identity: ProcessIdentity, trace_id: str, *, alpha_campaign: bool = False,
+    ) -> bool:
         self._validate_worker(worker_id)
         self._validate_trace(trace_id)
         if not isinstance(identity, ProcessIdentity) or not _HASH.fullmatch(identity.command_fingerprint):
             raise ValueError("complete process identity is required")
         with self._pool.connection() as connection:
             with connection.transaction():
-                row = connection.execute(
-                    """
-                    SELECT job_plane.worker_start_paper(
+                statement = (
+                    """SELECT job_plane.worker_start_alpha_campaign(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    ) AS started
-                    """,
+                    ) AS started"""
+                    if alpha_campaign else
+                    """SELECT job_plane.worker_start_paper(
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    ) AS started"""
+                )
+                row = connection.execute(
+                    statement,
                     (
                         job_id,
                         attempt_id,
@@ -288,7 +346,7 @@ class WorkerRepository:
 
     def heartbeat_control(
         self, job_id: str, attempt_id: str, worker_id: str,
-        lease_token: str, lease_seconds: int,
+        lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
     ) -> str:
         """Renew the current fence and return cancellation without a race."""
 
@@ -301,11 +359,12 @@ class WorkerRepository:
             lease_token,
             lease_seconds,
             "RUNNING",
+            alpha_campaign=alpha_campaign,
         )
 
     def pre_spawn_control(
         self, job_id: str, attempt_id: str, worker_id: str,
-        lease_token: str, lease_seconds: int,
+        lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
     ) -> str:
         """Fence the CLAIMED-to-spawn boundary and observe cancellation."""
 
@@ -318,6 +377,7 @@ class WorkerRepository:
             lease_token,
             lease_seconds,
             "PRE_SPAWN",
+            alpha_campaign=alpha_campaign,
         )
 
     def _control_snapshot_lease(
@@ -328,15 +388,22 @@ class WorkerRepository:
         lease_token: str,
         lease_seconds: int,
         phase: str,
+        *,
+        alpha_campaign: bool = False,
     ) -> str:
         with self._pool.connection() as connection:
             with connection.transaction():
-                row = connection.execute(
-                    """
-                    SELECT job_plane.worker_control_paper_lease(
+                statement = (
+                    """SELECT job_plane.worker_control_alpha_campaign_lease(
                         %s, %s, %s, %s, %s, %s
-                    ) AS control
-                    """,
+                    ) AS control"""
+                    if alpha_campaign else
+                    """SELECT job_plane.worker_control_paper_lease(
+                        %s, %s, %s, %s, %s, %s
+                    ) AS control"""
+                )
+                row = connection.execute(
+                    statement,
                     (
                         job_id,
                         attempt_id,
@@ -393,6 +460,7 @@ class WorkerRepository:
         result_metadata: dict[str, object] | None = None,
         error_code: str | None = None, error_message: str | None = None,
         artifacts: tuple[object, ...] = (), retry: bool = False,
+        alpha_campaign: bool = False,
     ) -> bool:
         self._validate_worker(worker_id)
         self._validate_trace(trace_id)
@@ -439,13 +507,19 @@ class WorkerRepository:
                             validation_metadata,
                         ),
                     )
-                authority = connection.execute(
-                    """
-                    SELECT job_plane.worker_finalize_paper(
+                statement = (
+                    """SELECT job_plane.worker_finalize_alpha_campaign(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
-                    ) AS finalized
-                    """,
+                    ) AS finalized"""
+                    if alpha_campaign else
+                    """SELECT job_plane.worker_finalize_paper(
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
+                    ) AS finalized"""
+                )
+                authority = connection.execute(
+                    statement,
                     (
                         job_id,
                         attempt_id,
@@ -523,6 +597,7 @@ class WorkerRepository:
         expected_attempt_outcome: str, final_state: JobState,
         reason_code: str, trace_id: str, outcome: object | None,
         result: object | None, stream_artifacts: tuple[object, ...],
+        alpha_campaign: bool = False,
     ) -> bool:
         artifacts = (*stream_artifacts, *((result,) if result is not None else ()))
         result_metadata: dict[str, object] = {
@@ -572,11 +647,13 @@ class WorkerRepository:
             result_metadata=result_metadata, artifacts=artifacts,
             error_code=None if final_state is JobState.SUCCEEDED else reason_code,
             error_message=None,
+            alpha_campaign=alpha_campaign,
         )
 
     def finalize_retry(
         self, claimed: ClaimedJob, *, reason_code: str, trace_id: str,
         outcome: object, stream_artifacts: tuple[object, ...],
+        alpha_campaign: bool = False,
     ) -> bool:
         return self.finalize(
             claimed.job_id, claimed.attempt_id, claimed.worker_id,
@@ -596,6 +673,7 @@ class WorkerRepository:
                 "lineage": outcome.lineage.as_metadata(),
             },
             error_code=reason_code, artifacts=stream_artifacts, retry=True,
+            alpha_campaign=alpha_campaign,
         )
 
     @staticmethod

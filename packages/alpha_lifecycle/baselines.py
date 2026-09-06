@@ -131,4 +131,52 @@ def baseline_weights(
     return _mean_reversion(values)
 
 
-__all__ = ["BaselineId", "BaselineResultV1", "DailyCloseV1", "baseline_weights"]
+def baseline_weights_with_reset(
+    baseline_id: BaselineId,
+    rows: tuple[DailyCloseV1, ...],
+    *,
+    score_start: CanonicalUtcDateTime,
+) -> tuple[Decimal, ...]:
+    """Use prior closes as indicator context while starting scored state flat."""
+    baseline = BaselineId(baseline_id)
+    values = _validated(rows)
+    first = next((index for index, row in enumerate(values) if row.closed_at >= score_start), None)
+    if first is None:
+        raise ValueError("score_start is outside the supplied close context")
+    if baseline is BaselineId.CASH:
+        return (Decimal(0),) * (len(values) - first)
+    if baseline in {BaselineId.BUY_AND_HOLD, BaselineId.EQUAL_WEIGHT}:
+        return (Decimal(1),) * (len(values) - first)
+
+    weight = Decimal(0)
+    output: list[Decimal] = []
+    month = (
+        (values[first - 1].closed_at.year, values[first - 1].closed_at.month)
+        if first else None
+    )
+    with localcontext() as context:
+        context.prec = 50
+        for index in range(first, len(values)):
+            row = values[index]
+            if baseline is BaselineId.SIMPLE_MOMENTUM:
+                current_month = (row.closed_at.year, row.closed_at.month)
+                if index >= 126 and current_month != month:
+                    weight = Decimal(1) if values[index - 5].close > values[index - 126].close else Decimal(0)
+                month = current_month
+            elif index >= 20 and row.closed_at.weekday() == 0:
+                closes = tuple(item.close for item in values[index - 20:index])
+                mean = sum(closes, Decimal(0)) / Decimal(20)
+                deviation = (sum((value - mean) ** 2 for value in closes) / Decimal(20)).sqrt()
+                z_score = Decimal(0) if deviation == 0 else (row.close - mean) / deviation
+                if weight == 0 and z_score <= Decimal(-1):
+                    weight = Decimal(1)
+                elif weight == 1 and z_score >= 0:
+                    weight = Decimal(0)
+            output.append(weight)
+    return tuple(output)
+
+
+__all__ = [
+    "BaselineId", "BaselineResultV1", "DailyCloseV1", "baseline_weights",
+    "baseline_weights_with_reset",
+]

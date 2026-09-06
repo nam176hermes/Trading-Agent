@@ -105,6 +105,25 @@ export interface components {
          * @enum {string}
          */
         readonly ActorType: "OPERATOR" | "SCHEDULER" | "WORKER" | "RECOVERY" | "SYSTEM";
+        /**
+         * AlphaCampaignOperation
+         * @enum {string}
+         */
+        readonly AlphaCampaignOperation: "BASELINES" | "REGISTER_FAMILY" | "OOS" | "HOLDOUT" | "PARITY" | "PHASE_EXIT";
+        /** AlphaCampaignPayload */
+        readonly AlphaCampaignPayload: {
+            readonly authorization_ref: components["schemas"]["ArtifactRefV1"];
+            readonly expected_source: components["schemas"]["SourceIdentity"];
+            /** Logical Trial Id */
+            readonly logical_trial_id: string;
+            readonly manifest_ref: components["schemas"]["ArtifactRefV1"];
+            readonly operation: components["schemas"]["AlphaCampaignOperation"];
+            /**
+             * Schema Version
+             * @constant
+             */
+            readonly schema_version: "p3-alpha-campaign-payload-v1";
+        };
         /** ArtifactMetadata */
         readonly ArtifactMetadata: {
             /** Artifact Id */
@@ -142,6 +161,17 @@ export interface components {
             readonly media_type: "application/json" | "application/jsonl";
             /** Sha256 */
             readonly sha256: string;
+        };
+        /** ArtifactRefV1 */
+        readonly ArtifactRefV1: {
+            /** Content Sha256 */
+            readonly content_sha256: string;
+            /** Locator */
+            readonly locator: string;
+            /** Media Type */
+            readonly media_type: string;
+            /** Size Bytes */
+            readonly size_bytes: number;
         };
         /** AttemptMetadata */
         readonly AttemptMetadata: {
@@ -297,6 +327,17 @@ export interface components {
             /** @constant */
             readonly job_type: "BACKTEST";
             readonly payload: components["schemas"]["BacktestPayload"] | components["schemas"]["EngineBacktestPayload"] | components["schemas"]["EngineBacktestSimulationPayload"];
+            /**
+             * Priority
+             * @default 0
+             */
+            readonly priority: number;
+        } | {
+            /** Idempotency Key */
+            readonly idempotency_key: string;
+            /** @constant */
+            readonly job_type: "ALPHA_CAMPAIGN";
+            readonly payload: components["schemas"]["AlphaCampaignPayload"];
             /**
              * Priority
              * @default 0
@@ -636,6 +677,34 @@ export interface components {
              * Format: date-time
              */
             readonly updated_at: string;
+        } | {
+            readonly actor: components["schemas"]["ActorIdentity"];
+            /** Attempt Count */
+            readonly attempt_count: number;
+            /** Job Id */
+            readonly job_id: string;
+            /** @constant */
+            readonly job_type: "ALPHA_CAMPAIGN";
+            readonly payload: components["schemas"]["AlphaCampaignPayload"];
+            /** Payload Fingerprint */
+            readonly payload_fingerprint: string;
+            /** Priority */
+            readonly priority: number;
+            /** Reason Code */
+            readonly reason_code?: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            readonly requested_at: string;
+            /** Result Hash */
+            readonly result_hash?: string | null;
+            readonly state: components["schemas"]["JobState"];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            readonly updated_at: string;
         };
         /**
          * JobState
@@ -646,7 +715,7 @@ export interface components {
          * JobType
          * @enum {string}
          */
-        readonly JobType: "SNAPSHOT" | "DEBATE" | "REPLAY" | "BACKTEST";
+        readonly JobType: "SNAPSHOT" | "DEBATE" | "REPLAY" | "BACKTEST" | "ALPHA_CAMPAIGN";
         /**
          * MarketDataSnapshotRequest
          * @description Closed, paper-only acquisition intent for the injected P10 fixture.
@@ -698,6 +767,19 @@ export interface components {
              * @constant
              */
             readonly scope: "default";
+        };
+        /** SourceIdentity */
+        readonly SourceIdentity: {
+            /** Closure Policy Sha256 */
+            readonly closure_policy_sha256: string;
+            /** Closure Schema Version */
+            readonly closure_schema_version: string;
+            /** Closure Sha256 */
+            readonly closure_sha256: string;
+            /** Commit Sha */
+            readonly commit_sha: string;
+            /** Tree Sha */
+            readonly tree_sha: string;
         };
     };
     responses: never;

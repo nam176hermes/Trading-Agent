@@ -639,7 +639,7 @@ def _workflow_common(
 def _foundation_workflow_valid(raw: bytes) -> bool:
     try:
         lines = _yaml_lines(raw)
-        _workflow_common(lines, ("verify", "attest-hwc"))
+        _workflow_common(lines, ("verify", "attest-hwc", "attest-p3-promotion"))
         triggers = _direct_map(_block(lines, 0, "on"), 2)
         if triggers != {"push": "", "pull_request": "", "workflow_dispatch": ""}:
             return False
@@ -652,12 +652,16 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         if direct != {
             "name": "verify-${{ github.event_name }}",
             "runs-on": "ubuntu-24.04", "timeout-minutes": "60",
-            "permissions": "", "env": "", "steps": "",
+            "permissions": "", "outputs": "", "env": "", "steps": "",
         }:
             return False
         if _direct_map(_block(job, 4, "permissions"), 6) != {
             "contents": "read",
             "attestations": "read",
+        }:
+            return False
+        if _direct_map(_block(job, 4, "outputs"), 6) != {
+            "p3-promotion-generated": "${{ steps.p3-promotion.outputs.generated }}",
         }:
             return False
         env = _direct_map(_block(job, 4, "env"), 6)
@@ -730,6 +734,29 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             ),
             (
                 {
+                    "name": "Generate protected-main P3 promotion provenance",
+                    "id": "p3-promotion",
+                    "if": "github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/p3/receipts/p3-phase-exit-v1.json') != ''",
+                    "run": 'set -euo pipefail; output="${RUNNER_TEMP:?}/p3-promotion/${GITHUB_SHA}-v1.json"; install -d -m 0700 -- "$(dirname "$output")"; uv run --frozen python scripts/record_p3_promotion.py --output "$output"; echo \'generated=true\' >> "$GITHUB_OUTPUT"',
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Publish protected-main P3 promotion provenance",
+                    "if": "github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.p3-promotion.outputs.generated == 'true'",
+                    "uses": "actions/upload-artifact@v4",
+                    "with": "",
+                },
+                {
+                    "name": "p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/p3-promotion/*.json",
+                    "if-no-files-found": "error",
+                    "retention-days": "14",
+                },
+            ),
+            (
+                {
                     "name": "Publish sealed portable evidence", "if": "always()",
                     "uses": "actions/upload-artifact@v4", "with": "",
                 },
@@ -788,7 +815,49 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
                 },
             ),
         ]
-        return [_step_contract(step) for step in _steps(attestation_job)] == _expected_step_contracts(attestation_steps)
+        if [_step_contract(step) for step in _steps(attestation_job)] != _expected_step_contracts(attestation_steps):
+            return False
+        p3_attestation_job = _block(lines, 2, "attest-p3-promotion")
+        if _direct_map(p3_attestation_job, 4) != {
+            "name": "attest-p3-promotion",
+            "if": "github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.verify.outputs.p3-promotion-generated == 'true'",
+            "needs": "verify",
+            "runs-on": "ubuntu-24.04",
+            "permissions": "",
+            "steps": "",
+        }:
+            return False
+        if _direct_map(_block(p3_attestation_job, 4, "permissions"), 6) != {
+            "contents": "read",
+            "id-token": "write",
+            "attestations": "write",
+            "artifact-metadata": "write",
+        }:
+            return False
+        p3_attestation_steps = [
+            (
+                {
+                    "name": "Download protected-main P3 promotion provenance",
+                    "uses": "actions/download-artifact@v4",
+                    "with": "",
+                },
+                {
+                    "name": "p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/p3-promotion-attestation",
+                },
+            ),
+            (
+                {
+                    "name": "Attest protected-main P3 promotion receipt",
+                    "uses": "actions/attest@v4",
+                    "with": "",
+                },
+                {
+                    "subject-path": "${{ runner.temp }}/p3-promotion-attestation/${{ github.sha }}-v1.json",
+                },
+            ),
+        ]
+        return [_step_contract(step) for step in _steps(p3_attestation_job)] == _expected_step_contracts(p3_attestation_steps)
     except (ClosureError, ValueError):
         return False
 

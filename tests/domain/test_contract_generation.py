@@ -14,6 +14,7 @@ from packages.domain.events import EVENT_TYPE_BY_PAYLOAD
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = ROOT / "generated" / "domain" / "json-schema"
 EXPECTED = {
+    "AlphaRegistryTransitionRecordedV1.json",
     "MarketCandle.json",
     "MarketDataProvenance.json",
     "MarketSnapshot.json",
@@ -97,6 +98,7 @@ EXPECTED = {
     "ConsumedSubmitAuthority.json",
     "SandboxRecoveryCheckpointRecorded.json",
     "EventEnvelope_SandboxRecoveryCheckpointRecorded_.json",
+    "EventEnvelope_AlphaRegistryTransitionRecordedV1_.json",
 }
 
 LEGACY_EVENT_TYPES = {

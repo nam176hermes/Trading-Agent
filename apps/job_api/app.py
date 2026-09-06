@@ -42,7 +42,10 @@ from services.job_store import (
     JobStoreError,
     StaleTransition,
 )
-from services.job_store.config import P1_DISPOSABLE_DATABASE_REVISION
+from services.job_store.config import (
+    P1_DISPOSABLE_DATABASE_REVISION,
+    P3_DISPOSABLE_DATABASE_REVISION,
+)
 
 from .auth import BearerAuthenticator
 from .config import JobApiSettings
@@ -561,6 +564,10 @@ def _create_app(
         },
     )
     def create_job(request: Request, command: EnqueueJobBody) -> JSONResponse:
+        if (command.job_type is JobType.ALPHA_CAMPAIGN) != (
+            expected_revision == P3_DISPOSABLE_DATABASE_REVISION
+        ):
+            raise JobApiError(422, "JOB_TYPE_NOT_AUTHORIZED", "Job type is not authorized by this profile.")
         authenticated_command = EnqueueJobRequest.model_validate(
             {**command.model_dump(mode="json"), "actor": request.state.principal}
         )
@@ -698,4 +705,19 @@ def create_p1_disposable_app(
         repository,
         authority,
         expected_revision=P1_DISPOSABLE_DATABASE_REVISION,
+    )
+
+
+def create_p3_app(
+    settings: JobApiSettings,
+    repository: Any,
+    authority: ValidatedJobPlaneAuthority,
+) -> FastAPI:
+    """Build the explicit retained/disposable P3-only Job API profile."""
+
+    return _create_app(
+        settings,
+        repository,
+        authority,
+        expected_revision=P3_DISPOSABLE_DATABASE_REVISION,
     )
