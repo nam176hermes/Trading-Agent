@@ -624,7 +624,7 @@ class JobWorker:
                     outcome=outcome, result=None,
                     stream_artifacts=(outcome.stdout, outcome.stderr),
                 )
-            elif claimed.attempt_number < claimed.max_attempts:
+            elif not self._p3_profile and claimed.attempt_number < claimed.max_attempts:
                 finalized = self._repository_call("finalize_retry",
                     claimed, reason_code="RESULT_VALIDATION_FAILED",
                     trace_id=trace_id, outcome=outcome,

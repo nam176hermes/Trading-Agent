@@ -196,3 +196,25 @@ def test_unprivileged_publication_proposal_is_validated_before_worker_commit() -
         "p3-publication-register-v1", canonical_json_bytes(proposal)
     )
     assert parsed == proposal
+
+
+def test_sql_enqueue_attempt_cap_matches_the_fixed_p3_command() -> None:
+    import re
+    from types import SimpleNamespace
+
+    from services.job_worker.command_registry import p3_command_spec
+
+    source = MIGRATION.read_text()
+    enqueue = source.split('AS $api_enqueue_alpha_campaign$', 1)[1].split(
+        '$api_enqueue_alpha_campaign$;', 1
+    )[0]
+    insert = enqueue.split('INSERT INTO public.jobs(', 1)[1].split(
+        'ON CONFLICT', 1
+    )[0]
+    assert insert.split(') VALUES', 1)[0].strip().endswith('priority,max_attempts')
+    attempts = re.search(r"'OPERATOR',p_actor_id,p_priority,(\d+)\s*\)", insert)
+    assert attempts is not None
+    spec = p3_command_spec(SimpleNamespace(
+        operation='OOS', logical_trial_id='p3-oos-a0-v1'
+    ))
+    assert int(attempts.group(1)) == spec.max_attempts == 1
