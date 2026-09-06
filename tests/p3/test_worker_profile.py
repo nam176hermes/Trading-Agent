@@ -14,11 +14,53 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from tests.jobs.test_worker_lifecycle import (
     Repository, Runner, artifact, claim, outcome, safety_evidence,
 )
+from tests.jobs.test_repository_transition_capabilities import _Connection, _worker
+from tests.p3.test_job_api import _alpha_request
 
 
 def test_alpha_campaign_claim_is_separate_from_default_worker_profile() -> None:
     assert JobType.ALPHA_CAMPAIGN.value == "ALPHA_CAMPAIGN"
     assert hasattr(WorkerRepository,"claim_next_alpha_campaign")
+
+
+@pytest.mark.parametrize("has_claim", [False, True])
+def test_alpha_campaign_claim_uses_only_the_scoped_capability(
+    has_claim: bool,
+) -> None:
+    request = _alpha_request()
+    claimed_row = None if not has_claim else {
+        "job_id": "job_fixed",
+        "job_type": "ALPHA_CAMPAIGN",
+        "payload": request.payload.model_dump(mode="json"),
+        "attempt_number": 1,
+        "max_attempts": 1,
+        "lease_expires_at": "2026-09-05T01:00:00Z",
+    }
+    connection = _Connection(claimed_row)
+    repository = _worker(connection)
+    generated = iter(("attempt_fixed", "event_fixed"))
+    repository._new_id = lambda _prefix: next(generated)
+
+    claimed = repository.claim_next_alpha_campaign(
+        "worker-p3", 30, "p3:claim"
+    )
+
+    assert "job_plane.worker_claim_alpha_campaign" in connection.calls[0][0]
+    assert (claimed is not None) is has_claim
+    if claimed is not None:
+        assert claimed.job_id == "job_fixed"
+        assert claimed.payload == request.payload
+
+
+def test_worker_repository_binds_p3_publication_to_its_pool() -> None:
+    repository = object.__new__(WorkerRepository)
+    repository._pool = object()
+    store = object()
+
+    publication = repository.alpha_publication_repository(store)
+
+    assert publication._pool is repository._pool
+    assert publication._store is store
 
 
 @pytest.mark.parametrize(

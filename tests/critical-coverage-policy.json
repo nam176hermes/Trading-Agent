@@ -18,6 +18,7 @@
     ],
     "pytest_paths": [
       "tests/domain",
+      "tests/p3",
       "tests/event_ledger",
       "tests/jobs/test_state_machine.py",
       "tests/jobs/test_worker_safety.py",
