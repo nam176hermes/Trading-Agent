@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
 REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
-HWC_REVIEWED_MAKEFILE_BLOB = "aee1c44346e306491b4ad76663c981109dc25544"
+P3_REVIEWED_MAKEFILE_BLOB = "1b59ddf8efb2c60df8d68bac9806439fc3130adb"
 HWC_ROOT_MANIFEST_BLOB = "a53c21e29cd55b10b42a51493e4dc06c6bd119c2"
 P2_ROOT_LOCK_BLOB = "0e7dd01a560c15627edcd340c9b538a26ca155b3"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
@@ -68,7 +68,7 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
-    assert _entry(head, "Makefile") == f"100644 blob {HWC_REVIEWED_MAKEFILE_BLOB}\tMakefile"
+    assert _entry(head, "Makefile") == f"100644 blob {P3_REVIEWED_MAKEFILE_BLOB}\tMakefile"
     assert _entry(head, "pyproject.toml") == (
         f"100644 blob {HWC_ROOT_MANIFEST_BLOB}\tpyproject.toml"
     )
