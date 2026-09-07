@@ -52,27 +52,36 @@ class IntegrationExecutionError(RuntimeError):
         self.reason_code = reason_code
 
 
-def _read_review(path: Path, reference) -> ReviewApproval:
+def _read_authority_bytes(path: Path) -> bytes:
     parent = _open_directory_chain(path.parent)
     descriptor = -1
     try:
         descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
         info = os.fstat(descriptor)
+        mode = stat.S_IMODE(info.st_mode)
         if (not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != 0
-            or stat.S_IMODE(info.st_mode) not in {0o400, 0o600} or info.st_nlink != 1
+            or mode not in {0o400,0o600,0o440,0o640} or info.st_nlink != 1
+            or (mode & 0o040 and info.st_gid not in {os.getegid(),*os.getgroups()})
             or not 1 <= info.st_size <= 65536):
-            raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: root-owned private approval required')
-        raw = os.read(descriptor, info.st_size + 1)
-        if len(raw) != reference.size_bytes or hashlib.sha256(raw).hexdigest() != reference.content_sha256:
-            raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: protected approval bytes differ')
-        review = ReviewApproval.model_validate_json(raw)
-        if canonical_json_bytes(review) != raw:
-            raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: approval is not canonical')
-        return review
+            raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: root-owned protected approval required')
+        raw = os.read(descriptor,info.st_size+1)
+        if len(raw) != info.st_size:
+            raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: protected approval size changed')
+        return raw
     finally:
         if descriptor >= 0:
             os.close(descriptor)
         os.close(parent)
+
+
+def _read_review(path: Path, reference) -> ReviewApproval:
+    raw = _read_authority_bytes(path)
+    if len(raw) != reference.size_bytes or hashlib.sha256(raw).hexdigest() != reference.content_sha256:
+        raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: protected approval bytes differ')
+    review = ReviewApproval.model_validate_json(raw)
+    if canonical_json_bytes(review) != raw:
+        raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: approval is not canonical')
+    return review
 
 
 class P3IntegrationFixtureExecutor:

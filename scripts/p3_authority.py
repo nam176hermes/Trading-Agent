@@ -129,22 +129,13 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
 def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
     authorization, payload = preflight(request_file, output_dir, workflow_operation)
     from packages.data_catalog.artifact_store import LocalArtifactStore
-    from services.job_worker.p3_integration import _read_review, FixturePlan
+    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan
     store = LocalArtifactStore(artifact_root)
     review = _read_review(review_file,authorization.review_ref)
     store.read_bytes(review.evidence_ref)
     if store.put_bytes(canonical_json_bytes(review),media_type="application/json") != authorization.review_ref:
         raise RuntimeError("HELD E_REVIEW_AUTHORITY: review CAS binding differs")
-    descriptor = os.open(manifest_file,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
-    try:
-        info = os.fstat(descriptor)
-        if (not manifest_file.is_absolute() or not stat.S_ISREG(info.st_mode)
-            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) not in {0o400,0o600}
-            or info.st_nlink != 1 or not 1 <= info.st_size <= 65536):
-            raise RuntimeError("HELD E_MANIFEST: root-owned private manifest required")
-        manifest = os.read(descriptor,info.st_size+1)
-    finally:
-        os.close(descriptor)
+    manifest = _read_authority_bytes(manifest_file)
     if workflow_operation == "p3-integration-fixture-v1":
         plan = FixturePlan.model_validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:

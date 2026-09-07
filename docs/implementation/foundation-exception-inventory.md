@@ -683,8 +683,8 @@ scripts/nautilus_pin_inventory/git_source.py|5403|BaseException|TOOLING_MIGRATIO
 scripts/nautilus_pin_inventory/git_source.py|5502|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5567|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATION|OTHER
+scripts/p3_authority.py|155|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_authority.py|164|Exception|TOOLING_MIGRATION|RAISE
-scripts/p3_authority.py|173|Exception|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
 scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
@@ -762,7 +762,7 @@ services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p1_engine_spawn.py|442|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_native.py|106|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_sql.py|757|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_integration.py|189|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_integration.py|198|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE

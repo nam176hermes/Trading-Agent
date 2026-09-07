@@ -243,3 +243,24 @@ def test_post_native_authority_failure_blocks_and_retains_lineage(details, reaso
     assert worker.run_once()
     final = next(call[2] for call in repository.calls if call[0] == 'finalize')
     assert (final['final_state'],final['reason_code'],final['outcome']) == ('BLOCKED',reason,actual)
+
+
+@pytest.mark.parametrize('mode,accepted', [(0o640,True),(0o660,False),(0o644,False)])
+def test_root_approval_can_be_read_by_worker_group_but_not_modified(mode, accepted, tmp_path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+    from services.job_worker import p3_integration as module
+    path = tmp_path/'approval'
+    path.write_bytes(b'approved-bytes')
+    path.chmod(mode)
+    original = os.fstat
+    def stat(fd):
+        info = original(fd)
+        return SimpleNamespace(st_mode=info.st_mode,st_uid=0,st_gid=info.st_gid,
+                               st_nlink=info.st_nlink,st_size=info.st_size)
+    monkeypatch.setattr(module.os,'fstat',stat)
+    if accepted:
+        assert module._read_authority_bytes(path) == b'approved-bytes'
+    else:
+        with pytest.raises(module.AuthorityHeld):
+            module._read_authority_bytes(path)
