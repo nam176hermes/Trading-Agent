@@ -218,3 +218,37 @@ def test_sql_enqueue_attempt_cap_matches_the_fixed_p3_command() -> None:
         operation='OOS', logical_trial_id='p3-oos-a0-v1'
     ))
     assert int(attempts.group(1)) == spec.max_attempts == 1
+
+
+def test_migration_scopes_schema_creation_to_owner_transfer_only() -> None:
+    source = MIGRATION.read_text()
+    grant = 'GRANT USAGE,CREATE ON SCHEMA public,job_plane TO trading_p3_owner;'
+    revoke = 'REVOKE CREATE ON SCHEMA public,job_plane FROM trading_p3_owner;'
+    assert grant in source
+    assert source.index(grant) < source.index('ALTER TABLE public.p3_alpha_heads OWNER TO')
+    assert source.index(revoke) > source.index('ALTER FUNCTION job_plane.worker_start_alpha_campaign')
+
+
+def test_migration_retains_alembic_search_path_and_binds_authorized_input() -> None:
+    source = MIGRATION.read_text()
+    preflight = source.split('$p3_preflight$')[1]
+    assert "set_config('search_path'" not in preflight
+    assert "IF NOT (CASE" in source and "ELSE false END) THEN" in source
+    assert "a.input_set_digest = v_payload #>> '{manifest_ref,content_sha256}'" in source
+    assert "a.input_set_digest=v_job.payload#>>'{manifest_ref,content_sha256}'" in source
+    assert source.index('REVOKE ALL PRIVILEGES ON TABLE public.p3_alpha_heads') < source.index('ALTER TABLE public.p3_alpha_heads OWNER TO')
+    assert "CREATE POLICY p3_owner_jobs" in source
+    assert "USING (job_type='ALPHA_CAMPAIGN') WITH CHECK (job_type='ALPHA_CAMPAIGN')" in source
+
+
+def test_sql_source_check_requires_explicit_manual_selection(monkeypatch) -> None:
+    import pytest
+    from scripts import check_p3_sql_source
+
+    calls = []
+    monkeypatch.setattr(check_p3_sql_source, 'run_sql_source_check', lambda: calls.append(True))
+    with pytest.raises(SystemExit) as refused:
+        check_p3_sql_source.main([])
+    assert refused.value.code == 2 and calls == []
+    check_p3_sql_source.main(['--run-disposable-sql'])
+    assert calls == [True]
