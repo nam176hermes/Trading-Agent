@@ -113,7 +113,7 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     _write(output_dir,"source-identity.json",source)
     _write(output_dir,"input-inventory.json",{
         "authorization_ref":authorization.digest,
-        "input_set_ref":authorization.input_set_ref,
+        ("fixture_plan_ref" if workflow_operation == "p3-integration-fixture-v1" else "input_set_ref"):payload.manifest_ref,
         "review_ref":authorization.review_ref,
     })
     _write(output_dir,"preflight.json",{

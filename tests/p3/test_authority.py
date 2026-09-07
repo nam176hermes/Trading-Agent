@@ -88,3 +88,38 @@ def test_protected_request_builds_one_closed_worker_payload() -> None:
     assert payload.authorization_ref.locator == (
         f"{payload.authorization_ref.content_sha256}.blob"
     )
+
+
+def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    request, source = _request("2026-01-01T01:00:00Z")
+    authorization = request["authorization"]
+    authorization["schema_version"] = "p3-fixture-authorization-v1"
+    authorization["operation"] = "PARITY"
+    authorization["fixture_plan_ref"] = authorization.pop("input_set_ref")
+    authorization.pop("allowed_alpha_ids")
+    now = datetime.now(UTC)
+    authorization["issued_at"] = (now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+    authorization["expires_at"] = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+    authorization.pop("digest")
+    authorization["digest"] = hashlib.sha256(canonical_json_bytes(authorization)).hexdigest()
+    path = tmp_path / "fixture-request.json"
+    path.write_text(json.dumps(request)); path.chmod(0o600)
+    validated = validate_request(path.resolve(), source, "PARITY")
+    payload = build_alpha_campaign_payload(validated, source, "p3-integration-fixture-v1")
+    assert payload.manifest_ref.model_dump(mode="json") == authorization["fixture_plan_ref"]
+    assert not hasattr(validated, "input_set_ref")
+    with pytest.raises(AuthorityHeld):
+        build_alpha_campaign_payload(validated, source, "p3-native-parity-v1")
+
+
+def test_official_authorization_cannot_bootstrap_integration_fixture() -> None:
+    request, source = _request("2026-01-01T01:00:00Z")
+    payload = request["authorization"]
+    payload["operation"] = "PARITY"
+    payload.pop("digest")
+    payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    authorization = RunAuthorization.model_validate_json(json.dumps(payload))
+    with pytest.raises(AuthorityHeld):
+        build_alpha_campaign_payload(authorization, source, "p3-integration-fixture-v1")
