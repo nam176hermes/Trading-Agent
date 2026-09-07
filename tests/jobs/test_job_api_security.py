@@ -227,7 +227,8 @@ def test_settings_reject_every_non_explicit_loopback_bind() -> None:
             settings(host=host)
 
 
-def test_entrypoint_waits_for_repository_pool_before_binding_listener(monkeypatch) -> None:
+@pytest.mark.parametrize("profile", ["paper", "p3-v1"])
+def test_entrypoint_waits_for_repository_pool_before_binding_listener(monkeypatch, profile) -> None:
     from apps.job_api import main
 
     configured = settings()
@@ -256,7 +257,7 @@ def test_entrypoint_waits_for_repository_pool_before_binding_listener(monkeypatc
     monkeypatch.setattr(main, "JobRepository", lambda settings: ReadyRepository())
     monkeypatch.setattr(
         main,
-        "create_app",
+        "create_p3_app" if profile == "p3-v1" else "create_app",
         lambda configured, repository, authority: events.append("app-created")
         or "job-app",
     )
@@ -266,7 +267,7 @@ def test_entrypoint_waits_for_repository_pool_before_binding_listener(monkeypatc
         lambda app, **kwargs: events.append("listener-started"),
     )
 
-    main.run(env={})
+    main.run(env={"TRADING_JOB_API_PROFILE":profile})
 
     assert events == [
         "repository-ready",

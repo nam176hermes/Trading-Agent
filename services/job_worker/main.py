@@ -54,8 +54,13 @@ def build_worker(
     p1_projection_authority_factory: P1ProjectionAuthorityFactory | None = None,
     p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
     _p1_safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
+    p3_fixture_executor: object | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
+    if p3_fixture_executor is not None:
+        from .p3_integration import P3IntegrationFixtureExecutor
+        if type(p3_fixture_executor) is not P3IntegrationFixtureExecutor:
+            raise TypeError("exact P3 fixture executor required")
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
         raise ValueError("runtime authority cannot be supplied through environment digests")
     if "TRADING_WORKER_LEASE_SECONDS" in values:
@@ -159,6 +164,15 @@ def build_worker(
             if engine_result_validator is not None
             else EngineResultValidator(runtime_paths.artifact_root)
         )
+    from .command_registry import prepare_immediate_spawn
+    from .engine_spawn_interface import EngineSpawnError
+
+    def reject_nonfixture(_job):
+        raise EngineSpawnError("P3_FIXTURE_ONLY", "fixture composition cannot execute research operations")
+
+    if p3_fixture_executor is not None:
+        repository.recover_expired_leases(ProcProcessInspector(),
+            recovery_id="worker-startup-recovery",alpha_campaign=True,fixture_only=True)
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -170,6 +184,11 @@ def build_worker(
         worker_id=worker_id,
         code_commit=code_commit,
         environment=environment,
+        p3_profile=p3_fixture_executor is not None,
+        p3_fixture_executor=p3_fixture_executor,
+        p3_publisher=(repository.alpha_publication_repository(p3_fixture_executor.store)
+                      if p3_fixture_executor is not None else None),
+        prepare_spawn=reject_nonfixture if p3_fixture_executor is not None else prepare_immediate_spawn,
         safety_preflight=safety_preflight,
         engine_authority_factory=engine_authority_factory,
         engine_spawn_provider=engine_spawn_provider,
@@ -194,11 +213,8 @@ def build_p1_worker(
 ) -> JobWorker:
     """Compose the fixed P1 lane from deployment-owned authority inputs."""
 
-    from .engine_artifacts import HashBoundArtifactResolver
     from .engine_profiles import P1_REAL_BACKTEST_POLICY
     from .engine_results import EngineResultValidator
-    from .p1_engine_spawn import P1EngineSpawnProvider
-    from .p1_nautilus_closure import attest_p1_nautilus_closure
     from packages.engine_portfolio_projection.parity import verify_p1_portfolio_parity
 
     if p1_projection_authority_factory is None:
@@ -206,14 +222,8 @@ def build_p1_worker(
 
     selected_authority = authority or attest_worker_runtime_authority()
     profile = P1_REAL_BACKTEST_POLICY
-    provider = P1EngineSpawnProvider(
-        transport_root=transport_root,
-        attest_closure=lambda: attest_p1_nautilus_closure(closure_config),
-        expected_manifest_schema_version=profile.manifest_schema_version,
-        profile_policy=profile,
-        attest_inputs=HashBoundArtifactResolver(artifact_bindings),
-        monotonic_ns=time.monotonic_ns,
-    )
+    from .p1_engine_spawn import build_p1_engine_spawn_provider
+    provider = build_p1_engine_spawn_provider(closure_config, transport_root, artifact_bindings)
     return build_worker(
         repository,
         source,
@@ -230,8 +240,32 @@ def build_p1_worker(
     )
 
 
+
+def build_p3_fixture_worker(repository, source, *, authority):
+    """Compose the explicit fixture lane using existing protected host authority."""
+    from pathlib import Path
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from .nautilus_closure import NautilusClosureConfig
+    from .p3_integration import P3IntegrationFixtureExecutor
+
+    names = ('P3_ARTIFACT_ROOT','P3_PRIVATE_ROOT','P3_REVIEW_FILE',
+             'P3_NATIVE_RUNTIME_ROOT','P3_NATIVE_ARTIFACT_DIRECTORY','P3_SANDBOX_EXECUTABLE')
+    if any(not source.get(name) or not Path(source[name]).is_absolute() for name in names):
+        raise ValueError('complete absolute P3 fixture host paths are required')
+    executor = P3IntegrationFixtureExecutor(
+        store=LocalArtifactStore(Path(source['P3_ARTIFACT_ROOT'])),
+        private_root=Path(source['P3_PRIVATE_ROOT']),review_file=Path(source['P3_REVIEW_FILE']),
+        closure_config=NautilusClosureConfig(
+            runtime_root=Path(source['P3_NATIVE_RUNTIME_ROOT']),
+            artifact_directory=Path(source['P3_NATIVE_ARTIFACT_DIRECTORY']),
+            sandbox_executable=Path(source['P3_SANDBOX_EXECUTABLE'])))
+    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor)
+
 def main() -> int:
     values = os.environ
+    profile = values.get("TRADING_WORKER_PROFILE", "paper")
+    if profile not in {"paper", "p3-fixture-v1"}:
+        raise ValueError("unknown worker profile")
     authority = attest_worker_runtime_authority()
     idle_seconds = float(values.get("TRADING_WORKER_IDLE_SECONDS", "1"))
     settings = (
@@ -244,6 +278,10 @@ def main() -> int:
         )
     )
     with WorkerRepository(settings) as repository:
+        if profile == "p3-fixture-v1":
+            repository.assert_p3_runtime_identity()
+            worker = build_p3_fixture_worker(repository,values,authority=authority)
+            return 0 if worker.run_once() else 2
         repository.assert_runtime_identity(
             expected_user="trading_job_worker",
             expected_revision=EXPECTED_DATABASE_REVISION,

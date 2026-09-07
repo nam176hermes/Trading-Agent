@@ -123,3 +123,24 @@ def test_official_authorization_cannot_bootstrap_integration_fixture() -> None:
     authorization = RunAuthorization.model_validate_json(json.dumps(payload))
     with pytest.raises(AuthorityHeld):
         build_alpha_campaign_payload(authorization, source, "p3-integration-fixture-v1")
+
+
+def test_staging_publishes_authorization_and_verifies_manifest_before_enqueue(tmp_path):
+    from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    tmp_path.chmod(0o700)
+    store = LocalArtifactStore(tmp_path)
+    request, source = _request('2026-01-01T01:00:00Z')
+    body = request['authorization']
+    manifest = b'{"fixture":"source-test-only"}'
+    ref = store.put_bytes(manifest,media_type='application/json')
+    body['input_set_ref'] = ref.model_dump(mode='json')
+    body['review_ref'] = ref.model_dump(mode='json')
+    body.pop('digest')
+    body['digest'] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+    authorization = RunAuthorization.model_validate_json(canonical_json_bytes(body))
+    payload = stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',manifest)
+    assert store.read_bytes(payload.authorization_ref) == canonical_json_bytes(authorization)
+    assert store.read_bytes(payload.manifest_ref) == manifest
+    with pytest.raises(AuthorityHeld,match='manifest'):
+        stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',b'wrong')

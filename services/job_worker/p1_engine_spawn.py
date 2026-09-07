@@ -480,3 +480,19 @@ __all__ = [
     "is_issued_p1_paper_launch",
     "validate_p1_engine_closure_attestation",
 ]
+
+
+def build_p1_engine_spawn_provider(closure_config, transport_root, artifact_bindings):
+    """Compose the existing protected P1 provider for a caller-owned input set."""
+    from time import monotonic_ns
+    from .engine_artifacts import HashBoundArtifactResolver
+    from .p1_nautilus_closure import attest_p1_nautilus_closure
+
+    return P1EngineSpawnProvider(
+        transport_root=transport_root,
+        attest_closure=lambda: attest_p1_nautilus_closure(closure_config),
+        expected_manifest_schema_version=P1_REAL_BACKTEST_POLICY.manifest_schema_version,
+        profile_policy=P1_REAL_BACKTEST_POLICY,
+        attest_inputs=HashBoundArtifactResolver(artifact_bindings),
+        monotonic_ns=monotonic_ns,
+    )

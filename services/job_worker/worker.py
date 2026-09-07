@@ -117,6 +117,7 @@ class JobWorker:
         p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
         p3_profile: bool = False,
         p3_publisher: object | None = None,
+        p3_fixture_executor: object | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -139,6 +140,11 @@ class JobWorker:
         self._p1_portfolio_parity_verifier = p1_portfolio_parity_verifier
         self._p3_profile = p3_profile
         self._p3_publisher = p3_publisher
+        self._p3_fixture_executor = p3_fixture_executor
+        if p3_fixture_executor is not None:
+            from .p3_integration import P3IntegrationFixtureExecutor
+            if not p3_profile or type(p3_fixture_executor) is not P3IntegrationFixtureExecutor:
+                raise ValueError("exact P3 fixture executor and profile required")
         if p3_profile and prepare_spawn is prepare_immediate_spawn:
             raise ValueError("explicit P3 spawn authority is required")
         if p3_profile and p3_publisher is None:
@@ -215,7 +221,8 @@ class JobWorker:
         self._worker_heartbeat("IDLE")
         claimed = (
             self._repository.claim_next_alpha_campaign(
-                self._worker_id, self._lease_seconds, trace_id
+                self._worker_id, self._lease_seconds, trace_id,
+                fixture_only=self._p3_fixture_executor is not None,
             )
             if self._p3_profile
             else self._repository.claim_next(
@@ -404,6 +411,58 @@ class JobWorker:
             if control is WorkerControl.STALE:
                 return HeartbeatDecision.STALE_LEASE
             return HeartbeatDecision.CONTINUE
+
+        if self._p3_profile and claimed.payload.logical_trial_id == "p3-integration-fixture-v1":
+            from .p3_integration import IntegrationExecutionError
+            outcome = None
+            try:
+                if self._p3_fixture_executor is None:
+                    raise IntegrationExecutionError("P3 fixture executor is unavailable")
+                execution = self._p3_fixture_executor.run(
+                    claimed, heartbeat=heartbeat, preflight=safety_preflight,
+                    progress=lambda: self._validation_progress(claimed, safety_preflight),
+                )
+                if not started or len(execution.native_runs) != 3:
+                    raise IntegrationExecutionError("fixture did not execute three attributable children")
+                self._validation_progress(claimed, safety_preflight)
+                result = self._validator.seal_integration_receipt(claimed, execution.receipt)
+            except Exception as error:
+                outcome = getattr(error, "outcome", None)
+                cause = error
+                while cause.__cause__ is not None:
+                    cause = cause.__cause__
+                control = getattr(error, "control", None)
+                if control == HeartbeatDecision.STALE_LEASE or isinstance(cause, _ValidationStale) or (
+                    outcome is not None and outcome.termination_reason == "STALE_LEASE"
+                ):
+                    self._worker_heartbeat("UNHEALTHY", claimed)
+                    return True
+                if outcome is not None and outcome.termination_reason is not None:
+                    finalized = self._finalize_termination(claimed, outcome, trace_id, started=started)
+                else:
+                    cancelled = isinstance(cause, _ValidationCancelled) or control == HeartbeatDecision.CANCEL
+                    cleanup_unverified = getattr(error, "cleanup_unverified", False)
+                    safety_drift = isinstance(cause, (_ValidationSafetyDrift, WorkerBlockedError)) or control == HeartbeatDecision.SAFETY_DRIFT
+                    blocked = cleanup_unverified or safety_drift or getattr(error, "blocked", False)
+                    reason = ("P3_CLEANUP_UNVERIFIED" if cleanup_unverified else
+                              (getattr(cause,"reason_code",None) or getattr(error,"reason_code",None) or "SAFETY_DRIFT") if safety_drift else
+                              "P3_AUTHORITY_HELD" if blocked else "P3_INTEGRATION_FAILED")
+                    expected = JobState.CANCEL_REQUESTED if cancelled else (JobState.RUNNING if started else JobState.CLAIMED)
+                    finalized = self._repository_call("finalize_execution",
+                        claimed, expected_state=expected,
+                        expected_attempt_outcome="RUNNING" if started else "CLAIMED",
+                        final_state=JobState.CANCELLED if cancelled else (JobState.BLOCKED if blocked else (JobState.FAILED if started else JobState.BLOCKED)),
+                        reason_code="CANCELLED" if cancelled else reason, trace_id=trace_id,
+                        outcome=outcome, result=None, stream_artifacts=(),
+                    )
+            else:
+                finalized = self._repository_call("finalize_execution",
+                    claimed, expected_state=JobState.RUNNING, expected_attempt_outcome="RUNNING",
+                    final_state=JobState.SUCCEEDED, reason_code="RESULT_VALIDATED", trace_id=trace_id,
+                    outcome=None, result=result, stream_artifacts=(),
+                )
+            self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
+            return True
 
         try:
             prepare_spawn = (

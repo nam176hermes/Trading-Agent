@@ -50,3 +50,17 @@ def test_cleanup_reports_stop_error_even_after_root_removed(tmp_path):
     with pytest.raises(RuntimeError, match='no server started'):
         _cleanup_cluster(tmp_path, data, socket, True, failed_start_stop)
     assert not tmp_path.exists()
+
+
+def test_cleanup_retains_root_when_postgres_descendants_survive(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from services.job_worker import p3_fixture_sql
+    data = tmp_path/'data'
+    data.mkdir()
+    sock = tmp_path/'socket'
+    sock.mkdir()
+    monkeypatch.setattr(p3_fixture_sql,'_session_members_proc',lambda identity:(object(),),raising=False)
+    with pytest.raises(RuntimeError,match='session.*retained'):
+        _cleanup_cluster(tmp_path,data,sock,True,lambda args:None,
+                         process=SimpleNamespace(send_signal=lambda _:None,wait=lambda **kwargs:0),identity=object())
+    assert tmp_path.exists()

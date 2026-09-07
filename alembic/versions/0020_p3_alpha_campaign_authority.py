@@ -200,7 +200,8 @@ def upgrade() -> None:
 
         CREATE FUNCTION job_plane.worker_claim_alpha_campaign(
           p_attempt_id text, p_worker_id text, p_lease_token text,
-          p_lease_seconds integer, p_trace_id text, p_event_id text
+          p_lease_seconds integer, p_trace_id text, p_event_id text,
+          p_fixture_only boolean DEFAULT false
         ) RETURNS TABLE(job_id text,job_type text,payload jsonb,
           attempt_number integer,max_attempts smallint,lease_expires_at timestamptz)
         LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
@@ -211,7 +212,7 @@ def upgrade() -> None:
           v_now timestamptz;
           v_sequence bigint;
         BEGIN
-          IF session_user <> 'trading_job_worker'
+          IF p_fixture_only IS NULL OR session_user <> 'trading_job_worker'
              OR p_attempt_id !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$'
              OR p_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
              OR p_lease_token !~ '^[A-Za-z0-9_-]{16,128}$'
@@ -222,6 +223,8 @@ def upgrade() -> None:
           END IF;
           SELECT j.* INTO v_job FROM public.jobs j
           WHERE j.job_type='ALPHA_CAMPAIGN' AND j.state='QUEUED'
+            AND (NOT p_fixture_only OR (j.payload->>'logical_trial_id'='p3-integration-fixture-v1'
+                 AND j.payload->>'operation'='PARITY'))
             AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= pg_catalog.clock_timestamp())
             AND j.attempt_count < j.max_attempts
           ORDER BY j.priority DESC,j.requested_at,j.job_id FOR UPDATE SKIP LOCKED LIMIT 1;
@@ -586,7 +589,7 @@ def upgrade() -> None:
         $worker_commit_alpha_campaign$;
 
         -- Derive the four remaining lifecycle functions from the exact reviewed
-        -- 0011 bodies, replacing only their name and closed job-type predicate.
+        -- 0011 bodies, retaining their fences and adding fixture cleanup holds.
         DO $promote_p3_lifecycle$
         DECLARE
           source_names text[] := ARRAY[
@@ -635,6 +638,17 @@ def upgrade() -> None:
               'job_plane.paper_worker_job_allowed(job_row.job_type, job_row.payload)',
               'job_row.job_type = ''ALPHA_CAMPAIGN'''
             );
+            IF function_index=4 THEN
+              promoted_definition:=pg_catalog.replace(promoted_definition,
+                'ELSIF effective_observation = ''STILL_RUNNING'' THEN',
+                'ELSIF current_job.payload->>''logical_trial_id''=''p3-integration-fixture-v1''
+                   AND current_job.payload->>''operation''=''PARITY''
+                   AND effective_observation=''ABSENT'' THEN
+                   reason:=''P3_FIXTURE_CLEANUP_UNVERIFIED'';
+                   target_state:=''BLOCKED'';
+                   target_attempt_outcome:=''BLOCKED'';
+                 ELSIF effective_observation = ''STILL_RUNNING'' THEN');
+            END IF;
             EXECUTE promoted_definition;
           END LOOP;
         END;
@@ -723,6 +737,10 @@ def upgrade() -> None:
         REVOKE ALL PRIVILEGES ON FUNCTION job_plane.alpha_worker_job_id_allowed(text)
           FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
         GRANT EXECUTE ON FUNCTION job_plane.alpha_worker_job_id_allowed(text) TO trading_job_worker;
+        CREATE POLICY p3_worker_jobs_select ON public.jobs
+          FOR SELECT TO trading_job_worker USING (job_type='ALPHA_CAMPAIGN');
+        CREATE POLICY p3_worker_attempts_select ON public.job_attempts
+          FOR SELECT TO trading_job_worker USING (job_plane.alpha_worker_job_id_allowed(job_id));
         CREATE POLICY p3_worker_artifacts_insert ON public.job_artifacts
           FOR INSERT TO trading_job_worker
           WITH CHECK (job_plane.alpha_worker_job_id_allowed(job_id));
@@ -762,7 +780,7 @@ def upgrade() -> None:
           job_plane.api_enqueue_alpha_campaign(text,text,text,text,text,integer,text,text)
           FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
         REVOKE ALL PRIVILEGES ON FUNCTION
-          job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text)
+          job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean)
           FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
         REVOKE ALL PRIVILEGES ON FUNCTION
           job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text)
@@ -783,7 +801,7 @@ def upgrade() -> None:
           FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
         GRANT EXECUTE ON FUNCTION job_plane.api_enqueue_alpha_campaign(text,text,text,text,text,integer,text,text) TO trading_job_api;
         GRANT EXECUTE ON FUNCTION job_plane.api_cancel_alpha_campaign(text,text,text,text) TO trading_job_api;
-        GRANT EXECUTE ON FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text) TO trading_job_worker;
+        GRANT EXECUTE ON FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean) TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION job_plane.read_alpha_commit(text,text,text) TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION job_plane.worker_start_alpha_campaign(text,text,text,text,bigint,bigint,bigint,text,text,text) TO trading_job_worker;
@@ -796,7 +814,7 @@ def upgrade() -> None:
         ALTER TABLE public.p3_campaign_authorizations OWNER TO trading_p3_owner;
         ALTER FUNCTION job_plane.worker_replace_alpha_fixture_process(text,text,text,text,bigint,bigint,bigint,text,bigint,bigint,bigint,text) OWNER TO trading_p3_owner;
         ALTER FUNCTION job_plane.api_enqueue_alpha_campaign(text,text,text,text,text,integer,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean) OWNER TO trading_p3_owner;
         ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) OWNER TO trading_p3_owner;
         ALTER FUNCTION job_plane.read_alpha_commit(text,text,text) OWNER TO trading_p3_owner;
         ALTER FUNCTION job_plane.api_cancel_alpha_campaign(text,text,text,text) OWNER TO trading_p3_owner;
