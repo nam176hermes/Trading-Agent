@@ -251,6 +251,8 @@ def run_sql_source_check() -> None:
             assert owner.execute("SELECT state,result_hash FROM public.jobs WHERE job_id='job_final'").fetchone() == ('SUCCEEDED','a'*64)
             assert owner.execute("SELECT count(*) FROM public.job_artifacts WHERE job_id='job_final'").fetchone() == (1,)
         print('WORKER_DURABLE_RESULT_PASS', flush=True)
+        from tests.p3.sql_publication_fixture import check_publication
+        check_publication(sock, name, root, payload)
 
 
 
