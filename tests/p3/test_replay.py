@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from packages.alpha_lifecycle.contracts.results import ReplayReceipt
-from packages.alpha_lifecycle.replay import run_replays
+from packages.alpha_lifecycle.replay import ReplayError, run_replays
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -52,3 +54,30 @@ def test_three_parent_observed_replays_are_byte_identical(tmp_path: Path) -> Non
     assert len(proof.receipt_refs) == 3
     assert tuple(item[0] for item in executor.calls) == ("R1", "R2", "R3")
     assert len({item[1] for item in executor.calls}) == 3
+
+
+@pytest.mark.parametrize("field", ("logical_trial_id", "source", "environment_ref", "sandbox_policy_digest", "result_ref"))
+def test_replay_rejects_mismatched_receipt_binding(tmp_path: Path, field: str) -> None:
+    class MismatchedExecutor(Executor):
+        def execute(self, manifest_ref, **kwargs):
+            receipt = super().execute(manifest_ref, **kwargs)
+            if kwargs["replicate"] != "R2":
+                return receipt
+            payload = receipt.model_dump(mode="json", exclude={"digest"})
+            if field == "logical_trial_id":
+                payload[field] = "trial.other"
+            elif field == "source":
+                payload[field]["commit_sha"] = "9" * 40
+            elif field == "environment_ref":
+                payload[field] = _ref("9" * 64).model_dump(mode="json")
+            elif field == "sandbox_policy_digest":
+                payload[field] = "9" * 64
+            else:
+                payload[field]["size_bytes"] += 1
+            payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+            return ReplayReceipt.model_validate(payload)
+
+    executor = MismatchedExecutor()
+    with pytest.raises(ReplayError):
+        run_replays(_ref("1" * 64), executor, logical_trial_id="trial.same", output_root=tmp_path)
+    assert len(executor.calls) == 2
