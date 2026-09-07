@@ -566,7 +566,7 @@ scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
 scripts/check_artifact_firewall.py|750|Exception|TOOLING_MIGRATION|RAISE
 scripts/check_artifact_firewall.py|791|BaseException|TOOLING_MIGRATION|RAISE
-scripts/check_p3_sql_source.py|261|BaseException|TOOLING_MIGRATION|RAISE
+scripts/check_p3_sql_source.py|263|BaseException|TOOLING_MIGRATION|RAISE
 scripts/diagnose_nautilus_v12_runtime_failure.py|628|BaseException|TOOLING_MIGRATION|RAISE
 scripts/generate_phase4_command_manifest.py|63|Exception|TOOLING_MIGRATION|RETURN
 scripts/generate_phase4_runtime_authority.py|109|Exception|TOOLING_MIGRATION|RETURN

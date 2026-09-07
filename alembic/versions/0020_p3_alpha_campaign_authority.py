@@ -573,6 +573,14 @@ def upgrade() -> None:
           WHERE job_id=p_job_id;
           UPDATE public.job_attempts SET outcome='SUCCEEDED',finished_at=pg_catalog.clock_timestamp()
           WHERE attempt_id=p_attempt_id AND job_id=p_job_id;
+          INSERT INTO public.job_events(
+            event_id,job_id,attempt_id,sequence,from_state,to_state,reason_code,
+            actor_type,actor_id,trace_id,metadata
+          ) SELECT 'event_p3_'||pg_catalog.substr(v_result_digest,1,55),
+            p_job_id,p_attempt_id,coalesce(max(e.sequence),0)+1,
+            'RUNNING','SUCCEEDED','P3_COMMITTED','WORKER',p_worker_id,p_trace_id,
+            pg_catalog.jsonb_build_object('result_digest',v_result_digest)
+          FROM public.job_events e WHERE e.job_id=p_job_id;
           RETURN v_result;
         END;
         $worker_commit_alpha_campaign$;
