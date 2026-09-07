@@ -7,11 +7,13 @@ from uuid import UUID
 
 from pydantic import BeforeValidator, Field
 from psycopg import OperationalError
+from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
 from packages.data_contracts import ArtifactRefV1
+from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationTransport
 from services.job_store.worker_repository import ClaimedJob
 
@@ -80,18 +82,25 @@ class P3PublicationRepository:
             transport.canonical_bytes().decode(),
             trace_id,
         )
-        try:
-            with self._pool.connection() as connection:
-                with connection.transaction():
-                    row = connection.execute(self.COMMIT_SQL, parameters).fetchone()
-        except OperationalError:
-            recovered = self.read_commit(request)
-            if recovered is not None:
-                return recovered
-            raise
+        for attempt in range(3):
+            try:
+                with self._pool.connection() as connection:
+                    with connection.transaction():
+                        row = connection.execute(self.COMMIT_SQL, parameters).fetchone()
+                break
+            except (DeadlockDetected, SerializationFailure):
+                # PostgreSQL has aborted this transaction. The same SQL capability
+                # checks the current fence again on every bounded retry.
+                if attempt == 2:
+                    raise
+            except OperationalError:
+                recovered = self.read_commit(request)
+                if recovered is not None:
+                    return recovered
+                raise
         if row is None or row["result"] is None:
             raise RuntimeError("P3 commit capability returned no result")
-        return JobCommitResult.model_validate(row["result"])
+        return JobCommitResult.model_validate_json(canonical_json_bytes(row["result"]))
 
     def read_commit(self, request: PublicationRequest) -> JobCommitResult | None:
         request = PublicationRequest.model_validate(request)
@@ -102,7 +111,7 @@ class P3PublicationRepository:
             ).fetchone()
         if row is None or row["result"] is None:
             return None
-        return JobCommitResult.model_validate(row["result"])
+        return JobCommitResult.model_validate_json(canonical_json_bytes(row["result"]))
 
 
 __all__ = ["JobCommitResult", "P3PublicationRepository"]

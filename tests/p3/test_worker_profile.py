@@ -102,6 +102,25 @@ def test_p3_worker_requires_atomic_publication_capability() -> None:
         )
 
 
+class P3Repository(Repository):
+    def claim_next_alpha_campaign(self, *args, **kwargs):
+        value, self.claimed = self.claimed, None
+        return value
+
+    def start_attempt(self, *args, **kwargs):
+        return True
+
+    def pre_spawn_control(self, *args, **kwargs):
+        return "CONTINUE"
+
+    def heartbeat_control(self, *args, **kwargs):
+        return "CONTINUE"
+
+    def finalize_execution(self, *args, **kwargs):
+        self.calls.append(("finalize", args, kwargs))
+        return True
+
+
 def test_p3_publication_commits_without_generic_success_finalize() -> None:
     claimed = claim(max_attempts=1)
     claimed = replace(
@@ -111,24 +130,6 @@ def test_p3_publication_commits_without_generic_success_finalize() -> None:
             logical_trial_id="p3-register-family-v1",
         ),
     )
-
-    class P3Repository(Repository):
-        def claim_next_alpha_campaign(self, *args, **kwargs):
-            value, self.claimed = self.claimed, None
-            return value
-
-        def start_attempt(self, *args, **kwargs):
-            return True
-
-        def pre_spawn_control(self, *args, **kwargs):
-            return "CONTINUE"
-
-        def heartbeat_control(self, *args, **kwargs):
-            return "CONTINUE"
-
-        def finalize_execution(self, *args, **kwargs):
-            self.calls.append(("finalize", args, kwargs))
-            return True
 
     class P3Validator:
         def validate_p3(self, *args, **kwargs):
@@ -178,3 +179,30 @@ def test_p3_result_validator_parses_only_its_fixed_terminal_contract() -> None:
     assert validate_p3_result_bytes("p3-primary-selection-v1", raw).digest == value["digest"]
     with pytest.raises(ResultValidationError, match="invalid"):
         validate_p3_result_bytes("p3-parity-result-v1", raw)
+
+
+def test_p3_result_failure_never_automatically_repeats_an_economic_operation() -> None:
+    from packages.job_contracts import JobState
+
+    claimed = replace(
+        claim(max_attempts=3), job_type=JobType.ALPHA_CAMPAIGN,
+        payload=SimpleNamespace(operation="OOS", logical_trial_id="p3-oos-a0-v1"),
+    )
+
+    class InvalidResult:
+        def validate_p3(self, *args, **kwargs):
+            raise ResultValidationError("replay mismatch")
+
+    repository = P3Repository(claimed)
+    worker = JobWorker(
+        repository, Runner(outcome()), InvalidResult(), worker_id="worker-1",
+        code_commit="e" * 40, environment=object(),
+        safety_preflight=lambda: safety_evidence("4" * 64),
+        prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=object(),
+    )
+    assert worker.run_once() is True
+    assert not [call for call in repository.calls if call[0] == "retry"]
+    final = [call for call in repository.calls if call[0] == "finalize"]
+    assert len(final) == 1
+    assert final[0][2]["final_state"] is JobState.FAILED
+    assert final[0][2]["reason_code"] == "RESULT_VALIDATION_FAILED"

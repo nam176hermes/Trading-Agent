@@ -172,7 +172,7 @@ def upgrade() -> None:
             actor_type,actor_id,priority,max_attempts
           ) VALUES (
             p_job_id,'ALPHA_CAMPAIGN','QUEUED',v_payload,v_fingerprint,
-            p_idempotency_key,'OPERATOR',p_actor_id,p_priority,3
+            p_idempotency_key,'OPERATOR',p_actor_id,p_priority,1
           ) ON CONFLICT(job_type,idempotency_key) DO NOTHING
           RETURNING public.jobs.job_id INTO v_inserted;
           IF v_inserted IS NOT NULL THEN
