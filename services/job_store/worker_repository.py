@@ -318,6 +318,31 @@ class WorkerRepository:
                 ).fetchone()
                 return bool(row and row["started"])
 
+    def replace_alpha_fixture_process(
+        self, claimed: ClaimedJob, previous: ProcessIdentity,
+        current: ProcessIdentity, trace_id: str,
+    ) -> bool:
+        """Compare and replace the recovery identity after a fixture child exits."""
+        self._validate_worker(claimed.worker_id)
+        self._validate_trace(trace_id)
+        for identity in (previous, current):
+            if not isinstance(identity, ProcessIdentity) or not _HASH.fullmatch(identity.command_fingerprint):
+                raise ValueError("complete process identity is required")
+        with self._pool.connection() as connection:
+            with connection.transaction():
+                row = connection.execute(
+                    """SELECT job_plane.worker_replace_alpha_fixture_process(
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s
+                    ) AS replaced""",
+                    (
+                        claimed.job_id, claimed.attempt_id, claimed.worker_id, claimed.lease_token,
+                        previous.pid, previous.process_group, previous.start_ticks, previous.command_fingerprint,
+                        current.pid, current.process_group, current.start_ticks, current.command_fingerprint,
+                    ),
+                ).fetchone()
+                return bool(row and row["replaced"])
+
     def heartbeat(
         self, job_id: str, attempt_id: str, worker_id: str,
         lease_token: str, lease_seconds: int, *,

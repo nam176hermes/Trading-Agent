@@ -5,16 +5,17 @@ from __future__ import annotations
 import os
 import hashlib
 import stat
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from packages.alpha_lifecycle.contracts.authority import RunAuthorization
-from packages.alpha_lifecycle.contracts.base import SourceIdentity
+from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity, Text
 from packages.data_contracts import ArtifactRefV1
-from packages.engine_contracts.serialization import canonical_json_bytes
+from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
 from packages.job_contracts import AlphaCampaignOperation, AlphaCampaignPayload
 
 
@@ -37,12 +38,34 @@ class AuthorityHeld(RuntimeError):
     """Required protected source, reviewer, or host authority is unavailable."""
 
 
+class _FixtureAuthorization(DigestModel):
+    """Private fixture request; it cannot authorize an official research operation."""
+
+    schema_version: Literal["p3-fixture-authorization-v1"]
+    fixture_plan_ref: ArtifactRefV1
+    review_ref: ArtifactRefV1
+    operation: Literal["PARITY"]
+    issued_at: CanonicalUtcDateTime
+    expires_at: CanonicalUtcDateTime
+    nonce: UUID
+    issuer_workflow: Text
+    issuer_run_id: Annotated[int, Field(ge=1)]
+    issuer_attempt: Annotated[int, Field(ge=1)]
+    authority: SafeAuthority
+
+    @model_validator(mode="after")
+    def _validity(self) -> "_FixtureAuthorization":
+        if not self.issued_at < self.expires_at <= self.issued_at + timedelta(hours=24):
+            raise ValueError("fixture authorization validity must be positive and at most 24h")
+        return self
+
+
 class _RequestFile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     schema_version: Literal["p3-authority-request-file-v1"]
     execution_source: SourceIdentity
-    authorization: RunAuthorization
+    authorization: Annotated[RunAuthorization | _FixtureAuthorization, Field(discriminator="schema_version")]
 
 
 def validate_workflow_operation(value: str) -> str:
@@ -56,7 +79,7 @@ def validate_request(
     path: Path,
     expected_source: SourceIdentity | None,
     operation: str,
-) -> RunAuthorization:
+) -> RunAuthorization | _FixtureAuthorization:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -106,7 +129,7 @@ def validate_request(
 
 
 def build_alpha_campaign_payload(
-    authorization: RunAuthorization,
+    authorization: RunAuthorization | _FixtureAuthorization,
     source: SourceIdentity,
     workflow_operation: str,
 ) -> AlphaCampaignPayload:
@@ -115,6 +138,9 @@ def build_alpha_campaign_payload(
     operation = validate_workflow_operation(workflow_operation)
     if authorization.operation != operation:
         raise AuthorityHeld("HELD E_OPERATION: authorization operation differs")
+    fixture = isinstance(authorization, _FixtureAuthorization)
+    if fixture != (workflow_operation == "p3-integration-fixture-v1"):
+        raise AuthorityHeld("HELD E_AUTHORITY: fixture and research authorization scopes differ")
     raw = canonical_json_bytes(authorization)
     digest = hashlib.sha256(raw).hexdigest()
     authorization_ref = ArtifactRefV1(
@@ -126,7 +152,7 @@ def build_alpha_campaign_payload(
     return AlphaCampaignPayload(
         schema_version="p3-alpha-campaign-payload-v1",
         operation=AlphaCampaignOperation(operation),
-        manifest_ref=authorization.input_set_ref,
+        manifest_ref=(authorization.fixture_plan_ref if fixture else authorization.input_set_ref),
         authorization_ref=authorization_ref,
         expected_source=source,
         logical_trial_id=workflow_operation,

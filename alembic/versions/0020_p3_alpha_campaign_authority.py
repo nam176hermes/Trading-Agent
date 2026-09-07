@@ -21,7 +21,6 @@ def upgrade() -> None:
         r"""
         DO $p3_preflight$
         BEGIN
-          PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
           IF current_user <> 'trading_owner'
              OR session_user <> 'trading_owner'
              OR (SELECT version_num FROM public.alembic_version)
@@ -88,6 +87,7 @@ def upgrade() -> None:
           request_digest char(64) PRIMARY KEY,
           input_set_digest char(64) NOT NULL,
           source_commit_sha char(40) NOT NULL,
+          source_identity_text text NOT NULL,
           operation varchar(32) NOT NULL CHECK (
             operation IN ('BASELINES','REGISTER_FAMILY','OOS','HOLDOUT','PARITY','PHASE_EXIT')
           ),
@@ -97,6 +97,11 @@ def upgrade() -> None:
           CHECK (request_digest ~ '^[0-9a-f]{64}$'),
           CHECK (input_set_digest ~ '^[0-9a-f]{64}$'),
           CHECK (source_commit_sha ~ '^[0-9a-f]{40}$'),
+          CHECK (source_identity_text = public.canonical_domain_json_string(source_identity_text)),
+          CHECK ((source_identity_text::jsonb->>'commit_sha') IS NOT NULL
+            AND source_identity_text::jsonb->>'commit_sha' = source_commit_sha),
+          CHECK (request_digest = pg_catalog.encode(pg_catalog.sha256(
+            pg_catalog.convert_to(authorization_text, 'UTF8')), 'hex')),
           CHECK (authorization_text = public.canonical_domain_json_string(authorization_text))
         );
         CREATE FUNCTION public.reject_p3_accepted_mutation() RETURNS trigger
@@ -113,10 +118,7 @@ def upgrade() -> None:
         CREATE TRIGGER p3_campaign_authorizations_append_only
           BEFORE UPDATE OR DELETE OR TRUNCATE ON public.p3_campaign_authorizations
           FOR EACH STATEMENT EXECUTE FUNCTION public.reject_p3_accepted_mutation();
-        ALTER TABLE public.p3_alpha_heads OWNER TO trading_p3_owner;
-        ALTER TABLE public.p3_alpha_job_commits OWNER TO trading_p3_owner;
-        ALTER TABLE public.p3_alpha_projection OWNER TO trading_p3_owner;
-        ALTER TABLE public.p3_campaign_authorizations OWNER TO trading_p3_owner;
+        GRANT USAGE,CREATE ON SCHEMA public,job_plane TO trading_p3_owner;
 
         CREATE FUNCTION job_plane.api_enqueue_alpha_campaign(
           p_job_id text, p_payload_text text, p_payload_fingerprint text,
@@ -150,8 +152,10 @@ def upgrade() -> None:
              OR NOT EXISTS (
                SELECT 1 FROM public.p3_campaign_authorizations a
                WHERE a.request_digest = v_payload #>> '{authorization_ref,content_sha256}'
+                 AND a.input_set_digest = v_payload #>> '{manifest_ref,content_sha256}'
                  AND a.operation = v_payload ->> 'operation'
                  AND a.source_commit_sha = v_payload #>> '{expected_source,commit_sha}'
+                 AND a.source_identity_text = public.canonical_domain_json(v_payload->'expected_source')
                  AND a.expires_at > pg_catalog.clock_timestamp()
              ) THEN
             RAISE EXCEPTION 'P3 enqueue payload rejected' USING ERRCODE='22023';
@@ -396,8 +400,10 @@ def upgrade() -> None:
           END IF;
           IF NOT EXISTS(SELECT 1 FROM public.p3_campaign_authorizations a
             WHERE a.request_digest=v_job.payload#>>'{authorization_ref,content_sha256}'
+              AND a.input_set_digest=v_job.payload#>>'{manifest_ref,content_sha256}'
               AND a.operation=v_job.payload->>'operation'
               AND a.source_commit_sha=v_job.payload#>>'{expected_source,commit_sha}'
+              AND a.source_identity_text=public.canonical_domain_json(v_job.payload->'expected_source')
               AND a.expires_at>pg_catalog.clock_timestamp()) THEN
             RAISE EXCEPTION 'P3 source authorization expired' USING ERRCODE='P3D03';
           END IF;
@@ -509,7 +515,7 @@ def upgrade() -> None:
                  OR v_registry#>'{record,superseded_version}' IS DISTINCT FROM v_previous#>'{record,superseded_version}' THEN
                 RAISE EXCEPTION 'P3 registry predecessor or identity rejected' USING ERRCODE='P3D04';
               END IF;
-              IF NOT CASE v_previous#>>'{record,lifecycle_status}'
+              IF NOT (CASE v_previous#>>'{record,lifecycle_status}'
                 WHEN 'IDEA' THEN v_registry#>>'{record,lifecycle_status}' IN ('CANDIDATE','REJECTED','RETIRED')
                 WHEN 'CANDIDATE' THEN v_registry#>>'{record,lifecycle_status}' IN ('RESEARCHED','REJECTED','RETIRED')
                 WHEN 'RESEARCHED' THEN v_registry#>>'{record,lifecycle_status}' IN ('OOS_PASS','REJECTED','RETIRED')
@@ -517,7 +523,7 @@ def upgrade() -> None:
                 WHEN 'QUALIFIED' THEN v_registry#>>'{record,lifecycle_status}' IN ('PAPER_OBSERVED','RETIRED')
                 WHEN 'PAPER_OBSERVED' THEN v_registry#>>'{record,lifecycle_status}'='RETIRED'
                 WHEN 'REJECTED' THEN v_registry#>>'{record,lifecycle_status}'='RETIRED'
-                ELSE false END THEN
+                ELSE false END) THEN
                 RAISE EXCEPTION 'P3 illegal registry transition' USING ERRCODE='P3D04';
               END IF;
             END IF;
@@ -626,20 +632,117 @@ def upgrade() -> None:
         END;
         $promote_p3_lifecycle$;
 
-        ALTER FUNCTION job_plane.api_enqueue_alpha_campaign(text,text,text,text,text,integer,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.read_alpha_commit(text,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.api_cancel_alpha_campaign(text,text,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_start_alpha_campaign(text,text,text,text,bigint,bigint,bigint,text,text,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_control_alpha_campaign_lease(text,text,text,text,integer,text) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_finalize_alpha_campaign(text,text,text,text,text,text,text,text,text,text,integer,text,text,jsonb,text,text,boolean,text,jsonb) OWNER TO trading_p3_owner;
-        ALTER FUNCTION job_plane.worker_recover_expired_alpha_campaign(text,text,text,text,text,text,bigint,bigint,bigint,text,text,text,text,text,text) OWNER TO trading_p3_owner;
+        CREATE FUNCTION job_plane.worker_replace_alpha_fixture_process(
+          p_job_id text, p_attempt_id text, p_worker_id text, p_lease_token text,
+          p_previous_pid bigint, p_previous_group bigint, p_previous_ticks bigint,
+          p_previous_fingerprint text, p_pid bigint, p_group bigint,
+          p_ticks bigint, p_fingerprint text
+        ) RETURNS boolean
+        LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE
+        SET search_path = pg_catalog
+        AS $worker_replace_alpha_fixture_process$
+        DECLARE
+          current_job public.jobs%ROWTYPE;
+          current_attempt public.job_attempts%ROWTYPE;
+          checked_at timestamptz;
+        BEGIN
+          IF session_user <> 'trading_job_worker' THEN
+            RAISE EXCEPTION 'P3 fixture process authority rejected' USING ERRCODE='42501';
+          END IF;
+          IF p_job_id IS NULL OR p_attempt_id IS NULL OR p_worker_id IS NULL
+             OR p_lease_token IS NULL
+             OR p_job_id !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$'
+             OR p_attempt_id !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$'
+             OR p_worker_id !~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+             OR p_lease_token !~ '^[A-Za-z0-9_-]{16,128}$'
+             OR p_previous_pid IS NULL OR p_previous_pid <= 0
+             OR p_previous_group IS NULL OR p_previous_group <= 0
+             OR p_previous_ticks IS NULL OR p_previous_ticks < 0
+             OR p_previous_fingerprint IS NULL OR p_previous_fingerprint !~ '^[0-9a-f]{64}$'
+             OR p_pid IS NULL OR p_pid <= 0
+             OR p_group IS NULL OR p_group <= 0
+             OR p_ticks IS NULL OR p_ticks < 0
+             OR p_fingerprint IS NULL OR p_fingerprint !~ '^[0-9a-f]{64}$'
+             OR (p_pid,p_group,p_ticks,p_fingerprint) =
+                (p_previous_pid,p_previous_group,p_previous_ticks,p_previous_fingerprint) THEN
+            RAISE EXCEPTION 'P3 fixture process identity rejected' USING ERRCODE='22023';
+          END IF;
+          SELECT * INTO current_job FROM public.jobs
+            WHERE job_id=p_job_id FOR UPDATE;
+          IF NOT FOUND THEN RETURN false; END IF;
+          SELECT * INTO current_attempt FROM public.job_attempts
+            WHERE job_id=p_job_id AND attempt_id=p_attempt_id FOR UPDATE;
+          IF NOT FOUND THEN RETURN false; END IF;
+          checked_at := clock_timestamp();
+          IF current_job.job_type <> 'ALPHA_CAMPAIGN'
+             OR current_job.payload->>'operation' IS DISTINCT FROM 'PARITY'
+             OR current_job.payload->>'logical_trial_id' IS DISTINCT FROM 'p3-integration-fixture-v1'
+             OR current_job.state <> 'RUNNING' OR current_attempt.outcome <> 'RUNNING'
+             OR current_job.lease_owner IS DISTINCT FROM p_worker_id
+             OR current_job.lease_token IS DISTINCT FROM p_lease_token
+             OR current_attempt.worker_id IS DISTINCT FROM p_worker_id
+             OR current_attempt.lease_token IS DISTINCT FROM p_lease_token
+             OR current_attempt.attempt_number <> current_job.attempt_count
+             OR current_job.lease_expires_at IS NULL OR current_job.lease_expires_at <= checked_at
+             OR current_attempt.lease_expires_at IS NULL OR current_attempt.lease_expires_at <= checked_at
+             OR current_attempt.child_pid IS DISTINCT FROM p_previous_pid
+             OR current_attempt.process_group_id IS DISTINCT FROM p_previous_group
+             OR current_attempt.process_start_ticks IS DISTINCT FROM p_previous_ticks
+             OR current_attempt.command_fingerprint IS DISTINCT FROM p_previous_fingerprint THEN
+            RETURN false;
+          END IF;
+          -- Like a heartbeat, this updates recovery state without a job state transition.
+          UPDATE public.job_attempts SET child_pid=p_pid, process_group_id=p_group,
+            process_start_ticks=p_ticks, command_fingerprint=p_fingerprint
+            WHERE job_id=p_job_id AND attempt_id=p_attempt_id;
+          RETURN true;
+        END;
+        $worker_replace_alpha_fixture_process$;
+        REVOKE ALL PRIVILEGES ON FUNCTION job_plane.worker_replace_alpha_fixture_process(text,text,text,text,bigint,bigint,bigint,text,bigint,bigint,bigint,text)
+          FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
+        GRANT EXECUTE ON FUNCTION job_plane.worker_replace_alpha_fixture_process(text,text,text,text,bigint,bigint,bigint,text,bigint,bigint,bigint,text) TO trading_job_worker;
+
+
+        CREATE FUNCTION job_plane.alpha_worker_job_id_allowed(p_job_id text)
+          RETURNS boolean LANGUAGE sql SECURITY DEFINER STABLE PARALLEL SAFE
+          SET search_path = pg_catalog
+          AS $alpha_worker_job_id_allowed$
+            SELECT session_user='trading_job_worker' AND EXISTS (
+              SELECT 1 FROM public.jobs j
+              WHERE j.job_id=p_job_id AND j.job_type='ALPHA_CAMPAIGN'
+            )
+          $alpha_worker_job_id_allowed$;
+        REVOKE ALL PRIVILEGES ON FUNCTION job_plane.alpha_worker_job_id_allowed(text)
+          FROM PUBLIC,trading_jobs,trading_migrator,trading_reader,trading_job_api,trading_job_worker,trading_job_scheduler;
+        GRANT EXECUTE ON FUNCTION job_plane.alpha_worker_job_id_allowed(text) TO trading_job_worker;
+        CREATE POLICY p3_worker_artifacts_insert ON public.job_artifacts
+          FOR INSERT TO trading_job_worker
+          WITH CHECK (job_plane.alpha_worker_job_id_allowed(job_id));
+        CREATE POLICY p3_worker_heartbeats_insert ON public.worker_heartbeats
+          FOR INSERT TO trading_job_worker
+          WITH CHECK (job_plane.alpha_worker_job_id_allowed(current_job_id));
+        CREATE POLICY p3_worker_heartbeats_update ON public.worker_heartbeats
+          FOR UPDATE TO trading_job_worker
+          USING (current_job_id IS NULL OR job_plane.alpha_worker_job_id_allowed(current_job_id))
+          WITH CHECK (job_plane.alpha_worker_job_id_allowed(current_job_id));
 
         GRANT SELECT,INSERT,UPDATE ON public.jobs,public.job_attempts TO trading_p3_owner;
         GRANT SELECT,INSERT ON public.job_events TO trading_p3_owner;
+        CREATE POLICY p3_owner_jobs ON public.jobs TO trading_p3_owner
+          USING (job_type='ALPHA_CAMPAIGN') WITH CHECK (job_type='ALPHA_CAMPAIGN');
+        CREATE POLICY p3_owner_attempts ON public.job_attempts TO trading_p3_owner
+          USING (EXISTS (SELECT 1 FROM public.jobs j
+            WHERE j.job_id=job_attempts.job_id AND j.job_type='ALPHA_CAMPAIGN'))
+          WITH CHECK (EXISTS (SELECT 1 FROM public.jobs j
+            WHERE j.job_id=job_attempts.job_id AND j.job_type='ALPHA_CAMPAIGN'));
+        CREATE POLICY p3_owner_events ON public.job_events TO trading_p3_owner
+          USING (EXISTS (SELECT 1 FROM public.jobs j
+            WHERE j.job_id=job_events.job_id AND j.job_type='ALPHA_CAMPAIGN'))
+          WITH CHECK (EXISTS (SELECT 1 FROM public.jobs j
+            WHERE j.job_id=job_events.job_id AND j.job_type='ALPHA_CAMPAIGN'));
         GRANT SELECT,INSERT ON public.domain_events,public.event_append_idempotency,public.event_outbox TO trading_p3_owner;
         GRANT EXECUTE ON FUNCTION public.append_domain_event(uuid,uuid,bigint,text,text,text,text) TO trading_p3_owner;
+        GRANT EXECUTE ON FUNCTION public.canonical_domain_json(jsonb),public.canonical_domain_json_string(text) TO trading_p3_owner;
 
         REVOKE ALL PRIVILEGES ON TABLE public.p3_alpha_heads,
           public.p3_alpha_job_commits,public.p3_alpha_projection,
@@ -679,6 +782,22 @@ def upgrade() -> None:
         GRANT EXECUTE ON FUNCTION job_plane.worker_control_alpha_campaign_lease(text,text,text,text,integer,text) TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION job_plane.worker_finalize_alpha_campaign(text,text,text,text,text,text,text,text,text,text,integer,text,text,jsonb,text,text,boolean,text,jsonb) TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION job_plane.worker_recover_expired_alpha_campaign(text,text,text,text,text,text,bigint,bigint,bigint,text,text,text,text,text,text) TO trading_job_worker;
+        ALTER TABLE public.p3_alpha_heads OWNER TO trading_p3_owner;
+        ALTER TABLE public.p3_alpha_job_commits OWNER TO trading_p3_owner;
+        ALTER TABLE public.p3_alpha_projection OWNER TO trading_p3_owner;
+        ALTER TABLE public.p3_campaign_authorizations OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_replace_alpha_fixture_process(text,text,text,text,bigint,bigint,bigint,text,bigint,bigint,bigint,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.api_enqueue_alpha_campaign(text,text,text,text,text,integer,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.read_alpha_commit(text,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.api_cancel_alpha_campaign(text,text,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_start_alpha_campaign(text,text,text,text,bigint,bigint,bigint,text,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_control_alpha_campaign_lease(text,text,text,text,integer,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_finalize_alpha_campaign(text,text,text,text,text,text,text,text,text,text,integer,text,text,jsonb,text,text,boolean,text,jsonb) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.worker_recover_expired_alpha_campaign(text,text,text,text,text,text,bigint,bigint,bigint,text,text,text,text,text,text) OWNER TO trading_p3_owner;
+        ALTER FUNCTION job_plane.alpha_worker_job_id_allowed(text) OWNER TO trading_p3_owner;
+        REVOKE CREATE ON SCHEMA public,job_plane FROM trading_p3_owner;
         """
     )
 

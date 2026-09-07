@@ -235,6 +235,7 @@ class JobWorker:
         self._worker_heartbeat("BUSY", claimed)
         started_at = self._clock()
         started = False
+        active_identity = None
 
         try:
             safety_preflight()
@@ -362,7 +363,7 @@ class JobWorker:
             return True
 
         def heartbeat(identity) -> HeartbeatDecision | HeartbeatInstruction:
-            nonlocal started
+            nonlocal started, active_identity
             # Every lease/start heartbeat is conditional on a newly opened,
             # still-fresh snapshot.  Do not record RUNNING first and inspect
             # safety afterward.
@@ -383,6 +384,17 @@ class JobWorker:
                         return HeartbeatDecision.CANCEL
                     return HeartbeatDecision.STALE_LEASE
                 started = True
+                active_identity = identity
+            elif (
+                self._p3_profile
+                and claimed.payload.logical_trial_id == "p3-integration-fixture-v1"
+                and identity != active_identity
+            ):
+                if not self._repository.replace_alpha_fixture_process(
+                    claimed, active_identity, identity, trace_id,
+                ):
+                    return HeartbeatDecision.STALE_LEASE
+                active_identity = identity
             control = WorkerControl(self._repository_call("heartbeat_control",
                 claimed.job_id, claimed.attempt_id, self._worker_id,
                 claimed.lease_token, self._lease_seconds,

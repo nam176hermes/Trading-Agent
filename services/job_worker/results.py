@@ -205,6 +205,10 @@ class ResultValidator:
             raise ResultValidationError("P3 result validator differs from fixed operation")
         raw = self._read_p3_stream(job, stream)
         result = validate_p3_result_bytes(validator_id, raw)
+        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
+
+        if isinstance(result, IntegrationReceipt) and result.source != job.payload.expected_source:
+            raise ResultValidationError("P3 integration receipt source differs from job")
         from services.job_store.p3_sql import PublicationProposal
         if isinstance(result, PublicationProposal):
             if result.request.job_id != getattr(job, "job_id", None):
