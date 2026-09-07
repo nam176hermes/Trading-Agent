@@ -33,6 +33,7 @@ def run_replays(
 ) -> ReplayProof:
     receipts = []
     outputs = []
+    execution_identity = None
     for replicate in ("R1", "R2", "R3"):
         directory = output_root / replicate.lower()
         directory.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -40,11 +41,22 @@ def run_replays(
             manifest_ref, replicate=replicate,
             logical_trial_id=logical_trial_id, output_dir=directory,
         ))
-        if receipt.replicate != replicate or receipt.manifest_digest != manifest_ref.content_sha256:
+        if (
+            receipt.replicate != replicate
+            or receipt.manifest_digest != manifest_ref.content_sha256
+            or receipt.logical_trial_id != logical_trial_id
+        ):
             raise ReplayError("execution receipt does not bind its replay request")
+        identity = (receipt.source, receipt.environment_ref, receipt.sandbox_policy_digest)
+        if execution_identity is not None and identity != execution_identity:
+            raise ReplayError("execution receipts differ in source, environment or sandbox policy")
+        execution_identity = identity
         value = executor.read_bytes(receipt.result_ref)
-        if hashlib.sha256(value).hexdigest() != receipt.result_ref.content_sha256:
-            raise ReplayError("parent read-back result digest is invalid")
+        if (
+            len(value) != receipt.result_ref.size_bytes
+            or hashlib.sha256(value).hexdigest() != receipt.result_ref.content_sha256
+        ):
+            raise ReplayError("parent read-back result size or digest is invalid")
         outputs.append(value)
         receipts.append(executor.put_bytes(canonical_json_bytes(receipt), media_type="application/json"))
     if len(set(outputs)) != 1:
