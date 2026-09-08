@@ -224,25 +224,49 @@ class ResultValidator:
             },
         )
 
-    def _read_p3_stream(self, job: object, stream: ArtifactMetadata) -> bytes:
-        expected = f"{getattr(job, 'job_id', '')}/{getattr(job, 'attempt_id', '')}/stdout.log"
+    def seal_integration_receipt(self, job: object, receipt: object) -> ValidatedResult:
+        """Seal a trusted-parent fixture result without claiming a child emitted it."""
+        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
+        from packages.engine_contracts import canonical_json_bytes
+        from packages.job_contracts import JobType
+        from .command_registry import p3_command_spec
+
+        if (
+            getattr(job, "job_type", None) is not JobType.ALPHA_CAMPAIGN
+            or job.payload.logical_trial_id != "p3-integration-fixture-v1"
+            or type(receipt) is not IntegrationReceipt
+            or receipt.source != job.payload.expected_source
+            or receipt.workflow_run_id < 1 or receipt.workflow_attempt < 1
+        ):
+            raise ResultValidationError("parent integration receipt authority differs from job")
+        receipt = IntegrationReceipt.model_validate(receipt)
+        validator_id = p3_command_spec(job.payload).result_validator_id
+        return self._seal(job, canonical_json_bytes(receipt), validator_id, {
+            "operation": job.payload.logical_trial_id, "result_digest": receipt.digest,
+            "producer": "p3-integration-parent",
+        })
+
+    def _read_p3_stream(self, job: object, stream: ArtifactMetadata, *, stream_name: str = "stdout") -> bytes:
+        if stream_name not in {"stdout", "stderr"}:
+            raise ResultValidationError("P3 stream name is invalid")
+        expected = f"{getattr(job, 'job_id', '')}/{getattr(job, 'attempt_id', '')}/{stream_name}.log"
         if (
             not isinstance(stream, ArtifactMetadata)
-            or stream.artifact_type != "stdout"
+            or stream.artifact_type != stream_name
             or stream.relative_ref != expected
             or stream.truncated
             or stream.validator_id != "bounded-stream-v1"
-            or not 1 <= stream.size_bytes <= MAX_STREAM_BYTES
+            or not (0 if stream_name == "stderr" else 1) <= stream.size_bytes <= MAX_STREAM_BYTES
             or _SHA256.fullmatch(stream.sha256) is None
         ):
-            raise ResultValidationError("P3 stdout artifact identity is invalid")
+            raise ResultValidationError("P3 stream artifact identity is invalid")
         root_fd = _open_directory_chain(self._artifact_root)
         job_fd = attempt_fd = descriptor = -1
         try:
             job_fd = os.open(str(getattr(job, "job_id")), _directory_flags(), dir_fd=root_fd)
             attempt_fd = os.open(str(getattr(job, "attempt_id")), _directory_flags(), dir_fd=job_fd)
             descriptor = os.open(
-                "stdout.log",
+                f"{stream_name}.log",
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
                 dir_fd=attempt_fd,
             )
@@ -254,15 +278,15 @@ class ResultValidator:
                 or info.st_nlink != 1
                 or info.st_size != stream.size_bytes
             ):
-                raise ResultValidationError("P3 stdout artifact changed")
+                raise ResultValidationError("P3 stream artifact changed")
             raw = os.read(descriptor, stream.size_bytes + 1)
             if len(raw) != stream.size_bytes or not secrets.compare_digest(
                 hashlib.sha256(raw).hexdigest(), stream.sha256
             ):
-                raise ResultValidationError("P3 stdout artifact digest differs")
+                raise ResultValidationError("P3 stream artifact digest differs")
             return raw
         except OSError as exc:
-            raise ResultValidationError("P3 stdout artifact is unavailable") from exc
+            raise ResultValidationError("P3 stream artifact is unavailable") from exc
         finally:
             _close_descriptors(descriptor, attempt_fd, job_fd, root_fd)
 

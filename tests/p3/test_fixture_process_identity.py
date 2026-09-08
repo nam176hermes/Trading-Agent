@@ -15,7 +15,7 @@ from tests.jobs.test_repository_transition_capabilities import _Connection, _wor
 
 
 @pytest.mark.parametrize("accepted", [False, True])
-def test_fixture_rebinds_each_child_before_extending_its_lease(accepted):
+def test_fixture_rebinds_each_child_before_extending_its_lease(accepted, monkeypatch):
     payload = _alpha_request().payload.model_copy(update={
         "operation": "PARITY", "logical_trial_id": "p3-integration-fixture-v1",
     })
@@ -41,10 +41,20 @@ def test_fixture_rebinds_each_child_before_extending_its_lease(accepted):
             raise ResultValidationError("synthetic test has no qualification receipt")
 
     repository, runner = Repository(claimed), Runner()
+    from services.job_worker.p3_integration import P3IntegrationFixtureExecutor, IntegrationExecutionError
+    executor = object.__new__(P3IntegrationFixtureExecutor)
+
+    def execute(job, *, heartbeat, **kwargs):
+        actual = runner.run(None,None,None,heartbeat)
+        raise IntegrationExecutionError("synthetic fixture refusal",outcome=actual)
+
+    monkeypatch.setattr(executor,"run",execute)
+
     worker = JobWorker(
         repository, runner, Validator(), worker_id="worker-1", code_commit="e" * 40,
         environment=object(), safety_preflight=lambda: safety_evidence("4" * 64),
         prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=object(),
+        p3_fixture_executor=executor,
     )
     worker.run_once()
     assert [c for c in repository.calls if c[0] == "replace"] == [("replace", first, second)]

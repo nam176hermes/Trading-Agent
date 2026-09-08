@@ -248,10 +248,12 @@ class WorkerRepository:
                 )
 
     def claim_next_alpha_campaign(
-        self, worker_id: str, lease_seconds: int, trace_id: str
+        self, worker_id: str, lease_seconds: int, trace_id: str, *, fixture_only: bool = False
     ) -> ClaimedJob | None:
         """Claim only from the explicit disposable P3 capability."""
 
+        if type(fixture_only) is not bool:
+            raise ValueError("fixture_only must be boolean")
         self._validate_worker(worker_id)
         self._validate_lease_seconds(lease_seconds)
         self._validate_trace(trace_id)
@@ -264,12 +266,12 @@ class WorkerRepository:
                     SELECT job_id,job_type,payload,attempt_number,max_attempts,
                            lease_expires_at
                     FROM job_plane.worker_claim_alpha_campaign(
-                        %s,%s,%s,%s,%s,%s
+                        %s,%s,%s,%s,%s,%s,%s
                     )
                     """,
                     (
                         attempt_id, worker_id, lease_token, lease_seconds,
-                        trace_id, self._new_id("event"),
+                        trace_id, self._new_id("event"), fixture_only,
                     ),
                 ).fetchone()
         if row is None:
@@ -710,9 +712,11 @@ class WorkerRepository:
             )
         return outcome
 
-    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery") -> tuple[tuple[str, str], ...]:
+    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool = False) -> tuple[tuple[str, str], ...]:
         """Recover expired attempts only after process identity is resolved."""
 
+        if type(alpha_campaign) is not bool or type(fixture_only) is not bool or (fixture_only and not alpha_campaign):
+            raise ValueError("fixture recovery requires the explicit alpha lane")
         run_trace = trace_id or f"recovery:{uuid4().hex}"
         self._validate_trace(run_trace)
         self._validate_worker(recovery_id)
@@ -736,7 +740,8 @@ class WorkerRepository:
                         AND a.outcome IN ('CLAIMED','RUNNING'))
                   )
                 ORDER BY j.lease_expires_at, j.job_id
-                """
+                """.replace("j.job_type IN ('SNAPSHOT','BACKTEST')",
+                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else "")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')")
             ).fetchall()
         outcomes: list[tuple[str, str]] = []
         for candidate in candidates:
@@ -755,7 +760,7 @@ class WorkerRepository:
             except (OSError, PermissionError, RuntimeError, ValueError):
                 observation = "UNVERIFIABLE"
             reason = self._recover_observed_candidate(
-                candidate, observation, run_trace, recovery_id
+                candidate, observation, run_trace, recovery_id, alpha_campaign=alpha_campaign
             )
             outcomes.append((candidate["job_id"], reason))
         return tuple(outcomes)
@@ -771,7 +776,7 @@ class WorkerRepository:
 
     def _recover_observed_candidate(
         self, candidate: dict[str, Any], observation: str,
-        trace_id: str, recovery_id: str,
+        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False,
     ) -> str:
         """Lock and re-read the full fence after the potentially slow procfs read."""
 
@@ -783,7 +788,8 @@ class WorkerRepository:
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s
                     ) AS outcome
-                    """,
+                    """.replace("worker_recover_expired_paper",
+                        "worker_recover_expired_alpha_campaign" if alpha_campaign else "worker_recover_expired_paper"),
                     (
                         candidate["job_id"],
                         candidate["attempt_id"],

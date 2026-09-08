@@ -159,6 +159,24 @@ def build_alpha_campaign_payload(
     )
 
 
+def stage_alpha_campaign_payload(store, authorization, source, workflow_operation, manifest_bytes):
+    """Publish exact approved input bytes to CAS and read them back before enqueue."""
+    payload = build_alpha_campaign_payload(authorization, source, workflow_operation)
+    reference = payload.manifest_ref
+    if (len(manifest_bytes) != reference.size_bytes
+        or hashlib.sha256(manifest_bytes).hexdigest() != reference.content_sha256):
+        raise AuthorityHeld("HELD E_MANIFEST: staged manifest differs from approval")
+    store.read_bytes(authorization.review_ref)
+    manifest_ref = store.put_bytes(manifest_bytes,media_type=reference.media_type)
+    raw = canonical_json_bytes(authorization)
+    authorization_ref = store.put_bytes(raw,media_type="application/json")
+    if (manifest_ref != reference or authorization_ref != payload.authorization_ref
+        or store.read_bytes(reference) != manifest_bytes
+        or store.read_bytes(authorization_ref) != raw):
+        raise AuthorityHeld("HELD E_CAS: approved inputs failed read-back verification")
+    return payload
+
+
 __all__ = [
     "AuthorityHeld", "WORKFLOW_OPERATIONS", "build_alpha_campaign_payload",
     "validate_request", "validate_workflow_operation",

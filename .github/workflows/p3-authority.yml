@@ -36,6 +36,9 @@ jobs:
         env:
           P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
           P3_JOB_API_TOKEN_FILE: ${{ secrets.P3_JOB_API_TOKEN_FILE }}
+          P3_ARTIFACT_ROOT: ${{ secrets.P3_ARTIFACT_ROOT }}
+          P3_MANIFEST_FILE: ${{ secrets.P3_MANIFEST_FILE }}
+          P3_REVIEW_FILE: ${{ secrets.P3_REVIEW_FILE }}
           P3_OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
@@ -46,7 +49,7 @@ jobs:
             p3-integration-fixture-v1|p3-baselines-v1|p3-register-family-v1|p3-oos-a0-v1|p3-oos-a1-v1|p3-oos-a2-v1|p3-oos-a3-v1|p3-select-primary-v1|p3-holdout-primary-v1|p3-native-parity-v1|p3-phase-exit-v1) ;;
             *) exit 64 ;;
           esac
-          uv run --frozen python scripts/p3_authority.py dispatch --request-file "$P3_AUTHORITY_REQUEST_FILE" --token-file "$P3_JOB_API_TOKEN_FILE" --output-dir "$RUNNER_TEMP/p3-preflight" --operation "$P3_OPERATION"
+          uv run --frozen python scripts/p3_authority.py dispatch --request-file "$P3_AUTHORITY_REQUEST_FILE" --token-file "$P3_JOB_API_TOKEN_FILE" --output-dir "$RUNNER_TEMP/p3-preflight" --operation "$P3_OPERATION" --artifact-root "$P3_ARTIFACT_ROOT" --manifest-file "$P3_MANIFEST_FILE" --review-file "$P3_REVIEW_FILE"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}

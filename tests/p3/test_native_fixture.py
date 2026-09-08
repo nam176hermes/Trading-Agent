@@ -17,7 +17,7 @@ from tests.nautilus_runtime_contracts.test_result import _batch, _p1_request
 from tests.p3.test_job_api import _alpha_request
 
 
-@pytest.mark.parametrize("fault", [None, "truncated", "tampered", "malformed", "duplicate_json", "lineage", "divergence"])
+@pytest.mark.parametrize("fault", [None, "truncated", "tampered", "malformed", "duplicate_json", "lineage", "divergence", "second_spawn"])
 def test_native_fixture_uses_three_pinned_spawns_and_distinct_artifacts(tmp_path, monkeypatch, fault):
     from services.job_worker import p3_fixture_native as native
 
@@ -38,6 +38,8 @@ def test_native_fixture_uses_three_pinned_spawns_and_distinct_artifacts(tmp_path
 
         def run(self, prepare, environment, timeout, heartbeat, **kwargs):
             request = prepare()
+            if fault == "second_spawn" and len(requests) == 2:
+                raise RuntimeError("second spawn refused")
             assert environment is None and timeout is None
             _, original = _batch()
             decoded = tuple(_decode_event(event) for event in original)
@@ -80,12 +82,15 @@ def test_native_fixture_uses_three_pinned_spawns_and_distinct_artifacts(tmp_path
 
     monkeypatch.setattr(native, "ProcessRunner", Runner)
     if fault:
-        with pytest.raises((RuntimeError, ValueError)):
+        with pytest.raises((RuntimeError, ValueError)) as caught:
             native.run_native_fixture(
                 job, _p1_request().payload, provider, artifact_root=tmp_path / "replicas",
                 heartbeat=lambda _: None, preflight=lambda: safety_evidence("4" * 64),
             )
-        assert len(requests) == (2 if fault == "divergence" else 1)
+        assert len(requests) == (2 if fault in {"divergence", "second_spawn"} else 1)
+        if fault == "second_spawn":
+            assert len(caught.value.completed) == 1
+            assert caught.value.outcome is caught.value.completed[0].outcome
         return
     results = native.run_native_fixture(
         job, _p1_request().payload, provider, artifact_root=tmp_path / "replicas",
