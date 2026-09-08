@@ -23,6 +23,20 @@ def test_alpha_campaign_claim_is_separate_from_default_worker_profile() -> None:
     assert hasattr(WorkerRepository,"claim_next_alpha_campaign")
 
 
+def test_fixture_claim_requires_a_boolean_lane_selector() -> None:
+    with pytest.raises(ValueError, match="fixture_only must be boolean"):
+        _worker(_Connection()).claim_next_alpha_campaign(
+            "worker-p3", 30, "p3:claim", fixture_only=1
+        )
+
+
+def test_fixture_recovery_requires_the_alpha_campaign_lane() -> None:
+    with pytest.raises(ValueError, match="fixture recovery requires"):
+        _worker(_Connection()).recover_expired_leases(
+            object(), alpha_campaign=False, fixture_only=True
+        )
+
+
 @pytest.mark.parametrize("has_claim", [False, True])
 def test_alpha_campaign_claim_uses_only_the_scoped_capability(
     has_claim: bool,
