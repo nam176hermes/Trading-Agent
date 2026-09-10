@@ -7,7 +7,7 @@ from services.job_worker import p3_fixture_sql
 from services.job_worker.p3_operation_fixture import REQUIRED_OPERATION_CHECKS
 
 
-@pytest.mark.host_coupled
+@pytest.mark.runtime_postgres
 @pytest.mark.skipif(os.environ.get('P3_OPERATION_SQL_SOURCE_TEST') != '1',
                    reason='explicit disposable SQL source selection required')
 def test_operation_authority_in_disposable_postgres():

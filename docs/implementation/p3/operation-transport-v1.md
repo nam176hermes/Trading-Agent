@@ -142,3 +142,16 @@ run was interrupted for the review correction after 375 passes and one skip;
 it is not a completed gate.
 The campaign entrypoint still implements baseline execution only; registration,
 candidate outcome assembly and the protected official worker remain incomplete.
+
+Foundation run 34482129004 rejected the newly introduced SQL test because its
+portable collection exclusion lacked a managed record. The test is now marked
+`runtime_postgres` and has an exact security-critical managed deselection,
+owned by job-plane and reviewed through 2026-10-31. A subprocess regression
+observes real collection, verifies no SQL test executes in the portable lane,
+and checks the resulting record against canonical test governance. Its prior
+host marker and missing managed record failed this test before correction.
+
+This changes no historical T-G03 inventory or receipt and does not grant its
+older PostgreSQL GREEN authority to P3. Explicit P3 source-test opt-in remains
+required. Protected T-P3-060 still requires its separate reviewed fixture,
+workflow/Job API/worker path, real SQL/native runs and cleanup evidence.
