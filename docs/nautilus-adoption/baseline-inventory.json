@@ -15,9 +15,9 @@
       "component": "core-control-plane",
       "runtime": "Python >=3.11,<3.12",
       "manifest": "pyproject.toml",
-      "manifest_sha256": "d1b0bafbd78465a5c0d8468876a8390c702fe221fd240dc9ac4578148bb02f6d",
+      "manifest_sha256": "dec0ab937874a667a99eadf898a2b4c4200daa5f84ba5ece1b08692c5e04f308",
       "lockfile": "uv.lock",
-      "lockfile_sha256": "82bafbf69fa3aea14d2beae426136f7c8b983c615faef1ba21f448d42f6af258"
+      "lockfile_sha256": "7ea3745e21108f73b232485a159e643f6f68d3deec865c308b566bb7579ef87c"
     },
     {
       "component": "legacy-research-backend",
@@ -31,9 +31,9 @@
       "component": "dashboard",
       "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
       "manifest": "apps/dashboard/package.json",
-      "manifest_sha256": "39b60be65dd9d85d3095898c4de6a59e3a95ca6120bda9cc410735d9a3f7a7db",
+      "manifest_sha256": "7457c1c230ee5ebb37cb558beafe1ac0bb1c5dbdd6a1b11dc34e0ee34ae6a254",
       "lockfile": "apps/dashboard/package-lock.json",
-      "lockfile_sha256": "7648edbd858b45d5bf3570f6fe4128a59fd92f9a36214e01235a93bd37947c56"
+      "lockfile_sha256": "0c585c186852cccfadb537f94ef11926a82108a0ef7f52bd24d27dbd575ddc4d"
     },
     {
       "component": "sealed-paper-release",
@@ -217,22 +217,34 @@
   "portfolio_and_pnl_writers": [
     {
       "path": "legacy/research-backend/paper_trader.py",
-      "writers": ["save_portfolio", "_append_order", "_append_trade"],
+      "writers": [
+        "save_portfolio",
+        "_append_order",
+        "_append_trade"
+      ],
       "state": "JSON portfolio plus JSONL orders/trades; updates cash, positions, pnl and daily_pnl"
     },
     {
       "path": "legacy/research-backend/backtest_engine.py",
-      "writers": ["Portfolio", "Broker.process_orders"],
+      "writers": [
+        "Portfolio",
+        "Broker.process_orders"
+      ],
       "state": "in-memory backtest portfolio and trade/PnL metrics"
     },
     {
       "path": "legacy/research-backend/alpha_backtest.py",
-      "writers": ["Broker.place_order", "Broker.process_orders"],
+      "writers": [
+        "Broker.place_order",
+        "Broker.process_orders"
+      ],
       "state": "separate backtest portfolio and trade/PnL metrics"
     },
     {
       "path": "legacy/research-backend/portfolio_manager.py",
-      "writers": ["PortfolioManager"],
+      "writers": [
+        "PortfolioManager"
+      ],
       "state": "legacy portfolio management and persisted reporting inputs"
     }
   ],
@@ -263,5 +275,9 @@
     "Legacy execution, credential, mode and OCO paths must remain ARCHIVE_ONLY and non-authoritative during migration.",
     "Nautilus event ingestion must converge on the typed event ledger and job authority rather than LocalEventBus or legacy JSON files.",
     "No listed source-code pin, frozen historical authority, stale v2 document, or historical provisioning pin asserts deployed database state or authorizes an activation, migration, or revision change."
-  ]
+  ],
+  "dependency_inventory_refresh": {
+    "source_commit": "bb6c4a6f22cac3c212e31d1712428cb69a000033",
+    "reason": "PR 56 reviewed security updates: Next 16.3.4, Sharp 0.35.4, httpx2/httpcore2 2.12.0 and js-yaml 4.3.2. Historical capture and migration authority are unchanged."
+  }
 }

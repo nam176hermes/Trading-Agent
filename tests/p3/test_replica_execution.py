@@ -201,6 +201,11 @@ def test_parent_retains_child_artifacts_after_real_portable_child_exit(
     source = inputs.source
     if mutation == "wrong_source":
         source = source.model_copy(update={"commit_sha": "9" * 40})
+    # Portable child-I/O test replaces host isolation; missing-host behavior is
+    # separately exercised by test_sandbox.py. This is never qualification.
+    monkeypatch.setattr(
+        "packages.alpha_lifecycle.sandbox.require_official_sandbox", lambda path: path
+    )
     executor = BubblewrapExecutor(
         store=store,
         store_root=tmp_path / "inputs",
