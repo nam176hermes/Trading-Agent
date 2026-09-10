@@ -248,9 +248,9 @@ class WorkerRepository:
                 )
 
     def claim_next_alpha_campaign(
-        self, worker_id: str, lease_seconds: int, trace_id: str, *, fixture_only: bool = False
+        self, worker_id: str, lease_seconds: int, trace_id: str, *, fixture_only: bool
     ) -> ClaimedJob | None:
-        """Claim only from the explicit disposable P3 capability."""
+        """Claim the explicit fixture or official P3 lane."""
 
         if type(fixture_only) is not bool:
             raise ValueError("fixture_only must be boolean")
@@ -712,10 +712,10 @@ class WorkerRepository:
             )
         return outcome
 
-    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool = False) -> tuple[tuple[str, str], ...]:
+    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None) -> tuple[tuple[str, str], ...]:
         """Recover expired attempts only after process identity is resolved."""
 
-        if type(alpha_campaign) is not bool or type(fixture_only) is not bool or (fixture_only and not alpha_campaign):
+        if type(alpha_campaign) is not bool or (alpha_campaign and type(fixture_only) is not bool) or (not alpha_campaign and fixture_only is not None and (type(fixture_only) is not bool or fixture_only)):
             raise ValueError("fixture recovery requires the explicit alpha lane")
         run_trace = trace_id or f"recovery:{uuid4().hex}"
         self._validate_trace(run_trace)
@@ -741,7 +741,7 @@ class WorkerRepository:
                   )
                 ORDER BY j.lease_expires_at, j.job_id
                 """.replace("j.job_type IN ('SNAPSHOT','BACKTEST')",
-                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else "")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')")
+                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else " AND job_plane.p3_worker_lane_matches(j.payload,false)")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')")
             ).fetchall()
         outcomes: list[tuple[str, str]] = []
         for candidate in candidates:
@@ -760,7 +760,7 @@ class WorkerRepository:
             except (OSError, PermissionError, RuntimeError, ValueError):
                 observation = "UNVERIFIABLE"
             reason = self._recover_observed_candidate(
-                candidate, observation, run_trace, recovery_id, alpha_campaign=alpha_campaign
+                candidate, observation, run_trace, recovery_id, alpha_campaign=alpha_campaign, fixture_only=fixture_only
             )
             outcomes.append((candidate["job_id"], reason))
         return tuple(outcomes)
@@ -776,20 +776,19 @@ class WorkerRepository:
 
     def _recover_observed_candidate(
         self, candidate: dict[str, Any], observation: str,
-        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False,
+        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False, fixture_only: bool | None = None,
     ) -> str:
         """Lock and re-read the full fence after the potentially slow procfs read."""
 
+        if alpha_campaign and type(fixture_only) is not bool:
+            raise ValueError("P3 recovery requires an explicit lane")
+        statement = "SELECT job_plane.worker_recover_expired_paper(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS outcome"
+        if alpha_campaign:
+            statement = statement.replace('worker_recover_expired_paper','worker_recover_expired_alpha_campaign').replace(') AS outcome',',%s) AS outcome')
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    """
-                    SELECT job_plane.worker_recover_expired_paper(
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s
-                    ) AS outcome
-                    """.replace("worker_recover_expired_paper",
-                        "worker_recover_expired_alpha_campaign" if alpha_campaign else "worker_recover_expired_paper"),
+                    statement,
                     (
                         candidate["job_id"],
                         candidate["attempt_id"],
@@ -806,7 +805,7 @@ class WorkerRepository:
                         recovery_id,
                         self._new_id("event"),
                         self._new_id("event"),
-                    ),
+                    ) + ((fixture_only,) if alpha_campaign else ()),
                 ).fetchone()
         if row is None or not isinstance(row["outcome"], str):
             raise RuntimeError("worker recovery authority returned an invalid result")

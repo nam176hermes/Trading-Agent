@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, ReadbackStore
 from packages.alpha_lifecycle.contracts.lifecycle import (
     CampaignClosureReport,
     PrePublicationEvidence,
@@ -145,6 +145,30 @@ def build_registration_proof(receipt: PublicationReceipt, *, store: ArtifactStor
     return RegistrationProof.model_validate(payload)
 
 
+def validate_evaluation_registration(manifest, *, store: ArtifactStore) -> RegistrationProof:
+    """Close historical registration before OOS; live SQL custody is checked by the worker."""
+    from packages.alpha_lifecycle.contracts.execution import EvaluationManifest
+    from packages.alpha_lifecycle.contracts.policy import CandidateSpec, _CANDIDATE_DIGESTS
+    from packages.alpha_lifecycle.lifecycle import read_registry_event
+    from packages.alpha_lifecycle.registry import AlphaLifecycleStatus
+
+    manifest = EvaluationManifest.model_validate(manifest)
+    proof = _read(store, manifest.registration_proof_ref, RegistrationProof)
+    receipt = _read(store, proof.publication_ref, PublicationReceipt)
+    expected = build_registration_proof(receipt, store=ReadbackStore(store, store))
+    spec = _read(store, manifest.candidate_spec_ref, CandidateSpec)
+    index = tuple(sorted(_CANDIDATE_DIGESTS)).index(spec.alpha_id)
+    head = read_registry_event(store, manifest.candidate_head_ref)
+    if (proof != expected or proof.input_set_ref != manifest.input_set_ref
+        or proof.baseline_selection_ref != manifest.baseline_selection_ref
+        or manifest.candidate_head_ref != proof.candidate_head_refs[index]
+        or head.sequence != 2 or head.record.lifecycle_status != AlphaLifecycleStatus.CANDIDATE
+        or head.record.alpha_id != spec.alpha_id or head.record.version != spec.version
+        or head.record.parameter_set_sha256 != spec.digest):
+        raise ValueError('evaluation differs from retained family registration')
+    return proof
+
+
 def build_closure_report(
     request: PublicationRequest,
     prepublication_ref: ArtifactRefV1,
@@ -180,4 +204,4 @@ def build_closure_report(
     return CampaignClosureReport.model_validate(payload)
 
 
-__all__ = ["build_closure_report", "build_publication_receipt", "build_registration_proof", "recover_publication_receipt", "validate_registration_records"]
+__all__ = ["build_closure_report", "build_publication_receipt", "build_registration_proof", "recover_publication_receipt", "validate_registration_records", "validate_evaluation_registration"]

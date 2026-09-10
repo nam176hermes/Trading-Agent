@@ -48,15 +48,15 @@ def main() -> None:
         or inputs.environment_ref != environment
         or environment_identity.sandbox_policy_digest != args.sandbox_policy_digest):
         raise ValueError('operation manifest, InputSet or execution identity differs')
+    from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    if not args.job_id or args.authorization_ref is None:
+        raise ValueError('operation requires job attribution and retained authorization')
+    authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RunAuthorization)
+    stage_alpha_campaign_payload(store,authorization,source,intent.workflow_operation,
+        intent_raw,operation_input=intent)
     if isinstance(intent.body,RegisterFamilyInput):
-        from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
-        from packages.alpha_lifecycle.contracts.authority import RunAuthorization
         from services.job_worker.p3_publication_producer import prepare_family_registration
-        if not args.job_id or args.authorization_ref is None:
-            raise ValueError('registration requires job attribution and retained authorization')
-        authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RunAuthorization)
-        stage_alpha_campaign_payload(store,authorization,source,intent.workflow_operation,
-            intent_raw,operation_input=intent)
         proposal = prepare_family_registration(intent,job_id=args.job_id,
             observed_at=authorization.issued_at,expires_at=authorization.expires_at,store=store)
         sys.stdout.buffer.write(canonical_json_bytes(proposal) + b"\n")

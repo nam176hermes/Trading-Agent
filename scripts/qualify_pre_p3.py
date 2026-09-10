@@ -620,7 +620,48 @@ def p2_final_v2(
     )
 
 
+def _execute_pit_suite(source, qualification, store):
+    """Observe exact PIT calls; retained test metadata is not execution authority."""
+    from packages.alpha_lifecycle.pit_suite import SUITE_PATH, build_pit_suite_receipt, pit_suite_cases
+    from scripts.trusted_test_tmp import prepare_trusted_test_tmp
+    if _source_v2() != source:
+        raise QualificationError('PIT suite source changed before execution')
+    manifest = SUITE_PATH.read_bytes()
+    cases = pit_suite_cases(manifest)
+    session = prepare_trusted_test_tmp('p3-pit-suite')
+    try:
+        report_path = session.path/'observations.json'
+        environment = {key:os.environ[key] for key in ('PATH','HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP') if key in os.environ}
+        environment.update(TEST_GOVERNANCE_REPORT=str(report_path), TEST_GOVERNANCE_COMPONENT='root',
+            TEST_GOVERNANCE_NO_CLOBBER='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+        collection_path = session.path/'collection.json'
+        _run(sys.executable, '-m', 'pytest', '-q', '--collect-only', '-p', 'scripts.test_governance_pytest',
+            *(case.node_id for case in cases), environment={**environment,
+                'TEST_GOVERNANCE_REPORT':str(collection_path), 'TEST_GOVERNANCE_COLLECTION_ONLY':'1'})
+        if _source_v2() != source or SUITE_PATH.read_bytes() != manifest:
+            raise QualificationError('PIT suite source changed during collection')
+        _run(sys.executable, '-m', 'pytest', '-q', '-p', 'scripts.test_governance_pytest',
+            *(case.node_id for case in cases), environment=environment)
+        if _source_v2() != source or SUITE_PATH.read_bytes() != manifest:
+            raise QualificationError('PIT suite source changed during execution')
+        with report_path.open('rb') as report:
+            raw = report.read(131073)
+        with collection_path.open('rb') as report:
+            collection_raw = report.read(131073)
+        if max(len(raw), len(collection_raw)) > 131072:
+            raise QualificationError('PIT observation report exceeds its bound')
+        manifest_ref = store.put_bytes(manifest, media_type='application/json')
+        report_ref = store.put_bytes(raw, media_type='application/json')
+        collection_ref = store.put_bytes(collection_raw, media_type='application/json')
+        qualification = {**qualification, 'completed_at_utc':datetime.now(timezone.utc)
+            .replace(microsecond=0).isoformat().replace('+00:00','Z')}
+        return build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
+    finally:
+        session.cleanup()
+
+
 def p2_source_v2(output: Path, *, qualification: dict[str, str]) -> None:
+    from packages.data_catalog.artifact_store import LocalArtifactStore
     source = _source_v2()
     _run(
         sys.executable,
@@ -646,7 +687,20 @@ def p2_source_v2(output: Path, *, qualification: dict[str, str]) -> None:
         or certification.get("migration_head") != "0019_p2_security_master"
     ):
         raise QualificationError("P2 deterministic certification did not pass")
+    artifacts = output.parent/'p2-pit-artifacts'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    artifacts.mkdir(mode=0o700)
+    store = LocalArtifactStore(artifacts)
+    pit_receipt = _execute_pit_suite(source, qualification, store)
+    qualification = pit_receipt.qualification.model_dump(mode='json')
+    store.put_bytes(canonical_json_bytes(pit_receipt), media_type='application/json')
+    _write(output.parent/'p2-pit-adversarial-suite-receipt-v1.json',
+        pit_receipt.model_dump(mode='json'), trailing_newline=False)
     evidence = [
+        {
+            'kind':'DERIVED_RECEIPT', 'locator':'p2-pit-adversarial-suite-receipt-v1.json',
+            'name':'p2-pit-executed-suite', 'sha256':pit_receipt.digest,
+        },
         {
             "kind": "DERIVED_RECEIPT",
             "locator": "scripts/certify_p2_data_platform.py",
@@ -668,6 +722,8 @@ def p2_source_v2(output: Path, *, qualification: dict[str, str]) -> None:
             (ROOT / "docs/operations/p2-data-platform-runbook.md", "p2-runbook"),
         )
     )
+    if _source_v2() != source:
+        raise QualificationError('P2 source changed during qualification')
     _write(
         output,
         make_v2_gate_receipt(

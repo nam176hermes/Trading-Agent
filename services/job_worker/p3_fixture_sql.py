@@ -28,7 +28,7 @@ from services.job_store.worker_repository import WorkerRepository
 from services.job_worker.recovery import ProcessIdentity, ProcProcessInspector
 from services.job_worker.process_runner import _session_members_proc, HeartbeatDecision, HeartbeatInstruction, _default_pidfd_api
 
-from .p3_operation_fixture import check_operations, publication_entries, REQUIRED_OPERATION_CHECKS
+from .p3_operation_fixture import check_operations, publication_entries, REQUIRED_OPERATION_CHECKS, _wait_for_lock
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = Path('/usr/lib/postgresql/16/bin')
@@ -78,15 +78,6 @@ def _alpha_request() -> EnqueueJobRequest:
 
 
 
-def _wait_for_lock(connection, role, query_pattern, count=1, *, wait_event=None):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        connection.execute('SELECT pg_stat_clear_snapshot()')
-        rows = connection.execute("SELECT pid FROM pg_stat_activity WHERE usename=%s AND wait_event_type='Lock' AND query LIKE %s AND (%s::text IS NULL OR wait_event=%s)",(role,query_pattern,wait_event,wait_event)).fetchall()
-        if len({row[0] for row in rows}) >= count:
-            return
-        time.sleep(.01)  # Poll observed locks; elapsed time never establishes the barrier.
-    raise AssertionError('required SQL lock barrier was not observed')
 
 def check_publication(sock, name, root, payload, mark):
     store_root = root / 'publication-cas'
@@ -114,7 +105,7 @@ def check_publication(sock, name, root, payload, mark):
     try:
         assert worker.claim_next_alpha_campaign('worker_fixture',30,'fixture:skip-research',fixture_only=True) is None
         mark('FIXTURE_CLAIM_ISOLATION_PASS')
-        claim = worker.claim_next_alpha_campaign('worker_publication',30,'publication:claim')
+        claim = worker.claim_next_alpha_campaign('worker_publication',30,'publication:claim', fixture_only=False)
         assert claim is not None and claim.job_id == 'job_publication'
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             ProcessIdentity(301,301,301,'d'*64),'publication:start',alpha_campaign=True)
@@ -206,7 +197,7 @@ def check_publication(sock, name, root, payload, mark):
         with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
             api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
                 ('job_cancel_before',raw.decode(),hashlib.sha256(raw).hexdigest(),'cancel-before','source-test',0,'cancel:enqueue','event_cancel_enqueue'))
-        cancel_claim = worker.claim_next_alpha_campaign('worker_cancel',30,'cancel:claim')
+        cancel_claim = worker.claim_next_alpha_campaign('worker_cancel',30,'cancel:claim', fixture_only=False)
         assert cancel_claim is not None and cancel_claim.job_id == 'job_cancel_before'
         assert worker.start_attempt(cancel_claim.job_id,cancel_claim.attempt_id,cancel_claim.worker_id,
             cancel_claim.lease_token,ProcessIdentity(401,401,401,'e'*64),'cancel:start',alpha_campaign=True)
@@ -617,7 +608,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         try:
             # Exercise the preserved 0020 authority before the forward migration.
             repository._assert_database_identity('trading_job_worker','0020_p3_alpha_campaign_authority')
-            claimed = repository.claim_next_alpha_campaign("worker_fixture",30,"fixture:final-claim")
+            claimed = repository.claim_next_alpha_campaign("worker_fixture",30,"fixture:final-claim", fixture_only=True)
             assert claimed is not None and claimed.job_id == "job_final"
             assert repository.start_attempt(claimed.job_id,claimed.attempt_id,claimed.worker_id,
                 claimed.lease_token,ProcessIdentity(201,201,201,"d"*64),"fixture:final-start",alpha_campaign=True)
@@ -640,14 +631,23 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
                 owner.execute("UPDATE public.job_attempts SET child_pid=%s,process_group_id=%s,process_start_ticks=%s,command_fingerprint=%s WHERE attempt_id='attempt_fixture'",
                     (absent_identity.pid,absent_identity.process_group,absent_identity.start_ticks,absent_identity.command_fingerprint))
-            try:
-                repository.recover_expired_leases(ProcProcessInspector(),recovery_id='p3-fixture-startup-recovery',alpha_campaign=True,fixture_only=True)
-            except psycopg.errors.InvalidParameterValue:
-                pass
-            else:
-                raise AssertionError('unapproved SQL recovery identity accepted')
-            recovered = repository.recover_expired_leases(ProcProcessInspector(),recovery_id='worker-startup-recovery',alpha_campaign=True,fixture_only=True)
-            assert ('job_fixture','P3_FIXTURE_CLEANUP_UNVERIFIED') in recovered
+            # Exercise the historical 0020 SQL signature before upgrading it.
+            # The current repository's explicit lane signature is tested after 0022.
+            with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
+                candidate = worker.execute("""SELECT j.job_id,a.attempt_id,j.state,a.outcome,
+                    j.lease_owner,j.lease_token,a.child_pid,a.process_group_id,a.process_start_ticks,a.command_fingerprint
+                    FROM jobs j JOIN job_attempts a ON a.job_id=j.job_id AND a.attempt_number=j.attempt_count
+                    WHERE j.job_id='job_fixture'""").fetchone()
+                assert candidate is not None
+                recover_sql = 'SELECT job_plane.worker_recover_expired_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'
+                try:
+                    with worker.transaction():
+                        worker.execute(recover_sql,(*candidate,'ABSENT','fixture:legacy-recovery','p3-fixture-startup-recovery','event_legacy_recover_bad','event_legacy_retry_bad'))
+                except psycopg.errors.InvalidParameterValue:
+                    pass
+                else:
+                    raise AssertionError('unapproved SQL recovery identity accepted')
+                assert worker.execute(recover_sql,(*candidate,'ABSENT','fixture:legacy-recovery','worker-startup-recovery','event_legacy_recover','event_legacy_retry')).fetchone() == ('P3_FIXTURE_CLEANUP_UNVERIFIED',)
             with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
                 assert owner.execute("SELECT state FROM public.jobs WHERE job_id='job_fixture'").fetchone() == ('BLOCKED',)
             mark('WORKER_ALPHA_RECOVERY_BLOCKED_PASS')

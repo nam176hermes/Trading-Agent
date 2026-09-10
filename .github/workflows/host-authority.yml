@@ -89,3 +89,11 @@ jobs:
           path: ${{ runner.temp }}/pre-p3-qualification.${{ github.run_id }}.${{ github.run_attempt }}/*.json
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish PIT execution evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-p3-pit-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pre-p3-qualification.${{ github.run_id }}.${{ github.run_attempt }}/p2-pit-artifacts/*.blob
+          if-no-files-found: error
+          retention-days: 14

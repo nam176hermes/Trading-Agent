@@ -103,7 +103,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
     root.mkdir(mode=0o700)
     source = job.payload.expected_source
     authorization = SimpleNamespace(issuer_run_id=1,issuer_attempt=1)
-    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0021_p3_operation_authority')
+    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0022_p3_worker_lane_isolation')
     stages = []
     def attest(self, actual_job):
         assert actual_job is job
@@ -133,7 +133,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
         run.request = Request(run.request)
     monkeypatch.setattr(module,'run_native_fixture',lambda *args,**kwargs:native)
     sql = {'checks':sorted(module.REQUIRED_SQL_CHECKS),'cleanup':{'root_absent':True,'server_stopped':True},
-           'source':source.model_dump(mode='json'),'sql_revision':'0021_p3_operation_authority'}
+           'source':source.model_dump(mode='json'),'sql_revision':'0022_p3_worker_lane_isolation'}
     if sql_mutation == 'old_revision':
         sql['sql_revision'] = '0020_p3_alpha_campaign_authority'
     elif sql_mutation == 'wrong_source':
@@ -184,7 +184,7 @@ def test_alpha_recovery_uses_its_sql_capability():
                      child_pid=123,process_group_id=123,process_start_ticks=1,command_fingerprint='b'*64)
     connection = _Connection({'outcome':'BLOCKED'})
     repository = _worker(connection)
-    repository._recover_observed_candidate(candidate,'STILL_RUNNING','test:recovery','recovery',alpha_campaign=True)
+    repository._recover_observed_candidate(candidate,'STILL_RUNNING','test:recovery','recovery',alpha_campaign=True, fixture_only=True)
     assert 'worker_recover_expired_alpha_campaign' in connection.calls[0][0]
 
 

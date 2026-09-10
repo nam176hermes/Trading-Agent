@@ -202,3 +202,103 @@ This changes no historical T-G03 inventory or receipt and does not grant its
 older PostgreSQL GREEN authority to P3. Explicit P3 source-test opt-in remains
 required. Protected T-P3-060 still requires its separate reviewed fixture,
 workflow/Job API/worker path, real SQL/native runs and cleanup evidence.
+
+Parent OOS preflight now reconstructs the retained registration receipt and
+complete eight-event family closure before writing the manifest reference or
+preparing a child process. It binds the exact ordered candidate slot,
+sequence 2, CANDIDATE state, version and frozen parameter digest. The existing
+replica readback helper is shared with baseline and registration validation:
+recomputation requires already retained bytes and cannot create missing proof.
+Eight negative tests failed before correction; the adjacent registration,
+baseline and replica set passed 64 tests in 90.18 seconds. Independent
+gpt-5.6-sol/high review passed this bounded correction. Lint passed; the same
+118 pre-existing type diagnostics remain. This establishes historical CAS
+consistency only, not current SQL custody, worker fencing or host authority.
+
+The operation CLI applies its existing retained authorization/review check to
+BASELINES as well as REGISTER_FAMILY before executor construction. A missing
+authorization regression previously ran all three synthetic replicas; it now
+fails before any child. Baseline/registration tests passed 28 cases in 58.98s,
+with 31 adjacent operation-input/authority/dispatch tests passing in 0.95s and
+lint passing. Independent gpt-5.6-sol/high review passed this bounded change.
+The CLI check does not establish accepted SQL authority or bind caller-supplied
+job attribution to a committed database row; the official worker still owns
+that remaining check.
+
+PIT execution now has a typed supporting receipt behind `PITProof.no_future_suite_ref`:
+`p3-pit-adversarial-suite-receipt-v1`. This extends the previously opaque
+referenced evidence, without changing the accepted trading policy or C01–C16.
+It binds source, tracked selector manifest, collection and execution report
+refs, exact expanded node inventory, qualification metadata and false live
+authority. The seven logical selectors currently expand to fourteen pytest
+nodes; fields distinguish `logical_selector_count=7`,
+`collected_node_count=14` and `passed_node_count=14`. A change to that source
+inventory requires review and fresh qualification.
+
+The Pre-P3 producer executes the exact selectors through the existing governance
+plugin, with plugin autoload disabled and a minimal environment. It checks clean
+source before, between and after collection/execution, rejects any non-pass or
+inventory mismatch, retains both raw reports and records actual completion
+time. Its private test root is cleaned. P2 source receipts bind the suite
+receipt digest as DERIVED_RECEIPT; the suite never references that future P2
+receipt. The host workflow uploads the precise PIT CAS directory as well as
+top-level receipt JSON, so report references remain recoverable.
+
+The consumer repeats all content, source and inventory checks. These bytes and
+run IDs cannot authenticate execution by themselves: protected producer custody
+and accepted independent review remain required. Actual-data revision/acquisition
+closure is still a separate missing leg; this packet alone cannot set C01 PASS.
+The current qualification adapter and official OOS dispatcher still require
+that correction before any official results.
+
+Source evidence: 22 focused tests passed in 6.28s, including three subprocess
+collection/execution scenarios with all fourteen real portable PIT calls,
+source-drift refusal, real private-root cleanup and retained P2 receipt linkage.
+The broader Pre-P3/PIT and workflow/closure checks passed 77 and 179 tests
+respectively before the final focused additions. These test fixtures use
+synthetic authority metadata and issue no official protected qualification.
+
+Reviewer reproduced a media-role and pre-read size defect. Sixteen negative
+cases failed before correction. The common reference guard now requires JSON,
+positive bounded sizes and digest-bound locators before any CAS read: 64 KiB
+for the outer receipt, exact tracked size for the selector manifest and 128 KiB
+for each observation report. Consumer tests also reject invalid nested refs
+without reading their blobs. All 38 focused tests passed in 6.53s after the
+correction. The two GitHub uploads are separate transport steps; retained
+objects still need authenticated import and complete consumer readback.
+
+## Explicit claim and recovery lanes (T-P3-030/031/040)
+
+Forward migration 0022 requires the reviewed 0021 parent and exact function
+bodies, ownership and grants. A shared SQL predicate enumerates operation/workflow
+pairs. Claims require an explicit fixture selector and recheck accepted operation
+authority after locking; PRE_SPAWN rechecks authority after both job and attempt
+locks. Recovery takes an explicit lane and rechecks it after locking without
+requiring an unexpired authorization, so expired custody can still be closed.
+The old recovery signature is removed. Both lanes still use trading_job_worker;
+this is routing isolation, not separate credentials or official runtime authority.
+
+The migration locks jobs while checking for active holdout custody and refuses
+to strand an existing active holdout. Queued holdout remains excluded. The fixture
+separately constructs a prior-source CLAIMED holdout with a matching attempt and
+lease to exercise the retained start denial independently of claim routing.
+Production and P1 database profiles remain unchanged; the P3 disposable profile
+now requires 0022. Historical 0020 recovery vectors call their original SQL
+signature before the forward upgrade; current repository recovery is exercised
+after it. Event/outbox/head/job-result publication semantics are unchanged.
+
+A real disposable PostgreSQL regression first claimed an unknown high-priority
+workflow (71.45s failing run). A separate expiry regression observed PRE_SPAWN
+CONTINUE after authorization expiry (74.31s failing run). The corrected source
+at 1d59b764 passed the disposable SQL fixture in 74.00s, including accepted
+positive vectors, exact pair combinations, wrong-lane refusal, a two-connection
+post-lock payload-change race and real cluster cleanup. Final-source validation
+is recorded separately; these source tests do not issue T-P3-060 or an InputSet.
+
+Review also exercised inherited default ACLs, strictness and an alternate trusted
+procedural language with the same function body. The migration now pins language,
+null-input/leakproof behavior, full argument/output metadata and exact ACLs both
+before and after replacement. The trusted-language regression failed in 30.64s;
+the correction at 7e9aacc8 passed the real disposable fixture in 69.56s with
+cleanup. Independent gpt-5.6-sol/high review passed this bounded packet. The
+separate root static check retained 118 pre-existing errors; it was not PASS.

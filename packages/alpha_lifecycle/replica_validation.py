@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, ReadbackStore, validate_research_inputs
 from packages.alpha_lifecycle.contracts.base import parse_contract
 from packages.alpha_lifecycle.contracts.data import (
     DailyBar,
@@ -43,26 +43,6 @@ def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model
     if not isinstance(value, model) or canonical_json_bytes(value) != raw:
         raise ValueError("replica artifact contract or canonical bytes differ")
     return value
-
-
-class _ReadbackStore:
-    def __init__(self, reader: ArtifactStore, outputs: ArtifactStore) -> None:
-        self._reader, self._outputs = reader, outputs
-
-    def read_bytes(self, ref: ArtifactRefV1) -> bytes:
-        return self._reader.read_bytes(ref)
-
-    def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
-        digest = hashlib.sha256(value).hexdigest()
-        ref = ArtifactRefV1(
-            content_sha256=digest,
-            size_bytes=len(value),
-            media_type=media_type,
-            locator=f"{digest}.blob",
-        )
-        if self._outputs.read_bytes(ref) != value:
-            raise ValueError("replica recomputation differs from child outputs")
-        return ref
 
 
 def validate_replica_result(
@@ -193,7 +173,7 @@ def validate_replica_result(
             result.base,
             (*result.perturbations, result.double_cost, result.delayed),
             selection,
-            _ReadbackStore(combined, outputs),
+            ReadbackStore(combined, outputs),
         )
         if (
             result.regimes != robustness.regimes
