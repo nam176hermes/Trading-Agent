@@ -453,7 +453,7 @@ ops/phase4b/verify-release.py|91|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1271|Exception|PRODUCTION_CRITICAL|RETURN
-packages/alpha_lifecycle/authority.py|110|Exception|PRODUCTION_CRITICAL|RAISE
+packages/alpha_lifecycle/authority.py|112|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|102|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|244|Exception|PRODUCTION_CRITICAL|RAISE
@@ -683,8 +683,8 @@ scripts/nautilus_pin_inventory/git_source.py|5403|BaseException|TOOLING_MIGRATIO
 scripts/nautilus_pin_inventory/git_source.py|5502|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5567|BaseException|TOOLING_MIGRATION|OTHER
 scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_authority.py|155|Exception|TOOLING_MIGRATION|RAISE
-scripts/p3_authority.py|164|Exception|TOOLING_MIGRATION|RAISE
+scripts/p3_authority.py|180|Exception|TOOLING_MIGRATION|RAISE
+scripts/p3_authority.py|190|Exception|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
 scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
@@ -761,8 +761,8 @@ services/job_worker/engine_spawn.py|1062|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p1_engine_spawn.py|442|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_native.py|106|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_fixture_sql.py|757|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_integration.py|198|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_fixture_sql.py|674|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_integration.py|203|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -790,9 +790,9 @@ services/job_worker/worker.py|429|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_worker/worker.py|581|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|591|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|640|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|844|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|867|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|892|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|847|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|870|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|895|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE
