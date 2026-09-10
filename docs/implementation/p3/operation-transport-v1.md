@@ -63,9 +63,13 @@ transaction, not a claim about the later physical COMMIT instant.
 
 The worker recovers its receipt immediately after publication. Retention failure
 propagates without a second finalization or research rerun. Recovery after a
-process crash still needs the official reconciliation dispatcher. The current
-fixture/database profiles remain on 0020 until the fixture upgrade packet is
-merged and qualified; adding this migration does not activate it.
+process crash still needs the official reconciliation dispatcher. The fixture/database profiles now require 0021. The worker-owned fixture first
+exercises the preserved 0020 vectors, then upgrades and exercises 0021. Its
+parent requires the actual final SQL revision, exact source, both required
+check sets and verified server/root cleanup before publishing IntegrationReceipt.
+The synthetic vectors live in `services/job_worker/p3_operation_fixture.py` and
+do not import the test tree. This source change does not provision or activate a
+host profile.
 
 Source verification: focused worker/publication tests: 61 passed; adjacent P3
 and alpha tests: 258 passed, 1 explicit host test skipped. The selected real
@@ -88,3 +92,13 @@ worker profile is enabled by this correction.
 
 A failed primary retains its result and keeps phase exit HELD; there is no
 fallback. LIVE_ELIGIBLE=false and LIVE_ENABLED=false.
+
+The fixture upgrade packet passed 25 focused revision/receipt tests and 263
+adjacent P3/alpha tests (one explicitly selected host test skipped). The routed
+PostgreSQL test passed with the 0021 profile, both real publication connections,
+and receipt recovery after actual authorization expiry. Its synthetic 30-second
+authorization window keeps a positive concurrent-write test separate from the
+expiry assertions; heartbeat ticks continue while that window expires. No
+production policy value changed. Static now retains 124 existing diagnostics,
+with none in the new operation fixture module. Protected-main Foundation and
+T-P3-060 must be rerun for the merged source; these checks are not that proof.

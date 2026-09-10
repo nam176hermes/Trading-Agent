@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from uuid import UUID, NAMESPACE_URL, uuid5
 from datetime import UTC, datetime
 
 import psycopg
@@ -21,15 +20,15 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, URL
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
-from packages.alpha_lifecycle.registry import AlphaLifecycleStatus, AlphaRecordV1, QualificationDecision
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.engine_contracts import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignOperation, EnqueueJobRequest
 from services.job_store.p3_publication_repository import P3PublicationRepository
-from services.job_store.p3_sql import DomainAppendEntry
 from services.job_store.worker_repository import WorkerRepository
 from services.job_worker.recovery import ProcessIdentity, ProcProcessInspector
 from services.job_worker.process_runner import _session_members_proc, HeartbeatDecision, HeartbeatInstruction, _default_pidfd_api
+
+from .p3_operation_fixture import check_operations, publication_entries, REQUIRED_OPERATION_CHECKS
 
 ROOT = Path(__file__).resolve().parents[2]
 BIN = Path('/usr/lib/postgresql/16/bin')
@@ -45,7 +44,7 @@ REQUIRED_SQL_CHECKS = frozenset({
     'PUBLICATION_DUPLICATE_EVENT_PASS','PUBLICATION_CANCEL_BEFORE_PASS',
     'PUBLICATION_CANCEL_AFTER_PASS','PUBLICATION_LOST_COMMIT_RESPONSE_PASS',
     'PUBLICATION_ATOMIC_REPLAY_PASS',
-})
+}) | REQUIRED_OPERATION_CHECKS
 
 
 def _alpha_request() -> EnqueueJobRequest:
@@ -76,71 +75,7 @@ def _alpha_request() -> EnqueueJobRequest:
         "actor": {"actor_type": "OPERATOR", "actor_id": "operator-p3"},
     })
 
-def _entry() -> DomainAppendEntry:
-    event_id = UUID("11111111-1111-5111-8111-111111111111")
-    stream_id = UUID("22222222-2222-5222-8222-222222222222")
-    record = AlphaRecordV1(
-        alpha_id="a0.test", version="1.0.0", source_sha="a" * 40,
-        implementation_identity="packages.alpha_lifecycle.candidates:run_candidate",
-        dataset_snapshot_sha256="b" * 64, feature_set=("close",),
-        parameter_set_sha256="c" * 64,
-        training_start_at="2020-01-01T00:00:00Z",
-        training_end_at="2021-01-01T00:00:00Z",
-        validation_start_at="2021-01-02T00:00:00Z",
-        validation_end_at="2022-01-01T00:00:00Z",
-        oos_start_at="2022-01-02T00:00:00Z",
-        oos_end_at="2023-01-01T00:00:00Z",
-        universe=("BTCUSDT.BINANCE",), cost_model_sha256="d" * 64,
-        baseline_id="B0_CASH", baseline_version="1.0.0",
-        metrics_sha256=None, robustness_sha256=None,
-        qualification_decision=QualificationDecision.NOT_EVALUATED,
-        qualification_reason="preregistered", artifact_digests=("e" * 64,),
-        lineage=("p3-btc-d1-e1",), superseded_version=None,
-        lifecycle_status=AlphaLifecycleStatus.IDEA,
-    )
-    registry_event = {
-        "predecessor_sha256": None,
-        "record": record,
-        "schema_version": "alpha-registry-event-v1",
-        "sequence": 1,
-    }
-    registry_event_text = canonical_json_bytes(registry_event).decode()
-    event = {
-        "causation_id": "33333333-3333-5333-8333-333333333333",
-        "correlation_id": "44444444-4444-5444-8444-444444444444",
-        "effective_at": "2026-09-05T00:00:00Z",
-        "event_id": str(event_id),
-        "event_type": "AlphaRegistryTransitionRecordedV1",
-        "expires_at": "2026-09-06T00:00:00Z",
-        "ingested_at": "2026-09-05T00:00:00Z",
-        "observed_at": "2026-09-05T00:00:00Z",
-        "payload": {
-            "alpha_id": "a0.test",
-            "alpha_version": "1.0.0",
-            "epoch_id": "p3-btc-d1-e1",
-            "evidence_sha256": "d" * 64,
-            "predecessor_sha256": None,
-            "registry_event_sha256": hashlib.sha256(registry_event_text.encode()).hexdigest(),
-            "registry_event_text": registry_event_text,
-            "registry_sequence": 1,
-            "schema_version": "alpha-registry-transition-recorded-v1",
-        },
-        "produced_at": "2026-09-05T00:00:00Z",
-        "schema_version": "event-envelope-v1",
-        "sequence": 1,
-        "source": "p3-alpha-lifecycle",
-        "stream_id": str(stream_id),
-        "trace_id": "55555555-5555-5555-8555-555555555555",
-    }
-    return DomainAppendEntry(
-        event_id=event_id,
-        stream_id=stream_id,
-        sequence=1,
-        event_type="AlphaRegistryTransitionRecordedV1",
-        canonical_event_text=canonical_json_bytes(event).decode(),
-        topic="p3.alpha-registry",
-        outbox_payload_text=canonical_json_bytes({"event_id": str(event_id)}).decode(),
-    )
+
 
 
 def _wait_for_lock(connection, role, query_pattern, count=1, *, wait_event=None):
@@ -152,35 +87,6 @@ def _wait_for_lock(connection, role, query_pattern, count=1, *, wait_event=None)
             return
         time.sleep(.01)  # Poll observed locks; elapsed time never establishes the barrier.
     raise AssertionError('required SQL lock barrier was not observed')
-
-def publication_entries(store, evidence_ref, alpha_ids, *, source_sha='a'*40):
-    template = json.loads(_entry().canonical_event_text)
-    entries, refs, heads = [], [], []
-    for alpha_id in alpha_ids:
-        heads.append({'alpha_id':alpha_id,'version':'1.0.0','sequence':0,'event_digest':None})
-        predecessor = None
-        stream_id = uuid5(NAMESPACE_URL, alpha_id)
-        for sequence, status in ((1,'IDEA'),(2,'CANDIDATE')):
-            event = json.loads(canonical_json_bytes(template))
-            registry = json.loads(event['payload']['registry_event_text'])
-            registry['record'].update(alpha_id=alpha_id,lifecycle_status=status,source_sha=source_sha)
-            registry.update(sequence=sequence,predecessor_sha256=predecessor)
-            registry_raw = canonical_json_bytes(registry)
-            ref = store.put_bytes(registry_raw,media_type='application/json')
-            refs.append(ref)
-            event_id = uuid5(NAMESPACE_URL, f'{alpha_id}:{sequence}')
-            event.update(event_id=str(event_id),stream_id=str(stream_id),sequence=sequence)
-            event['payload'].update(alpha_id=alpha_id,registry_sequence=sequence,
-                predecessor_sha256=predecessor,registry_event_sha256=ref.content_sha256,
-                registry_event_text=registry_raw.decode(),evidence_sha256=evidence_ref.content_sha256)
-            entries.append(DomainAppendEntry.model_validate_json(canonical_json_bytes({
-                'event_id':str(event_id),'stream_id':str(stream_id),'sequence':sequence,
-                'event_type':'AlphaRegistryTransitionRecordedV1','canonical_event_text':canonical_json_bytes(event).decode(),
-                'topic':'p3.alpha-registry','outbox_payload_text':canonical_json_bytes({'event_id':str(event_id)}).decode(),
-            })))
-            predecessor = ref.content_sha256
-    return tuple(entries), refs, heads
-
 
 def check_publication(sock, name, root, payload, mark):
     store_root = root / 'publication-cas'
@@ -709,7 +615,8 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         repository = object.__new__(WorkerRepository)
         repository._pool = ConnectionPool(make_conninfo(host=str(sock), dbname=name, user="trading_job_worker"), min_size=1, max_size=2, kwargs={"row_factory":dict_row})
         try:
-            repository.assert_p3_runtime_identity()
+            # Exercise the preserved 0020 authority before the forward migration.
+            repository._assert_database_identity('trading_job_worker','0020_p3_alpha_campaign_authority')
             claimed = repository.claim_next_alpha_campaign("worker_fixture",30,"fixture:final-claim")
             assert claimed is not None and claimed.job_id == "job_final"
             assert repository.start_attempt(claimed.job_id,claimed.attempt_id,claimed.worker_id,
@@ -751,6 +658,12 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             assert owner.execute("SELECT count(*) FROM public.job_artifacts WHERE job_id='job_final'").fetchone() == (1,)
         mark('WORKER_DURABLE_RESULT_PASS', flush=True)
         check_publication(sock, name, root, payload, mark)
+        check_operations(sock, name, root, payload, mark)
+        with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
+            revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
+            if revision_row is None:
+                raise RuntimeError('SQL revision evidence unavailable')
+            sql_revision = revision_row[0]
 
 
 
@@ -762,7 +675,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             cause = (BaseExceptionGroup("source check and cleanup failed", [primary_error, cleanup_error])
                      if primary_error is not None else cleanup_error)
             raise SQLFixtureCleanupError(f"SQL cleanup unverified; retained {root}") from cause
-    return {"source": source.model_dump(mode="json"), "checks": checks,
+    return {"source": source.model_dump(mode="json"), "checks": checks, "sql_revision":sql_revision,
             "postgres_binary_sha256": hashlib.sha256((BIN/'postgres').read_bytes()).hexdigest(),
             "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
             "cleanup": {"cluster_id": root.name, "root_absent": not root.exists(),
