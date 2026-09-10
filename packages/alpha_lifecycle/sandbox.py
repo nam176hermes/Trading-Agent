@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity, parse_contract
-from packages.alpha_lifecycle.baseline_campaign import _read
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, _read
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest, EvaluationManifest, EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.contracts.results import BaselinePack, EvaluationResult, ReplayReceipt
 from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, retain_replica_outputs
@@ -44,7 +44,7 @@ class BubblewrapExecutor:
     """Parent-observed, credential-free executor for deterministic P3 replicas."""
 
     def __init__(
-        self, *, store: LocalArtifactStore, store_root: Path, release_root: Path,
+        self, *, store: ArtifactStore, store_root: Path, release_root: Path,
         python: Path, source: SourceIdentity, environment_ref: ArtifactRefV1,
         sandbox_policy_digest: str, bwrap: Path = Path("/usr/bin/bwrap"),
     ) -> None:

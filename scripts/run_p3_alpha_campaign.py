@@ -12,11 +12,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
-from packages.alpha_lifecycle.baseline_campaign import execute_baseline_manifest, _read
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, execute_baseline_manifest, ReadbackStore, _read
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet, EnvironmentIdentity
 from packages.alpha_lifecycle.operation_input import P3OperationInput, BaselinesInput, RegisterFamilyInput
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.data_catalog.artifact_store import LocalArtifactStore
+from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -35,7 +36,7 @@ def main() -> None:
     parser.add_argument("--job-id")
     parser.add_argument("--authorization-ref", type=Path)
     args = parser.parse_args()
-    store = LocalArtifactStore(args.store)
+    store: ArtifactStore = LocalArtifactStore(args.store)
     intent_raw = store.read_bytes(ArtifactRefV1.model_validate_json(args.manifest_ref.read_bytes()))
     intent = P3OperationInput.model_validate_json(intent_raw)
     if canonical_json_bytes(intent) != intent_raw or intent.workflow_operation != args.logical_trial_id:
@@ -53,8 +54,12 @@ def main() -> None:
     if not args.job_id or args.authorization_ref is None:
         raise ValueError('operation requires job attribution and retained authorization')
     authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RunAuthorization)
-    stage_alpha_campaign_payload(store,authorization,source,intent.workflow_operation,
+    stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,intent.workflow_operation,
         intent_raw,operation_input=intent)
+    args.output.mkdir(mode=0o700,exist_ok=True)
+    private_store = args.output/'artifacts'
+    private_store.mkdir(mode=0o700,exist_ok=False)
+    store = ReplicaArtifactStore(args.store,private_store)
     if isinstance(intent.body,RegisterFamilyInput):
         from services.job_worker.p3_publication_producer import prepare_family_registration
         proposal = prepare_family_registration(intent,job_id=args.job_id,

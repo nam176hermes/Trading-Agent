@@ -126,7 +126,10 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
             workflow_operation='p3-baselines-v1',operation='BASELINES',
             input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],
             body={'baseline_manifest_ref':manifest_ref})
-        monkeypatch.setattr(command,'BubblewrapExecutor',lambda **kwargs:executor)
+        def child_executor(**kwargs):
+            executor._store = kwargs['store']
+            return executor
+        monkeypatch.setattr(command,'BubblewrapExecutor',child_executor)
         for name,value in [('manifest',intent_ref),('source',inputs.source),('environment',inputs.environment_ref)]:
             (tmp_path/name).write_bytes(canonical_json_bytes(value))
         monkeypatch.setattr(sys,'argv',[str(command.__file__),
@@ -143,7 +146,12 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
         (tmp_path/'authorization').write_bytes(canonical_json_bytes(authorization_ref))
         monkeypatch.setattr(sys,'argv',[*sys.argv,'--job-id','job_baseline',
             '--authorization-ref',str(tmp_path/'authorization')])
+        import hashlib
+        before = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()}
         command.main()
+        assert {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()} == before
+        from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
+        store = ReplicaArtifactStore(tmp_path/'inputs',tmp_path/'runs'/'artifacts')
         selection = BaselineSelection.model_validate_json(capsys.readouterr().out)
     proof = ReplayProof.model_validate_json(store.read_bytes(selection.baseline_replay_proof_ref))
     pack = BaselinePack.model_validate_json(store.read_bytes(selection.pack_ref))
