@@ -5,18 +5,15 @@ from decimal import Decimal
 
 from pydantic import BaseModel
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs
 from packages.alpha_lifecycle.contracts.base import parse_contract
 from packages.alpha_lifecycle.contracts.data import (
     DailyBar,
-    DatasetEvidence,
     Fold,
-    FoldManifest,
 )
 from packages.alpha_lifecycle.contracts.execution import (
     BaselineManifest,
     EvaluationManifest,
-    InputSet,
 )
 from packages.alpha_lifecycle.contracts.policy import CandidateSpec
 from packages.alpha_lifecycle.contracts.results import (
@@ -24,7 +21,6 @@ from packages.alpha_lifecycle.contracts.results import (
     BaselineSelection,
     EvaluationResult,
     PerformanceTrace,
-    RegimeThreshold,
     ScenarioResult,
 )
 from packages.alpha_lifecycle.robustness import build_robustness
@@ -76,13 +72,9 @@ def validate_replica_result(
     outputs: ArtifactStore,
     combined: ArtifactStore,
 ) -> None:
-    input_set = _read(inputs, manifest.input_set_ref, InputSet)
-    folds = _read(inputs, input_set.fold_manifest_ref, FoldManifest)
-    dataset = _read(inputs, folds.dataset_evidence_ref, DatasetEvidence)
+    input_set, folds, dataset, regime = validate_research_inputs(manifest.input_set_ref,inputs)
     bars = tuple(_read(inputs, ref, DailyBar) for ref in dataset.row_refs)
-    threshold = Decimal(
-        _read(inputs, input_set.regime_threshold_ref, RegimeThreshold).threshold
-    )
+    threshold = Decimal(regime.threshold)
     labels_by_fold = {
         fold.fold_id: assign_regimes(
             tuple(

@@ -89,8 +89,8 @@ def test_fixture_claim_is_filtered_before_claiming_research_jobs():
     assert connection.calls[0][1][-1] is True
 
 
-@pytest.mark.parametrize('changed', [False, True])
-def test_executor_reattests_authority_after_cleanup(changed, tmp_path, monkeypatch):
+@pytest.mark.parametrize('changed,sql_mutation', [(False,None),(True,None),*( (False,value) for value in ('old_revision','wrong_source','missing_check','cleanup_root','cleanup_server'))])
+def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_path, monkeypatch):
     from dataclasses import dataclass
     from types import SimpleNamespace
     from services.job_worker import p3_integration as module
@@ -103,7 +103,7 @@ def test_executor_reattests_authority_after_cleanup(changed, tmp_path, monkeypat
     root.mkdir(mode=0o700)
     source = job.payload.expected_source
     authorization = SimpleNamespace(issuer_run_id=1,issuer_attempt=1)
-    plan = SimpleNamespace(native_request_digest='a'*64)
+    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0021_p3_operation_authority')
     stages = []
     def attest(self, actual_job):
         assert actual_job is job
@@ -132,18 +132,28 @@ def test_executor_reattests_authority_after_cleanup(changed, tmp_path, monkeypat
     for run in native:
         run.request = Request(run.request)
     monkeypatch.setattr(module,'run_native_fixture',lambda *args,**kwargs:native)
-    monkeypatch.setattr(module,'run_sql_fixture',lambda *args,**kwargs:{
-        'checks':sorted(module.REQUIRED_SQL_CHECKS),'cleanup':{'root_absent':True},
-    })
+    sql = {'checks':sorted(module.REQUIRED_SQL_CHECKS),'cleanup':{'root_absent':True,'server_stopped':True},
+           'source':source.model_dump(mode='json'),'sql_revision':'0021_p3_operation_authority'}
+    if sql_mutation == 'old_revision':
+        sql['sql_revision'] = '0020_p3_alpha_campaign_authority'
+    elif sql_mutation == 'wrong_source':
+        sql['source']['commit_sha'] = '9'*40
+    elif sql_mutation == 'missing_check':
+        sql['checks'].remove('OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS')
+    elif sql_mutation == 'cleanup_root':
+        sql['cleanup']['root_absent'] = False
+    elif sql_mutation == 'cleanup_server':
+        sql['cleanup']['server_stopped'] = False
+    monkeypatch.setattr(module,'run_sql_fixture',lambda *args,**kwargs:sql)
     monkeypatch.setattr(module.ResultValidator,'_read_p3_stream',lambda *args,**kwargs:b'fixture')
     store = SimpleNamespace(put_bytes=lambda *args,**kwargs:job.payload.manifest_ref)
     executor = module.P3IntegrationFixtureExecutor(store=store,closure_config=object(),private_root=root,review_file=tmp_path/'review')
-    if changed:
-        with pytest.raises(module.IntegrationExecutionError,match='source changed'):
+    if changed or sql_mutation:
+        with pytest.raises(module.IntegrationExecutionError,match='source changed' if changed else 'E_SQL'):
             executor.run(job,heartbeat=lambda *_:None,preflight=lambda:None,progress=lambda:None)
     else:
         assert executor.run(job,heartbeat=lambda *_:None,preflight=lambda:None,progress=lambda:None).receipt.status == 'PASS'
-    assert stages == ['attest','attest']
+    assert stages == (['attest'] if sql_mutation else ['attest','attest'])
     assert list(root.iterdir()) == []
 
 

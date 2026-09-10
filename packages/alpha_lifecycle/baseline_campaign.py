@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from decimal import Decimal
+from pathlib import Path
 from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from packages.alpha_lifecycle.baselines import BaselineId, BaselineResultV1, baseline_weights_with_reset
-from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence, FoldManifest
-from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
+from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence, FoldManifest, PITProof
+from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet, EnvironmentIdentity
 from packages.alpha_lifecycle.contracts.results import (
     BaselineEntry, BaselinePack, BaselineSelection, FoldResult, RegimeThreshold, ScenarioResult,
+    ReplayReceipt, ReplayProof,
 )
 from packages.alpha_lifecycle.data_view import to_daily_close
 from packages.alpha_lifecycle.execution_trace import build_research_trace, suppress_terminal_signal
 from packages.alpha_lifecycle.metrics import calculate_aggregate_performance_metrics
 from packages.alpha_lifecycle.regimes import assign_regimes
+from packages.alpha_lifecycle.replay import SandboxExecutor, run_replays, validate_replay_proof
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -31,25 +35,52 @@ Model = TypeVar("Model", bound=BaseModel)
 
 
 def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model:
-    return model.model_validate_json(store.read_bytes(ref))
+    raw = store.read_bytes(ref)
+    value = model.model_validate_json(raw)
+    if canonical_json_bytes(value) != raw:
+        raise ValueError('research input artifact is not canonical')
+    return value
 
 
 def _seal(store: ArtifactStore, value: BaseModel) -> ArtifactRefV1:
     return store.put_bytes(canonical_json_bytes(value), media_type="application/json")
 
 
-def _digest(payload: dict[str, object]) -> str:
-    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+def _digest(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_json_bytes(dict(payload))).hexdigest()
+
+
+def validate_research_inputs(input_set_ref: ArtifactRefV1, reader: ArtifactStore):
+    inputs = _read(reader,input_set_ref,InputSet)
+    folds = _read(reader,inputs.fold_manifest_ref,FoldManifest)
+    dataset = _read(reader,inputs.dataset_evidence_ref,DatasetEvidence)
+    threshold = _read(reader,inputs.regime_threshold_ref,RegimeThreshold)
+    pit = _read(reader,inputs.pit_proof_ref,PITProof)
+    if (
+        dataset.segment != 'RESEARCH' or folds.mode != 'OOS'
+        or folds.dataset_evidence_ref != inputs.dataset_evidence_ref
+        or folds.static_policy_digest != inputs.policy_digest
+        or any(fold.snapshot_ref != dataset.snapshot_ref for fold in folds.folds)
+        or threshold.policy_digest != inputs.policy_digest
+        or threshold.training_dataset_ref != inputs.dataset_evidence_ref
+        or not dataset.date_range.start <= threshold.training_range.start <= threshold.training_range.end <= dataset.date_range.end
+        or threshold.training_range.end >= folds.folds[0].decision_start
+        or pit.dataset_ref != inputs.dataset_evidence_ref
+        or pit.fold_manifest_ref != inputs.fold_manifest_ref
+        or pit.vintage_class != dataset.vintage_class or pit.limitations != dataset.limitations
+    ):
+        raise ValueError('research input graph binding differs')
+    reader.read_bytes(pit.revision_proof_ref)
+    reader.read_bytes(pit.no_future_suite_ref)
+    return inputs,folds,dataset,threshold
 
 
 def run_baseline_pack(
     manifest: BaselineManifest, reader: ArtifactStore
 ) -> BaselinePack:
     manifest = BaselineManifest.model_validate(manifest)
-    input_set = _read(reader, manifest.input_set_ref, InputSet)
-    fold_manifest = _read(reader, input_set.fold_manifest_ref, FoldManifest)
-    dataset = _read(reader, fold_manifest.dataset_evidence_ref, DatasetEvidence)
-    threshold = Decimal(_read(reader, input_set.regime_threshold_ref, RegimeThreshold).threshold)
+    input_set, fold_manifest, dataset, regime = validate_research_inputs(manifest.input_set_ref,reader)
+    threshold = Decimal(regime.threshold)
     bars = tuple(_read(reader, ref, DailyBar) for ref in dataset.row_refs)
     by_day = {bar.date: (bar, ref) for bar, ref in zip(bars, dataset.row_refs, strict=True)}
 
@@ -134,4 +165,47 @@ def select_baseline(
     return BaselineSelection.model_validate(payload)
 
 
-__all__ = ["ArtifactStore", "run_baseline_pack", "select_baseline"]
+def execute_baseline_manifest(
+    manifest_ref: ArtifactRefV1, executor: SandboxExecutor, *,
+    logical_trial_id: str, output_root: Path,
+) -> BaselineSelection:
+    """Select B0-B4 only after parent-observed replay of the baseline manifest."""
+    manifest = _read(executor,manifest_ref,BaselineManifest)
+    inputs, _, dataset, _ = validate_research_inputs(manifest.input_set_ref,executor)
+    proof = run_replays(manifest_ref,executor,logical_trial_id=logical_trial_id,output_root=output_root)
+    receipt = _read(executor,proof.receipt_refs[0],ReplayReceipt)
+    pack = _read(executor,receipt.result_ref,BaselinePack)
+    if pack.input_set_ref != manifest.input_set_ref:
+        raise ValueError('baseline replay result belongs to another InputSet')
+    return select_baseline(pack,replay_proof_ref=_seal(executor,proof),
+        selection_policy_digest=inputs.policy_digest,
+        snapshot_digest=dataset.snapshot_ref.content_sha256,
+        cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=executor)
+
+
+def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: ArtifactRefV1,
+    reader: ArtifactStore) -> BaselineSelection:
+    inputs,_,dataset,_ = validate_research_inputs(input_set_ref,reader)
+    selection = _read(reader,selection_ref,BaselineSelection)
+    pack = _read(reader,selection.pack_ref,BaselinePack)
+    proof = _read(reader,selection.baseline_replay_proof_ref,ReplayProof)
+    environment = _read(reader,inputs.environment_ref,EnvironmentIdentity)
+    value = dict(schema_version='p3-baseline-manifest-v1',input_set_ref=input_set_ref,
+        required_baselines=tuple(item.value for item in BaselineId))
+    value['digest'] = _digest(value)
+    raw = canonical_json_bytes(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    manifest_ref = ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),media_type='application/json',locator=f'{digest}.blob')
+    _read(reader,manifest_ref,BaselineManifest)
+    validate_replay_proof(proof,manifest_ref=manifest_ref,result_ref=selection.pack_ref,
+        source=inputs.source,environment_ref=inputs.environment_ref,
+        sandbox_policy_digest=environment.sandbox_policy_digest,reader=reader)
+    expected = select_baseline(pack,replay_proof_ref=selection.baseline_replay_proof_ref,
+        selection_policy_digest=inputs.policy_digest,snapshot_digest=dataset.snapshot_ref.content_sha256,
+        cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=reader)
+    if pack.input_set_ref != input_set_ref or selection != expected:
+        raise ValueError('baseline selection differs from its frozen input or result')
+    return selection
+
+
+__all__ = ["ArtifactStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]

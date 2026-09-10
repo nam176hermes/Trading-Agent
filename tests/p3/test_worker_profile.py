@@ -135,7 +135,8 @@ class P3Repository(Repository):
         return True
 
 
-def test_p3_publication_commits_without_generic_success_finalize() -> None:
+@pytest.mark.parametrize("receipt_failure", [False, True])
+def test_p3_publication_commits_without_generic_success_finalize(receipt_failure) -> None:
     claimed = claim(max_attempts=1)
     claimed = replace(
         claimed, job_type=JobType.ALPHA_CAMPAIGN,
@@ -152,9 +153,16 @@ def test_p3_publication_commits_without_generic_success_finalize() -> None:
     class Publisher:
         def __init__(self):
             self.calls = []
+            self.recovered = []
 
         def publish(self, *args, **kwargs):
             self.calls.append((args, kwargs))
+
+        def recover_receipt(self, job_id):
+            assert self.calls, "receipt must follow SQL commit"
+            self.recovered.append(job_id)
+            if receipt_failure:
+                raise RuntimeError("retained CAS temporarily unavailable")
 
     repository = P3Repository(claimed)
     publisher = Publisher()
@@ -167,12 +175,18 @@ def test_p3_publication_commits_without_generic_success_finalize() -> None:
         prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=publisher,
     )
 
-    assert worker.run_once() is True
+    if receipt_failure:
+        with pytest.raises(RuntimeError, match="retained CAS"):
+            worker.run_once()
+    else:
+        assert worker.run_once() is True
+    assert publisher.recovered == [claimed.job_id]
     assert publisher.calls[0][0][:3] == ("request", claimed, ("entry",))
     assert not [call for call in repository.calls if call[0] == "finalize"]
 
 
-def test_p3_result_validator_parses_only_its_fixed_terminal_contract() -> None:
+@pytest.mark.parametrize('framing', [b'', b'\n', b' ', b'\n\n', b'\r\n'])
+def test_p3_result_validator_parses_only_its_fixed_terminal_contract(framing) -> None:
     ref = {
         "content_sha256": "b" * 64,
         "size_bytes": 1,
@@ -189,7 +203,11 @@ def test_p3_result_validator_parses_only_its_fixed_terminal_contract() -> None:
         "outcome": "NONE_QUALIFIED",
     }
     value["digest"] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-    raw = canonical_json_bytes(value)
+    raw = canonical_json_bytes(value) + framing
+    if framing not in {b'', b'\n'}:
+        with pytest.raises(ResultValidationError):
+            validate_p3_result_bytes("p3-primary-selection-v1", raw)
+        return
     assert validate_p3_result_bytes("p3-primary-selection-v1", raw).digest == value["digest"]
     with pytest.raises(ResultValidationError, match="invalid"):
         validate_p3_result_bytes("p3-parity-result-v1", raw)

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity, parse_contract
+from packages.alpha_lifecycle.baseline_campaign import _read
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest, EvaluationManifest, EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.contracts.results import BaselinePack, EvaluationResult, ReplayReceipt
 from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, retain_replica_outputs
@@ -67,7 +68,7 @@ class BubblewrapExecutor:
     def _argv(self, manifest_path: Path, result_path: Path, output_dir: Path) -> tuple[str, ...]:
         child = self._release_root / "scripts/run_p3_evaluation_child.py"
         return (
-            str(self._bwrap), "--unshare-all", "--die-with-parent", "--new-session",
+            str(self._bwrap), "--unshare-all", "--die-with-parent",
             "--clearenv", "--ro-bind", str(self._release_root), str(self._release_root),
             "--ro-bind", str(self._store_root), str(self._store_root),
             "--bind", str(output_dir), str(output_dir), "--proc", "/proc", "--dev", "/dev",
@@ -97,6 +98,17 @@ class BubblewrapExecutor:
         logical_trial_id: str, output_dir: Path,
     ) -> ReplayReceipt:
         manifest_ref = ArtifactRefV1.model_validate(manifest_ref)
+        try:
+            kind = json.loads(self._store.read_bytes(manifest_ref))['schema_version']
+            manifest = _read(self._store,manifest_ref,
+                BaselineManifest if kind == 'p3-baseline-manifest-v1' else EvaluationManifest)
+            input_set = _read(self._store,manifest.input_set_ref,InputSet)
+            environment = _read(self._store,input_set.environment_ref,EnvironmentIdentity)
+            if (input_set.source != self._source or input_set.environment_ref != self._environment_ref
+                or environment.sandbox_policy_digest != self._sandbox_policy_digest):
+                raise ValueError('input source or environment binding differs')
+        except (KeyError,TypeError,ValueError,OSError) as error:
+            raise SandboxHeld('HELD E_SANDBOX: input contract or binding is invalid') from error
         manifest_path = output_dir / "manifest-ref.json"
         result_path = output_dir / "result.json"
         manifest_path.write_bytes(canonical_json_bytes(manifest_ref))
@@ -105,42 +117,43 @@ class BubblewrapExecutor:
         try:
             completed = subprocess.run(
                 self._argv(manifest_path, result_path, output_dir), env={}, cwd="/",
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=300, check=False, preexec_fn=self._limits,
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise SandboxHeld("HELD E_SANDBOX: bounded child execution failed") from error
-        if completed.returncode != 0 or not result_path.is_file() or result_path.is_symlink():
+        if completed.returncode != 0:
             raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result")
-        raw = result_path.read_bytes()
-        if len(raw) > 64 * 1024**2:
-            raise SandboxHeld("HELD E_SANDBOX: child result exceeded the bound")
+        descriptor = -1
         try:
-            manifest_raw = self._store.read_bytes(manifest_ref)
-            if json.loads(manifest_raw)["schema_version"] == "p3-baseline-manifest-v1":
-                manifest = parse_contract("BaselineManifest", manifest_raw)
+            descriptor = os.open(result_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or not 1 <= before.st_size <= 64 * 1024**2):
+                raise ValueError("result must be a bounded regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(before.st_size + 1)
+            after = os.fstat(descriptor)
+            if (len(raw) != before.st_size or before.st_size != after.st_size
+                or before.st_mtime_ns != after.st_mtime_ns or before.st_ctime_ns != after.st_ctime_ns):
+                raise ValueError("result changed during descriptor read")
+        except (OSError, ValueError) as error:
+            raise SandboxHeld("HELD E_SANDBOX: child result file is unsafe") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        try:
+            if isinstance(manifest,BaselineManifest):
                 result = parse_contract("BaselinePack", raw)
-                matches = (isinstance(result, BaselinePack) and isinstance(manifest, BaselineManifest)
+                matches = (isinstance(result, BaselinePack)
                            and result.input_set_ref == manifest.input_set_ref)
             else:
-                manifest = parse_contract("EvaluationManifest", manifest_raw)
                 result = parse_contract("EvaluationResult", raw)
                 matches = isinstance(result, EvaluationResult) and result.manifest_ref == manifest_ref
             if not matches or canonical_json_bytes(result) != raw:
                 raise ValueError("result differs from the requested manifest")
-            if not isinstance(result, (BaselinePack, EvaluationResult)) or not isinstance(manifest, (BaselineManifest, EvaluationManifest)):
+            if not isinstance(result, (BaselinePack, EvaluationResult)):
                 raise ValueError("unsupported result or manifest")
-            input_set = parse_contract("InputSet", self._store.read_bytes(manifest.input_set_ref))
-            if not isinstance(input_set, InputSet):
-                raise ValueError("invalid InputSet")
-            environment = parse_contract("EnvironmentIdentity", self._store.read_bytes(input_set.environment_ref))
-            if (
-                input_set.source != self._source
-                or input_set.environment_ref != self._environment_ref
-                or not isinstance(environment, EnvironmentIdentity)
-                or environment.sandbox_policy_digest != self._sandbox_policy_digest
-            ):
-                raise ValueError("result source or environment binding differs")
             with localcontext() as context:
                 context.prec = 50
                 context.rounding = ROUND_HALF_EVEN

@@ -24,6 +24,30 @@ class ReplayError(ValueError):
     """Independent child results do not prove deterministic replay."""
 
 
+def validate_replay_proof(proof: ReplayProof, *, manifest_ref: ArtifactRefV1,
+    result_ref: ArtifactRefV1, source, environment_ref: ArtifactRefV1,
+    sandbox_policy_digest: str, reader) -> None:
+    """Bind retained parent receipts to the exact computation being consumed."""
+    proof = ReplayProof.model_validate(proof)
+    raw = reader.read_bytes(result_ref)
+    if (proof.manifest_digest != manifest_ref.content_sha256 or proof.result_digest != result_ref.content_sha256
+        or len(raw) != result_ref.size_bytes or hashlib.sha256(raw).hexdigest() != result_ref.content_sha256):
+        raise ReplayError('retained replay manifest or result differs')
+    identity = None
+    for replica,ref in zip(('R1','R2','R3'),proof.receipt_refs,strict=True):
+        raw = reader.read_bytes(ref)
+        receipt = ReplayReceipt.model_validate_json(raw)
+        current = (receipt.logical_trial_id,receipt.output_inventory_digest)
+        if (canonical_json_bytes(receipt) != raw or receipt.replicate != replica
+            or receipt.manifest_digest != proof.manifest_digest or receipt.result_ref != result_ref
+            or receipt.source != source or receipt.environment_ref != environment_ref
+            or receipt.sandbox_policy_digest != sandbox_policy_digest
+            or receipt.completed_at < receipt.started_at
+            or (identity is not None and identity != current)):
+            raise ReplayError('retained replay receipt identity differs')
+        identity = current
+
+
 def run_replays(
     manifest_ref: ArtifactRefV1,
     executor: SandboxExecutor,
@@ -71,4 +95,4 @@ def run_replays(
     return ReplayProof.model_validate(payload)
 
 
-__all__ = ["ReplayError", "SandboxExecutor", "run_replays"]
+__all__ = ["ReplayError", "SandboxExecutor", "run_replays", "validate_replay_proof"]

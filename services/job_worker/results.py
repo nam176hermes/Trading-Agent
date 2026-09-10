@@ -618,6 +618,7 @@ class ResultValidator:
 def validate_p3_result_bytes(validator_id: str, raw: bytes):
     """Parse one operation-specific terminal P3 result contract."""
 
+    from packages.engine_contracts.serialization import canonical_json_bytes
     from packages.alpha_lifecycle.contracts.authority import (
         IntegrationReceipt,
         PrimarySelection,
@@ -652,9 +653,13 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
             proposal = PublicationProposal.model_validate_json(raw)
             if proposal.request.stage != publication_stages[validator_id]:
                 raise ValueError("publication stage differs from fixed operation")
-            return proposal
-        model = models[validator_id]
-        return model.model_validate_json(raw)
+            result = proposal
+        else:
+            result = models[validator_id].model_validate_json(raw)
+        canonical = canonical_json_bytes(result)
+        if raw not in (canonical, canonical + b"\n"):
+            raise ValueError("P3 result framing is not canonical")
+        return result
     except KeyError as exc:
         raise ResultValidationError("P3 result validator is not allowlisted") from exc
     except Exception as exc:

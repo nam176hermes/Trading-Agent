@@ -25,7 +25,7 @@ from packages.alpha_lifecycle.authority import (
 )
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody
+from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody, JobMetadata, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
 from packages.project_status import derive_project_status
 from apps.job_api.contracts import (
@@ -53,6 +53,17 @@ def build_enqueue_body(payload: AlphaCampaignPayload, nonce: object) -> EnqueueJ
         job_type="ALPHA_CAMPAIGN", payload=payload,
         idempotency_key=f"p3:{payload.logical_trial_id}:{nonce}", priority=0,
     )
+
+
+def _bind_job_response(job: JobMetadata, body: EnqueueJobBody, operator: str, *, job_id: str | None = None) -> None:
+    if (
+        job.job_type != body.job_type or job.payload != body.payload
+        or job.payload_fingerprint != payload_fingerprint(body.payload)
+        or job.priority != body.priority
+        or job.actor.actor_type.value != "OPERATOR" or job.actor.actor_id != operator
+        or (job_id is not None and job.job_id != job_id)
+    ):
+        raise RuntimeError("HELD E_JOB_API: response does not bind the authorized job")
 
 
 def _read_token(path: Path) -> str:
@@ -101,8 +112,9 @@ def _request_json(method: str, path: str, token: str, body: object | None = None
 def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     operation = validate_workflow_operation(workflow_operation)
     source = SourceIdentity.model_validate(canonical_source_identity(ROOT))
-    authorization = validate_request(request_file, source, operation)
-    payload = build_alpha_campaign_payload(authorization, source, workflow_operation)
+    request = validate_request(request_file, source, operation)
+    authorization = request.authorization
+    payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=request.operation_input)
     status = derive_project_status(ROOT)
     if not (
         status["gates"]["HWC_SOURCE_READY"] == "PASS"
@@ -113,21 +125,22 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     output_dir.mkdir(mode=0o700,parents=False,exist_ok=False)
     _write(output_dir,"source-identity.json",source)
     _write(output_dir,"input-inventory.json",{
-        "authorization_ref":authorization.digest,
-        ("fixture_plan_ref" if workflow_operation == "p3-integration-fixture-v1" else "input_set_ref"):payload.manifest_ref,
+        "authorization_ref":payload.authorization_ref,
+        ("fixture_plan_ref" if workflow_operation == "p3-integration-fixture-v1" else "operation_input_ref"):payload.manifest_ref,
         "review_ref":authorization.review_ref,
     })
     _write(output_dir,"preflight.json",{
         "schema_version":"p3-preflight-v1","operation":operation,
-        "source":source,"status":"PASS",
+        "source":source,"status":"STRUCTURE_VALIDATED","execution_authorized":False,
         "authority":{"broker":False,"live":False,"network":False,"production":False},
     })
     _write(output_dir,"payload.json",payload)
-    return authorization, payload
+    return request, payload
 
 
 def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
-    authorization, payload = preflight(request_file, output_dir, workflow_operation)
+    request, payload = preflight(request_file, output_dir, workflow_operation)
+    authorization = request.authorization
     from packages.data_catalog.artifact_store import LocalArtifactStore
     from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan
     store = LocalArtifactStore(artifact_root)
@@ -140,17 +153,29 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
         plan = FixturePlan.model_validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:
             raise RuntimeError("HELD E_MANIFEST: fixture plan differs from source")
-    payload = stage_alpha_campaign_payload(store,authorization,payload.expected_source,workflow_operation,manifest)
+    payload = stage_alpha_campaign_payload(store,authorization,payload.expected_source,workflow_operation,manifest, operation_input=request.operation_input)
+    if request.operation_input is not None:
+        from packages.alpha_lifecycle.authority import AuthorityHeld
+        from services.job_store.p3_operation_authority import accept_operation_authorization
+        credential_directory = os.environ.get("P3_AUTHORITY_CREDENTIALS_DIRECTORY")
+        if not credential_directory:
+            raise AuthorityHeld("HELD E_SQL_AUTHORITY: protected acceptance credentials unavailable")
+        accept_operation_authorization(
+            authorization, request.operation_input, review,
+            credential_directory=Path(credential_directory),
+        )
     token = _read_token(token_file)
+    body = build_enqueue_body(payload, authorization.nonce)
     enqueue_raw = _request_json(
         "POST", "/v1/jobs", token,
-        build_enqueue_body(payload, authorization.nonce).model_dump(mode="json"),
+        body.model_dump(mode="json"),
     )
     try:
         outcome = enqueue_raw["data"]["outcome"]  # type: ignore[index]
         envelope = (
             JobEnqueuedEnvelope if outcome == "ENQUEUED" else JobDeduplicatedEnvelope
         ).model_validate(enqueue_raw)
+        _bind_job_response(envelope.data.job, body, review.operator_identity)
         job_id = envelope.data.job.job_id
     except Exception as error:
         raise RuntimeError("HELD E_JOB_API: enqueue response contract is invalid") from error
@@ -160,6 +185,7 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
         detail_raw = _request_json("GET", f"/v1/jobs/{job_id}", token)
         try:
             detail = JobDetailEnvelope.model_validate(detail_raw)
+            _bind_job_response(detail.data.job, body, review.operator_identity, job_id=job_id)
             state = detail.data.job.state.value
         except Exception as error:
             raise RuntimeError("HELD E_JOB_API: detail response contract is invalid") from error

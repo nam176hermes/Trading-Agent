@@ -31,7 +31,7 @@ class FixturePlan(DigestModel):
     purpose: Literal['SYNTHETIC_ONLY']
     native_request_digest: Sha256
     policy_set_sha256: Sha256
-    sql_revision: Literal['0020_p3_alpha_campaign_authority']
+    sql_revision: Literal['0021_p3_operation_authority']
     cleanup_policy: Literal['OWNED_ROOTS_ONLY']
 
 
@@ -173,6 +173,11 @@ class P3IntegrationFixtureExecutor:
             sql = run_sql_fixture(source,progress=progress,heartbeat=heartbeat,
                                   owned_root=self.private_root/("sql-"+hashlib.sha256(
                                       f"{job.job_id}/{job.attempt_id}".encode()).hexdigest()[:32]))
+            if (sql.get('sql_revision') != plan.sql_revision
+                or sql.get('source') != source.model_dump(mode='json')
+                or sql.get('cleanup',{}).get('root_absent') is not True
+                or sql.get('cleanup',{}).get('server_stopped') is not True):
+                raise AuthorityHeld('HELD E_SQL_PROOF: source, revision or cleanup differs')
             if not REQUIRED_SQL_CHECKS <= set(sql['checks']):
                 raise AuthorityHeld('HELD E_SQL_COVERAGE: required SQL qualification vectors are missing')
             sql_ref = self.store.put_bytes(canonical_json_bytes(sql),media_type='application/json')

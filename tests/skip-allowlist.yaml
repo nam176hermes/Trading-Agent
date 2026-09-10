@@ -492,6 +492,20 @@
     },
     {
       "allowed_in_ci": true,
+      "approval_record_type": "disposable-postgres-test-approval-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "job-plane",
+      "reason": "marker expression deselected: runtime_postgres",
+      "reason_category": "DISPOSABLE_POSTGRES_REQUIRED",
+      "required_binary_or_service": "approved private PostgreSQL 16 fixture and explicit P3_OPERATION_SQL_SOURCE_TEST=1 selection",
+      "review_by": "2026-10-31",
+      "security_critical": true,
+      "target_phase": "P3 operation-authority disposable SQL source validation",
+      "test_node_id": "tests/p3/test_operation_sql.py::test_operation_authority_in_disposable_postgres"
+    },
+    {
+      "allowed_in_ci": true,
       "approval_record_type": "host-capability-review-v1",
       "component": "root",
       "outcome": "deselected",
