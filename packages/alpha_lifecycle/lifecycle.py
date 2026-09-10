@@ -84,7 +84,7 @@ def to_domain_payload(
         predecessor_sha256=event.predecessor_sha256,
         registry_event_sha256=event.event_sha256,
         registry_event_text=raw.decode(),
-        evidence_sha256=evidence.digest,
+        evidence_sha256=hashlib.sha256(canonical_json_bytes(evidence)).hexdigest(),
     )
 
 

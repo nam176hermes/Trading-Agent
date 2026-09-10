@@ -321,10 +321,22 @@ def upgrade() -> None:
         ELSE RETURN false;
       END CASE;
       RETURN coalesce(request->>'stage'=expected_stage
+        AND job_plane.p3_valid_ref(request->'evidence_ref')
+        AND jsonb_array_length(request->'proposed_event_refs')=jsonb_array_length(entries)
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(entries) WITH ORDINALITY e(value,position)
+          JOIN jsonb_array_elements(request->'proposed_event_refs') WITH ORDINALITY r(value,position)
+            USING (position)
+          WHERE NOT job_plane.p3_valid_ref(r.value)
+            OR r.value->>'content_sha256' IS DISTINCT FROM (e.value->>'canonical_event_text')::jsonb#>>'{payload,registry_event_sha256}'
+            OR r.value->>'media_type' IS DISTINCT FROM 'application/json'
+            OR r.value->>'size_bytes' IS DISTINCT FROM octet_length(convert_to(
+                 (e.value->>'canonical_event_text')::jsonb#>>'{payload,registry_event_text}','UTF8'))::text)
         AND (SELECT jsonb_agg(h->'alpha_id' ORDER BY h->>'alpha_id') FROM jsonb_array_elements(request->'expected_heads') h)=intent->'allowed_alpha_ids'
         AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(request->'expected_heads') h WHERE h->>'version' IS DISTINCT FROM '1.0.0')
         AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(entries) e
           WHERE ((intent->'allowed_alpha_ids') ? ((e->>'canonical_event_text')::jsonb#>>'{payload,alpha_id}')) IS NOT TRUE
+            OR (e->>'canonical_event_text')::jsonb#>>'{payload,evidence_sha256}' IS DISTINCT FROM request#>>'{evidence_ref,content_sha256}'
             OR (e->>'canonical_event_text')::jsonb#>>'{payload,alpha_version}' IS DISTINCT FROM '1.0.0'
             OR ((e->>'canonical_event_text')::jsonb#>>'{payload,registry_event_text}')::jsonb#>>'{record,source_sha}'
                IS DISTINCT FROM payload#>>'{expected_source,commit_sha}'),false);
@@ -415,6 +427,7 @@ def upgrade() -> None:
           END IF;
 """
     _replace("worker_commit_alpha_campaign", "ed27b67489d3af9f5f8304858fe3fbb134fa4722808aaeccf9686e049cc3279e", (
+        ("P3 source authorization expired", "P3 source or operation publication authority rejected"),
         ("IF v_existing.semantic_request_digest<>v_request->>'semantic_request_digest' THEN",
          "IF v_existing.semantic_request_digest<>v_request->>'semantic_request_digest' OR v_existing.publication_request_text IS DISTINCT FROM public.canonical_domain_json(v_request) THEN"),
         ("a.input_set_digest=v_job.payload#>>'{manifest_ref,content_sha256}'",

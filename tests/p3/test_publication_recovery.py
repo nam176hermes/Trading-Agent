@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 import hashlib
+import json
 
 import pytest
 from psycopg import OperationalError
@@ -22,9 +23,13 @@ def _publication(tmp_path, failures, *, recovered=False, result_updates=None):
     store = LocalArtifactStore(root)
     entry = _entry()
     ref = store.put_bytes(b'{}', media_type='application/json')
+    envelope = json.loads(entry.canonical_event_text)
+    envelope['payload']['evidence_sha256'] = ref.content_sha256
+    entry = entry.model_copy(update={'canonical_event_text':canonical_json_bytes(envelope).decode()})
+    registry_ref = store.put_bytes(envelope['payload']['registry_event_text'].encode(), media_type='application/json')
     payload = _request().model_dump(mode='json', exclude={'digest'})
     payload.update(evidence_ref=ref.model_dump(mode='json'),
-                   proposed_event_refs=[ref.model_dump(mode='json')])
+                   proposed_event_refs=[registry_ref.model_dump(mode='json')])
     payload['digest'] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     request = PublicationRequest.model_validate_json(canonical_json_bytes(payload))
     value = dict(schema_version='p3-job-commit-result-v1', job_id=request.job_id,
@@ -32,7 +37,7 @@ def _publication(tmp_path, failures, *, recovered=False, result_updates=None):
                  semantic_request_digest=request.semantic_request_digest,
                  prepublication_ref=ref.model_dump(mode='json'),
                  ledger_event_ids=[str(entry.event_id)],
-                 registry_event_refs=[ref.model_dump(mode='json')],
+                 registry_event_refs=[registry_ref.model_dump(mode='json')],
                  alpha_outcome='NOT_EVALUATED')
     value.update(result_updates or {})
     value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()

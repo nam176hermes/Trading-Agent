@@ -1,5 +1,7 @@
 import hashlib
 import importlib.util
+import json
+import pytest
 from pathlib import Path
 from uuid import UUID
 
@@ -175,8 +177,15 @@ def _entry() -> DomainAppendEntry:
 
 
 def test_private_transport_is_closed_and_size_bounded() -> None:
-    request = _request()
     entry = _entry()
+    payload = json.loads(entry.canonical_event_text)['payload']
+    request_value = _request().model_dump(mode='json', exclude={'digest'})
+    request_value.update(evidence_ref=_ref('d').model_dump(mode='json'), proposed_event_refs=[dict(
+        content_sha256=payload['registry_event_sha256'],
+        size_bytes=len(payload['registry_event_text'].encode()), media_type='application/json',
+        locator=payload['registry_event_sha256']+'.blob')])
+    request_value['digest'] = hashlib.sha256(canonical_json_bytes(request_value)).hexdigest()
+    request = PublicationRequest.model_validate_json(canonical_json_bytes(request_value))
     transport = PublicationTransport(
         job_id=request.job_id,
         attempt_id="attempt-1",
@@ -188,6 +197,32 @@ def test_private_transport_is_closed_and_size_bounded() -> None:
     encoded = transport.canonical_bytes()
     assert len(encoded) <= 1_048_576
     assert PublicationTransport.from_canonical_bytes(encoded) == transport
+
+
+@pytest.mark.parametrize('fault', ['order', 'size', 'media', 'evidence', 'count'])
+def test_publication_transport_binds_ordered_artifacts(tmp_path, fault):
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_worker.p3_operation_fixture import publication_entries, _sealed
+    store = LocalArtifactStore(tmp_path)
+    evidence = store.put_bytes(b'{}', media_type='application/json')
+    entries, refs, heads = publication_entries(store, evidence, ('a0.test',))
+    request = _request().model_dump(mode='json')
+    request.update(evidence_ref=evidence.model_dump(mode='json'), expected_heads=heads,
+                   proposed_event_refs=[r.model_dump(mode='json') for r in refs])
+    if fault == 'order':
+        request['proposed_event_refs'].reverse()
+    elif fault == 'size':
+        request['proposed_event_refs'][0]['size_bytes'] += 1
+    elif fault == 'media':
+        request['proposed_event_refs'][0]['media_type'] = 'text/plain'
+    elif fault == 'evidence':
+        request['evidence_ref'] = _ref('f').model_dump(mode='json')
+    else:
+        request['proposed_event_refs'].pop()
+    request = PublicationRequest.model_validate_json(_sealed(request))
+    with pytest.raises(ValueError, match='publication artifact'):
+        PublicationTransport(job_id=request.job_id, attempt_id='attempt-1',
+            worker_id='worker-1', lease_token='abcdefghijklmnop', request=request, entries=entries)
 
 
 def test_unprivileged_publication_proposal_is_validated_before_worker_commit() -> None:

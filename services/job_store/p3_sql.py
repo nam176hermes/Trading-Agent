@@ -92,6 +92,19 @@ class PublicationTransport(StrictModel):
     def _matches_request(self) -> "PublicationTransport":
         if self.job_id != self.request.job_id:
             raise ValueError("transport job does not match publication request")
+        if len(self.entries) != len(self.request.proposed_event_refs):
+            raise ValueError("publication artifact count differs from entries")
+        for entry, ref in zip(self.entries, self.request.proposed_event_refs, strict=True):
+            payload = EventEnvelope[AlphaRegistryTransitionRecordedV1].model_validate_json(
+                entry.canonical_event_text
+            ).payload
+            if (
+                payload.evidence_sha256 != self.request.evidence_ref.content_sha256
+                or ref.content_sha256 != payload.registry_event_sha256
+                or ref.size_bytes != len(payload.registry_event_text.encode("utf-8"))
+                or ref.media_type != "application/json"
+            ):
+                raise ValueError("publication artifact does not match its ordered entry")
         if len(canonical_json_bytes(self)) > _MAX_TRANSPORT_BYTES:
             raise ValueError("publication transport exceeds 1 MiB")
         return self

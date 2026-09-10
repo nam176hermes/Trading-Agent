@@ -51,3 +51,13 @@ def test_transition_planning_is_hash_bound_but_not_durable_acceptance() -> None:
     assert event.artifact.content_sha256 == event.event_sha256
     with pytest.raises(AlphaRegistryError, match="start at IDEA"):
         plan_transition(_record(AlphaLifecycleStatus.CANDIDATE), None, _evidence())
+
+
+def test_domain_payload_references_full_prepublication_artifact_bytes():
+    from packages.alpha_lifecycle.lifecycle import to_domain_payload
+    evidence = _evidence()
+    event = plan_transition(_record(AlphaLifecycleStatus.IDEA), None, evidence)
+    payload = to_domain_payload(event,evidence,epoch_id='p3-btc-d1-e1')
+    content_digest = hashlib.sha256(canonical_json_bytes(evidence)).hexdigest()
+    assert content_digest != evidence.digest
+    assert payload.evidence_sha256 == content_digest

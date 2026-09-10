@@ -102,3 +102,12 @@ expiry assertions; heartbeat ticks continue while that window expires. No
 production policy value changed. Static now retains 124 existing diagnostics,
 with none in the new operation fixture module. Protected-main Foundation and
 T-P3-060 must be rerun for the merged source; these checks are not that proof.
+
+Publication now binds each event's evidence to the full canonical artifact hash
+and each ordered registry reference to its entry's hash, UTF-8 byte size and JSON
+media type. The worker transport rejects mismatches early; SQL independently
+rejects direct malformed calls before the same atomic transaction can publish.
+Five focused negative tests first failed, and a direct SQL permutation was
+accepted before correction. Afterwards 59 focused and 285 adjacent tests passed
+(one host test skipped); the selected PostgreSQL 16 test passed in 68.66 seconds,
+including unchanged event/outbox/head/job state after rejection and real cleanup.

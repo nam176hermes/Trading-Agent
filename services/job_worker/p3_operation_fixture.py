@@ -414,6 +414,32 @@ def _check_publication(sock, name, root, source, mark):
         assert not worker.finalize(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             expected_state='RUNNING',expected_attempt_outcome='RUNNING',final_state='SUCCEEDED',
             reason_code='PROCESS_EXITED',trace_id='test:no-generic-publication',alpha_campaign=True)
+        wrong_event = json.loads(entries[0].canonical_event_text)
+        wrong_event['payload']['evidence_sha256'] = 'e'*64
+        wrong_evidence_entries = (entries[0].model_copy(update={'canonical_event_text':canonical_json_bytes(wrong_event).decode()}),*entries[1:])
+        transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
+            worker_id=claim.worker_id,lease_token=claim.lease_token,request=request,entries=wrong_evidence_entries)).decode()
+        with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
+            connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                claim.worker_id,claim.lease_token,transport,'test:wrong-prepublication-evidence'))
+        for fault in ('order','size','media','missing_ref_field','malformed_evidence'):
+            malformed = request.model_dump(mode='json')
+            if fault == 'order':
+                malformed['proposed_event_refs'].reverse()
+            elif fault == 'size':
+                malformed['proposed_event_refs'][0]['size_bytes'] += 1
+            elif fault == 'media':
+                malformed['proposed_event_refs'][0]['media_type'] = 'text/plain'
+            elif fault == 'missing_ref_field':
+                del malformed['proposed_event_refs'][0]['size_bytes']
+            else:
+                del malformed['evidence_ref']['size_bytes']
+            transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
+                worker_id=claim.worker_id,lease_token=claim.lease_token,
+                request=json.loads(_sealed(malformed)),entries=entries)).decode()
+            with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
+                connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                    claim.worker_id,claim.lease_token,transport,'test:publication-ref-'+fault))
         wrong_entries, wrong_refs, _ = publication_entries(store,evidence,FAMILY_IDS,source_sha='f'*40)
         wrong = request.model_dump(mode='json')
         wrong['proposed_event_refs'] = [r.model_dump(mode='json') for r in wrong_refs]
@@ -428,6 +454,7 @@ def _check_publication(sock, name, root, source, mark):
             for table in ('domain_events','event_outbox'):
                 assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id=ANY(%s)',(event_ids,)).fetchone() == (0,)
             assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (0,)
+            assert observer.execute('SELECT count(*) FROM public.p3_alpha_heads WHERE alpha_id=ANY(%s)',(list(FAMILY_IDS),)).fetchone() == (0,)
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             blocker.execute('SELECT job_id FROM public.jobs WHERE job_id=%s FOR UPDATE',(claim.job_id,))
             with ThreadPoolExecutor(max_workers=2) as threads:
