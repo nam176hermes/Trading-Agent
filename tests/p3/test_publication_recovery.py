@@ -16,7 +16,7 @@ from tests.jobs.test_worker_lifecycle import claim
 from tests.p3.test_sql_authority import _entry, _request
 
 
-def _publication(tmp_path, failures, *, recovered=False):
+def _publication(tmp_path, failures, *, recovered=False, result_updates=None):
     root = tmp_path / 'cas'
     root.mkdir(mode=0o700)
     store = LocalArtifactStore(root)
@@ -34,6 +34,7 @@ def _publication(tmp_path, failures, *, recovered=False):
                  ledger_event_ids=[str(entry.event_id)],
                  registry_event_refs=[ref.model_dump(mode='json')],
                  alpha_outcome='NOT_EVALUATED')
+    value.update(result_updates or {})
     value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
     class Pool:
@@ -42,6 +43,7 @@ def _publication(tmp_path, failures, *, recovered=False):
             self.reads = 0
             self.failures = iter(failures)
             self.commit_error = None
+            self.transactions_committed = 0
 
         @contextmanager
         def connection(self):
@@ -52,6 +54,7 @@ def _publication(tmp_path, failures, *, recovered=False):
             yield self
             if self.commit_error is not None:
                 raise self.commit_error
+            self.transactions_committed += 1
 
         def execute(self, sql, parameters):
             if sql == P3PublicationRepository.COMMIT_SQL:
@@ -104,3 +107,36 @@ def test_unknown_commit_is_reconciled_without_blind_retry(tmp_path, recovered):
             repository.publish(request, claimed, (entry,), trace_id='p3:test')
     assert len(pool.commits) == 1
     assert pool.reads == 1
+
+
+@pytest.mark.parametrize('path', ['publish', 'recover', 'read'])
+@pytest.mark.parametrize('updates', [
+    {'job_id': 'another-job'},
+    {'idempotency_key': 'another-request'},
+    {'semantic_request_digest': 'f' * 64},
+    {'prepublication_ref': _request().evidence_ref.model_dump(mode='json')},
+    {'registry_event_refs': [_request().proposed_event_refs[0].model_dump(mode='json')]},
+    {'alpha_outcome': 'PASS'},
+])
+def test_commit_result_is_bound_to_request_on_every_return_path(tmp_path, path, updates):
+    repository, pool, request, claimed, entry, _ = _publication(
+        tmp_path, [OperationalError('connection lost')] if path == 'recover' else [],
+        recovered=True, result_updates=updates)
+    with pytest.raises(ValueError, match='commit result'):
+        if path == 'read':
+            repository.read_commit(request)
+        else:
+            repository.publish(request, claimed, (entry,), trace_id='p3:test')
+    assert len(pool.commits) <= 1  # Never repeat an unknown transaction outcome.
+    assert pool.transactions_committed == 0
+
+
+@pytest.mark.parametrize('recovered', [False, True])
+def test_publication_rejects_other_ledger_event_even_with_valid_result_digest(tmp_path, recovered):
+    repository, pool, request, claimed, entry, _ = _publication(
+        tmp_path, [OperationalError('connection lost')] if recovered else [],
+        recovered=recovered,
+        result_updates={'ledger_event_ids': ['99999999-9999-5999-8999-999999999999']})
+    with pytest.raises(ValueError, match='commit result'):
+        repository.publish(request, claimed, (entry,), trace_id='p3:test')
+    assert len(pool.commits) == 1

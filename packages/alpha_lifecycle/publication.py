@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from uuid import UUID
+from typing import TypeVar
 
 from pydantic import BaseModel
 
@@ -18,6 +19,17 @@ from packages.alpha_lifecycle.contracts.lifecycle import (
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_publication_repository import JobCommitResult
+
+
+Model = TypeVar("Model", bound=BaseModel)
+
+
+def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model:
+    raw = store.read_bytes(ref)
+    value = model.model_validate_json(raw)
+    if canonical_json_bytes(value) != raw:
+        raise ValueError("publication artifact is not canonical")
+    return value
 
 
 def _seal(store: ArtifactStore, value: object) -> ArtifactRefV1:
@@ -48,7 +60,8 @@ def build_publication_receipt(
     committed_at: datetime,
     store: ArtifactStore,
 ) -> PublicationReceipt:
-    commit = JobCommitResult.model_validate(commit)
+    request = _read(store, request_ref, PublicationRequest)
+    commit = JobCommitResult.model_validate(commit).bound_to(request)
     payload = {
         "schema_version": "p3-publication-receipt-v1",
         "request_ref": request_ref,
@@ -71,7 +84,18 @@ def build_closure_report(
     projection_digest: str | None = None,
 ) -> CampaignClosureReport:
     request = PublicationRequest.model_validate(request)
-    evidence = PrePublicationEvidence.model_validate_json(store.read_bytes(prepublication_ref))
+    receipt = PublicationReceipt.model_validate(receipt)
+    committed_request = _read(store, receipt.request_ref, PublicationRequest)
+    commit = _read(store, receipt.commit_result_ref, JobCommitResult).bound_to(request)
+    evidence = _read(store, prepublication_ref, PrePublicationEvidence)
+    if (
+        committed_request != request
+        or prepublication_ref != request.evidence_ref
+        or evidence.stage != request.stage
+        or receipt.ledger_event_ids != commit.ledger_event_ids
+        or receipt.registry_event_refs != commit.registry_event_refs
+    ):
+        raise ValueError("publication closure artifacts do not match the committed request")
     payload = {
         "schema_version": "p3-campaign-closure-report-v1",
         "stage": request.stage,

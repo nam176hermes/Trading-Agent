@@ -38,6 +38,24 @@ class JobCommitResult(DigestModel):
     ]
     alpha_outcome: Literal["NOT_EVALUATED", "PASS", "FAIL"]
 
+    def bound_to(
+        self, request: PublicationRequest, *, ledger_event_ids: tuple[UUID, ...] | None = None
+    ) -> "JobCommitResult":
+        """Validate response identity; a valid digest alone does not bind a commit."""
+        if (
+            self.job_id != request.job_id
+            or self.idempotency_key != request.idempotency_key
+            or self.semantic_request_digest != request.semantic_request_digest
+            or self.prepublication_ref != request.evidence_ref
+            or self.registry_event_refs != request.proposed_event_refs
+            or len(self.ledger_event_ids) != len(self.registry_event_refs)
+            or len(set(self.ledger_event_ids)) != len(self.ledger_event_ids)
+            or (self.alpha_outcome == "NOT_EVALUATED") != (request.stage == "REGISTER")
+            or (ledger_event_ids is not None and self.ledger_event_ids != ledger_event_ids)
+        ):
+            raise ValueError("P3 commit result does not match publication request")
+        return self
+
 
 class _Pool(Protocol):
     def connection(self): ...
@@ -87,7 +105,12 @@ class P3PublicationRepository:
                 with self._pool.connection() as connection:
                     with connection.transaction():
                         row = connection.execute(self.COMMIT_SQL, parameters).fetchone()
-                break
+                        if row is None or row["result"] is None:
+                            raise RuntimeError("P3 commit capability returned no result")
+                        result = JobCommitResult.model_validate_json(
+                            canonical_json_bytes(row["result"])
+                        ).bound_to(request, ledger_event_ids=tuple(entry.event_id for entry in entries))
+                return result
             except (DeadlockDetected, SerializationFailure):
                 # PostgreSQL has aborted this transaction. The same SQL capability
                 # checks the current fence again on every bounded retry.
@@ -96,11 +119,11 @@ class P3PublicationRepository:
             except OperationalError:
                 recovered = self.read_commit(request)
                 if recovered is not None:
-                    return recovered
+                    return recovered.bound_to(
+                        request, ledger_event_ids=tuple(entry.event_id for entry in entries)
+                    )
                 raise
-        if row is None or row["result"] is None:
-            raise RuntimeError("P3 commit capability returned no result")
-        return JobCommitResult.model_validate_json(canonical_json_bytes(row["result"]))
+        raise RuntimeError("P3 commit retries exhausted")
 
     def read_commit(self, request: PublicationRequest) -> JobCommitResult | None:
         request = PublicationRequest.model_validate(request)
@@ -111,7 +134,9 @@ class P3PublicationRepository:
             ).fetchone()
         if row is None or row["result"] is None:
             return None
-        return JobCommitResult.model_validate_json(canonical_json_bytes(row["result"]))
+        return JobCommitResult.model_validate_json(
+            canonical_json_bytes(row["result"])
+        ).bound_to(request)
 
 
 __all__ = ["JobCommitResult", "P3PublicationRepository"]
