@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
-from packages.alpha_lifecycle.replay import run_replays
+from packages.alpha_lifecycle.baseline_campaign import execute_baseline_manifest
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
@@ -39,11 +39,11 @@ def main() -> None:
         environment_ref=ArtifactRefV1.model_validate_json(args.environment_ref.read_bytes()),
         sandbox_policy_digest=args.sandbox_policy_digest,
     )
-    proof = run_replays(
+    result = execute_baseline_manifest(
         ArtifactRefV1.model_validate_json(args.manifest_ref.read_bytes()), executor,
         logical_trial_id=args.logical_trial_id, output_root=args.output,
     )
-    sys.stdout.buffer.write(canonical_json_bytes(proof) + b"\n")
+    sys.stdout.buffer.write(canonical_json_bytes(result) + b"\n")
 
 
 if __name__ == "__main__":

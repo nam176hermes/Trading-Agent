@@ -308,7 +308,7 @@ def upgrade() -> None:
     CREATE FUNCTION job_plane.p3_publication_authorized(payload jsonb,bound_job text,request jsonb,entries jsonb)
       RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE SET search_path=pg_catalog
     AS $publication$
-    DECLARE intent jsonb; expected_stage text;
+    DECLARE intent jsonb; expected_stage text; states jsonb;
     BEGIN
       IF NOT job_plane.p3_payload_authorized(payload,bound_job) THEN RETURN false; END IF;
       SELECT o.intent_text::jsonb INTO intent FROM public.p3_operation_authorizations o
@@ -320,7 +320,24 @@ def upgrade() -> None:
         WHEN 'p3-phase-exit-v1' THEN expected_stage:='EXIT_DECISION';
         ELSE RETURN false;
       END CASE;
+      SELECT jsonb_agg(((e.value->>'canonical_event_text')::jsonb#>>'{payload,registry_event_text}')::jsonb#>'{record,lifecycle_status}' ORDER BY e.position)
+        INTO states FROM jsonb_array_elements(entries) WITH ORDINALITY e(value,position);
+      IF (CASE expected_stage
+        WHEN 'REGISTER' THEN states='["IDEA","CANDIDATE","IDEA","CANDIDATE","IDEA","CANDIDATE","IDEA","CANDIDATE"]'::jsonb
+        WHEN 'RESEARCH_DECISION' THEN states IN ('["RESEARCHED","OOS_PASS"]'::jsonb,'["RESEARCHED","REJECTED"]'::jsonb)
+        WHEN 'EXIT_DECISION' THEN states IN ('["QUALIFIED"]'::jsonb,'["REJECTED"]'::jsonb)
+        ELSE false END) IS NOT TRUE THEN RETURN false; END IF;
       RETURN coalesce(request->>'stage'=expected_stage
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(entries) e
+          CROSS JOIN LATERAL (SELECT ((e->>'canonical_event_text')::jsonb#>>'{payload,registry_event_text}')::jsonb->'record' AS record) r
+          WHERE (CASE
+            WHEN r.record->>'lifecycle_status' IN ('IDEA','CANDIDATE') THEN r.record->>'qualification_decision'='NOT_EVALUATED'
+              AND r.record->'metrics_sha256'='null'::jsonb AND r.record->'robustness_sha256'='null'::jsonb
+            WHEN r.record->>'lifecycle_status' IN ('OOS_PASS','QUALIFIED') THEN r.record->>'qualification_decision'='PASS'
+              AND r.record->>'metrics_sha256' ~ '^[0-9a-f]{64}$' AND r.record->>'robustness_sha256' ~ '^[0-9a-f]{64}$'
+            WHEN r.record->>'lifecycle_status'='REJECTED' THEN r.record->>'qualification_decision'='FAIL'
+            ELSE true END) IS NOT TRUE)
         AND job_plane.p3_valid_ref(request->'evidence_ref')
         AND jsonb_array_length(request->'proposed_event_refs')=jsonb_array_length(entries)
         AND NOT EXISTS (

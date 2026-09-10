@@ -31,6 +31,7 @@ REQUIRED_OPERATION_CHECKS = frozenset({
     'OFFICIAL_INTENT_INPUT_REVIEW_AND_JOB_BINDING_PASS',
     'ENQUEUE_TWO_CONNECTION_AUTHORIZATION_EXPIRY_PASS',
     'OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS',
+    'RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS',
     'HOLDOUT_CANNOT_START_WITHOUT_DURABLE_CONSUMPTION_PASS',
 })
 
@@ -204,6 +205,8 @@ def check_operations(sock, name, root, payload, mark):
     _check_accepted(sock, name, payload.expected_source, mark)
     _check_enqueue_expiry(sock, name, payload.expected_source, mark)
     _check_publication(sock, name, root, payload.expected_source, mark)
+    for index, outcome in ((0, 'FAIL'), (1, 'PASS')):
+        _check_research_batch(sock, name, root, payload.expected_source, mark, index, outcome)
     _check_holdout_denial(sock, name, payload.expected_source, mark)
 
 
@@ -501,6 +504,96 @@ def _check_publication(sock, name, root, source, mark):
                 with _rejected(psycopg.errors.InsufficientPrivilege):
                     denied.execute('SELECT * FROM job_plane.worker_read_alpha_publication(%s)',(claim.job_id,))
     mark('OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS')
+
+
+def _check_research_batch(sock, name, root, source, mark, index, outcome):
+    from psycopg.conninfo import make_conninfo
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    from packages.alpha_lifecycle.operation_input import FAMILY_IDS
+    from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_store.p3_publication_repository import P3PublicationRepository
+    from services.job_store.worker_repository import WorkerRepository
+    from services.job_worker.recovery import ProcessIdentity
+    alpha = FAMILY_IDS[index]
+    job_id = f'job_research_batch_{index}'
+    operation = f'p3-oos-a{index}-v1'
+    terminal = 'OOS_PASS' if outcome == 'PASS' else 'REJECTED'
+    auth,intent,review = _authorization(source,operation,'OOS',(alpha,),{'evaluation_manifest_ref':_reference('{}')})
+    with psycopg.connect(host=str(sock),dbname=name,user='trading_p3_authority') as authority:
+        authority.execute('SELECT job_plane.accept_p3_operation_authorization(%s,%s,%s)',(auth,intent,review))
+    payload = dict(schema_version='p3-alpha-campaign-payload-v1',operation='OOS',manifest_ref=_reference(intent),
+                   authorization_ref=_reference(auth),expected_source=source.model_dump(mode='json'),logical_trial_id=operation)
+    raw = canonical_json_bytes(payload).decode()
+    with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
+        api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+            (job_id,raw,hashlib.sha256(raw.encode()).hexdigest(),'p3:'+operation+':'+json.loads(auth)['nonce'],
+             'synthetic-operator',100,'test:research-batch',f'event_research_batch_enqueue_{index}'))
+    store = LocalArtifactStore(root/'operation-publication-cas')
+    evidence = store.put_bytes(b'{"purpose":"synthetic-research-batch-test"}',media_type='application/json')
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
+        row = observer.execute('SELECT stream_id,registry_event_text,registry_event_sha256 FROM public.p3_alpha_heads WHERE alpha_id=%s',(alpha,)).fetchone()
+        assert row is not None
+    stream,old_text,previous = row
+    entries,refs = [],[]
+    for sequence,status in ((3,'RESEARCHED'),(4,terminal)):
+        registry = json.loads(old_text)
+        registry.update(sequence=sequence,predecessor_sha256=previous)
+        registry['record'].update(lifecycle_status=status,qualification_decision=outcome,qualification_reason='synthetic-qualification',
+            metrics_sha256='a'*64 if outcome == 'PASS' else None,robustness_sha256='b'*64 if outcome == 'PASS' else None)
+        ref = store.put_bytes(canonical_json_bytes(registry),media_type='application/json')
+        refs.append(ref)
+        event_id = uuid5(stream,canonical_json_bytes([sequence,ref.content_sha256]).decode())
+        event = json.loads(_entry().canonical_event_text)
+        event.update(event_id=str(event_id),stream_id=str(stream),sequence=sequence)
+        event['payload'].update(alpha_id=alpha,alpha_version='1.0.0',registry_sequence=sequence,
+            predecessor_sha256=previous,registry_event_sha256=ref.content_sha256,
+            registry_event_text=canonical_json_bytes(registry).decode(),evidence_sha256=evidence.content_sha256)
+        entries.append(DomainAppendEntry(event_id=event_id,stream_id=stream,sequence=sequence,
+            event_type='AlphaRegistryTransitionRecordedV1',canonical_event_text=canonical_json_bytes(event).decode(),
+            topic='p3.alpha-registry',outbox_payload_text=canonical_json_bytes({'event_id':str(event_id)}).decode()))
+        previous = ref.content_sha256
+    with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=1,kwargs={'row_factory':dict_row}) as pool:
+        worker = object.__new__(WorkerRepository)
+        worker._pool = pool
+        claim = worker.claim_next_alpha_campaign('worker_research_batch',30,'test:research-batch-claim')
+        assert claim is not None and claim.job_id == job_id
+        assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
+            ProcessIdentity(701,701,701,'d'*64),'test:research-start',alpha_campaign=True)
+        def request_for(count):
+            return json.loads(_sealed(dict(schema_version='p3-publication-request-v1',job_id=claim.job_id,
+                idempotency_key='synthetic-research',semantic_request_digest=hashlib.sha256(canonical_json_bytes(refs[:count])).hexdigest(),
+                stage='RESEARCH_DECISION',evidence_ref=evidence,
+                expected_heads=[dict(alpha_id=alpha,version='1.0.0',sequence=2,event_digest=row[2])],proposed_event_refs=refs[:count])))
+        transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
+            lease_token=claim.lease_token,request=request_for(1),entries=entries[:1])).decode()
+        with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
+            connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:incomplete-research'))
+        for decision,metrics in (('NOT_EVALUATED',None),('FAIL','a'*64),('PASS',None)):
+            wrong = json.loads(entries[-1].canonical_event_text)
+            record = json.loads(wrong['payload']['registry_event_text'])
+            record['record'].update(lifecycle_status='OOS_PASS',qualification_decision=decision,
+                metrics_sha256=metrics,robustness_sha256=metrics)
+            bad_ref = store.put_bytes(canonical_json_bytes(record),media_type='application/json')
+            wrong['payload'].update(registry_event_text=canonical_json_bytes(record).decode(),registry_event_sha256=bad_ref.content_sha256)
+            bad_entry = entries[-1].model_copy(update={'canonical_event_text':canonical_json_bytes(wrong).decode()})
+            bad_request = request_for(2)
+            bad_request['proposed_event_refs'][-1] = bad_ref.model_dump(mode='json')
+            bad_request['semantic_request_digest'] = hashlib.sha256(canonical_json_bytes(bad_request['proposed_event_refs'])).hexdigest()
+            transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
+                lease_token=claim.lease_token,request=json.loads(_sealed(bad_request)),entries=[entries[0],bad_entry])).decode()
+            with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
+                connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:contradictory-oos-decision'))
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
+            for table in ('domain_events','event_outbox'):
+                assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id=ANY(%s)',([e.event_id for e in entries],)).fetchone() == (0,)
+            assert observer.execute('SELECT registry_sequence FROM public.p3_alpha_heads WHERE alpha_id=%s',(alpha,)).fetchone() == (2,)
+            assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
+            assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (0,)
+        result = P3PublicationRepository(pool,store).publish(PublicationRequest.model_validate_json(canonical_json_bytes(request_for(2))),claim,tuple(entries),trace_id='test:complete-research')
+        assert len(result.ledger_event_ids) == 2 and result.alpha_outcome == outcome
+    mark('RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS')
 
 
 def _check_holdout_denial(sock, name, source, mark):
