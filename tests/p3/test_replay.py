@@ -56,7 +56,7 @@ def test_three_parent_observed_replays_are_byte_identical(tmp_path: Path) -> Non
     assert len({item[1] for item in executor.calls}) == 3
 
 
-@pytest.mark.parametrize("field", ("logical_trial_id", "source", "environment_ref", "sandbox_policy_digest", "result_ref"))
+@pytest.mark.parametrize("field", ("logical_trial_id", "source", "environment_ref", "sandbox_policy_digest", "output_inventory_digest", "result_ref"))
 def test_replay_rejects_mismatched_receipt_binding(tmp_path: Path, field: str) -> None:
     class MismatchedExecutor(Executor):
         def execute(self, manifest_ref, **kwargs):
@@ -70,7 +70,7 @@ def test_replay_rejects_mismatched_receipt_binding(tmp_path: Path, field: str) -
                 payload[field]["commit_sha"] = "9" * 40
             elif field == "environment_ref":
                 payload[field] = _ref("9" * 64).model_dump(mode="json")
-            elif field == "sandbox_policy_digest":
+            elif field in {"sandbox_policy_digest", "output_inventory_digest"}:
                 payload[field] = "9" * 64
             else:
                 payload[field]["size_bytes"] += 1

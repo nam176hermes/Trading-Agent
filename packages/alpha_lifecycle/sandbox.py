@@ -6,13 +6,17 @@ import os
 import hashlib
 import json
 import resource
+from decimal import ROUND_HALF_EVEN, localcontext
 import stat
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
-from packages.alpha_lifecycle.contracts.base import SourceIdentity
-from packages.alpha_lifecycle.contracts.results import ReplayReceipt
+from packages.alpha_lifecycle.contracts.base import SourceIdentity, parse_contract
+from packages.alpha_lifecycle.contracts.execution import BaselineManifest, EvaluationManifest, EnvironmentIdentity, InputSet
+from packages.alpha_lifecycle.contracts.results import BaselinePack, EvaluationResult, ReplayReceipt
+from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, retain_replica_outputs
+from packages.alpha_lifecycle.replica_validation import validate_replica_result
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -111,8 +115,44 @@ class BubblewrapExecutor:
         raw = result_path.read_bytes()
         if len(raw) > 64 * 1024**2:
             raise SandboxHeld("HELD E_SANDBOX: child result exceeded the bound")
-        json.loads(raw)
+        try:
+            manifest_raw = self._store.read_bytes(manifest_ref)
+            if json.loads(manifest_raw)["schema_version"] == "p3-baseline-manifest-v1":
+                manifest = parse_contract("BaselineManifest", manifest_raw)
+                result = parse_contract("BaselinePack", raw)
+                matches = (isinstance(result, BaselinePack) and isinstance(manifest, BaselineManifest)
+                           and result.input_set_ref == manifest.input_set_ref)
+            else:
+                manifest = parse_contract("EvaluationManifest", manifest_raw)
+                result = parse_contract("EvaluationResult", raw)
+                matches = isinstance(result, EvaluationResult) and result.manifest_ref == manifest_ref
+            if not matches or canonical_json_bytes(result) != raw:
+                raise ValueError("result differs from the requested manifest")
+            if not isinstance(result, (BaselinePack, EvaluationResult)) or not isinstance(manifest, (BaselineManifest, EvaluationManifest)):
+                raise ValueError("unsupported result or manifest")
+            input_set = parse_contract("InputSet", self._store.read_bytes(manifest.input_set_ref))
+            if not isinstance(input_set, InputSet):
+                raise ValueError("invalid InputSet")
+            environment = parse_contract("EnvironmentIdentity", self._store.read_bytes(input_set.environment_ref))
+            if (
+                input_set.source != self._source
+                or input_set.environment_ref != self._environment_ref
+                or not isinstance(environment, EnvironmentIdentity)
+                or environment.sandbox_policy_digest != self._sandbox_policy_digest
+            ):
+                raise ValueError("result source or environment binding differs")
+            with localcontext() as context:
+                context.prec = 50
+                context.rounding = ROUND_HALF_EVEN
+                validate_replica_result(
+                    result, manifest, self._store,
+                    LocalArtifactStore(output_dir / "artifacts"),
+                    ReplicaArtifactStore(self._store_root, output_dir / "artifacts"),
+                )
+        except (KeyError, TypeError, ValueError) as error:
+            raise SandboxHeld("HELD E_SANDBOX: child result contract or binding is invalid") from error
         result_ref = self._store.put_bytes(raw, media_type="application/json")
+        inventory_digest = retain_replica_outputs(output_dir / "artifacts", self._store, result_ref)
         payload = {
             "schema_version": "p3-replay-receipt-v1", "logical_trial_id": logical_trial_id,
             "replicate": replicate, "manifest_digest": manifest_ref.content_sha256,
@@ -121,7 +161,7 @@ class BubblewrapExecutor:
             "sandbox_policy_digest": self._sandbox_policy_digest,
             "started_at": self._utc(started), "completed_at": self._utc(datetime.now(UTC)),
             "process_exit": 0, "network_denied": True,
-            "output_inventory_digest": hashlib.sha256(raw).hexdigest(),
+            "output_inventory_digest": inventory_digest,
         }
         payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         return ReplayReceipt.model_validate(payload)
