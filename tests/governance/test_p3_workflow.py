@@ -24,3 +24,9 @@ def test_foundation_attests_exact_p3_promotion() -> None:
     assert "attest-p3-promotion" in source
     assert "p3-promotion-${{ github.run_id }}-${{ github.run_attempt }}" in source
     assert "docs/implementation/p3/receipts/p3-phase-exit-v1.json" in source
+
+
+def test_fixture_dispatch_does_not_receive_official_sql_credentials():
+    source = (Path(__file__).parents[2]/'.github/workflows/p3-authority.yml').read_text()
+    assert "inputs.operation != 'p3-integration-fixture-v1' && secrets.P3_AUTHORITY_CREDENTIALS_DIRECTORY || ''" in source
+    assert 'unset P3_AUTHORITY_CREDENTIALS_DIRECTORY' in source

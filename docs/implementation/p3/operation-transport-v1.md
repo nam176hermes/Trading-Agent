@@ -111,3 +111,12 @@ Five focused negative tests first failed, and a direct SQL permutation was
 accepted before correction. Afterwards 59 focused and 285 adjacent tests passed
 (one host test skipped); the selected PostgreSQL 16 test passed in 68.66 seconds,
 including unchanged event/outbox/head/job state after rejection and real cleanup.
+
+Official workflow dispatch now accepts the exact staged authorization, intent
+and review through the protected `trading_p3_authority` SQL role before enqueue.
+Its credential directory is withheld from fixture invocations and remains
+outside Job API/worker role settings. Both enqueue and polling responses must
+match the authorized payload, fingerprint, type, priority and operator; polling
+also binds the assigned job ID. Genuine missing-acceptance and wrong-response
+tests failed before correction; 31 focused tests and independent review passed.
+Credential provisioning and real protected-host acceptance have not been run.

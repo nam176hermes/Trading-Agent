@@ -35,6 +35,7 @@ jobs:
       - name: Validate fixed protected request
         env:
           P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
+          P3_AUTHORITY_CREDENTIALS_DIRECTORY: ${{ inputs.operation != 'p3-integration-fixture-v1' && secrets.P3_AUTHORITY_CREDENTIALS_DIRECTORY || '' }}
           P3_JOB_API_TOKEN_FILE: ${{ secrets.P3_JOB_API_TOKEN_FILE }}
           P3_ARTIFACT_ROOT: ${{ secrets.P3_ARTIFACT_ROOT }}
           P3_MANIFEST_FILE: ${{ secrets.P3_MANIFEST_FILE }}
@@ -42,6 +43,9 @@ jobs:
           P3_OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
+          if [[ "$P3_OPERATION" == 'p3-integration-fixture-v1' ]]; then
+            unset P3_AUTHORITY_CREDENTIALS_DIRECTORY
+          fi
           if [[ "${{ github.repository }}" != "nam176hermes/Trading-Agent" ]]; then exit 64; fi
           if [[ "${{ github.ref }}" != 'refs/heads/main' ]]; then exit 64; fi
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
