@@ -716,6 +716,9 @@ class JobWorker:
                 self._p3_publisher.publish(
                     result.request, claimed, result.entries, trace_id=trace_id
                 )
+                # SQL is already terminal. A retention failure must not finalize
+                # again or rerun research; recover from immutable SQL custody.
+                self._p3_publisher.recover_receipt(claimed.job_id)
                 finalized = True
             else:
                 finalized = self._repository_call("finalize_execution",

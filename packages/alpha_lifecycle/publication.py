@@ -18,7 +18,7 @@ from packages.alpha_lifecycle.contracts.lifecycle import (
 )
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from services.job_store.p3_publication_repository import JobCommitResult
+from services.job_store.p3_publication_repository import JobCommitResult, P3PublicationRepository
 
 
 Model = TypeVar("Model", bound=BaseModel)
@@ -75,6 +75,18 @@ def build_publication_receipt(
     return PublicationReceipt.model_validate(payload)
 
 
+def recover_publication_receipt(
+    job_id: str, *, repository: P3PublicationRepository, store: ArtifactStore
+) -> PublicationReceipt:
+    """Reproduce a receipt from committed SQL custody, never from caller time."""
+    request, commit, committed_at = repository.read_publication(job_id)
+    request_ref = _seal(store, request)
+    receipt = build_publication_receipt(request_ref, commit, committed_at=committed_at, store=store)
+    if _read(store, receipt.commit_result_ref, JobCommitResult) != commit:
+        raise ValueError("publication commit retention mismatch")
+    return _read(store, _seal(store, receipt), PublicationReceipt)
+
+
 def build_closure_report(
     request: PublicationRequest,
     prepublication_ref: ArtifactRefV1,
@@ -110,4 +122,4 @@ def build_closure_report(
     return CampaignClosureReport.model_validate(payload)
 
 
-__all__ = ["build_closure_report", "build_publication_receipt"]
+__all__ = ["build_closure_report", "build_publication_receipt", "recover_publication_receipt"]

@@ -45,19 +45,45 @@ official operation intent. It does not require an official InputSet.
 
 ## Required downstream work before enabling official execution
 
-Migration 0021 must preserve merged migration 0020 and accepted history. It must
-persist both intent digest meanings, exact workflow operation and alpha scope,
-and expose acceptance only to a separately provisioned protected authority
-principal. Job API and worker credentials must not grant themselves acceptance.
-Enqueue/start/commit must bind this intent and current authorization; publication
-must retain the existing single event/outbox/head/job-result transaction.
+Migration 0021 preserves migration 0020 and accepted history. Its separately
+provisioned `trading_p3_authority` login accepts canonical reviewed intents;
+Job API and worker roles cannot accept authority or write the acceptance tables.
+Both digest meanings and exact workflow/alpha scope are retained in canonical
+texts. One nonce binds one job. Enqueue rechecks current authority after unique
+key and job binding waits; start/finalize/publication recheck after locks.
+
+Publication retains the existing event/outbox/head/job-result transaction and
+adds complete request custody to the same append-only commit row. Idempotent
+readback compares the entire request, including predecessor heads. The worker
+reader requires one commit bound to the succeeded job and its stored result.
+Receipt recovery validates canonical request/result bytes and the database UTC
+timestamp before CAS writes. Legacy rows without full request custody remain
+HELD. The timestamp is the database-recorded publication time inside the
+transaction, not a claim about the later physical COMMIT instant.
+
+The worker recovers its receipt immediately after publication. Retention failure
+propagates without a second finalization or research rerun. Recovery after a
+process crash still needs the official reconciliation dispatcher. The current
+fixture/database profiles remain on 0020 until the fixture upgrade packet is
+merged and qualified; adding this migration does not activate it.
+
+Source verification: focused worker/publication tests: 61 passed; adjacent P3
+and alpha tests: 258 passed, 1 explicit host test skipped. The selected real
+PostgreSQL 16 test (`P3_OPERATION_SQL_SOURCE_TEST=1 uv run --frozen python
+scripts/dev.py test tests/p3/test_operation_sql.py`) passed, including two
+connections, expiry after lock waits, atomic rollback, exact idempotency,
+receipt recovery after authorization expiry, holdout start denial, and real
+cleanup. These synthetic disposable-cluster identities are not official review
+or runtime qualification. Independent gpt-5.6-sol/high review passed the bounded
+custody and immediate-worker packet. Static retains 130 existing diagnostics
+versus 134 before this packet; there are no new diagnostics.
 
 Holdout consumption must be durably fenced before any plaintext access, unique
 by holdout commitment, and reject another request/job after consumption. The
 meaning of `holdout_input_set_ref`, the protected plaintext delivery protocol,
 and native request/runtime closure still need executable contracts and tests.
 `native_request_ref` is a required root, not a claim that its producer exists.
-Postcommit receipt/registration/closure recovery is also required. No official
+Postcommit registration/closure and startup receipt recovery are also required. No official
 worker profile is enabled by this correction.
 
 A failed primary retains its result and keeps phase exit HELD; there is no

@@ -153,6 +153,35 @@ def _wait_for_lock(connection, role, query_pattern, count=1, *, wait_event=None)
         time.sleep(.01)  # Poll observed locks; elapsed time never establishes the barrier.
     raise AssertionError('required SQL lock barrier was not observed')
 
+def publication_entries(store, evidence_ref, alpha_ids, *, source_sha='a'*40):
+    template = json.loads(_entry().canonical_event_text)
+    entries, refs, heads = [], [], []
+    for alpha_id in alpha_ids:
+        heads.append({'alpha_id':alpha_id,'version':'1.0.0','sequence':0,'event_digest':None})
+        predecessor = None
+        stream_id = uuid5(NAMESPACE_URL, alpha_id)
+        for sequence, status in ((1,'IDEA'),(2,'CANDIDATE')):
+            event = json.loads(canonical_json_bytes(template))
+            registry = json.loads(event['payload']['registry_event_text'])
+            registry['record'].update(alpha_id=alpha_id,lifecycle_status=status,source_sha=source_sha)
+            registry.update(sequence=sequence,predecessor_sha256=predecessor)
+            registry_raw = canonical_json_bytes(registry)
+            ref = store.put_bytes(registry_raw,media_type='application/json')
+            refs.append(ref)
+            event_id = uuid5(NAMESPACE_URL, f'{alpha_id}:{sequence}')
+            event.update(event_id=str(event_id),stream_id=str(stream_id),sequence=sequence)
+            event['payload'].update(alpha_id=alpha_id,registry_sequence=sequence,
+                predecessor_sha256=predecessor,registry_event_sha256=ref.content_sha256,
+                registry_event_text=registry_raw.decode(),evidence_sha256=evidence_ref.content_sha256)
+            entries.append(DomainAppendEntry.model_validate_json(canonical_json_bytes({
+                'event_id':str(event_id),'stream_id':str(stream_id),'sequence':sequence,
+                'event_type':'AlphaRegistryTransitionRecordedV1','canonical_event_text':canonical_json_bytes(event).decode(),
+                'topic':'p3.alpha-registry','outbox_payload_text':canonical_json_bytes({'event_id':str(event_id)}).decode(),
+            })))
+            predecessor = ref.content_sha256
+    return tuple(entries), refs, heads
+
+
 def check_publication(sock, name, root, payload, mark):
     store_root = root / 'publication-cas'
     store_root.mkdir(mode=0o700)
@@ -183,32 +212,7 @@ def check_publication(sock, name, root, payload, mark):
         assert claim is not None and claim.job_id == 'job_publication'
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             ProcessIdentity(301,301,301,'d'*64),'publication:start',alpha_campaign=True)
-        template = json.loads(_entry().canonical_event_text)
-        entries, refs, heads = [], [], []
-        for candidate in range(4):
-            alpha_id = f'a{candidate}.source.fixture'
-            heads.append({'alpha_id':alpha_id,'version':'1.0.0','sequence':0,'event_digest':None})
-            predecessor = None
-            stream_id = uuid5(NAMESPACE_URL, alpha_id)
-            for sequence, status in ((1,'IDEA'),(2,'CANDIDATE')):
-                event = json.loads(canonical_json_bytes(template))
-                registry = json.loads(event['payload']['registry_event_text'])
-                registry['record'].update(alpha_id=alpha_id,lifecycle_status=status)
-                registry.update(sequence=sequence,predecessor_sha256=predecessor)
-                registry_raw = canonical_json_bytes(registry)
-                ref = store.put_bytes(registry_raw,media_type='application/json')
-                refs.append(ref)
-                event_id = uuid5(NAMESPACE_URL, f'{alpha_id}:{sequence}')
-                event.update(event_id=str(event_id),stream_id=str(stream_id),sequence=sequence)
-                event['payload'].update(alpha_id=alpha_id,registry_sequence=sequence,
-                    predecessor_sha256=predecessor,registry_event_sha256=ref.content_sha256,
-                    registry_event_text=registry_raw.decode(),evidence_sha256=evidence_ref.content_sha256)
-                entries.append(DomainAppendEntry.model_validate_json(canonical_json_bytes({
-                    'event_id':str(event_id),'stream_id':str(stream_id),'sequence':sequence,
-                    'event_type':'AlphaRegistryTransitionRecordedV1','canonical_event_text':canonical_json_bytes(event).decode(),
-                    'topic':'p3.alpha-registry','outbox_payload_text':canonical_json_bytes({'event_id':str(event_id)}).decode(),
-                })))
-                predecessor = ref.content_sha256
+        entries, refs, heads = publication_entries(store, evidence_ref, (f'a{n}.source.fixture' for n in range(4)))
         request_payload = {
             'schema_version':'p3-publication-request-v1','idempotency_key':'source-registration',
             'semantic_request_digest':hashlib.sha256(canonical_json_bytes(refs)).hexdigest(),

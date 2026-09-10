@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Protocol
+from datetime import UTC, datetime
+from typing import Annotated, Any, ContextManager, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BeforeValidator, Field
@@ -11,7 +12,7 @@ from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token
-from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
+from packages.alpha_lifecycle.contracts.lifecycle import PublicationReceipt, PublicationRequest
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationTransport
@@ -58,7 +59,7 @@ class JobCommitResult(DigestModel):
 
 
 class _Pool(Protocol):
-    def connection(self): ...
+    def connection(self) -> ContextManager[Any]: ...
 
 
 class P3PublicationRepository:
@@ -124,6 +125,31 @@ class P3PublicationRepository:
                     )
                 raise
         raise RuntimeError("P3 commit retries exhausted")
+
+    def recover_receipt(self, job_id: str) -> PublicationReceipt:
+        from packages.alpha_lifecycle.publication import recover_publication_receipt
+        return recover_publication_receipt(job_id, repository=self, store=self._store)
+
+    def read_publication(self, job_id: str) -> tuple[PublicationRequest, JobCommitResult, datetime]:
+        """Read immutable SQL custody after commit, including after lease expiry."""
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM job_plane.worker_read_alpha_publication(%s)", (job_id,)
+            ).fetchone()
+        if row is None or row["request_text"] is None:
+            raise RuntimeError("HELD: canonical publication custody unavailable")
+        raw = row["request_text"]
+        request = PublicationRequest.model_validate_json(raw)
+        committed_at = row["committed_at"]
+        if (
+            canonical_json_bytes(request).decode() != raw or request.job_id != job_id
+            or not isinstance(committed_at, datetime) or committed_at.tzinfo is not UTC
+        ):
+            raise ValueError("invalid publication custody identity or timestamp")
+        result = JobCommitResult.model_validate_json(row["result_text"]).bound_to(request)
+        if canonical_json_bytes(result).decode() != row["result_text"]:
+            raise ValueError("publication custody result is not canonical")
+        return request, result, committed_at
 
     def read_commit(self, request: PublicationRequest) -> JobCommitResult | None:
         request = PublicationRequest.model_validate(request)

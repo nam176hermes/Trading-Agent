@@ -140,3 +140,50 @@ def test_publication_rejects_other_ledger_event_even_with_valid_result_digest(tm
     with pytest.raises(ValueError, match='commit result'):
         repository.publish(request, claimed, (entry,), trace_id='p3:test')
     assert len(pool.commits) == 1
+
+
+@pytest.mark.parametrize('edge', [None, 'missing', 'legacy', 'wrong_job', 'noncanonical', 'wrong_result', 'missing_time', 'non_utc_zone', 'noncanonical_result'])
+def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge):
+    from datetime import UTC, datetime
+    from tests.p3.test_publication import _chain, _changed
+    from packages.alpha_lifecycle.publication import recover_publication_receipt
+    store, request, commit, expected, _ = _chain(tmp_path)
+    timestamp = datetime(2026, 9, 5, tzinfo=UTC)
+    raw = canonical_json_bytes(request).decode()
+    row = {'request_text': raw, 'result': commit.model_dump(mode='json'), 'committed_at': timestamp}
+    if edge == 'legacy':
+        row['request_text'] = None
+    elif edge == 'wrong_job':
+        row['request_text'] = canonical_json_bytes(_changed(request, job_id='other-job')).decode()
+    elif edge == 'noncanonical':
+        row['request_text'] += ' '
+    elif edge == 'wrong_result':
+        row['result'] = _changed(commit, semantic_request_digest='f'*64).model_dump(mode='json')
+    elif edge == 'missing_time':
+        row['committed_at'] = None
+    elif edge == 'non_utc_zone':
+        from zoneinfo import ZoneInfo
+        row['committed_at'] = timestamp.replace(tzinfo=ZoneInfo('Etc/UTC'))
+    row['result_text'] = canonical_json_bytes(row['result']).decode()
+    if edge == 'noncanonical_result':
+        row['result_text'] += ' '
+    class Pool:
+        @contextmanager
+        def connection(self):
+            yield self
+        def execute(self, sql, parameters):
+            assert 'worker_read_alpha_publication' in sql
+            assert parameters == (request.job_id,)
+            return SimpleNamespace(fetchone=lambda: None if edge == 'missing' else row)
+    output = tmp_path / 'recovered-cas'
+    output.mkdir(mode=0o700)
+    store = LocalArtifactStore(output)
+    repository = P3PublicationRepository(Pool(), store)
+    before = set(output.glob('*'))
+    if edge is None:
+        assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
+        assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            recover_publication_receipt(request.job_id, repository=repository, store=store)
+        assert set(output.glob('*')) == before

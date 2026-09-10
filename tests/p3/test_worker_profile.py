@@ -135,7 +135,8 @@ class P3Repository(Repository):
         return True
 
 
-def test_p3_publication_commits_without_generic_success_finalize() -> None:
+@pytest.mark.parametrize("receipt_failure", [False, True])
+def test_p3_publication_commits_without_generic_success_finalize(receipt_failure) -> None:
     claimed = claim(max_attempts=1)
     claimed = replace(
         claimed, job_type=JobType.ALPHA_CAMPAIGN,
@@ -152,9 +153,16 @@ def test_p3_publication_commits_without_generic_success_finalize() -> None:
     class Publisher:
         def __init__(self):
             self.calls = []
+            self.recovered = []
 
         def publish(self, *args, **kwargs):
             self.calls.append((args, kwargs))
+
+        def recover_receipt(self, job_id):
+            assert self.calls, "receipt must follow SQL commit"
+            self.recovered.append(job_id)
+            if receipt_failure:
+                raise RuntimeError("retained CAS temporarily unavailable")
 
     repository = P3Repository(claimed)
     publisher = Publisher()
@@ -167,7 +175,12 @@ def test_p3_publication_commits_without_generic_success_finalize() -> None:
         prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=publisher,
     )
 
-    assert worker.run_once() is True
+    if receipt_failure:
+        with pytest.raises(RuntimeError, match="retained CAS"):
+            worker.run_once()
+    else:
+        assert worker.run_once() is True
+    assert publisher.recovered == [claimed.job_id]
     assert publisher.calls[0][0][:3] == ("request", claimed, ("entry",))
     assert not [call for call in repository.calls if call[0] == "finalize"]
 
