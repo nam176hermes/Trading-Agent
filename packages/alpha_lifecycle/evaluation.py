@@ -44,9 +44,9 @@ def _digest(payload: dict[str, object]) -> str:
 
 def _head(store: ArtifactStore, ref: ArtifactRefV1) -> AlphaRegistryEventV1:
     payload = json.loads(store.read_bytes(ref))
-    return AlphaRegistryEventV1.model_validate({
+    return AlphaRegistryEventV1.model_validate_json(canonical_json_bytes({
         **payload, "event_sha256": ref.content_sha256, "artifact": ref,
-    })
+    }))
 
 
 def _scenario(

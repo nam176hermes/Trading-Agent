@@ -50,7 +50,7 @@ class ScenarioResult(DigestModel):
     schema_version: Literal["p3-scenario-result-v1"]
     scenario: Literal["BASE", "DOUBLE_COST", "DELAYED", "PERTURBATION"]
     perturbation_id: Token | None
-    fold_results: Annotated[tuple[FoldResult, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=3)]
+    fold_results: Annotated[tuple[FoldResult, ...], Field(min_length=1, max_length=3)]
     aggregate_metrics: PerformanceMetricsV1
 
 
@@ -64,7 +64,7 @@ class BaselineEntry(StrictModel):
 class BaselinePack(DigestModel):
     schema_version: Literal["p3-baseline-pack-v1"]
     input_set_ref: ArtifactRefV1
-    baseline_results: Annotated[tuple[BaselineEntry, ...], BeforeValidator(_tuple), Field(min_length=5, max_length=5)]
+    baseline_results: Annotated[tuple[BaselineEntry, ...], Field(min_length=5, max_length=5)]
 
     @model_validator(mode="after")
     def _baselines(self) -> "BaselinePack":
@@ -154,7 +154,7 @@ class EvaluationResult(DigestModel):
     base: ScenarioResult
     double_cost: ScenarioResult
     delayed: ScenarioResult
-    perturbations: Annotated[tuple[ScenarioResult, ...], BeforeValidator(_tuple), Field(min_length=4, max_length=4)]
+    perturbations: Annotated[tuple[ScenarioResult, ...], Field(min_length=4, max_length=4)]
     regimes: Annotated[tuple[RegimeResult, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
     capacity: CapacityEvidence
     deterministic_trial_keys: Annotated[tuple[Token, ...], BeforeValidator(_tuple), Field(min_length=7, max_length=7)]

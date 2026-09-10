@@ -7,6 +7,7 @@ import hashlib
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.capacity import participation_samples
+from packages.alpha_lifecycle.execution_trace import _text
 from packages.alpha_lifecycle.contracts.data import DailyBar
 from packages.alpha_lifecycle.contracts.results import (
     BaselinePack, BaselineSelection, CapacityEvidence, PerformanceTrace,
@@ -82,8 +83,8 @@ def _capacity(base_samples, policy_digest: str, store: ArtifactStore) -> Capacit
     )
     payload = {
         "schema_version": "p3-capacity-evidence-v1", "policy_digest": policy_digest,
-        "event_participations": samples, "event_keys": tuple(keys),
-        "median": format(median, "f"), "peak": format(max(ordered, default=Decimal(0)), "f"),
+        "event_participations": tuple(map(_text, samples)), "event_keys": tuple(keys),
+        "median": _text(median), "peak": _text(max(ordered, default=Decimal(0))),
         "no_trades": not samples,
     }
     payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
@@ -129,8 +130,8 @@ def build_robustness(
         baseline_return = _compound(tuple(baseline_returns[index] for index in indices))
         regimes.append(RegimeResult(
             schema_version="p3-regime-result-v1", regime_id=label,
-            sample_indices=indices, candidate_return=format(candidate_return, "f"),
-            baseline_return=format(baseline_return, "f"), excess=format(excess[label], "f"),
+            sample_indices=indices, candidate_return=_text(candidate_return),
+            baseline_return=_text(baseline_return), excess=_text(excess[label]),
         ))
     capacity = _capacity(candidate_samples, baseline.selection_policy_digest, reader)
     payload = {

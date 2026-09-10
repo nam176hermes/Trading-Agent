@@ -47,9 +47,9 @@ def run_replays(
             or receipt.logical_trial_id != logical_trial_id
         ):
             raise ReplayError("execution receipt does not bind its replay request")
-        identity = (receipt.source, receipt.environment_ref, receipt.sandbox_policy_digest)
+        identity = (receipt.source, receipt.environment_ref, receipt.sandbox_policy_digest, receipt.output_inventory_digest)
         if execution_identity is not None and identity != execution_identity:
-            raise ReplayError("execution receipts differ in source, environment or sandbox policy")
+            raise ReplayError("execution receipts differ in source, environment, sandbox policy or output inventory")
         execution_identity = identity
         value = executor.read_bytes(receipt.result_ref)
         if (
