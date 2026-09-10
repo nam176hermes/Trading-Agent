@@ -1063,6 +1063,17 @@ def _host_workflow_valid(raw: bytes) -> bool:
                     "if-no-files-found": "error", "retention-days": "14",
                 },
             ),
+            (
+                {
+                    "name": "Publish PIT execution evidence",
+                    "uses": "actions/upload-artifact@v4", "with": "",
+                },
+                {
+                    "name": "pre-p3-pit-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "${{ runner.temp }}/pre-p3-qualification.${{ github.run_id }}.${{ github.run_attempt }}/p2-pit-artifacts/*.blob",
+                    "if-no-files-found": "error", "retention-days": "14",
+                },
+            ),
         ]
         return [_step_contract(step) for step in _steps(job)] == _expected_step_contracts(expected)
     except (ClosureError, ValueError):

@@ -57,7 +57,7 @@ def test_alpha_campaign_claim_uses_only_the_scoped_capability(
 
     claimed = repository.claim_next_alpha_campaign(
         "worker-p3", 30, "p3:claim"
-    )
+    , fixture_only=False)
 
     assert "job_plane.worker_claim_alpha_campaign" in connection.calls[0][0]
     assert (claimed is not None) is has_claim
@@ -238,3 +238,23 @@ def test_p3_result_failure_never_automatically_repeats_an_economic_operation() -
     assert len(final) == 1
     assert final[0][2]["final_state"] is JobState.FAILED
     assert final[0][2]["reason_code"] == "RESULT_VALIDATION_FAILED"
+
+
+def test_official_claim_requires_explicit_lane():
+    with pytest.raises(TypeError, match='fixture_only'):
+        _worker(_Connection()).claim_next_alpha_campaign('worker-p3',30,'p3:claim')
+
+
+@pytest.mark.parametrize('lane', [None, 0, 1, 'false'])
+def test_official_recovery_requires_explicit_boolean_lane(lane):
+    connection = _Connection()
+    with pytest.raises(ValueError):
+        _worker(connection).recover_expired_leases(object(),alpha_campaign=True,fixture_only=lane)
+    assert connection.calls == []
+
+
+def test_protected_recovery_call_rejects_an_implicit_lane():
+    connection = _Connection()
+    with pytest.raises(ValueError, match='explicit lane'):
+        _worker(connection)._recover_observed_candidate({},'ABSENT','test:recovery','worker-startup-recovery',alpha_campaign=True)
+    assert connection.calls == []

@@ -107,6 +107,9 @@ class BubblewrapExecutor:
             if (input_set.source != self._source or input_set.environment_ref != self._environment_ref
                 or environment.sandbox_policy_digest != self._sandbox_policy_digest):
                 raise ValueError('input source or environment binding differs')
+            if isinstance(manifest, EvaluationManifest):
+                from packages.alpha_lifecycle.publication import validate_evaluation_registration
+                validate_evaluation_registration(manifest, store=self._store)
         except (KeyError,TypeError,ValueError,OSError) as error:
             raise SandboxHeld('HELD E_SANDBOX: input contract or binding is invalid') from error
         manifest_path = output_dir / "manifest-ref.json"

@@ -31,6 +31,24 @@ class ArtifactStore(Protocol):
     def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1: ...
 
 
+class ReadbackStore:
+    """Recompute with existing builders while requiring already retained bytes."""
+
+    def __init__(self, reader: ArtifactStore, outputs: ArtifactStore) -> None:
+        self._reader, self._outputs = reader, outputs
+
+    def read_bytes(self, ref: ArtifactRefV1) -> bytes:
+        return self._reader.read_bytes(ref)
+
+    def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
+        digest = hashlib.sha256(value).hexdigest()
+        ref = ArtifactRefV1(content_sha256=digest, size_bytes=len(value),
+            media_type=media_type, locator=f"{digest}.blob")
+        if self._outputs.read_bytes(ref) != value:
+            raise ValueError("recomputation differs from retained artifacts")
+        return ref
+
+
 Model = TypeVar("Model", bound=BaseModel)
 
 
@@ -202,10 +220,10 @@ def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: Art
         sandbox_policy_digest=environment.sandbox_policy_digest,reader=reader)
     expected = select_baseline(pack,replay_proof_ref=selection.baseline_replay_proof_ref,
         selection_policy_digest=inputs.policy_digest,snapshot_digest=dataset.snapshot_ref.content_sha256,
-        cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=reader)
+        cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=ReadbackStore(reader,reader))
     if pack.input_set_ref != input_set_ref or selection != expected:
         raise ValueError('baseline selection differs from its frozen input or result')
     return selection
 
 
-__all__ = ["ArtifactStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]
+__all__ = ["ArtifactStore", "ReadbackStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]

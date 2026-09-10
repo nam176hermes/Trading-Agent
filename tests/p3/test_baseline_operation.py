@@ -10,6 +10,27 @@ from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from tests.p3.test_replica_execution import baseline_inputs
 
 
+def _cli_authorization(store, intent_ref, source):
+    """Synthetic review/authority for CLI source tests, never protected authority."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import UUID
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from tests.p3.test_replica_execution import _seal
+    intent = P3OperationInput.model_validate_json(store.read_bytes(intent_ref))
+    now = datetime.now(UTC)
+    def utc(value):
+        return value.isoformat(timespec='microseconds').replace('+00:00','Z')
+    safe = dict(broker=False, live=False, network=False, production=False)
+    review_ref = _seal(store, schema_version='p3-review-approval-v1', source=source,
+        subject_digests=[intent.digest], operator_identity='synthetic-operator', reviewer_identity='synthetic-reviewer',
+        review_execution_id='synthetic-execution', verdict='APPROVED', issued_at=utc(now-timedelta(minutes=1)),
+        expires_at=utc(now+timedelta(hours=1)), evidence_ref=store.put_bytes(b'{}', media_type='application/json'), authority=safe)
+    return _seal(store, schema_version='p3-run-authorization-v1', input_set_ref=intent.input_set_ref,
+        review_ref=review_ref, operation=intent.operation, allowed_alpha_ids=intent.allowed_alpha_ids,
+        issued_at=utc(now), expires_at=utc(now+timedelta(minutes=30)), nonce=str(UUID(int=2)), issuer_workflow='p3-authority.yml',
+        issuer_run_id=1, issuer_attempt=1, authority=safe)
+
+
 @pytest.mark.parametrize('fault',['fold_policy','threshold_policy','threshold_dataset','fold_snapshot','pit_dataset','pit_folds','pit_vintage','fold_mode','dataset_segment','noncanonical_folds','training_before_dataset','training_overlaps_oos','pit_limitations','missing_revision','missing_no_future'])
 def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monkeypatch,fault):
     import json
@@ -78,7 +99,7 @@ def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monke
         module.execute_baseline_manifest(manifest_ref,store,logical_trial_id='synthetic',output_root=tmp_path/'unused')
 
 
-@pytest.mark.parametrize('entrypoint',['helper','cli'])
+@pytest.mark.parametrize('entrypoint',['helper','cli','cli_without_authorization'])
 def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_path,monkeypatch,capsys,entrypoint):
     from packages.alpha_lifecycle.baseline_campaign import execute_baseline_manifest
     from packages.alpha_lifecycle import sandbox
@@ -113,6 +134,15 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
             '--environment-ref',str(tmp_path/'environment'),'--store',str(tmp_path/'inputs'),
             '--release',str(root),'--python',sys.executable,'--sandbox-policy-digest','c'*64,
             '--logical-trial-id','p3-baselines-v1','--output',str(tmp_path/'runs')])
+        if entrypoint == 'cli_without_authorization':
+            with pytest.raises(ValueError, match='authorization'):
+                command.main()
+            assert calls == []
+            return
+        authorization_ref = _cli_authorization(store, intent_ref, inputs.source)
+        (tmp_path/'authorization').write_bytes(canonical_json_bytes(authorization_ref))
+        monkeypatch.setattr(sys,'argv',[*sys.argv,'--job-id','job_baseline',
+            '--authorization-ref',str(tmp_path/'authorization')])
         command.main()
         selection = BaselineSelection.model_validate_json(capsys.readouterr().out)
     proof = ReplayProof.model_validate_json(store.read_bytes(selection.baseline_replay_proof_ref))
