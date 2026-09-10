@@ -170,6 +170,27 @@ def test_baseline_child_dispatches_and_preserves_the_input_store(tmp_path):
     assert outputs.read_bytes(pack.baseline_results[0].scenario_ref)
 
 
+@pytest.mark.parametrize('fault',['source','environment','policy'])
+def test_executor_rejects_unbound_inputs_before_preparing_child_argv(tmp_path,monkeypatch,fault):
+    from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
+    from packages.alpha_lifecycle import sandbox
+    store,manifest_ref = baseline_inputs(tmp_path/'inputs')
+    manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
+    inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
+    monkeypatch.setattr(sandbox,'require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
+    executor = BubblewrapExecutor(store=store,store_root=tmp_path/'inputs',release_root=Path(__file__).resolve().parents[2],
+        python=Path(sys.executable),source=inputs.source.model_copy(update={'commit_sha':'9'*40}) if fault=='source' else inputs.source,
+        environment_ref=manifest_ref if fault=='environment' else inputs.environment_ref,
+        sandbox_policy_digest=('9' if fault=='policy' else 'c')*64)
+    def forbidden(*args):
+        raise AssertionError('unbound inputs reached child argv preparation')
+    monkeypatch.setattr(executor,'_argv',forbidden)
+    output = tmp_path/'output'
+    output.mkdir(mode=0o700)
+    with pytest.raises(SandboxHeld):
+        executor.execute(manifest_ref,replicate='R1',logical_trial_id='synthetic',output_dir=output)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -308,13 +329,16 @@ def test_parent_retains_child_artifacts_after_real_portable_child_exit(
             return completed
 
         monkeypatch.setattr(subprocess, "run", corrupt_result)
-        with pytest.raises(SandboxHeld, match="result"):
+        input_fault = mutation in {'wrong_source','wrong_environment','wrong_policy'}
+        with pytest.raises(SandboxHeld, match="input" if input_fault else "result"):
             executor.execute(
                 manifest,
                 replicate="R1",
                 logical_trial_id="synthetic",
                 output_dir=output,
             )
+        if input_fault:
+            assert not (output/'result.json').exists()
         return
     receipt = executor.execute(
         manifest, replicate="R1", logical_trial_id="synthetic", output_dir=output
@@ -492,3 +516,50 @@ def test_parent_rejects_tampered_replica_outputs(tmp_path, damage):
     with pytest.raises(ArtifactIntegrityError):
         retain_replica_outputs(source_root, target, result)
     assert not (target_root / ref.locator).exists()
+
+
+@pytest.mark.parametrize('fault', ['session', 'streams', 'oversized', 'descriptor_read'])
+def test_replica_preserves_driver_custody_and_bounds_untrusted_io(tmp_path, monkeypatch, fault):
+    import subprocess
+    from packages.alpha_lifecycle import sandbox
+    from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
+
+    store, manifest_ref = baseline_inputs(tmp_path / 'inputs')
+    manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
+    inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
+    monkeypatch.setattr(sandbox, 'require_official_sandbox', lambda path: path)
+    executor = BubblewrapExecutor(
+        store=store, store_root=tmp_path / 'inputs',
+        release_root=Path(__file__).resolve().parents[2], python=Path(sys.executable),
+        source=inputs.source, environment_ref=inputs.environment_ref,
+        sandbox_policy_digest='c' * 64,
+    )
+    output = tmp_path / 'output'
+    output.mkdir(mode=0o700)
+    result = output / 'result.json'
+    original_read = Path.read_bytes
+
+    def no_unbounded_path_read(path):
+        if path == result:
+            raise AssertionError('untrusted result was read before descriptor bounds')
+        return original_read(path)
+
+    def run(argv, **kwargs):
+        if fault == 'session':
+            assert '--new-session' not in argv
+            assert not kwargs.get('start_new_session', False)
+        if fault == 'streams':
+            assert kwargs['stdout'] == subprocess.DEVNULL
+            assert kwargs['stderr'] == subprocess.DEVNULL
+        if fault in {'oversized', 'descriptor_read'}:
+            result.write_bytes(b'{}')
+            if fault == 'oversized':
+                with result.open('r+b') as stream:
+                    stream.truncate(64 * 1024**2 + 1)
+            monkeypatch.setattr(Path, 'read_bytes', no_unbounded_path_read)
+            return subprocess.CompletedProcess(argv, 0)
+        return subprocess.CompletedProcess(argv, 1)
+
+    monkeypatch.setattr(sandbox.subprocess, 'run', run)
+    with pytest.raises(SandboxHeld):
+        executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)

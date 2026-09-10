@@ -140,8 +140,55 @@ host test skipped in that portable run; the SQL result above is its separate
 execution. Canonical contract generation passed. A broader unrelated governance
 run was interrupted for the review correction after 375 passes and one skip;
 it is not a completed gate.
-The campaign entrypoint still implements baseline execution only; registration,
-candidate outcome assembly and the protected official worker remain incomplete.
+The baseline/registration executor packet repairs source seams in T-P3-021,
+T-P3-031 and T-P3-042–044. The campaign entrypoint reads the exact private
+P3OperationInput. Baseline dispatch binds InputSet/source/environment before
+constructing the replica executor. Registration dispatch reuses current reviewed
+operation staging, validates the retained baseline replay and all four frozen
+candidate records/specifications, then emits exactly eight IDEA/CANDIDATE events
+as an unprivileged PublicationProposal. It uses the retained authorization's
+informational interval, not a later receipt or completion timestamp. SQL alone
+can publish that proposal through the existing atomic capability.
+
+The postcommit RegistrationProof producer reconstructs the exact eight-event
+receipt/commit closure and historical candidate heads. It rejects incomplete,
+reordered, unretained or mismatched source/dataset/cost/baseline/epoch records.
+Retained baseline validation checks R1–R3, source/environment/policy, full result
+references, manifest, output inventory and the unchanged maximum-return/tie
+selection. These producers do not prove that arbitrary supplied CAS bytes were
+issued by SQL; official callers still require the SQL custody reader.
+
+The shared Bubblewrap executor rejects invalid source/environment bindings
+before argv construction, keeps nested replicas in the driver's existing
+session, discards unused stdout/stderr and reads result bytes through a
+no-follow descriptor. File type/link count/size are checked before a bounded
+read, with size/mtime/ctime stability checked afterwards. The P3 result parser
+accepts canonical JSON with at most the producer's single LF terminator.
+
+Fresh source verification for this packet: 83 focused tests passed before the
+I/O changes; four custody/I/O tests then failed before correction and the full
+replica/sandbox set passed 29 tests. Three noncanonical-framing tests failed
+before correction; 42 worker/result/publication tests passed afterwards. The
+adjacent P3/alpha/governance set passed 361 tests with one explicitly skipped
+SQL host test after the CLI registration change. Registration CLI tests failed before its implementation and the
+baseline/registration set then passed 27 tests. Canonical contract generation
+and check passed. Static lint passed; type checking retains 118 pre-existing
+diagnostics versus 124 before this packet, with no new owned diagnostics at
+that check. These checks are source evidence, not official OOS or T-P3-060.
+
+A local synthetic Bubblewrap namespace check observed four real host PIDs in
+the same driver session. After terminating only that task-owned session, all
+four procfs entries were absent. This is narrower than the required protected
+host ProcessRunner cancellation/timeout/cleanup qualification.
+
+Still required before official activation: the opaque official spawn provider,
+separate claim/recovery scope, full OOS/primary validators, authoritative PIT
+inventory and executed-suite evidence, durable one-time holdout consumption,
+native runtime/request closure, and postcommit/startup report discovery.
+Missing evidence remains HELD; current source tests do not qualify these seams.
+
+Independent gpt-5.6-sol/high review passed this bounded source packet. It does
+not approve the missing official execution, PIT/OOS/selection, or host gates.
 
 Foundation run 34482129004 rejected the newly introduced SQL test because its
 portable collection exclusion lacked a managed record. The test is now marked

@@ -782,7 +782,7 @@ services/job_worker/process_runner.py|943|BaseException|PRODUCTION_CRITICAL|OTHE
 services/job_worker/results.py|130|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/results.py|139|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/results.py|544|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/results.py|660|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|665|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/safety_state.py|151|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/safety_state.py|351|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/worker.py|333|Exception|PRODUCTION_CRITICAL|OTHER

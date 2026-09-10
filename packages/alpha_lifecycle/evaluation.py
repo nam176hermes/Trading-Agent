@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from decimal import Decimal
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs
@@ -19,7 +18,7 @@ from packages.alpha_lifecycle.data_view import to_daily_close
 from packages.alpha_lifecycle.execution_trace import build_research_trace
 from packages.alpha_lifecycle.metrics import CostModelV1, calculate_aggregate_performance_metrics
 from packages.alpha_lifecycle.regimes import assign_regimes
-from packages.alpha_lifecycle.registry import AlphaRegistryEventV1
+from packages.alpha_lifecycle.lifecycle import read_registry_event
 from packages.alpha_lifecycle.robustness import build_robustness, delayed_weights
 from packages.alpha_lifecycle.trials import deterministic_trial_keys
 from packages.data_contracts import ArtifactRefV1
@@ -40,13 +39,6 @@ def _seal(store: ArtifactStore, value):
 
 def _digest(payload: dict[str, object]) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
-
-
-def _head(store: ArtifactStore, ref: ArtifactRefV1) -> AlphaRegistryEventV1:
-    payload = json.loads(store.read_bytes(ref))
-    return AlphaRegistryEventV1.model_validate_json(canonical_json_bytes({
-        **payload, "event_sha256": ref.content_sha256, "artifact": ref,
-    }))
 
 
 def _scenario(
@@ -113,7 +105,7 @@ def evaluate(manifest: EvaluationManifest, reader: ArtifactStore) -> EvaluationR
         or manifest.candidate_head_ref not in registration.candidate_head_refs
     ):
         raise EvaluationError("registration does not bind the evaluation manifest")
-    head = _head(reader, manifest.candidate_head_ref)
+    head = read_registry_event(reader, manifest.candidate_head_ref)
     if (
         head.record.alpha_id != spec.alpha_id
         or head.record.version != spec.version

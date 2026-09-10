@@ -185,7 +185,8 @@ def test_p3_publication_commits_without_generic_success_finalize(receipt_failure
     assert not [call for call in repository.calls if call[0] == "finalize"]
 
 
-def test_p3_result_validator_parses_only_its_fixed_terminal_contract() -> None:
+@pytest.mark.parametrize('framing', [b'', b'\n', b' ', b'\n\n', b'\r\n'])
+def test_p3_result_validator_parses_only_its_fixed_terminal_contract(framing) -> None:
     ref = {
         "content_sha256": "b" * 64,
         "size_bytes": 1,
@@ -202,7 +203,11 @@ def test_p3_result_validator_parses_only_its_fixed_terminal_contract() -> None:
         "outcome": "NONE_QUALIFIED",
     }
     value["digest"] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-    raw = canonical_json_bytes(value)
+    raw = canonical_json_bytes(value) + framing
+    if framing not in {b'', b'\n'}:
+        with pytest.raises(ResultValidationError):
+            validate_p3_result_bytes("p3-primary-selection-v1", raw)
+        return
     assert validate_p3_result_bytes("p3-primary-selection-v1", raw).digest == value["digest"]
     with pytest.raises(ResultValidationError, match="invalid"):
         validate_p3_result_bytes("p3-parity-result-v1", raw)

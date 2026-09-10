@@ -100,8 +100,13 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
         selection = execute_baseline_manifest(manifest_ref,executor,logical_trial_id='synthetic-baselines',output_root=tmp_path/'runs')
     else:
         from scripts import run_p3_alpha_campaign as command
+        from tests.p3.test_replica_execution import _seal
+        intent_ref = _seal(store,schema_version='p3-operation-input-v1',
+            workflow_operation='p3-baselines-v1',operation='BASELINES',
+            input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],
+            body={'baseline_manifest_ref':manifest_ref})
         monkeypatch.setattr(command,'BubblewrapExecutor',lambda **kwargs:executor)
-        for name,value in [('manifest',manifest_ref),('source',inputs.source),('environment',inputs.environment_ref)]:
+        for name,value in [('manifest',intent_ref),('source',inputs.source),('environment',inputs.environment_ref)]:
             (tmp_path/name).write_bytes(canonical_json_bytes(value))
         monkeypatch.setattr(sys,'argv',[str(command.__file__),
             '--manifest-ref',str(tmp_path/'manifest'),'--source',str(tmp_path/'source'),
@@ -117,3 +122,38 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
     assert pack.input_set_ref == manifest.input_set_ref
     assert selection.selected_result.total_return == max(item.aggregate_metrics.total_return for item in pack.baseline_results)
     assert selection.selection_policy_digest == inputs.policy_digest
+
+
+@pytest.mark.parametrize('fault',['missing_environment','noncanonical_environment','sandbox_policy'])
+def test_cli_rejects_environment_before_executor_construction(tmp_path,monkeypatch,fault):
+    import json
+    from scripts import run_p3_alpha_campaign as command
+    from tests.p3.test_publication import _changed
+    from tests.p3.test_replica_execution import _seal
+    store,manifest_ref = baseline_inputs(tmp_path/'inputs')
+    manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
+    inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
+    if fault == 'missing_environment':
+        (tmp_path/'inputs'/inputs.environment_ref.locator).unlink()
+    elif fault == 'noncanonical_environment':
+        raw = json.dumps(json.loads(store.read_bytes(inputs.environment_ref)),indent=2).encode()
+        environment_ref = store.put_bytes(raw,media_type='application/json')
+        inputs = _changed(inputs,environment_ref=environment_ref.model_dump(mode='json'))
+        input_ref = store.put_bytes(canonical_json_bytes(inputs),media_type='application/json')
+        manifest = _changed(manifest,input_set_ref=input_ref.model_dump(mode='json'))
+        manifest_ref = store.put_bytes(canonical_json_bytes(manifest),media_type='application/json')
+    intent_ref = _seal(store,schema_version='p3-operation-input-v1',workflow_operation='p3-baselines-v1',
+        operation='BASELINES',input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],body={'baseline_manifest_ref':manifest_ref})
+    for name,value in [('manifest',intent_ref),('source',inputs.source),('environment',inputs.environment_ref)]:
+        (tmp_path/name).write_bytes(canonical_json_bytes(value))
+    def forbidden(**kwargs):
+        raise AssertionError('invalid environment reached executor construction')
+    monkeypatch.setattr(command,'BubblewrapExecutor',forbidden)
+    monkeypatch.setattr(sys,'argv',[str(command.__file__),'--manifest-ref',str(tmp_path/'manifest'),
+        '--source',str(tmp_path/'source'),'--environment-ref',str(tmp_path/'environment'),
+        '--store',str(tmp_path/'inputs'),'--release',str(Path(__file__).resolve().parents[2]),
+        '--python',sys.executable,'--sandbox-policy-digest',('d' if fault == 'sandbox_policy' else 'c')*64,
+        '--logical-trial-id','p3-baselines-v1','--output',str(tmp_path/'runs')])
+    with pytest.raises((ValueError,OSError)):
+        command.main()
+    assert not (tmp_path/'runs').exists()

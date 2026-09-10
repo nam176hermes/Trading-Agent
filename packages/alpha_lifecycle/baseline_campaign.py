@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -11,16 +12,16 @@ from pydantic import BaseModel
 
 from packages.alpha_lifecycle.baselines import BaselineId, BaselineResultV1, baseline_weights_with_reset
 from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence, FoldManifest, PITProof
-from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
+from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet, EnvironmentIdentity
 from packages.alpha_lifecycle.contracts.results import (
     BaselineEntry, BaselinePack, BaselineSelection, FoldResult, RegimeThreshold, ScenarioResult,
-    ReplayReceipt,
+    ReplayReceipt, ReplayProof,
 )
 from packages.alpha_lifecycle.data_view import to_daily_close
 from packages.alpha_lifecycle.execution_trace import build_research_trace, suppress_terminal_signal
 from packages.alpha_lifecycle.metrics import calculate_aggregate_performance_metrics
 from packages.alpha_lifecycle.regimes import assign_regimes
-from packages.alpha_lifecycle.replay import SandboxExecutor, run_replays
+from packages.alpha_lifecycle.replay import SandboxExecutor, run_replays, validate_replay_proof
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -45,8 +46,8 @@ def _seal(store: ArtifactStore, value: BaseModel) -> ArtifactRefV1:
     return store.put_bytes(canonical_json_bytes(value), media_type="application/json")
 
 
-def _digest(payload: dict[str, object]) -> str:
-    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+def _digest(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_json_bytes(dict(payload))).hexdigest()
 
 
 def validate_research_inputs(input_set_ref: ArtifactRefV1, reader: ArtifactStore):
@@ -182,4 +183,29 @@ def execute_baseline_manifest(
         cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=executor)
 
 
-__all__ = ["ArtifactStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_research_inputs"]
+def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: ArtifactRefV1,
+    reader: ArtifactStore) -> BaselineSelection:
+    inputs,_,dataset,_ = validate_research_inputs(input_set_ref,reader)
+    selection = _read(reader,selection_ref,BaselineSelection)
+    pack = _read(reader,selection.pack_ref,BaselinePack)
+    proof = _read(reader,selection.baseline_replay_proof_ref,ReplayProof)
+    environment = _read(reader,inputs.environment_ref,EnvironmentIdentity)
+    value = dict(schema_version='p3-baseline-manifest-v1',input_set_ref=input_set_ref,
+        required_baselines=tuple(item.value for item in BaselineId))
+    value['digest'] = _digest(value)
+    raw = canonical_json_bytes(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    manifest_ref = ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),media_type='application/json',locator=f'{digest}.blob')
+    _read(reader,manifest_ref,BaselineManifest)
+    validate_replay_proof(proof,manifest_ref=manifest_ref,result_ref=selection.pack_ref,
+        source=inputs.source,environment_ref=inputs.environment_ref,
+        sandbox_policy_digest=environment.sandbox_policy_digest,reader=reader)
+    expected = select_baseline(pack,replay_proof_ref=selection.baseline_replay_proof_ref,
+        selection_policy_digest=inputs.policy_digest,snapshot_digest=dataset.snapshot_ref.content_sha256,
+        cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=reader)
+    if pack.input_set_ref != input_set_ref or selection != expected:
+        raise ValueError('baseline selection differs from its frozen input or result')
+    return selection
+
+
+__all__ = ["ArtifactStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
 from packages.alpha_lifecycle.registry import (
@@ -22,6 +23,18 @@ _STAGE_TARGETS = {
     },
     "EXIT_DECISION": {AlphaLifecycleStatus.QUALIFIED, AlphaLifecycleStatus.REJECTED},
 }
+
+
+def read_registry_event(store, ref: ArtifactRefV1) -> AlphaRegistryEventV1:
+    raw = store.read_bytes(ref)
+    payload = json.loads(raw)
+    event = AlphaRegistryEventV1.model_validate_json(canonical_json_bytes({
+        **payload, 'event_sha256':ref.content_sha256, 'artifact':ref,
+    }))
+    if canonical_json_bytes(dict(schema_version=event.schema_version,sequence=event.sequence,
+        predecessor_sha256=event.predecessor_sha256,record=event.record)) != raw:
+        raise ValueError('registry event artifact is not canonical')
+    return event
 
 
 def plan_transition(
@@ -88,4 +101,4 @@ def to_domain_payload(
     )
 
 
-__all__ = ["plan_transition", "to_domain_payload"]
+__all__ = ["plan_transition", "read_registry_event", "to_domain_payload"]
