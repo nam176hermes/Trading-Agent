@@ -79,12 +79,16 @@ def test_protected_request_builds_one_closed_worker_payload() -> None:
     authorization = RunAuthorization.model_validate_json(
         json.dumps(request["authorization"])
     )
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from tests.p3.test_operation_input import intent
+    operation_input = P3OperationInput.model_validate_json(intent(input_set_ref=authorization.input_set_ref.model_dump(mode="json")))
     payload = build_alpha_campaign_payload(
-        authorization, source, "p3-baselines-v1"
+        authorization, source, "p3-baselines-v1", operation_input=operation_input,
     )
     assert payload.operation == "BASELINES"
     assert payload.logical_trial_id == "p3-baselines-v1"
-    assert payload.manifest_ref == authorization.input_set_ref
+    assert payload.manifest_ref.content_sha256 == hashlib.sha256(canonical_json_bytes(operation_input)).hexdigest()
+    assert payload.manifest_ref != authorization.input_set_ref
     assert payload.authorization_ref.locator == (
         f"{payload.authorization_ref.content_sha256}.blob"
     )
@@ -107,11 +111,11 @@ def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path) ->
     path = tmp_path / "fixture-request.json"
     path.write_text(json.dumps(request)); path.chmod(0o600)
     validated = validate_request(path.resolve(), source, "PARITY")
-    payload = build_alpha_campaign_payload(validated, source, "p3-integration-fixture-v1")
+    payload = build_alpha_campaign_payload(validated.authorization, source, "p3-integration-fixture-v1")
     assert payload.manifest_ref.model_dump(mode="json") == authorization["fixture_plan_ref"]
-    assert not hasattr(validated, "input_set_ref")
+    assert not hasattr(validated.authorization, "input_set_ref")
     with pytest.raises(AuthorityHeld):
-        build_alpha_campaign_payload(validated, source, "p3-native-parity-v1")
+        build_alpha_campaign_payload(validated.authorization, source, "p3-native-parity-v1")
 
 
 def test_official_authorization_cannot_bootstrap_integration_fixture() -> None:
@@ -139,8 +143,27 @@ def test_staging_publishes_authorization_and_verifies_manifest_before_enqueue(tm
     body.pop('digest')
     body['digest'] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
     authorization = RunAuthorization.model_validate_json(canonical_json_bytes(body))
-    payload = stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',manifest)
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from tests.p3.test_operation_input import intent
+    operation_input = P3OperationInput.model_validate_json(intent(input_set_ref=ref.model_dump(mode="json")))
+    from datetime import UTC, datetime, timedelta
+    from tests.p3.test_replica_execution import _seal
+    now = datetime.now(UTC)
+    review_ref = _seal(store, schema_version="p3-review-approval-v1",
+        source=source, subject_digests=[operation_input.digest], operator_identity="operator",
+        reviewer_identity="reviewer", review_execution_id="synthetic-review",
+        verdict="APPROVED", issued_at=(now-timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        expires_at=(now+timedelta(minutes=5)).isoformat().replace("+00:00", "Z"), evidence_ref=ref,
+        authority={"broker":False,"live":False,"network":False,"production":False})
+    body['review_ref'] = review_ref.model_dump(mode='json')
+    body['issued_at'] = now.isoformat().replace("+00:00", "Z")
+    body['expires_at'] = (now+timedelta(minutes=4)).isoformat().replace("+00:00", "Z")
+    body.pop('digest')
+    body['digest'] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+    authorization = RunAuthorization.model_validate_json(canonical_json_bytes(body))
+    manifest = canonical_json_bytes(operation_input)
+    payload = stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',manifest,operation_input=operation_input)
     assert store.read_bytes(payload.authorization_ref) == canonical_json_bytes(authorization)
     assert store.read_bytes(payload.manifest_ref) == manifest
     with pytest.raises(AuthorityHeld,match='manifest'):
-        stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',b'wrong')
+        stage_alpha_campaign_payload(store,authorization,source,'p3-baselines-v1',b'wrong',operation_input=operation_input)

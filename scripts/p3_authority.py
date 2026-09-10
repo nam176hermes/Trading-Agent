@@ -101,8 +101,9 @@ def _request_json(method: str, path: str, token: str, body: object | None = None
 def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     operation = validate_workflow_operation(workflow_operation)
     source = SourceIdentity.model_validate(canonical_source_identity(ROOT))
-    authorization = validate_request(request_file, source, operation)
-    payload = build_alpha_campaign_payload(authorization, source, workflow_operation)
+    request = validate_request(request_file, source, operation)
+    authorization = request.authorization
+    payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=request.operation_input)
     status = derive_project_status(ROOT)
     if not (
         status["gates"]["HWC_SOURCE_READY"] == "PASS"
@@ -113,21 +114,22 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     output_dir.mkdir(mode=0o700,parents=False,exist_ok=False)
     _write(output_dir,"source-identity.json",source)
     _write(output_dir,"input-inventory.json",{
-        "authorization_ref":authorization.digest,
-        ("fixture_plan_ref" if workflow_operation == "p3-integration-fixture-v1" else "input_set_ref"):payload.manifest_ref,
+        "authorization_ref":payload.authorization_ref,
+        ("fixture_plan_ref" if workflow_operation == "p3-integration-fixture-v1" else "operation_input_ref"):payload.manifest_ref,
         "review_ref":authorization.review_ref,
     })
     _write(output_dir,"preflight.json",{
         "schema_version":"p3-preflight-v1","operation":operation,
-        "source":source,"status":"PASS",
+        "source":source,"status":"STRUCTURE_VALIDATED","execution_authorized":False,
         "authority":{"broker":False,"live":False,"network":False,"production":False},
     })
     _write(output_dir,"payload.json",payload)
-    return authorization, payload
+    return request, payload
 
 
 def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
-    authorization, payload = preflight(request_file, output_dir, workflow_operation)
+    request, payload = preflight(request_file, output_dir, workflow_operation)
+    authorization = request.authorization
     from packages.data_catalog.artifact_store import LocalArtifactStore
     from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan
     store = LocalArtifactStore(artifact_root)
@@ -140,7 +142,7 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
         plan = FixturePlan.model_validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:
             raise RuntimeError("HELD E_MANIFEST: fixture plan differs from source")
-    payload = stage_alpha_campaign_payload(store,authorization,payload.expected_source,workflow_operation,manifest)
+    payload = stage_alpha_campaign_payload(store,authorization,payload.expected_source,workflow_operation,manifest, operation_input=request.operation_input)
     token = _read_token(token_file)
     enqueue_raw = _request_json(
         "POST", "/v1/jobs", token,

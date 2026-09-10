@@ -12,7 +12,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import ReviewApproval, RunAuthorization
+from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity, Text
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
@@ -66,6 +67,7 @@ class _RequestFile(BaseModel):
     schema_version: Literal["p3-authority-request-file-v1"]
     execution_source: SourceIdentity
     authorization: Annotated[RunAuthorization | _FixtureAuthorization, Field(discriminator="schema_version")]
+    operation_input: P3OperationInput | None = None
 
 
 def validate_workflow_operation(value: str) -> str:
@@ -79,7 +81,7 @@ def validate_request(
     path: Path,
     expected_source: SourceIdentity | None,
     operation: str,
-) -> RunAuthorization | _FixtureAuthorization:
+) -> _RequestFile:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -125,13 +127,30 @@ def validate_request(
     now = datetime.now(UTC)
     if not request.authorization.issued_at <= now < request.authorization.expires_at:
         raise AuthorityHeld("HELD E_AUTHORITY: authorization is not current")
-    return request.authorization
+    if isinstance(request.authorization, _FixtureAuthorization):
+        if request.operation_input is not None:
+            raise AuthorityHeld("HELD E_AUTHORITY: fixture cannot carry an official operation input")
+    elif request.operation_input is None:
+        raise AuthorityHeld("HELD E_OPERATION: official operation input is required")
+    if isinstance(request.authorization, RunAuthorization):
+        expected_context = {
+            "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
+            "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": expected_source.commit_sha,
+            "GITHUB_REF_PROTECTED": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_RUN_ID": str(request.authorization.issuer_run_id),
+            "GITHUB_RUN_ATTEMPT": str(request.authorization.issuer_attempt),
+            "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
+        }
+        if any(os.environ.get(key) != value for key, value in expected_context.items()):
+            raise AuthorityHeld("HELD E_ISSUER: request differs from the protected-main workflow context")
+    return request
 
 
 def build_alpha_campaign_payload(
     authorization: RunAuthorization | _FixtureAuthorization,
     source: SourceIdentity,
     workflow_operation: str,
+    *, operation_input: P3OperationInput | None = None,
 ) -> AlphaCampaignPayload:
     """Build the one closed worker payload represented by a protected request."""
 
@@ -141,6 +160,23 @@ def build_alpha_campaign_payload(
     fixture = isinstance(authorization, _FixtureAuthorization)
     if fixture != (workflow_operation == "p3-integration-fixture-v1"):
         raise AuthorityHeld("HELD E_AUTHORITY: fixture and research authorization scopes differ")
+    if fixture:
+        if operation_input is not None:
+            raise AuthorityHeld("HELD E_OPERATION: fixture cannot carry an official operation input")
+        manifest_ref = authorization.fixture_plan_ref
+    else:
+        if operation_input is None:
+            raise AuthorityHeld("HELD E_OPERATION: official operation input is required")
+        operation_input = P3OperationInput.model_validate(operation_input)
+        if (operation_input.workflow_operation != workflow_operation
+            or operation_input.operation != authorization.operation
+            or operation_input.input_set_ref != authorization.input_set_ref
+            or operation_input.allowed_alpha_ids != authorization.allowed_alpha_ids):
+            raise AuthorityHeld("HELD E_OPERATION: operation input differs from authorization")
+        intent_raw = canonical_json_bytes(operation_input)
+        intent_digest = hashlib.sha256(intent_raw).hexdigest()
+        manifest_ref = ArtifactRefV1(content_sha256=intent_digest, size_bytes=len(intent_raw),
+            media_type="application/json", locator=f"{intent_digest}.blob")
     raw = canonical_json_bytes(authorization)
     digest = hashlib.sha256(raw).hexdigest()
     authorization_ref = ArtifactRefV1(
@@ -152,21 +188,34 @@ def build_alpha_campaign_payload(
     return AlphaCampaignPayload(
         schema_version="p3-alpha-campaign-payload-v1",
         operation=AlphaCampaignOperation(operation),
-        manifest_ref=(authorization.fixture_plan_ref if fixture else authorization.input_set_ref),
+        manifest_ref=manifest_ref,
         authorization_ref=authorization_ref,
         expected_source=source,
         logical_trial_id=workflow_operation,
     )
 
 
-def stage_alpha_campaign_payload(store, authorization, source, workflow_operation, manifest_bytes):
+def stage_alpha_campaign_payload(store, authorization, source, workflow_operation, manifest_bytes, *, operation_input=None):
     """Publish exact approved input bytes to CAS and read them back before enqueue."""
-    payload = build_alpha_campaign_payload(authorization, source, workflow_operation)
+    payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=operation_input)
     reference = payload.manifest_ref
     if (len(manifest_bytes) != reference.size_bytes
         or hashlib.sha256(manifest_bytes).hexdigest() != reference.content_sha256):
         raise AuthorityHeld("HELD E_MANIFEST: staged manifest differs from approval")
-    store.read_bytes(authorization.review_ref)
+    review_raw = store.read_bytes(authorization.review_ref)
+    if operation_input is not None:
+        try:
+            review = ReviewApproval.model_validate_json(review_raw)
+            now = datetime.now(UTC)
+            if (canonical_json_bytes(review) != review_raw
+                or review.source != source or review.verdict != "APPROVED"
+                or review.operator_identity == review.reviewer_identity
+                or not review.issued_at <= authorization.issued_at <= now < authorization.expires_at <= review.expires_at
+                or operation_input.digest not in review.subject_digests):
+                raise ValueError("operation input is not covered by a current independent review")
+            store.read_bytes(review.evidence_ref)
+        except (ValueError, OSError) as error:
+            raise AuthorityHeld("HELD E_REVIEW_AUTHORITY: operation review is invalid") from error
     manifest_ref = store.put_bytes(manifest_bytes,media_type=reference.media_type)
     raw = canonical_json_bytes(authorization)
     authorization_ref = store.put_bytes(raw,media_type="application/json")
