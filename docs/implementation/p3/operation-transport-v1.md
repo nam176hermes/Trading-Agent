@@ -373,3 +373,19 @@ is retained with the current delta stated separately. Two focused failures were
 reproduced locally before correction; both then passed, and all three affected
 suites passed 265 tests in 79.83 seconds. Independent review passed this count
 repair without changing any gate, classification, closure row or status rule.
+
+Foundation run 34588600068 at 1aa08866 completed 9,896 root tests and 10,653
+aggregate passing observations, then failed the separate critical-coverage rerun:
+the latter attempted the governed native bwrap transport test on a host without
+/usr/bin/bwrap. Coverage now derives exact native deselections from the existing
+hash-locked capability inventory and rejects overlap with any sealed required
+critical case. Native qualification, inventory/classifications, coverage sources,
+paths, floors and required cases remain unchanged. The genuine routing test
+failed before correction; 85 focused governance/native tests then passed in
+37.35 seconds, including the real local bwrap probe. Independent review passed.
+
+The first local full coverage attempt exposed missing dashboard generator tools
+while their frozen install was still completing; it was not a source failure.
+After npm ci completed, the full gate was rerun successfully. Transition
+repositories measured 96.9136% line and 92.3611% branch coverage. No threshold
+was lowered and no native capability receipt was inferred from portable coverage.
