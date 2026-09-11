@@ -158,3 +158,90 @@ def test_revision_read_budget_counts_repeated_reads_and_rejects_before_io():
     with pytest.raises(ValueError,match='read budget'):
         reader.read_bytes(ref)
     assert store.reads==2
+
+
+def test_full_research_backup_reconstructs_then_copies_and_reads_destination(
+    complete_revision_inputs,tmp_path,monkeypatch,
+):
+    from packages.alpha_lifecycle import research_custody
+    from packages.alpha_lifecycle.acquisition import DailyAcquisitionReceipt
+    from packages.alpha_lifecycle.data_view import _partition_ref
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store,ref,query,dataset_ref,dataset=complete_revision_inputs
+    revision=pit_evidence.P3ResearchRevisionInventory.model_validate_json(store.read_bytes(ref))
+    expected=[ref,dataset_ref,dataset.snapshot_ref,*dataset.row_refs]
+    for entry in revision.entries:
+        acquired=DailyAcquisitionReceipt.model_validate_json(store.read_bytes(entry.acquisition_ref))
+        expected.extend((entry.acquisition_ref,entry.normalized_ref,entry.provider_ref,entry.quality_ref,
+            _partition_ref(entry.partition),acquired.archive_ref,acquired.checksum_ref))
+    def key(item):
+        return item.content_sha256,item.size_bytes,item.media_type,item.locator
+    def source_metadata():
+        return {path.name:(path.stat().st_ino,path.stat().st_mode,path.stat().st_size,
+            path.stat().st_mtime_ns,path.stat().st_nlink,path.stat().st_uid,path.stat().st_gid)
+            for path in store._root.iterdir()}
+    before=source_metadata()
+    root=tmp_path/'backup'
+    root.mkdir(mode=0o700)
+    backup=LocalArtifactStore(root)
+    monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('backup wrote source artifacts')))
+    receipt,object_inventory_ref=research_custody.backup_revision_inventory(
+        ref,source=SOURCE,policy_digest=POLICY,query=query,dataset_ref=dataset_ref,
+        store=store,backup=backup,producer_run_id=1,producer_attempt=1)
+    inventory_raw=backup.read_bytes(object_inventory_ref)
+    objects=tuple(ArtifactRefV1.model_validate(item) for item in json.loads(inventory_raw))
+    assert inventory_raw==canonical_json_bytes(objects)
+    assert tuple(map(key,objects))==tuple(sorted(set(map(key,expected))))
+    assert ref in objects and dataset_ref in objects and dataset.snapshot_ref in objects
+    assert receipt.object_version==receipt.object_inventory_content_sha256==object_inventory_ref.content_sha256
+    assert receipt.dataset_content_sha256==dataset_ref.content_sha256
+    assert receipt.inventory_content_sha256==ref.content_sha256
+    assert receipt.verified_at>=query.cutoff
+    assert receipt.object_count==len({item.content_sha256 for item in objects})
+    assert receipt.total_bytes==sum({item.content_sha256:item.size_bytes for item in objects}.values())
+    for item in objects:
+        assert backup.read_bytes(item)==store.read_bytes(item)
+    assert source_metadata()==before
+
+
+@pytest.mark.parametrize('fault',[
+    'run','attempt','same_root','nested_backup','nested_source','future_cutoff','invalid_inventory','put_identity','readback',
+])
+def test_backup_failure_never_returns_receipt(tmp_path,monkeypatch,fault):
+    """Unit-test failure routing only; full reconstruction is exercised above."""
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle.research_custody import backup_revision_inventory
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    roots=(tmp_path/'source',tmp_path/'backup')
+    if fault=='nested_backup':
+        roots=(tmp_path/'source',tmp_path/'source'/'backup')
+    elif fault=='nested_source':
+        roots=(tmp_path/'backup'/'source',tmp_path/'backup')
+    for root in sorted(roots,key=lambda path:len(path.parts)):
+        root.mkdir(mode=0o700)
+    store,backup=(LocalArtifactStore(root) for root in roots)
+    ref=store.put_bytes(b'{}',media_type='application/json')
+    query=PITQueryV1(mode=PITQueryMode.SYSTEM_OBSERVED,
+        valid_at=datetime(2025,9,1,tzinfo=UTC),cutoff=datetime(2026,9,11,tzinfo=UTC))
+    if fault=='future_cutoff':
+        query=PITQueryV1(mode=query.mode,valid_at=query.valid_at,
+            cutoff=datetime.now(UTC)+timedelta(days=1))
+    def validate(*a,**kwargs):
+        if fault=='invalid_inventory':
+            raise ValueError('invalid revision inventory')
+        kwargs['store'].read_bytes(ref)
+        return SimpleNamespace(snapshot_ref=ref)
+    monkeypatch.setattr(pit_evidence,'validate_revision_inventory',validate)
+    before=tuple(sorted(str(path) for path in tmp_path.rglob('*')))
+    if fault=='put_identity':
+        original=backup.put_bytes
+        monkeypatch.setattr(backup,'put_bytes',lambda *a,**k:original(b'other',**k))
+    if fault=='readback':
+        monkeypatch.setattr(backup,'read_bytes',lambda item:b'wrong')
+    with pytest.raises(ValueError):
+        backup_revision_inventory(ref,source=SOURCE,policy_digest=POLICY,query=query,
+            dataset_ref=ref,store=store,backup=LocalArtifactStore(roots[0]) if fault=='same_root' else backup,
+            producer_run_id=0 if fault=='run' else 1,producer_attempt=True if fault=='attempt' else 1)
+    if fault not in ('put_identity','readback'):
+        assert tuple(sorted(str(path) for path in tmp_path.rglob('*')))==before
+    assert store.read_bytes(ref)==b'{}'

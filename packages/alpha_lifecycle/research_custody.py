@@ -1,5 +1,6 @@
 """Compact structural data bindings; protected producer/admission is separate."""
 import hashlib
+import os
 from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
@@ -9,6 +10,7 @@ from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, _read
 from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity
 from packages.alpha_lifecycle.contracts.data import DatasetEvidence
 from packages.alpha_lifecycle.pit_evidence import _ReadBudget, _reference
+from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1, PITQueryMode, PITQueryV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
 
@@ -122,3 +124,62 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
         or not commitment.completed_at<=backup.verified_at<=commitment.issued_at):
         raise ValueError('research backup subject, producer or timing differs')
     return commitment
+
+
+def backup_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,
+    policy_digest: str, query: PITQueryV1, dataset_ref: ArtifactRefV1,
+    store: LocalArtifactStore, backup: LocalArtifactStore,
+    producer_run_id: int, producer_attempt: int) -> tuple[P3ResearchBackupReceipt, ArtifactRefV1]:
+    """Copy reconstructed objects and read back; host custody is checked separately."""
+    from packages.alpha_lifecycle.acquisition import _retain_json
+    from packages.alpha_lifecycle.pit_evidence import validate_revision_inventory
+
+    if (type(producer_run_id) is not int or producer_run_id<1
+        or type(producer_attempt) is not int or producer_attempt<1):
+        raise ValueError('backup producer run and attempt must be positive integers')
+    query=PITQueryV1.model_validate(query)
+    if query.cutoff>datetime.now(UTC):
+        raise ValueError('backup cannot verify a future inventory cutoff')
+    if (not isinstance(store,LocalArtifactStore) or not isinstance(backup,LocalArtifactStore)
+        or os.path.samefile(store._root,backup._root)
+        or store._root in backup._root.parents or backup._root in store._root.parents):
+        raise ValueError('backup needs distinct private source and destination stores')
+    objects={}
+    sizes={}
+
+    class RecordingReader:
+        def read_bytes(self, item: ArtifactRefV1) -> bytes:
+            key=(item.content_sha256,item.size_bytes,item.media_type,item.locator)
+            if len(objects)>=1000000 and key not in objects:
+                raise ValueError('backup object count exceeds its bound')
+            if sizes.setdefault(item.content_sha256,item.size_bytes)!=item.size_bytes:
+                raise ValueError('backup object declares inconsistent sizes')
+            objects[key]=item
+            return store.read_bytes(item)
+
+    dataset=validate_revision_inventory(ref,source=source,policy_digest=policy_digest,
+        query=query,dataset_ref=dataset_ref,store=RecordingReader())
+    total_bytes=sum(sizes.values())
+    inventory=canonical_json_bytes([objects[key] for key in sorted(objects)])
+    if total_bytes>1073741824 or len(inventory)>67108864:
+        raise ValueError('backup bytes or object inventory exceeds its bound')
+    reader=_ReadBudget(store)
+    for key in sorted(objects):
+        item=objects[key]
+        raw=reader.read_bytes(item)
+        if backup.put_bytes(raw,media_type=item.media_type)!=item or backup.read_bytes(item)!=raw:
+            raise ValueError('backup destination identity or readback differs')
+    inventory_ref=_retain_json(inventory,backup)
+    payload=dict(schema_version='p3-research-backup-receipt-v1',source=source,
+        producer_repository='nam176hermes/Trading-Agent',
+        producer_workflow_ref='nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main',
+        producer_run_id=producer_run_id,producer_attempt=producer_attempt,
+        authority=dict(broker=False,live=False,network=False,production=False),
+        inventory_content_sha256=ref.content_sha256,dataset_content_sha256=dataset_ref.content_sha256,
+        snapshot_content_sha256=dataset.snapshot_ref.content_sha256,
+        object_inventory_content_sha256=inventory_ref.content_sha256,
+        destination_namespace='p3.research.backup',object_version=inventory_ref.content_sha256,
+        object_count=len(sizes),total_bytes=total_bytes,
+        verified_at=datetime.now(UTC).isoformat().replace('+00:00','Z'),status='READBACK_VERIFIED')
+    payload['digest']=hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    return P3ResearchBackupReceipt.model_validate_json(canonical_json_bytes(payload)),inventory_ref

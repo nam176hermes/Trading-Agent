@@ -252,3 +252,26 @@ Regression tests first reproduced acceptance of invalid closure/accounting and
 an arbitrary ordered-row digest. The final compact suite passed 39 tests in
 11.26 seconds; independent gpt-5.6-sol/high review passed this structural scope.
 These synthetic tests do not authenticate the declared producer or custody.
+
+## Physical backup producer (local source helper)
+
+`backup_revision_inventory` reconstructs the complete raw/P2/dataset closure
+before any destination write, records only the exact references read, copies
+those objects to a distinct private LocalArtifactStore and reads every object
+back. Source and destination cannot be identical or nested. The canonical sorted
+object inventory is retained and read back in the destination; the receipt is
+created last. Count and bytes refer to unique physical content hashes, excluding
+the inventory itself. Partial copies remain retained on failure, without a
+receipt. No source artifacts are written or cleaned.
+
+The missing producer first failed its full synthetic test. Two later failing
+tests reproduced nested-root acceptance before the disjoint-root correction.
+The final full 2,800-day reconstruction/copy and nine failure cases passed ten
+tests in 181.79 seconds. The expected transitive reference set is independently
+derived from typed inventory/acquisition/dataset artifacts; source metadata and
+every destination byte are checked. Static retained 117 existing diagnostics,
+none in owned files; independent gpt-5.6-sol/high review passed this bounded scope.
+
+This helper does not authenticate the declared workflow/run, protect against
+privileged mount replacement, qualify the retained SQL store, or admit an
+official InputSet. Those protected host and producer checks remain HELD.
