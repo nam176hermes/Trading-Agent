@@ -474,3 +474,11 @@ publication and fixed policy values are unchanged. Synthetic SQL identities
 and review fixtures are not protected authority. Current canonical attempt
 completeness, SQL heads, protected reviewer admission, worker profile, host
 qualification and all official research execution remain HELD.
+
+The broad P3 suite exposed one stale negative-test date after the synthetic
+research fixture expanded to the frozen 2018 start. Its hardcoded 2019 date
+formed an inverted training range and failed at schema parsing instead of the
+intended dataset-boundary guard. The test now derives one day before the actual
+dataset start. The original case reproduced 1 FAIL in 12.94 seconds; both
+training-boundary cases passed in 26.23 seconds after the test-only correction.
+The guard, threshold arithmetic and production source are unchanged.

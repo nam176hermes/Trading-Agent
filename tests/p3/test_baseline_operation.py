@@ -54,7 +54,8 @@ def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monke
     elif fault == 'threshold_dataset':
         threshold['training_dataset_ref'] = other
     elif fault == 'training_before_dataset':
-        threshold['training_range']['start'] = '2019-12-31'
+        from datetime import date, timedelta
+        threshold['training_range']['start'] = (date.fromisoformat(dataset['date_range']['start']) - timedelta(days=1)).isoformat()
     elif fault == 'training_overlaps_oos':
         threshold['training_range']['end'] = folds['folds'][0]['decision_start']
     elif fault == 'pit_limitations':
