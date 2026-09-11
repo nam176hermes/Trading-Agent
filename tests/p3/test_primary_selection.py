@@ -57,7 +57,7 @@ def test_selection_recomputes_candidate_closure_before_ranking(monkeypatch):
         select_primary(FamilyReview.model_validate_json(canonical_json_bytes(value)),NoUnvalidatedRead())
 
 
-@pytest.mark.parametrize('case',['selected_precision','none_qualified','wrong_order','wrong_version'])
+@pytest.mark.parametrize('case',['selected_precision','none_qualified','wrong_order','wrong_version','missing_trials'])
 def test_selection_family_and_aggregate_ordering_unit(tmp_path,monkeypatch,case):
     """Isolate selection arithmetic with stubbed graph reads; no authority proof."""
     from decimal import Decimal,localcontext
@@ -99,13 +99,15 @@ def test_selection_family_and_aggregate_ordering_unit(tmp_path,monkeypatch,case)
         return (objects[(ref(i+4).content_sha256,QualificationBundle)],
             objects[(ref(i+8).content_sha256,AlphaQualificationEvidenceV1)],ref(i+16))
     monkeypatch.setattr(selection,'validate_candidate_closure',candidate)
+    if case!='missing_trials':
+        monkeypatch.setattr(selection,'_validate_disclosure',lambda *args:None)
     root=tmp_path/'store'
     root.mkdir(mode=0o700)
     store=LocalArtifactStore(root)
     with localcontext() as context:
         context.prec=6
-        if case in ('wrong_order','wrong_version'):
-            with pytest.raises(ValueError,match='family'):
+        if case in ('wrong_order','wrong_version','missing_trials'):
+            with pytest.raises(ValueError,match='trial' if case=='missing_trials' else 'family'):
                 selection.select_primary(review,store)
             assert not tuple(root.iterdir())
         else:
@@ -151,3 +153,162 @@ def test_distinct_reports_for_one_candidate_cannot_replace_complete_family(synth
         candidate_report_refs=reports,trial_outcome_refs=(request_ref,),review_ref=request_ref,complete_disclosure=True)
     with pytest.raises(ValueError,match='family'):
         select_primary(_read(store,review_ref,FamilyReview),store)
+
+
+@pytest.fixture
+def disclosed_family(tmp_path,synthetic_oos):
+    """Real retained contracts; candidate qualification and SQL authority are assumed unit inputs."""
+    from types import SimpleNamespace
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.alpha_lifecycle.replay import run_replays
+    from packages.alpha_lifecycle.operation_input import FAMILY_IDS
+    from packages.alpha_lifecycle.trials import deterministic_trial_keys
+    from packages.alpha_lifecycle.primary_selection import family_disclosure_digest
+    from tests.p3.test_replay import Executor,_ref
+    from tests.p3.test_replica_execution import _seal
+    root=tmp_path/'store'; root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    from tests.p3.test_publication import _changed
+    environment_ref=_seal(store,schema_version='p3-environment-identity-v1',python_version='3.11',
+        root_lock_digest='a'*64,native_manifest_digest='b'*64,sandbox_policy_digest='c'*64,
+        platform='linux-x86_64',decimal_precision=50)
+    class UnitExecutor(Executor):
+        def execute(self,*args,**kwargs):
+            return _changed(super().execute(*args,**kwargs),environment_ref=environment_ref,sandbox_policy_digest='c'*64)
+    qualifications=[]; outcomes=[]
+    for index,alpha_id in enumerate(FAMILY_IDS):
+        executor=UnitExecutor()
+        executor.result=canonical_json_bytes(_changed(synthetic_oos[1],manifest_ref=_ref(str(index+1)*64)))
+        executor.result_ref=_ref(hashlib.sha256(executor.result).hexdigest(),len(executor.result))
+        executor.values={executor.result_ref.content_sha256:executor.result}
+        proof=run_replays(_ref(str(index+1)*64),executor,
+            logical_trial_id=f'p3-oos-a{index}-v1',output_root=tmp_path/f'alpha{index}')
+        for raw in executor.values.values():
+            store.put_bytes(raw,media_type='application/json')
+        proof_ref=store.put_bytes(canonical_json_bytes(proof),media_type='application/json')
+        qualifications.append(SimpleNamespace(evaluation_ref=executor.result_ref,replay_proof_ref=proof_ref))
+        for key in deterministic_trial_keys('synthetic.epoch',alpha_id):
+            outcomes.append(_seal(store,schema_version='p3-trial-outcome-v1',trial_key=key,status='COMPLETED',
+                result_ref=executor.result_ref,execution_receipt_refs=proof.receipt_refs))
+    first=json_read(store,proof.receipt_refs[0])
+    from packages.alpha_lifecycle.contracts.results import ReplayReceipt
+    receipt=ReplayReceipt.model_validate_json(canonical_json_bytes(first))
+    inputs=SimpleNamespace(source=receipt.source,environment_ref=receipt.environment_ref,epoch_id='synthetic.epoch')
+    placeholder=store.put_bytes(b'{}',media_type='application/json')
+    review_ref=_seal(store,schema_version='p3-family-review-v1',input_set_ref=placeholder,
+        candidate_report_refs=tuple(_ref(str(index+1)*64) for index in range(4)),
+        trial_outcome_refs=outcomes,review_ref=placeholder,complete_disclosure=True)
+    review=FamilyReview.model_validate_json(store.read_bytes(review_ref))
+    approval_ref=_seal(store,schema_version='p3-review-approval-v1',source=inputs.source,
+        subject_digests=(family_disclosure_digest(review),),operator_identity='synthetic.operator',
+        reviewer_identity='synthetic.reviewer',review_execution_id='synthetic.review',verdict='APPROVED',
+        issued_at='2026-09-10T00:00:00Z',expires_at='2026-09-11T00:00:00Z',evidence_ref=placeholder,
+        authority=dict(broker=False,live=False,network=False,production=False))
+    from tests.p3.test_publication import _changed
+    review=_changed(review,review_ref=approval_ref.model_dump(mode='json'))
+    return store,inputs,qualifications,review
+
+
+def json_read(store,ref):
+    import json
+    return json.loads(store.read_bytes(ref))
+
+
+@pytest.mark.parametrize('fault',[None,'missing','outside_key','wrong_result','wrong_receipts','unfinished',
+    'cancelled_result','omitted_completion','wrong_review_subject','same_reviewer','rejected_review',
+    'wrong_source','invalid_interval','missing_review_evidence','historical_failure','historical_cancellation',
+    'receipt_missing_result','receipt_wrong_policy','receipt_reverse_time','receipt_wrong_order',
+    'receipt_wrong_manifest','detached_failed_result'])
+def test_family_disclosure_binds_all_trials_and_noncyclic_review(disclosed_family,fault):
+    from packages.alpha_lifecycle import primary_selection as selection
+    from packages.alpha_lifecycle.contracts.results import TrialOutcome
+    from packages.alpha_lifecycle.contracts.authority import ReviewApproval
+    from tests.p3.test_publication import _changed
+    store,inputs,bundles,review=disclosed_family
+    def retain(value):
+        return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+    refs=list(review.trial_outcome_refs)
+    outcome=TrialOutcome.model_validate_json(store.read_bytes(refs[0]))
+    approval=ReviewApproval.model_validate_json(store.read_bytes(review.review_ref))
+    if fault=='missing': refs.pop()
+    elif fault=='outside_key': outcome=_changed(outcome,trial_key='outside.family')
+    elif fault=='wrong_result': outcome=_changed(outcome,result_ref=review.input_set_ref.model_dump(mode='json'))
+    elif fault=='wrong_receipts': outcome=_changed(outcome,execution_receipt_refs=list(reversed(outcome.execution_receipt_refs)))
+    elif fault=='unfinished': outcome=_changed(outcome,status='STARTED')
+    elif fault=='cancelled_result': outcome=_changed(outcome,status='CANCELLED')
+    elif fault=='omitted_completion': outcome=_changed(outcome,status='PIPELINE_FAILED')
+    elif fault in ('historical_failure','historical_cancellation'):
+        refs.append(retain(_changed(outcome,status='PIPELINE_FAILED' if fault=='historical_failure' else 'CANCELLED',
+            result_ref=None,execution_receipt_refs=[])))
+    if fault and (fault.startswith('receipt_') or fault=='detached_failed_result'):
+        from packages.alpha_lifecycle.contracts.results import ReplayReceipt,EvaluationResult
+        from tests.p3.test_replay import _ref
+        receipt=ReplayReceipt.model_validate_json(store.read_bytes(outcome.execution_receipt_refs[0]))
+        partial_result=None
+        if fault=='receipt_missing_result': receipt=_changed(receipt,result_ref=_ref('9'*64))
+        elif fault=='receipt_wrong_policy': receipt=_changed(receipt,sandbox_policy_digest='9'*64)
+        elif fault=='receipt_reverse_time': receipt=_changed(receipt,completed_at='2026-09-04T00:00:00Z')
+        elif fault=='receipt_wrong_order':
+            receipt=ReplayReceipt.model_validate_json(store.read_bytes(outcome.execution_receipt_refs[2]))
+        elif fault=='receipt_wrong_manifest':
+            evaluation=EvaluationResult.model_validate_json(store.read_bytes(receipt.result_ref))
+            receipt=_changed(receipt,result_ref=retain(_changed(evaluation,manifest_ref=_ref('9'*64))))
+        else: partial_result=review.input_set_ref
+        refs.append(retain(_changed(outcome,status='PIPELINE_FAILED',result_ref=partial_result,
+            execution_receipt_refs=(retain(receipt),))))
+    if fault!='missing': refs[0]=retain(outcome)
+    review=_changed(review,trial_outcome_refs=refs)
+    approval=_changed(approval,subject_digests=(selection.family_disclosure_digest(review),))
+    if fault=='wrong_review_subject': approval=_changed(approval,subject_digests=('a'*64,))
+    elif fault=='same_reviewer': approval=_changed(approval,reviewer_identity=approval.operator_identity)
+    elif fault=='rejected_review': approval=_changed(approval,verdict='REJECTED')
+    elif fault=='wrong_source': approval=_changed(approval,source={**approval.source.model_dump(),'commit_sha':'e'*40})
+    elif fault=='invalid_interval': approval=_changed(approval,expires_at='2026-09-09T00:00:00Z')
+    elif fault=='missing_review_evidence':
+        from tests.p3.test_replay import _ref
+        approval=_changed(approval,evidence_ref=_ref('9'*64))
+    review=_changed(review,review_ref=retain(approval))
+    before={p.name:p.read_bytes() for p in store._root.iterdir()}
+    if fault in (None,'historical_failure','historical_cancellation'):
+        selection._validate_disclosure(review,bundles,inputs,store)
+    else:
+        with pytest.raises((ValueError,OSError)):
+            selection._validate_disclosure(review,bundles,inputs,store)
+    assert before=={p.name:p.read_bytes() for p in store._root.iterdir()}
+
+
+@pytest.mark.parametrize('fault',['expired','future','short_interval','wrong_input_set','wrong_operator',None])
+def test_selection_staging_requires_current_inner_review(disclosed_family,fault):
+    from datetime import UTC,datetime,timedelta
+    from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload,AuthorityHeld
+    from packages.alpha_lifecycle.contracts.authority import ReviewApproval,RunAuthorization
+    from packages.alpha_lifecycle.operation_input import P3OperationInput,FAMILY_IDS
+    from tests.p3.test_baseline_operation import _cli_authorization
+    from tests.p3.test_replica_execution import _seal
+    from tests.p3.test_publication import _changed
+    store,inputs,_,review=disclosed_family
+    def retain(value): return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+    now=datetime.now(UTC)
+    inner=ReviewApproval.model_validate_json(store.read_bytes(review.review_ref))
+    def utc(value): return value.isoformat(timespec='microseconds').replace('+00:00','Z')
+    inner=_changed(inner,operator_identity='synthetic-operator',issued_at=utc(now-timedelta(minutes=2)),
+        expires_at=utc(now+timedelta(hours=1)))
+    if fault=='expired': inner=_changed(inner,expires_at=utc(now-timedelta(minutes=1)))
+    elif fault=='future': inner=_changed(inner,issued_at=utc(now+timedelta(minutes=1)))
+    elif fault=='short_interval': inner=_changed(inner,expires_at=utc(now+timedelta(minutes=1)))
+    elif fault=='wrong_operator': inner=_changed(inner,operator_identity='another.operator')
+    review=_changed(review,review_ref=retain(inner))
+    operation_ref=_seal(store,schema_version='p3-operation-input-v1',workflow_operation='p3-select-primary-v1',
+        operation='OOS',input_set_ref=retain({'different':True}) if fault=='wrong_input_set' else review.input_set_ref,
+        allowed_alpha_ids=FAMILY_IDS,body=dict(family_review_ref=retain(review)))
+    authorization_ref=_cli_authorization(store,operation_ref,inputs.source)
+    operation=P3OperationInput.model_validate_json(store.read_bytes(operation_ref))
+    authorization=RunAuthorization.model_validate_json(store.read_bytes(authorization_ref))
+    if fault is None:
+        payload=stage_alpha_campaign_payload(store,authorization,inputs.source,operation.workflow_operation,
+            canonical_json_bytes(operation),operation_input=operation)
+        assert payload.manifest_ref==operation_ref
+    else:
+        with pytest.raises(AuthorityHeld,match='REVIEW'):
+            stage_alpha_campaign_payload(store,authorization,inputs.source,operation.workflow_operation,
+                canonical_json_bytes(operation),operation_input=operation)

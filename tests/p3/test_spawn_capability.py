@@ -359,3 +359,26 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
     finally:
         process.stdout.close()
         process.stderr.close()
+
+
+def test_projected_driver_imports_official_calculation_owners(tmp_path):
+    """Import from only the reviewed projection; the repository is absent from sys.path."""
+    import json
+    import subprocess
+    import sys
+    root=Path(__file__).resolve().parents[2]
+    inventory=json.loads((root/'docs/implementation/p3/p3-driver-files-v1.json').read_bytes())
+    for relative in inventory['paths']:
+        target=tmp_path/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/relative).read_bytes())
+    probe="""import sys
+sys.path.insert(0,sys.argv[1])
+from scripts import run_p3_alpha_campaign
+from packages.alpha_lifecycle import primary_selection, qualification, research_custody, pit_evidence, pit_suite
+print('projected official owners imported')
+"""
+    result=subprocess.run([sys.executable,'-I','-B','-c',probe,str(tmp_path)],cwd=tmp_path,
+        capture_output=True,text=True,timeout=30,check=False)
+    assert result.returncode==0,result.stderr
+    assert result.stdout=='projected official owners imported\n'

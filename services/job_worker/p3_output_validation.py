@@ -6,12 +6,12 @@ import json
 from decimal import ROUND_HALF_EVEN,localcontext
 
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore,_read,run_baseline_pack,validate_baseline_selection,baseline_manifest_ref
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RunAuthorization,FamilyReview,PrimarySelection
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest
 from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
 from services.job_store.p3_sql import PublicationProposal
 from packages.alpha_lifecycle.contracts.results import BaselinePack,BaselineSelection,ReplayProof,ReplayReceipt,QualificationBundle,EvaluationResult
-from packages.alpha_lifecycle.operation_input import P3OperationInput,BaselinesInput,RegisterFamilyInput,CandidateOOSInput
+from packages.alpha_lifecycle.operation_input import P3OperationInput,BaselinesInput,RegisterFamilyInput,CandidateOOSInput,SelectPrimaryInput
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload,JobType
@@ -66,6 +66,8 @@ def _closure(initial, store, *, output_refs=()):
         if len(found) >= _MAX_REFS or total > _MAX_BYTES:
             raise ValueError('P3 result closure exceeds its bound')
         raw=store.read_bytes(ref)
+        if len(raw)!=ref.size_bytes or hashlib.sha256(raw).hexdigest()!=ref.content_sha256:
+            raise ValueError('P3 closure artifact bytes differ from their reference')
         found[key]=ref
         if ref.media_type != 'application/json':
             continue
@@ -79,6 +81,11 @@ def _closure(initial, store, *, output_refs=()):
             if _key(inventory) not in found:
                 pending[_key(inventory)]=inventory
         values=[(value,0)]
+        if isinstance(value,dict) and value.get('schema_version')=='p3-evaluation-result-v1':
+            evaluation=EvaluationResult.model_validate_json(raw)
+            # These exact embedded values are separately retained by build_robustness.
+            values.extend((_reference(canonical_json_bytes(item)).model_dump(mode='json'),0)
+                for item in (*evaluation.perturbations,evaluation.double_cost,evaluation.delayed))
         while values:
             item,depth=values.pop()
             if depth > 64:
@@ -133,7 +140,7 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
     if result_ref not in output_refs:
         raise ValueError('P3 terminal result is absent from this attempt output')
     intent=_read(store,job.payload.manifest_ref,P3OperationInput)
-    if not isinstance(intent.body,(BaselinesInput,RegisterFamilyInput,CandidateOOSInput)):
+    if not isinstance(intent.body,(BaselinesInput,RegisterFamilyInput,CandidateOOSInput,SelectPrimaryInput)):
         raise ValueError('HELD E_OPERATION: complete output validation is unavailable')
     inputs=_closure((job.payload.manifest_ref,job.payload.authorization_ref,baseline_manifest_ref(intent.input_set_ref)),store)
     reader=_ClosedReader(store,(*inputs.values(),*output_refs))
@@ -160,6 +167,14 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
             proof=_read(outputs,result.baseline_replay_proof_ref,ReplayProof)
             _validate_replicas(proof,intent.body.baseline_manifest_ref,result.pack_ref,
                 job,inventory,output_refs,outputs)
+        elif isinstance(intent.body,SelectPrimaryInput) and isinstance(result,PrimarySelection):
+            from packages.alpha_lifecycle.primary_selection import select_primary
+            family=_read(reader,intent.body.family_review_ref,FamilyReview)
+            if (family.input_set_ref!=intent.input_set_ref
+                or any(not path.startswith('artifacts/') for path in inventory)):
+                raise ValueError('P3 selection differs from its InputSet or produced replica files')
+            if result!=select_primary(family,ReadbackStore(reader,outputs)):
+                raise ValueError('P3 primary selection differs from complete family recomputation')
         elif isinstance(intent.body,CandidateOOSInput) and isinstance(result,PublicationProposal):
             evidence=_read(outputs,result.request.evidence_ref,PrePublicationEvidence)
             if evidence.qualification_bundle_ref is None:

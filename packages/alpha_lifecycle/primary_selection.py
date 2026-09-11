@@ -94,6 +94,87 @@ def validate_candidate_closure(closure_ref: ArtifactRefV1, *, input_set_ref: Art
     return qualification,legacy,events[-1].artifact
 
 
+def family_disclosure_digest(review: FamilyReview) -> str:
+    """Review the complete disclosure without hashing its own approval edge."""
+    return hashlib.sha256(canonical_json_bytes(review.model_dump(
+        mode='json',exclude={'digest','review_ref'}))).hexdigest()
+
+
+def _validate_disclosure(review, qualifications, inputs, reader):
+    from packages.alpha_lifecycle.contracts.results import ReplayProof,ReplayReceipt,TrialOutcome,EvaluationResult
+    from packages.alpha_lifecycle.pit_evidence import _reference, _ReadBudget
+    from packages.alpha_lifecycle.trials import deterministic_trial_keys
+
+    if len(review.trial_outcome_refs)<28:
+        raise ValueError('family trial disclosure omits frozen paths')
+    reader=_ReadBudget(reader)
+    from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity
+    _reference(inputs.environment_ref,65536)
+    environment=_read(reader,inputs.environment_ref,EnvironmentIdentity)
+    results={}
+    expected={}
+    for index,(alpha_id,bundle) in enumerate(zip(FAMILY_IDS,qualifications,strict=True)):
+        _reference(bundle.replay_proof_ref,65536)
+        proof=_read(reader,bundle.replay_proof_ref,ReplayProof)
+        for key in deterministic_trial_keys(inputs.epoch_id,alpha_id):
+            expected[key]=(bundle.evaluation_ref,proof,f'p3-oos-a{index}-v1')
+    completed=set()
+    for ref in review.trial_outcome_refs:
+        _reference(ref,65536)
+        outcome=_read(reader,ref,TrialOutcome)
+        if outcome.trial_key not in expected:
+            raise ValueError('trial disclosure includes a path outside the frozen family')
+        result_ref,proof,operation=expected[outcome.trial_key]
+        if (outcome.status in {'PREREGISTERED','STARTED'}
+            or (outcome.status=='CANCELLED' and outcome.result_ref is not None)):
+            raise ValueError('selection needs terminal trial outcomes without cancelled results')
+        if outcome.status=='COMPLETED':
+            if (outcome.trial_key in completed or outcome.result_ref!=result_ref
+                or outcome.execution_receipt_refs!=proof.receipt_refs):
+                raise ValueError('completed trial differs from the retained candidate replay')
+            completed.add(outcome.trial_key)
+        receipt_results=[]
+        for index,receipt_ref in enumerate(outcome.execution_receipt_refs):
+            _reference(receipt_ref,65536)
+            receipt=_read(reader,receipt_ref,ReplayReceipt)
+            if (receipt.replicate!=('R1','R2','R3')[index] or receipt.source!=inputs.source
+                or receipt.environment_ref!=inputs.environment_ref
+                or receipt.sandbox_policy_digest!=environment.sandbox_policy_digest
+                or receipt.completed_at<receipt.started_at
+                or receipt.manifest_digest!=proof.manifest_digest
+                or receipt.logical_trial_id!=operation):
+                raise ValueError('disclosed trial receipt belongs to another candidate execution')
+            _reference(receipt.result_ref,67108864)
+            key=canonical_json_bytes(receipt.result_ref)
+            if key not in results:
+                results[key]=_read(reader,receipt.result_ref,EvaluationResult)
+            if results[key].manifest_ref.content_sha256!=proof.manifest_digest:
+                raise ValueError('disclosed replay result belongs to another candidate manifest')
+            receipt_results.append(receipt.result_ref)
+        if outcome.result_ref is not None and outcome.result_ref not in receipt_results:
+            raise ValueError('trial result is not backed by a disclosed execution receipt')
+    if completed!=set(expected):
+        raise ValueError('family trial disclosure omits completed frozen paths')
+    validate_family_review_approval(review,inputs.source,reader)
+
+
+def validate_family_review_approval(review,source,reader):
+    """Structural approval only; currentness and reviewer trust belong to admission."""
+    from packages.alpha_lifecycle.contracts.authority import ReviewApproval
+    from packages.alpha_lifecycle.pit_evidence import _reference,_ReadBudget
+    reader=_ReadBudget(reader)
+    _reference(review.review_ref,65536)
+    approval=_read(reader,review.review_ref,ReviewApproval)
+    if (approval.source!=source or approval.verdict!='APPROVED'
+        or approval.operator_identity==approval.reviewer_identity
+        or not approval.issued_at<approval.expires_at
+        or approval.subject_digests!=(family_disclosure_digest(review),)):
+        raise ValueError('family disclosure needs its bound independent review')
+    _reference(approval.evidence_ref,67108864)
+    reader.read_bytes(approval.evidence_ref)
+    return approval
+
+
 def select_primary(review: FamilyReview, reader: ArtifactStore) -> PrimarySelection:
     review = FamilyReview.model_validate(review)
     if (len({ref.content_sha256 for ref in review.candidate_report_refs})!=4
@@ -101,10 +182,12 @@ def select_primary(review: FamilyReview, reader: ArtifactStore) -> PrimarySelect
         raise ValueError("primary selection requires distinct reports and trial disclosures")
     eligible = []
     family = []
+    qualifications=[]
     for alpha_id,closure_ref in zip(FAMILY_IDS,review.candidate_report_refs,strict=True):
         qualification,evidence,head_ref=validate_candidate_closure(closure_ref,
             input_set_ref=review.input_set_ref,alpha_id=alpha_id,store=reader)
         family.append((evidence.alpha_id,evidence.alpha_version))
+        qualifications.append(qualification)
         if qualification.alpha_verdict == "PASS" and all(item.passed for item in qualification.criteria):
             with localcontext(prec=50,rounding=ROUND_HALF_EVEN):
                 aggregate_excess=evidence.metrics.total_return-evidence.baseline_result.total_return
@@ -121,6 +204,7 @@ def select_primary(review: FamilyReview, reader: ArtifactStore) -> PrimarySelect
     if tuple(family)!=tuple((alpha_id,'1.0.0') for alpha_id in FAMILY_IDS):
         raise ValueError('primary selection requires the complete ordered frozen family')
     input_set = _read(reader, review.input_set_ref, InputSet)
+    _validate_disclosure(review,qualifications,input_set,reader)
     review_ref = reader.put_bytes(canonical_json_bytes(review), media_type="application/json")
     if eligible:
         _, evidence, head_ref = min(eligible, key=lambda item: item[0])

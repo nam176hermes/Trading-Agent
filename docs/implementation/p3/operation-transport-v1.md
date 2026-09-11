@@ -449,3 +449,28 @@ adjacent suite passed 14 tests in 252.49 seconds, including altered physical
 result, manifest, inventory and extra-file rejection. Independent review passed;
 static retains 117 existing diagnostics. Provider admission, protected profile,
 source qualification and official execution remain HELD.
+
+Primary selection now verifies the complete frozen 28-trial disclosure and
+retained historical receipt/results, then reuses the existing deterministic
+ranking. Family approval binds the disclosure projection without a hash cycle;
+staging additionally requires its actual validity interval to cover the issued
+operation authorization. The unprivileged CLI and parent validator both use
+this selection owner. Parent validation admits no replica paths and recomputes
+through readback-only retained custody. The bounded closure walker verifies
+artifact bytes before parsing and derives the six existing embedded scenario
+references from typed EvaluationResult, preserving every published identity.
+
+Genuine red evidence includes missing disclosure (1 FAIL), expired inner review
+(1 FAIL), six historical receipt gaps (6 FAIL), missing CLI operation (1 FAIL),
+missing isolated driver projection (1 FAIL), missing parent branch (1 FAIL), and
+missing derived scenario closure (1 FAIL). The reviewed disclosure/CLI/authority
+suite passed 79 tests in 448.82 seconds. Final real portable CLI-to-custody,
+forged-selection rejection and derived-closure checks passed 3 tests in 317.52
+seconds; adjacent OOS/baseline/PIT checks passed 15 tests in 243.45 seconds.
+Canonical contracts passed; static retains 117 pre-existing diagnostics.
+Independent source review passed this bounded packet. Driver inventory adds
+only the five existing selection/qualification/custody/PIT owners. SQL atomic
+publication and fixed policy values are unchanged. Synthetic SQL identities
+and review fixtures are not protected authority. Current canonical attempt
+completeness, SQL heads, protected reviewer admission, worker profile, host
+qualification and all official research execution remain HELD.

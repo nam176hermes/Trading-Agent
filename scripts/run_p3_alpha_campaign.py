@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, execute_baseline_manifest, ReadbackStore, _read
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest, EvaluationManifest, InputSet, EnvironmentIdentity
-from packages.alpha_lifecycle.operation_input import P3OperationInput, BaselinesInput, RegisterFamilyInput, CandidateOOSInput
+from packages.alpha_lifecycle.operation_input import P3OperationInput, BaselinesInput, RegisterFamilyInput, CandidateOOSInput, SelectPrimaryInput
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
@@ -68,6 +68,17 @@ def main() -> None:
         proposal = prepare_family_registration(intent,job_id=args.job_id,
             observed_at=authorization.issued_at,expires_at=authorization.expires_at,store=store)
         sys.stdout.buffer.write(canonical_json_bytes(proposal) + b"\n")
+        return
+    if isinstance(intent.body,SelectPrimaryInput):
+        from packages.alpha_lifecycle.contracts.authority import FamilyReview
+        from packages.alpha_lifecycle.primary_selection import select_primary
+        family=_read(store,intent.body.family_review_ref,FamilyReview)
+        if family.input_set_ref!=intent.input_set_ref:
+            raise ValueError('family review belongs to another InputSet')
+        result=select_primary(family,store)
+        raw=canonical_json_bytes(result)
+        store.put_bytes(raw,media_type='application/json')
+        sys.stdout.buffer.write(raw+b"\n")
         return
     if not isinstance(intent.body,(BaselinesInput,CandidateOOSInput)):
         raise RuntimeError('HELD E_OPERATION: official operation executor is not implemented')

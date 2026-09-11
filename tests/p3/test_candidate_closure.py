@@ -22,13 +22,13 @@ from tests.p3.test_qualification import synthetic_oos
 from tests.p3.test_replica_execution import _seal
 
 
-def _candidate_closure(inputs,*,forged=False):
+def _candidate_closure(inputs,*,forged=False,index=0):
     store,evaluation,proof=inputs
     def retain(value):
         return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
     manifest=_read(store,evaluation.manifest_ref,EvaluationManifest)
-    intent_ref=_seal(store,schema_version='p3-operation-input-v1',workflow_operation='p3-oos-a0-v1',
-        operation='OOS',input_set_ref=manifest.input_set_ref,allowed_alpha_ids=(FAMILY_IDS[0],),
+    intent_ref=_seal(store,schema_version='p3-operation-input-v1',workflow_operation=f'p3-oos-a{index}-v1',
+        operation='OOS',input_set_ref=manifest.input_set_ref,allowed_alpha_ids=(FAMILY_IDS[index],),
         body=dict(evaluation_manifest_ref=evaluation.manifest_ref))
     now=datetime(2026,9,10,tzinfo=UTC)
     proposal=prepare_candidate_oos(_read(store,intent_ref,P3OperationInput),evaluation,proof,
@@ -146,3 +146,24 @@ def test_typed_research_read_rejects_nonjson_before_storage(owner):
     ref=ArtifactRefV1(content_sha256='a'*64,size_bytes=2,media_type='text/plain',locator='a'*64+'.blob')
     with pytest.raises(ValueError):
         read(NoRead(),ref,InputSet)
+
+
+def test_evaluation_closure_includes_retained_embedded_scenario_bytes(synthetic_oos,monkeypatch):
+    from services.job_worker.p3_output_validation import _closure,_key,_reference
+    store,evaluation,_=synthetic_oos
+    evaluation_ref=_reference(canonical_json_bytes(evaluation))
+    scenarios=tuple(_reference(canonical_json_bytes(value)) for value in
+        (*evaluation.perturbations,evaluation.double_cost,evaluation.delayed))
+    closed=_closure((evaluation_ref,),store)
+    assert all(_key(ref) in closed for ref in scenarios)
+    original=store.read_bytes
+    for fault in ('missing','corrupt'):
+        def read(ref):
+            if ref==scenarios[0]:
+                if fault=='missing': raise FileNotFoundError('synthetic missing derived scenario')
+                return b'{}'
+            return original(ref)
+        with monkeypatch.context() as patch:
+            patch.setattr(store,'read_bytes',read)
+            with pytest.raises((ValueError,OSError)):
+                _closure((evaluation_ref,),store)
