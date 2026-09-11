@@ -35,6 +35,7 @@ REQUIRED_OPERATION_CHECKS = frozenset({
     'ENQUEUE_TWO_CONNECTION_AUTHORIZATION_EXPIRY_PASS',
     'OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS',
     'OFFICIAL_ATTEMPT_OUTPUT_BINDING_PASS',
+    'OFFICIAL_OUTPUT_LOST_COMMIT_RESPONSE_PASS',
     'RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS',
     'HOLDOUT_CANNOT_START_WITHOUT_DURABLE_CONSUMPTION_PASS',
 })
@@ -604,6 +605,24 @@ def _check_publication(sock, name, root, source, mark):
         with _rejected(psycopg.errors.InvalidParameterValue):
             publisher.publish(request,claim,bad_entries,output_inventory_ref=output_inventory,trace_id='test:atomic-rollback')
         event_ids = [entry.event_id for entry in entries]
+        from threading import Lock
+        class DisconnectOncePool:
+            pending=True
+            disconnected=False
+            lock=Lock()
+            @contextmanager
+            def connection(self):
+                with self.lock:
+                    disconnect=self.pending
+                    self.pending=False
+                with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
+                    yield connection
+                    if disconnect:
+                        connection.close()
+                        self.disconnected=True
+                        raise psycopg.OperationalError('fixture disconnect after real 0023 COMMIT')
+        disconnect_pool=DisconnectOncePool()
+        concurrent_publisher=P3PublicationRepository(disconnect_pool,store)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres',autocommit=True) as observer, psycopg.connect(host=str(sock),dbname=name,user='postgres') as blocker:
             for table in ('domain_events','event_outbox'):
                 assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id=ANY(%s)',(event_ids,)).fetchone() == (0,)
@@ -612,7 +631,7 @@ def _check_publication(sock, name, root, source, mark):
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             blocker.execute('SELECT job_id FROM public.jobs WHERE job_id=%s FOR UPDATE',(claim.job_id,))
             with ThreadPoolExecutor(max_workers=2) as threads:
-                futures = [threads.submit(publisher.publish,request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:concurrent-publication') for _ in range(2)]
+                futures = [threads.submit(concurrent_publisher.publish,request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:concurrent-publication') for _ in range(2)]
                 try:
                     deadline = time.monotonic()+3
                     while time.monotonic()<deadline:
@@ -626,6 +645,8 @@ def _check_publication(sock, name, root, source, mark):
                 first, second = [future.result(timeout=5) for future in futures]
                 assert first == second
                 result = first
+        assert disconnect_pool.disconnected
+        mark('OFFICIAL_OUTPUT_LOST_COMMIT_RESPONSE_PASS')
         with _rejected(RuntimeError, match='custody unavailable'):
             recover_publication_receipt('job_publication',repository=publisher,store=store)
         altered = request.model_dump(mode='json')

@@ -147,7 +147,7 @@ def test_publication_rejects_other_ledger_event_even_with_valid_result_digest(tm
     assert len(pool.commits) == 1
 
 
-@pytest.mark.parametrize('edge', [None, 'missing', 'legacy', 'wrong_job', 'noncanonical', 'wrong_result', 'missing_time', 'non_utc_zone', 'noncanonical_result'])
+@pytest.mark.parametrize('edge', [None, 'missing', 'legacy', 'wrong_job', 'noncanonical', 'wrong_result', 'missing_time', 'non_utc_zone', 'noncanonical_result', 'missing_inventory', 'missing_attempt', 'unretained_inventory'])
 def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge):
     from datetime import UTC, datetime
     from tests.p3.test_publication import _chain, _changed
@@ -183,13 +183,22 @@ def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge
     output = tmp_path / 'recovered-cas'
     output.mkdir(mode=0o700)
     store = LocalArtifactStore(output)
+    inventory=store.put_bytes(b'[]',media_type='application/json')
+    row['output_inventory_ref_text']=canonical_json_bytes(inventory).decode()
+    row['output_attempt_id']='attempt_committed'
+    if edge == 'missing_inventory':
+        row['output_inventory_ref_text']=None
+    elif edge == 'missing_attempt':
+        row['output_attempt_id']=None
+    elif edge == 'unretained_inventory':
+        (output/inventory.locator).unlink()
     repository = P3PublicationRepository(Pool(), store)
     before = set(output.glob('*'))
     if edge is None:
         assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
         assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
     else:
-        with pytest.raises((ValueError, RuntimeError)):
+        with pytest.raises((ValueError, RuntimeError, OSError)):
             recover_publication_receipt(request.job_id, repository=repository, store=store)
         assert set(output.glob('*')) == before
 

@@ -12,13 +12,13 @@ branch_labels = None
 depends_on = None
 
 
-def _reviewed(name, signature, digest, *, arguments, language, volatility, parallel, result, modes=None):
+def _reviewed(name, signature, digest, *, arguments, language, volatility, parallel, result, modes=None, security=True, worker=True):
     rows=op.get_bind().execute(text("""
         SELECT p.prosrc,pg_catalog.pg_get_functiondef(p.oid)
         FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
         JOIN pg_catalog.pg_language l ON l.oid=p.prolang
         WHERE p.oid=pg_catalog.to_regprocedure(:signature)
-          AND r.rolname='trading_p3_owner' AND p.prosecdef AND p.provolatile=:volatility
+          AND r.rolname='trading_p3_owner' AND p.prosecdef=:security AND p.provolatile=:volatility
           AND p.proparallel=:parallel AND p.pronargdefaults=0 AND p.prokind='f'
           AND l.lanname=:language AND p.proconfig=ARRAY['search_path=pg_catalog']
           AND NOT p.proleakproof AND NOT p.proisstrict AND p.proretset=:returns_set
@@ -29,17 +29,76 @@ def _reviewed(name, signature, digest, *, arguments, language, volatility, paral
           AND NOT r.rolcreaterole AND NOT r.rolreplication AND NOT r.rolbypassrls
           AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-            WHERE a.grantee NOT IN (p.proowner,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker'))
+            WHERE a.grantee NOT IN (p.proowner,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker' AND :worker))
               OR a.privilege_type<>'EXECUTE' OR a.is_grantable)
-          AND EXISTS (SELECT 1 FROM pg_catalog.aclexplode(p.proacl) a
+          AND :worker = EXISTS (SELECT 1 FROM pg_catalog.aclexplode(p.proacl) a
             WHERE a.grantee=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker')
               AND a.privilege_type='EXECUTE')
     """),dict(signature='job_plane.'+name+'('+signature+')',arguments=arguments.split(','),
         language=language,volatility=volatility,parallel=parallel,result=result,modes=modes,
-        returns_set=modes is not None)).fetchall()
+        returns_set=modes is not None,security=security,worker=worker)).fetchall()
     if len(rows)!=1 or hashlib.sha256(rows[0][0].encode()).hexdigest()!=digest:
         raise RuntimeError('0023 reviewed function drift: '+name)
     return rows[0][1]
+
+
+def _catalog(*, upgraded=False):
+    connection=op.get_bind()
+    _reviewed('p3_valid_ref','jsonb',
+        '1558714089bb906369acc7f9c1f005a039db1b87076d76c1f330d65caa78da5f',
+        arguments='ref',language='sql',volatility='i',parallel='u',result='boolean',security=False,worker=False)
+    trigger=connection.execute(text("""
+        SELECT p.prosrc FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_roles r ON r.oid=p.proowner
+        JOIN pg_catalog.pg_language l ON l.oid=p.prolang
+        WHERE p.oid='public.reject_p3_accepted_mutation()'::regprocedure
+          AND r.rolname='trading_owner' AND l.lanname='plpgsql'
+          AND NOT p.prosecdef AND NOT p.proisstrict AND NOT p.proleakproof
+          AND p.provolatile='v' AND p.proparallel='u' AND p.prokind='f'
+          AND NOT p.proretset AND p.pronargs=0 AND p.pronargdefaults=0
+          AND p.proconfig=ARRAY['search_path=pg_catalog'] AND p.prorettype='trigger'::regtype
+    """)).scalar()
+    if trigger is None or hashlib.sha256(trigger.encode()).hexdigest()!='051dd0e20f1712cc653430c1831be32ce9e78100d8599e1e3d74a998b732dd74':
+        raise RuntimeError('0023 append-only function drift')
+    if connection.execute(text("""
+        SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname='trading_job_worker'
+          AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole
+          AND NOT r.rolreplication AND NOT r.rolbypassrls
+          AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid))
+        AND EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
+          WHERE c.oid='public.p3_alpha_job_commits'::regclass AND c.relkind='r'
+          AND r.rolname='trading_p3_owner' AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
+             WHERE a.grantee<>c.relowner)
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attacl IS NOT NULL)
+          AND (SELECT count(*) FROM pg_catalog.pg_trigger t WHERE t.tgrelid=c.oid AND NOT t.tgisinternal)=1
+          AND EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid=c.oid
+            AND t.tgname='p3_alpha_job_commits_append_only' AND t.tgenabled='O' AND t.tgtype=58
+            AND t.tgfoid='public.reject_p3_accepted_mutation()'::regprocedure
+            AND NOT t.tgisinternal AND t.tgnargs=0 AND t.tgqual IS NULL AND t.tgattr=''::int2vector))
+    """)).scalar() is not True:
+        raise RuntimeError('0023 publication table, trigger or worker authority drift')
+    columns=connection.execute(text("""
+        SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod),a.attnotnull,
+          pg_catalog.pg_get_expr(d.adbin,d.adrelid),a.attidentity,a.attgenerated
+        FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+        WHERE a.attrelid='public.p3_alpha_job_commits'::regclass AND a.attnum>0 ORDER BY a.attnum
+    """)).fetchall()
+    expected=[('job_id','character varying(64)',True,None),('idempotency_key','character varying(128)',True,None),
+        ('semantic_request_digest','character(64)',True,None),('result_json','jsonb',True,None),
+        ('result_text','text',True,None),('result_digest','character(64)',True,None),
+        ('committed_at','timestamp with time zone',True,'transaction_timestamp()'),('publication_request_text','text',False,None)]
+    if upgraded:
+        expected += [('output_inventory_ref_text','text',False,None),('output_attempt_id','character varying(64)',False,None)]
+    if [tuple(row) for row in columns] != [(*row,'','') for row in expected]:
+        raise RuntimeError('0023 publication columns drift')
+
+
+def _body_digest(definition):
+    body=definition.partition('\nAS $function$')[2].rpartition('$function$')[0]
+    if not body:
+        raise RuntimeError('0023 reviewed function framing drift')
+    return hashlib.sha256(body.encode()).hexdigest()
 
 
 def _replace(definition,before,after):
@@ -56,7 +115,8 @@ def upgrade():
     if op.get_bind().execute(text("""SELECT current_user='trading_owner' AND session_user='trading_owner'
         AND (SELECT version_num FROM public.alembic_version)='0022_p3_worker_lane_isolation'""")).scalar() is not True:
         raise RuntimeError('0023 requires the reviewed P3 parent and owner')
-    op.execute('LOCK TABLE public.jobs IN SHARE ROW EXCLUSIVE MODE')
+    op.execute('LOCK TABLE public.jobs,public.p3_alpha_job_commits IN SHARE ROW EXCLUSIVE MODE')
+    _catalog()
     commit=_reviewed('worker_commit_alpha_campaign','text,text,text,text,text,text',
         '7a31bf44f779b51220d2ab0e432025028dfa46a607f94d276becec64f230429a',
         arguments='p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_request_text,p_trace_id',
@@ -96,6 +156,10 @@ def upgrade():
     read=_replace(read,'SELECT c.result_json FROM public.p3_alpha_job_commits c',
         'SELECT CASE WHEN c.output_inventory_ref_text IS NULL THEN c.result_json ELSE '+
         _wrapper('c.result_json','c.output_inventory_ref_text','c.output_attempt_id')+' END FROM public.p3_alpha_job_commits c')
+    custody=_replace(custody,'committed_at timestamp with time zone)',
+        'committed_at timestamp with time zone, output_inventory_ref_text text, output_attempt_id text)')
+    custody=_replace(custody,'SELECT c.publication_request_text,c.result_text,c.committed_at',
+        'SELECT c.publication_request_text,c.result_text,c.committed_at,c.output_inventory_ref_text,c.output_attempt_id::text')
     custody=_replace(custody,'AND j.result_hash=c.result_digest AND j.result_metadata=c.result_json;',
         """AND j.result_hash=c.result_digest AND j.result_metadata=c.result_json
           AND c.output_inventory_ref_text IS NOT NULL
@@ -116,8 +180,22 @@ def upgrade():
            AND output_inventory_ref_text::jsonb->>'media_type'='application/json'
            AND (output_inventory_ref_text::jsonb->>'size_bytes')::numeric BETWEEN 1 AND 4194304) IS TRUE);
         """)
+    op.execute('DROP FUNCTION job_plane.worker_read_alpha_publication(text)')
     for definition in (commit,read,custody):
         op.execute(definition)
+    op.execute('REVOKE ALL ON FUNCTION job_plane.worker_read_alpha_publication(text) FROM PUBLIC,trading_p3_authority,trading_job_api,trading_job_worker,trading_job_scheduler,trading_jobs,trading_reader,trading_migrator')
+    op.execute('GRANT EXECUTE ON FUNCTION job_plane.worker_read_alpha_publication(text) TO trading_job_worker')
+    _reviewed('worker_commit_alpha_campaign','text,text,text,text,text,text',_body_digest(commit),
+        arguments='p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_request_text,p_trace_id',
+        language='plpgsql',volatility='v',parallel='u',result='jsonb')
+    _reviewed('read_alpha_commit','text,text,text',_body_digest(read),
+        arguments='p_job_id,p_idempotency_key,p_semantic_request_digest',
+        language='sql',volatility='s',parallel='s',result='jsonb')
+    _reviewed('worker_read_alpha_publication','text',_body_digest(custody),
+        arguments='p_job_id,request_text,result_text,committed_at,output_inventory_ref_text,output_attempt_id',language='plpgsql',
+        volatility='s',parallel='u',result='TABLE(request_text text, result_text text, committed_at timestamp with time zone, output_inventory_ref_text text, output_attempt_id text)',
+        modes=['i','t','t','t','t','t'])
+    _catalog(upgraded=True)
     op.execute("""RESET ROLE;
         REVOKE CREATE ON SCHEMA job_plane FROM trading_p3_owner;
         REVOKE REFERENCES ON TABLE public.job_attempts FROM trading_p3_owner;""")
