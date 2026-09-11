@@ -14,6 +14,7 @@ from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
 
 
+PIT_EVIDENCE_MEDIA = 'application/vnd.trading-agent.pit-evidence+json'
 SUITE_PATH = Path(__file__).resolve().parents[2]/'docs/implementation/pre-p3/p2-pit-adversarial-suite-v1.json'
 
 
@@ -87,8 +88,8 @@ def _validate_observations(raw: bytes, cases: tuple[PITCase, ...], *, collection
     return nodes
 
 
-def _json_ref(ref: ArtifactRefV1, maximum: int, *, exact: bool = False) -> None:
-    if (ref.media_type != 'application/json' or type(ref.size_bytes) is not int
+def _json_ref(ref: ArtifactRefV1, maximum: int, *, exact: bool = False, media: str = 'application/json') -> None:
+    if (ref.media_type != media or type(ref.size_bytes) is not int
         or not 0 < ref.size_bytes <= maximum or (exact and ref.size_bytes != maximum)
         or ref.locator != ref.content_sha256+'.blob'):
         raise ValueError('PIT artifact reference has invalid media, size or locator')
@@ -96,9 +97,9 @@ def _json_ref(ref: ArtifactRefV1, maximum: int, *, exact: bool = False) -> None:
 
 def build_pit_suite_receipt(source, suite_manifest_ref, collection_ref, report_ref, qualification,
     *, store: ArtifactStore) -> PITAdversarialSuiteReceiptV1:
-    _json_ref(suite_manifest_ref, len(SUITE_PATH.read_bytes()), exact=True)
+    _json_ref(suite_manifest_ref, len(SUITE_PATH.read_bytes()), exact=True, media=PIT_EVIDENCE_MEDIA)
     _json_ref(collection_ref, 131072)
-    _json_ref(report_ref, 131072)
+    _json_ref(report_ref, 131072, media=PIT_EVIDENCE_MEDIA)
     cases = pit_suite_cases(store.read_bytes(suite_manifest_ref))
     collected = _validate_observations(store.read_bytes(collection_ref), cases, collection=True)
     executed = _validate_observations(store.read_bytes(report_ref), cases, collection=False)

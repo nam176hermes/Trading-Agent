@@ -302,3 +302,14 @@ qualification tests passed in 313.24 seconds. Independent structural review
 passed; static retains 117 existing diagnostics. Protected producer, reviewer,
 backup custody and official admission still remain HELD. C01 reaches its existing
 PIT-suite check only after calculation has traversed this revision validation.
+
+PIT raw suite and execution-observation artifacts use the dedicated
+application/vnd.trading-agent.pit-evidence+json media type. Their original bytes
+are preserved and still validated against the exact tracked manifest and strict
+14-node report format. The receipt and collection stay canonical application/json;
+the worker's generic canonical JSON rule is unchanged. A real portable producer
+receipt previously failed worker input closure; the regression failed before
+correction, then 53 PIT/qualification tests passed in 99.17 seconds, including
+exact four-artifact closure. Independent source review passed and static remains
+at 117 existing diagnostics. Media metadata changes invalidate old source-bound
+PIT receipt references; no protected receipt is synthesized by these tests.

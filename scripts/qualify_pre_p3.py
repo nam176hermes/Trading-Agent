@@ -622,7 +622,7 @@ def p2_final_v2(
 
 def _execute_pit_suite(source, qualification, store):
     """Observe exact PIT calls; retained test metadata is not execution authority."""
-    from packages.alpha_lifecycle.pit_suite import SUITE_PATH, build_pit_suite_receipt, pit_suite_cases
+    from packages.alpha_lifecycle.pit_suite import SUITE_PATH, PIT_EVIDENCE_MEDIA, build_pit_suite_receipt, pit_suite_cases
     from scripts.trusted_test_tmp import prepare_trusted_test_tmp
     if _source_v2() != source:
         raise QualificationError('PIT suite source changed before execution')
@@ -650,8 +650,8 @@ def _execute_pit_suite(source, qualification, store):
             collection_raw = report.read(131073)
         if max(len(raw), len(collection_raw)) > 131072:
             raise QualificationError('PIT observation report exceeds its bound')
-        manifest_ref = store.put_bytes(manifest, media_type='application/json')
-        report_ref = store.put_bytes(raw, media_type='application/json')
+        manifest_ref = store.put_bytes(manifest, media_type=PIT_EVIDENCE_MEDIA)
+        report_ref = store.put_bytes(raw, media_type=PIT_EVIDENCE_MEDIA)
         collection_ref = store.put_bytes(collection_raw, media_type='application/json')
         qualification = {**qualification, 'completed_at_utc':datetime.now(timezone.utc)
             .replace(microsecond=0).isoformat().replace('+00:00','Z')}
