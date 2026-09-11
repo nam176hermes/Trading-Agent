@@ -757,15 +757,17 @@ def _p3_spec(script: str, timeout: int, validator: str) -> CommandSpec:
 
 
 _P3_CAMPAIGN = "scripts/run_p3_alpha_campaign.py"
+# Three bounded replicas plus one parent validation/retention budget.
+_P3_RESEARCH_WALL_SECONDS = 4 * 300
 _P3_NATIVE = "scripts/run_p3_nautilus_parity.py"
 _P3_COMMANDS: Mapping[str, tuple[AlphaCampaignOperation, CommandSpec]] = MappingProxyType({
     "p3-integration-fixture-v1": (AlphaCampaignOperation.PARITY, _p3_spec(_P3_NATIVE, 900, "p3-integration-qualified-v1")),
-    "p3-baselines-v1": (AlphaCampaignOperation.BASELINES, _p3_spec(_P3_CAMPAIGN, 900, "p3-baseline-selection-v1")),
+    "p3-baselines-v1": (AlphaCampaignOperation.BASELINES, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-baseline-selection-v1")),
     "p3-register-family-v1": (AlphaCampaignOperation.REGISTER_FAMILY, _p3_spec(_P3_CAMPAIGN, 300, "p3-publication-register-v1")),
-    "p3-oos-a0-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
-    "p3-oos-a1-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
-    "p3-oos-a2-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
-    "p3-oos-a3-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 900, "p3-publication-research-v1")),
+    "p3-oos-a0-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
+    "p3-oos-a1-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
+    "p3-oos-a2-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
+    "p3-oos-a3-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
     "p3-select-primary-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 300, "p3-primary-selection-v1")),
     "p3-holdout-primary-v1": (AlphaCampaignOperation.HOLDOUT, _p3_spec(_P3_CAMPAIGN, 900, "p3-holdout-evaluation-result-v1")),
     "p3-native-parity-v1": (AlphaCampaignOperation.PARITY, _p3_spec(_P3_NATIVE, 900, "p3-parity-result-v1")),

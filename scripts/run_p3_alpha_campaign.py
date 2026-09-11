@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -33,6 +34,8 @@ def main() -> None:
     parser.add_argument("--sandbox-policy-digest", required=True)
     parser.add_argument("--logical-trial-id", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--sandbox", type=Path, default=Path("/usr/bin/bwrap"))
+    parser.add_argument("--runtime-mounts-ref", type=Path)
     parser.add_argument("--job-id")
     parser.add_argument("--authorization-ref", type=Path)
     args = parser.parse_args()
@@ -71,16 +74,28 @@ def main() -> None:
     manifest = _read(store,intent.body.baseline_manifest_ref,BaselineManifest)
     if manifest.input_set_ref != intent.input_set_ref:
         raise ValueError('operation manifest belongs to another InputSet')
+    runtime_mounts = ()
+    if args.runtime_mounts_ref is not None:
+        with args.runtime_mounts_ref.open('rb') as stream:
+            raw = stream.read(1048577)
+        values = json.loads(raw)
+        if (len(raw) > 1048576 or not isinstance(values,list) or len(values) > 8192
+            or any(not isinstance(value,str) for value in values)
+            or canonical_json_bytes(values) != raw):
+            raise ValueError('runtime mounts must be a bounded canonical path list')
+        runtime_mounts = tuple(Path(value) for value in values)
     executor = BubblewrapExecutor(
         store=store, store_root=args.store, release_root=args.release, python=args.python,
         source=source, environment_ref=environment,
-        sandbox_policy_digest=args.sandbox_policy_digest,
+        sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox, runtime_mounts=runtime_mounts,
     )
     result = execute_baseline_manifest(
         intent.body.baseline_manifest_ref, executor,
         logical_trial_id=args.logical_trial_id, output_root=args.output,
     )
-    sys.stdout.buffer.write(canonical_json_bytes(result) + b"\n")
+    raw_result=canonical_json_bytes(result)
+    store.put_bytes(raw_result,media_type="application/json")
+    sys.stdout.buffer.write(raw_result + b"\n")
 
 
 if __name__ == "__main__":

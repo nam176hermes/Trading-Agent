@@ -11,7 +11,7 @@ from psycopg import OperationalError
 from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
-from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token
+from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token, StrictModel
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationReceipt, PublicationRequest
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -58,6 +58,12 @@ class JobCommitResult(DigestModel):
         return self
 
 
+class _OutputCommit(StrictModel):
+    result: JobCommitResult
+    output_attempt_id: Text
+    output_inventory_ref: ArtifactRefV1
+
+
 class _Pool(Protocol):
     def connection(self) -> ContextManager[Any]: ...
 
@@ -79,18 +85,23 @@ class P3PublicationRepository:
         entries: tuple[DomainAppendEntry, ...],
         *,
         trace_id: str,
+        output_inventory_ref: ArtifactRefV1 | None = None,
     ) -> JobCommitResult:
         request = PublicationRequest.model_validate(request)
         if claim.job_id != request.job_id:
             raise ValueError("claim does not match publication request")
         for ref in (request.evidence_ref, *request.proposed_event_refs):
             self._store.read_bytes(ref)
+        if output_inventory_ref is not None:
+            output_inventory_ref = ArtifactRefV1.model_validate(output_inventory_ref)
+            self._read_inventory(output_inventory_ref)
         transport = PublicationTransport(
             job_id=claim.job_id,
             attempt_id=claim.attempt_id,
             worker_id=claim.worker_id,
             lease_token=claim.lease_token,
             request=request,
+            output_inventory_ref=output_inventory_ref,
             entries=entries,
         )
         parameters = (
@@ -108,8 +119,8 @@ class P3PublicationRepository:
                         row = connection.execute(self.COMMIT_SQL, parameters).fetchone()
                         if row is None or row["result"] is None:
                             raise RuntimeError("P3 commit capability returned no result")
-                        result = JobCommitResult.model_validate_json(
-                            canonical_json_bytes(row["result"])
+                        result = self._commit_result(row["result"],request,
+                            output_inventory_ref=output_inventory_ref,attempt_id=claim.attempt_id
                         ).bound_to(request, ledger_event_ids=tuple(entry.event_id for entry in entries))
                 return result
             except (DeadlockDetected, SerializationFailure):
@@ -118,7 +129,7 @@ class P3PublicationRepository:
                 if attempt == 2:
                     raise
             except OperationalError:
-                recovered = self.read_commit(request)
+                recovered = self.read_commit(request,output_inventory_ref=output_inventory_ref,attempt_id=claim.attempt_id)
                 if recovered is not None:
                     return recovered.bound_to(
                         request, ledger_event_ids=tuple(entry.event_id for entry in entries)
@@ -151,7 +162,33 @@ class P3PublicationRepository:
             raise ValueError("publication custody result is not canonical")
         return request, result, committed_at
 
-    def read_commit(self, request: PublicationRequest) -> JobCommitResult | None:
+    def _read_inventory(self, ref: ArtifactRefV1) -> None:
+        import json
+        if ref.media_type != 'application/json' or not 0 < ref.size_bytes <= 4_194_304:
+            raise ValueError('P3 output custody inventory bound differs')
+        raw = self._store.read_bytes(ref)
+        value = json.loads(raw)
+        if not isinstance(value,list) or canonical_json_bytes(value) != raw:
+            raise ValueError('P3 output custody inventory is not canonical')
+
+    def _commit_result(self, value, request, *, output_inventory_ref=None, attempt_id=None):
+        if isinstance(value,dict) and 'result' in value:
+            bound = _OutputCommit.model_validate_json(canonical_json_bytes(value))
+            if ((output_inventory_ref is not None and bound.output_inventory_ref != output_inventory_ref)
+                or (attempt_id is not None and bound.output_attempt_id != attempt_id)):
+                raise ValueError('P3 output custody differs from committed attempt')
+            self._read_inventory(bound.output_inventory_ref)
+            result = bound.result
+        else:
+            if output_inventory_ref is not None:
+                raise ValueError('P3 output custody is absent from canonical commit')
+            # Historical fixture result remains readable; it does not prove output custody.
+            result = JobCommitResult.model_validate_json(canonical_json_bytes(value))
+        return result.bound_to(request)
+
+    def read_commit(self, request: PublicationRequest, *,
+        output_inventory_ref: ArtifactRefV1 | None = None, attempt_id: str | None = None,
+    ) -> JobCommitResult | None:
         request = PublicationRequest.model_validate(request)
         with self._pool.connection() as connection:
             row = connection.execute(
@@ -160,9 +197,8 @@ class P3PublicationRepository:
             ).fetchone()
         if row is None or row["result"] is None:
             return None
-        return JobCommitResult.model_validate_json(
-            canonical_json_bytes(row["result"])
-        ).bound_to(request)
+        return self._commit_result(row["result"],request,
+            output_inventory_ref=output_inventory_ref,attempt_id=attempt_id)
 
 
 __all__ = ["JobCommitResult", "P3PublicationRepository"]

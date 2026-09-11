@@ -11,6 +11,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from packages.alpha_lifecycle.contracts.base import StrictModel, Text
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
 from packages.alpha_lifecycle.registry import AlphaRecordV1
+from packages.data_contracts import ArtifactRefV1
 from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.domain.events import EventEnvelope
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -84,6 +85,7 @@ class PublicationTransport(StrictModel):
     worker_id: Text
     lease_token: Text
     request: PublicationRequest
+    output_inventory_ref: ArtifactRefV1 | None = None
     entries: Annotated[
         tuple[DomainAppendEntry, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=8)
     ]
@@ -110,7 +112,8 @@ class PublicationTransport(StrictModel):
         return self
 
     def canonical_bytes(self) -> bytes:
-        return canonical_json_bytes(self)
+        # Only the historical disposable 0020 fixture uses the six-field transport.
+        return canonical_json_bytes(self.model_dump(mode="json",exclude={"output_inventory_ref"} if self.output_inventory_ref is None else set()))
 
     @classmethod
     def from_canonical_bytes(cls, raw: bytes) -> "PublicationTransport":

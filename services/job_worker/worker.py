@@ -21,6 +21,7 @@ from .command_registry import (
 )
 from .errors import WorkerBlockedError
 from .engine_spawn_interface import EngineSpawnError
+from .p3_spawn_interface import P3SpawnError
 from .process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
@@ -64,6 +65,12 @@ class WorkerControl(StrEnum):
     CONTINUE = "CONTINUE"
     CANCEL = "CANCEL"
     STALE = "STALE"
+
+
+class _PreSpawnControlChanged(Exception):
+    def __init__(self, control: WorkerControl):
+        super().__init__(str(control))
+        self.control = control
 
 
 # The claim cannot be heartbeated until three full immutable/semantic scans
@@ -470,6 +477,15 @@ class JobWorker:
                 if engine_request is not None
                 else (lambda: self._prepare_spawn(claimed))
             )
+            def spawn_preflight():
+                if self._p3_profile:
+                    control = WorkerControl(self._repository_call("pre_spawn_control",
+                        claimed.job_id, claimed.attempt_id, self._worker_id,
+                        claimed.lease_token, self._lease_seconds,
+                    ))
+                    if control is not WorkerControl.CONTINUE:
+                        raise _PreSpawnControlChanged(control)
+                return safety_preflight()
             outcome = self._runner.run(
                 prepare_spawn,
                 self._environment,
@@ -479,9 +495,20 @@ class JobWorker:
                     else self._command_timeout(claimed)
                 ),
                 heartbeat,
-                preflight=safety_preflight,
+                preflight=spawn_preflight,
                 job_id=claimed.job_id, attempt_id=claimed.attempt_id,
             )
+        except _PreSpawnControlChanged as exc:
+            finalized = False
+            if exc.control is WorkerControl.CANCEL:
+                finalized = self._repository_call("finalize_execution",
+                    claimed, expected_state=JobState.CANCEL_REQUESTED,
+                    expected_attempt_outcome="CLAIMED", final_state=JobState.CANCELLED,
+                    reason_code="CANCELLED", trace_id=trace_id,
+                    outcome=None, result=None, stream_artifacts=(),
+                )
+            self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
+            return True
         except WorkerBlockedError as exc:
             # The runner's last-moment preflight and environment revalidation
             # occur before Popen, so the attempt is still CLAIMED here.
@@ -493,8 +520,8 @@ class JobWorker:
             )
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
-        except EngineSpawnError as exc:
-            # Engine authority is consumed before Popen.  A closure, sandbox,
+        except (EngineSpawnError, P3SpawnError) as exc:
+            # Engine/P3 authority is consumed before Popen. A closure, sandbox,
             # or protected transport refusal therefore leaves the attempt in
             # CLAIMED and is safe to finalize without process artifacts.
             finalized = self._repository_call("finalize_execution",
@@ -621,6 +648,8 @@ class JobWorker:
                     claimed,
                     stream=outcome.stdout,
                     exit_code=outcome.exit_code if outcome.exit_code is not None else -1,
+                    output_custody=outcome.p3_output_custody,
+                    output_inventory_ref=outcome.p3_output_inventory_ref,
                 )
             else:
                 result = self._validator.validate(
@@ -728,6 +757,13 @@ class JobWorker:
                     outcome=outcome, result=result,
                     stream_artifacts=(outcome.stdout, outcome.stderr),
                 )
+            if finalized and outcome.p3_output_custody is not None and not isinstance(result, ValidatedP3Publication):
+                # The terminal SQL result now binds the retained inventory through
+                # ProcessOutcome lineage. Cleanup failure cannot undo that commit.
+                outcome.p3_output_custody.cleanup()
+        finally:
+            if outcome.p3_output_custody is not None:
+                outcome.p3_output_custody.abandon()
         self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
         return True
 

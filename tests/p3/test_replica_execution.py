@@ -242,7 +242,7 @@ def test_parent_retains_child_artifacts_after_real_portable_child_exit(
     monkeypatch.setattr(
         executor,
         "_argv",
-        lambda request, result, output: (
+        lambda request, result, output, seccomp_fd: (
             sys.executable,
             "-I",
             "-B",

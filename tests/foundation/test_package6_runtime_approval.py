@@ -1073,7 +1073,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
         binding_schema["minItems"]
         == binding_schema["maxItems"]
         == len(PACKAGE6_SOURCE_BINDING_PATHS)
-        == 79
+        == 80
     )
 
 

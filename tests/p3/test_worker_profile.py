@@ -258,3 +258,89 @@ def test_protected_recovery_call_rejects_an_implicit_lane():
     with pytest.raises(ValueError, match='explicit lane'):
         _worker(connection)._recover_observed_candidate({},'ABSENT','test:recovery','worker-startup-recovery',alpha_campaign=True)
     assert connection.calls == []
+
+
+@pytest.mark.parametrize('control',['CANCEL','STALE'])
+def test_p3_rechecks_sql_authority_after_preparing_spawn(control):
+    from packages.job_contracts import JobState
+    claimed=replace(claim(),job_type=JobType.ALPHA_CAMPAIGN,
+        payload=SimpleNamespace(operation='BASELINES',logical_trial_id='p3-baselines-v1'))
+    prepared=False
+    class CurrentRepository(P3Repository):
+        def pre_spawn_control(self,*args,**kwargs):
+            return control if prepared else 'CONTINUE'
+    class BeforePopenRunner:
+        def run(self,prepare,*args,preflight,**kwargs):
+            preflight()
+            prepare()
+            preflight()
+            pytest.fail('SQL authority changed but the P3 child reached Popen')
+    def prepare(_):
+        nonlocal prepared
+        prepared=True
+        return object()
+    repository=CurrentRepository(claimed)
+    worker=JobWorker(repository,BeforePopenRunner(),object(),worker_id='worker-1',code_commit='e'*40,
+        environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
+        prepare_spawn=prepare,p3_profile=True,p3_publisher=object())
+    assert worker.run_once() is True
+    finalizations=[call for call in repository.calls if call[0] == 'finalize']
+    if control == 'CANCEL':
+        assert len(finalizations) == 1
+        assert finalizations[0][2]['expected_state'] is JobState.CANCEL_REQUESTED
+        assert finalizations[0][2]['final_state'] is JobState.CANCELLED
+    else:
+        assert finalizations == []
+
+
+@pytest.mark.parametrize('publication', [False, True])
+@pytest.mark.parametrize('fault', [None, 'commit_error', 'lost_fence', 'receipt_error'])
+def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
+    claimed=replace(claim(max_attempts=1),job_type=JobType.ALPHA_CAMPAIGN,
+        payload=SimpleNamespace(operation='REGISTER_FAMILY' if publication else 'BASELINES',
+            logical_trial_id='p3-register-family-v1' if publication else 'p3-baselines-v1'))
+    events=[]
+    inventory=object()
+    class Custody:
+        def cleanup(self):
+            events.append('cleanup')
+        def abandon(self):
+            events.append('close')
+    class Validator:
+        def validate_p3(self,*args,**kwargs):
+            events.append('validate')
+            assert kwargs['output_inventory_ref'] is inventory
+            return ValidatedP3Publication('request',('entry',)) if publication else object()
+    class Repository(P3Repository):
+        def finalize_execution(self,*args,**kwargs):
+            events.append('commit')
+            assert 'cleanup' not in events
+            assert kwargs['outcome'].p3_output_inventory_ref is inventory
+            if fault == 'commit_error':
+                raise RuntimeError('SQL unavailable')
+            return fault != 'lost_fence'
+    class Publisher:
+        def publish(self,*args,**kwargs):
+            events.append('commit')
+            assert 'cleanup' not in events
+            if fault in {'commit_error','lost_fence'}:
+                raise RuntimeError('SQL unavailable')
+        def recover_receipt(self,job_id):
+            events.append('receipt')
+            if fault == 'receipt_error':
+                raise RuntimeError('receipt unavailable')
+    worker=JobWorker(Repository(claimed),Runner(replace(outcome(),p3_output_custody=Custody(),
+        p3_output_inventory_ref=inventory)),Validator(),worker_id='worker-1',code_commit='e'*40,
+        environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
+        prepare_spawn=lambda _:object(),p3_profile=True,p3_publisher=Publisher())
+    raises=fault == 'commit_error' or publication and fault in {'lost_fence','receipt_error'}
+    if raises:
+        with pytest.raises(RuntimeError,match='unavailable'):
+            worker.run_once()
+    else:
+        assert worker.run_once()
+    assert events[-1] == 'close'
+    if raises or fault == 'lost_fence':
+        assert 'cleanup' not in events
+    elif not publication:
+        assert events.index('cleanup') > events.index('commit')

@@ -112,7 +112,7 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
         python=Path(sys.executable),source=inputs.source,environment_ref=inputs.environment_ref,
         sandbox_policy_digest='c'*64)
     calls = []
-    def argv(request,result,output):
+    def argv(request,result,output,seccomp_fd):
         calls.append(output.name)
         return (sys.executable,'-I','-B',str(root/'scripts/run_p3_evaluation_child.py'),
                 str(request),str(tmp_path/'inputs'),str(result))
@@ -153,6 +153,8 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
         from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
         store = ReplicaArtifactStore(tmp_path/'inputs',tmp_path/'runs'/'artifacts')
         selection = BaselineSelection.model_validate_json(capsys.readouterr().out)
+        raw_selection=canonical_json_bytes(selection)
+        assert (tmp_path/'runs'/'artifacts'/(hashlib.sha256(raw_selection).hexdigest()+'.blob')).read_bytes() == raw_selection
     proof = ReplayProof.model_validate_json(store.read_bytes(selection.baseline_replay_proof_ref))
     pack = BaselinePack.model_validate_json(store.read_bytes(selection.pack_ref))
     assert calls == ['r1','r2','r3']

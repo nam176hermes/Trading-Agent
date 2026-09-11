@@ -77,10 +77,10 @@ def test_register_cli_returns_proposal_without_replica_or_database_access(retain
     def no_replica(**kwargs):
         raise AssertionError('registration attempted to construct a numerical replica')
     monkeypatch.setattr(command, 'BubblewrapExecutor', no_replica)
-    monkeypatch.setattr(command, 'LocalArtifactStore', lambda path: store)
+    before={path.name:path.read_bytes() for path in store._root.iterdir()}
     monkeypatch.setattr(sys, 'argv', [str(command.__file__), '--manifest-ref', str(tmp_path/'manifest'),
         '--source', str(tmp_path/'source'), '--environment-ref', str(tmp_path/'environment'),
-        '--store', str(tmp_path/'inputs'), '--release', str(Path(command.ROOT)), '--python', sys.executable,
+        '--store', str(store._root), '--release', str(Path(command.ROOT)), '--python', sys.executable,
         '--sandbox-policy-digest', 'c'*64, '--logical-trial-id', 'p3-register-family-v1',
         '--output', str(tmp_path/'runs'), '--job-id', 'job_registration', '--authorization-ref', str(tmp_path/'authorization')])
     if fault:
@@ -93,4 +93,11 @@ def test_register_cli_returns_proposal_without_replica_or_database_access(retain
         assert proposal.request.job_id == 'job_registration'
         assert proposal.request.stage == 'REGISTER'
         assert len(proposal.entries) == 8
-    assert not (tmp_path/'runs').exists()
+    assert {path.name:path.read_bytes() for path in store._root.iterdir()} == before
+    if fault:
+        assert not (tmp_path/'runs').exists()
+    else:
+        from packages.data_catalog.artifact_store import LocalArtifactStore
+        private=LocalArtifactStore(tmp_path/'runs'/'artifacts')
+        assert private.read_bytes(proposal.request.evidence_ref)
+        assert all(private.read_bytes(ref) for ref in proposal.request.proposed_event_refs)

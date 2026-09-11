@@ -492,6 +492,12 @@ def _check_publication(sock, name, root, source, mark):
         request = PublicationRequest.model_validate_json(_sealed(dict(schema_version='p3-publication-request-v1',
             idempotency_key='source-official-registration',semantic_request_digest=hashlib.sha256(canonical_json_bytes(refs)).hexdigest(),stage='REGISTER',evidence_ref=evidence.model_dump(mode='json'),expected_heads=heads,proposed_event_refs=[r.model_dump(mode='json') for r in refs],job_id=claim.job_id)))
         publisher = P3PublicationRepository(pool,store)
+        legacy_transport=canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
+            worker_id=claim.worker_id,lease_token=claim.lease_token,request=request,entries=entries)).decode()
+        with _rejected(psycopg.errors.InvalidParameterValue,match='output custody'), pool.connection() as connection:
+            with connection.transaction(force_rollback=True):
+                connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                    claim.worker_id,claim.lease_token,legacy_transport,'test:missing-output-custody'))
         assert not worker.finalize(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             expected_state='RUNNING',expected_attempt_outcome='RUNNING',final_state='SUCCEEDED',
             reason_code='PROCESS_EXITED',trace_id='test:no-generic-publication',alpha_campaign=True)

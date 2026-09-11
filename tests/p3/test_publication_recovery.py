@@ -192,3 +192,33 @@ def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge
         with pytest.raises((ValueError, RuntimeError)):
             recover_publication_receipt(request.job_id, repository=repository, store=store)
         assert set(output.glob('*')) == before
+
+
+@pytest.mark.parametrize('fault',[None,'inventory','attempt','missing_binding','lost_connection'])
+def test_publication_binds_attempt_inventory_before_return(tmp_path,fault):
+    repository,pool,request,claimed,entry,expected=_publication(tmp_path,[])
+    inventory=repository._store.put_bytes(b'[]',media_type='application/json')
+    original=pool.execute
+    def execute(sql,parameters):
+        row=original(sql,parameters)
+        if sql == repository.COMMIT_SQL:
+            assert json.loads(parameters[4])['output_inventory_ref'] == inventory.model_dump(mode='json')
+        response=dict(result=expected.model_dump(mode='json'),output_attempt_id=claimed.attempt_id,
+            output_inventory_ref=inventory.model_dump(mode='json'))
+        if fault == 'inventory':
+            response['output_inventory_ref']=request.evidence_ref.model_dump(mode='json')
+        elif fault == 'attempt':
+            response['output_attempt_id']='attempt_other'
+        elif fault == 'missing_binding':
+            response=expected.model_dump(mode='json')
+        elif fault == 'lost_connection' and sql == repository.COMMIT_SQL:
+            pool.commit_error=OperationalError('connection lost after commit')
+        return SimpleNamespace(fetchone=lambda:{'result':response})
+    pool.execute=execute
+    if fault in {'inventory','attempt','missing_binding'}:
+        with pytest.raises(ValueError,match='output custody'):
+            repository.publish(request,claimed,(entry,),trace_id='test:inventory',output_inventory_ref=inventory)
+        assert pool.transactions_committed == 0
+    else:
+        assert repository.publish(request,claimed,(entry,),trace_id='test:inventory',output_inventory_ref=inventory) == expected
+        assert pool.reads == (1 if fault == 'lost_connection' else 0)

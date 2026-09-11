@@ -201,6 +201,16 @@ def execute_baseline_manifest(
         cost_model_digest=hashlib.sha256(canonical_json_bytes(inputs.cost_model)).hexdigest(),store=executor)
 
 
+def baseline_manifest_ref(input_set_ref: ArtifactRefV1) -> ArtifactRefV1:
+    """Reconstruct the fixed baseline manifest identity without creating artifacts."""
+    value = dict(schema_version='p3-baseline-manifest-v1',input_set_ref=input_set_ref,
+        required_baselines=tuple(item.value for item in BaselineId))
+    value['digest'] = _digest(value)
+    raw = canonical_json_bytes(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    return ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),media_type='application/json',locator=f'{digest}.blob')
+
+
 def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: ArtifactRefV1,
     reader: ArtifactStore) -> BaselineSelection:
     inputs,_,dataset,_ = validate_research_inputs(input_set_ref,reader)
@@ -208,12 +218,7 @@ def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: Art
     pack = _read(reader,selection.pack_ref,BaselinePack)
     proof = _read(reader,selection.baseline_replay_proof_ref,ReplayProof)
     environment = _read(reader,inputs.environment_ref,EnvironmentIdentity)
-    value = dict(schema_version='p3-baseline-manifest-v1',input_set_ref=input_set_ref,
-        required_baselines=tuple(item.value for item in BaselineId))
-    value['digest'] = _digest(value)
-    raw = canonical_json_bytes(value)
-    digest = hashlib.sha256(raw).hexdigest()
-    manifest_ref = ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),media_type='application/json',locator=f'{digest}.blob')
+    manifest_ref = baseline_manifest_ref(input_set_ref)
     _read(reader,manifest_ref,BaselineManifest)
     validate_replay_proof(proof,manifest_ref=manifest_ref,result_ref=selection.pack_ref,
         source=inputs.source,environment_ref=inputs.environment_ref,
@@ -226,4 +231,4 @@ def validate_baseline_selection(selection_ref: ArtifactRefV1, input_set_ref: Art
     return selection
 
 
-__all__ = ["ArtifactStore", "ReadbackStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]
+__all__ = ["baseline_manifest_ref", "ArtifactStore", "ReadbackStore", "execute_baseline_manifest", "run_baseline_pack", "select_baseline", "validate_baseline_selection", "validate_research_inputs"]

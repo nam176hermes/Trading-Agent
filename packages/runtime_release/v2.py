@@ -156,6 +156,7 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
     ),
     ("services/job_worker/errors.py", "services/job_worker/errors.py"),
     ("services/job_worker/main.py", "services/job_worker/main.py"),
+    ("services/job_worker/p3_spawn_interface.py", "services/job_worker/p3_spawn_interface.py"),
     ("services/job_worker/process_runner.py", "services/job_worker/process_runner.py"),
     ("services/job_worker/recovery.py", "services/job_worker/recovery.py"),
     (

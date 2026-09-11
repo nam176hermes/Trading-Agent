@@ -73,8 +73,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 79,
-      "maxItems": 79,
+      "minItems": 80,
+      "maxItems": 80,
       "items": {"$ref": "#/$defs/binding"}
     },
     "custodian_authority": {
