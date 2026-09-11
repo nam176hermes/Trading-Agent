@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, LiteralString
+from typing import Any, LiteralString, cast
 from uuid import UUID, NAMESPACE_URL, uuid5, uuid4
 
 import psycopg
@@ -302,6 +302,7 @@ def _check_output_migration_drift(sock,name,engine):
         ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
         result_constraint=_first(owner.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass AND conname='p3_alpha_job_commits_result_text_check'").fetchone())
     faults=(
+        ('api_owner_membership','GRANT trading_p3_owner TO trading_job_api','REVOKE trading_p3_owner FROM trading_job_api'),
         ('helper_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) TO trading_reader','REVOKE EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) FROM trading_reader'),
         ('reverse_worker_membership','GRANT trading_job_worker TO trading_reader','REVOKE trading_job_worker FROM trading_reader'),
         ('result_constraint','ALTER TABLE public.p3_alpha_job_commits DROP CONSTRAINT p3_alpha_job_commits_result_text_check; ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_alpha_job_commits_result_text_check CHECK (true)',
@@ -315,7 +316,7 @@ def _check_output_migration_drift(sock,name,engine):
     accepted=[]
     for label,damage,restore in faults:
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
-            owner.execute(SQL(damage))
+            owner.execute(SQL(cast(LiteralString,damage)))
         try:
             with engine.connect() as connection:
                 transaction=connection.begin()
@@ -332,7 +333,7 @@ def _check_output_migration_drift(sock,name,engine):
                     transaction.rollback()
         finally:
             with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
-                owner.execute(SQL(restore))
+                owner.execute(SQL(cast(LiteralString,restore)))
     from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError
     with engine.connect() as connection:
@@ -350,7 +351,7 @@ def _check_output_migration_drift(sock,name,engine):
                         FROM public.p3_alpha_job_commits WHERE job_id='job_publication' RETURNING job_id""")).fetchall()
                     assert len(inserted)==1
             except IntegrityError as error:
-                assert error.orig.sqlstate=='23514'
+                assert isinstance(error.orig,psycopg.Error) and error.orig.sqlstate=='23514'
             else:
                 accepted.append('new_commit_without_custody')
         finally:
@@ -642,7 +643,7 @@ def _check_publication(sock, name, root, source, mark):
                 with self.lock:
                     disconnect=self.pending
                     self.pending=False
-                with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
+                with psycopg.Connection[dict[str,Any]].connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
                     yield connection
                     if disconnect:
                         connection.close()
