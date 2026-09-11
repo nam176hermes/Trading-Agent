@@ -42,7 +42,17 @@ def _reviewed(name, signature, digest, *, arguments, language, volatility, paral
     return rows[0][1]
 
 
-_PARENT_CONSTRAINTS={'p3_alpha_job_commits_check': ('c', '828198534b5227f0916cb4a76ed633ecf99dad88bf226f8aa2300e6fa7a61c4a', True), 'p3_alpha_job_commits_job_id_fkey': ('f', '36739895ab79faa1eea76ce9e7d23591e487ba129000db3db6c87b9884685562', True), 'p3_alpha_job_commits_pkey': ('p', '1cfd28865f81d3ea9eee531f4f43fa1748e122a9e210b1902ad62aa6e5d3758a', True), 'p3_alpha_job_commits_result_digest_check': ('c', 'cda46c3ac56206f7e531d434b232133f028514ad9823f74c36a2b4125f9e860e', True), 'p3_alpha_job_commits_result_digest_key': ('u', 'abbffe4c964329484493278908c55ba7e6931bcd5f592d7c4f8615e923936f9e', True), 'p3_alpha_job_commits_result_text_check': ('c', 'af458e6adf09568bcf5840da21eb767b49d04a8047003b6ad37296120aa3e24f', True), 'p3_alpha_job_commits_semantic_request_digest_check': ('c', '59e290293f578ecfc73101cee176ba3349348aec1d35e899b09840ff1f4dfa59', True), 'p3_publication_custody': ('c', 'd810837f060a44c185b97f0c57ac97a4a1422d9b413fd4a9b130903ad2c0ea4c', True)}
+_PARENT_CONSTRAINTS = {
+    'p3_alpha_job_commits_check': ('c', '828198534b5227f0916cb4a76ed633ecf99dad88bf226f8aa2300e6fa7a61c4a', True),
+    'p3_alpha_job_commits_job_id_fkey': ('f', '36739895ab79faa1eea76ce9e7d23591e487ba129000db3db6c87b9884685562', True),
+    'p3_alpha_job_commits_pkey': ('p', '1cfd28865f81d3ea9eee531f4f43fa1748e122a9e210b1902ad62aa6e5d3758a', True),
+    'p3_alpha_job_commits_result_digest_check': ('c', 'cda46c3ac56206f7e531d434b232133f028514ad9823f74c36a2b4125f9e860e', True),
+    'p3_alpha_job_commits_result_digest_key': ('u', 'abbffe4c964329484493278908c55ba7e6931bcd5f592d7c4f8615e923936f9e', True),
+    'p3_alpha_job_commits_result_text_check': ('c', 'af458e6adf09568bcf5840da21eb767b49d04a8047003b6ad37296120aa3e24f', True),
+    'p3_alpha_job_commits_semantic_request_digest_check': ('c', '59e290293f578ecfc73101cee176ba3349348aec1d35e899b09840ff1f4dfa59', True),
+    'p3_publication_custody': ('c', 'd810837f060a44c185b97f0c57ac97a4a1422d9b413fd4a9b130903ad2c0ea4c', True),
+}
+
 
 def _catalog(*, upgraded=False):
     connection=op.get_bind()
@@ -106,14 +116,14 @@ def _catalog(*, upgraded=False):
     if upgraded:
         expected_constraints.update({
             'p3_alpha_job_commits_output_attempt_id_fkey':('f',hashlib.sha256(b'FOREIGN KEY (output_attempt_id) REFERENCES job_attempts(attempt_id) ON DELETE RESTRICT').hexdigest(),True),
-            'p3_output_custody_bound':('c','PENDING_REVIEWED_DEPARSE',True),
+            'p3_output_custody_bound':('c','e3ebf8e3c731032126b14de3ac2890d7974a7d1a00dfcccea8ef0bebf928f4e1',True),
             'p3_output_custody_new_rows':('c',hashlib.sha256(b'CHECK (((output_inventory_ref_text IS NOT NULL) AND (output_attempt_id IS NOT NULL))) NOT VALID').hexdigest(),False),
         })
     actual={name:(kind,hashlib.sha256(definition.encode()).hexdigest(),validated)
         for name,kind,definition,validated in constraints}
     total=connection.execute(text("SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass")).scalar()
     if actual != expected_constraints or len(actual)!=total:
-        raise RuntimeError('0023 publication constraints drift: '+repr([tuple(row) for row in constraints]))
+        raise RuntimeError('0023 publication constraints drift')
     if connection.execute(text("""
         SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c
           LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
