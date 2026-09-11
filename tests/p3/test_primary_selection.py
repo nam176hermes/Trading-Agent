@@ -7,7 +7,6 @@ from packages.alpha_lifecycle.contracts.authority import FamilyReview
 from packages.alpha_lifecycle.primary_selection import select_primary
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from tests.p3.test_qualification import synthetic_oos
 
 
 @pytest.mark.parametrize('fault',['candidate_reports','trial_outcomes'])
@@ -155,8 +154,8 @@ def test_distinct_reports_for_one_candidate_cannot_replace_complete_family(synth
         select_primary(_read(store,review_ref,FamilyReview),store)
 
 
-@pytest.fixture
-def disclosed_family(tmp_path,synthetic_oos):
+@pytest.fixture(scope='module')
+def disclosed_family(tmp_path_factory,synthetic_oos):
     """Real retained contracts; candidate qualification and SQL authority are assumed unit inputs."""
     from types import SimpleNamespace
     from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -166,6 +165,7 @@ def disclosed_family(tmp_path,synthetic_oos):
     from packages.alpha_lifecycle.primary_selection import family_disclosure_digest
     from tests.p3.test_replay import Executor,_ref
     from tests.p3.test_replica_execution import _seal
+    tmp_path=tmp_path_factory.mktemp('disclosed-family')
     root=tmp_path/'store'; root.mkdir(mode=0o700)
     store=LocalArtifactStore(root)
     from tests.p3.test_publication import _changed

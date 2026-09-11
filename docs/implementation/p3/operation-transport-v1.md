@@ -482,3 +482,26 @@ intended dataset-boundary guard. The test now derives one day before the actual
 dataset start. The original case reproduced 1 FAIL in 12.94 seconds; both
 training-boundary cases passed in 26.23 seconds after the test-only correction.
 The guard, threshold arithmetic and production source are unchanged.
+
+## Foundation research fixture reuse
+
+Both Foundation runs for PR60 head ea9e8e1f reached their 60-minute job limit.
+The recorded root suite had 10,841 passes and no failures before critical
+coverage was cancelled. The coverage floors, required native inventory, test
+selection and workflow time limit are unchanged.
+
+A deterministic pytest collection probe failed with five independent
+registrations each for `retained_baseline` and `synthetic_oos`. Their canonical
+session fixtures now live in tests/p3/conftest.py, with plain seed builders and
+no imported fixture registrations. The ordinary baseline recipe and the distinct
+high-volume/PIT OOS recipe retain their exact inputs and three real children;
+A1-A3 still execute three replicas each. The 28-case disclosure seed is shared
+only within its module. Consumers append CAS objects or use restored method
+patches; destructive test cases keep private stores.
+
+The same probe now reports one registration per seed and all 667 collected
+nodes. Full source P3 verification passed: 666 passed, one explicit disposable
+host gate skipped, 1638.27 seconds, versus 2007.49 seconds in the preceding full
+run (which also exposed the subsequently corrected stale training-date test).
+Static retains 117 existing diagnostics; independent fixture-reuse review passed.
+These source fixtures issue no protected qualification or research authority.

@@ -15,7 +15,6 @@ from services.job_store.p3_publication_repository import JobCommitResult
 from services.job_worker.p3_publication_producer import build_publication_proposal
 from tests.p3.test_lifecycle import _record, _evidence
 from tests.p3.test_publication import _changed
-from tests.p3.test_baseline_selection_validation import retained_baseline
 
 
 def registration_chain(baseline, *, record_fault=None, dangling_selection=False):

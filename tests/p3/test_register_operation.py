@@ -8,7 +8,6 @@ import pytest
 from packages.alpha_lifecycle.operation_input import P3OperationInput, FAMILY_IDS
 from packages.engine_contracts.serialization import canonical_json_bytes
 from scripts.generate_p3_specs import _candidate_specs, POLICY_SOURCE
-from tests.p3.test_baseline_selection_validation import retained_baseline
 from tests.p3.test_registration_proof import registration_chain
 
 

@@ -18,7 +18,6 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_publication_repository import JobCommitResult
 from services.job_worker.p3_publication_producer import prepare_candidate_oos,build_publication_proposal
 from tests.p3.test_publication import _changed
-from tests.p3.test_qualification import synthetic_oos
 from tests.p3.test_replica_execution import _seal
 
 

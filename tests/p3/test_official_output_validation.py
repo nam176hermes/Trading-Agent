@@ -10,7 +10,6 @@ from packages.job_contracts import JobType
 from services.job_worker.artifacts import ArtifactWriter
 from services.job_worker.results import ResultValidator,ResultValidationError
 from tests.jobs.test_worker_lifecycle import claim
-from tests.p3.test_baseline_selection_validation import retained_baseline
 
 
 def test_old_baseline_cas_cannot_succeed_without_private_attempt_evidence(retained_baseline,tmp_path):

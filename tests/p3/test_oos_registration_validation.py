@@ -11,7 +11,6 @@ from packages.alpha_lifecycle.publication import build_registration_proof
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor, SandboxHeld
 from packages.engine_contracts.serialization import canonical_json_bytes
 from scripts.generate_p3_specs import POLICY_SOURCE, _candidate_specs
-from tests.p3.test_baseline_selection_validation import retained_baseline
 from tests.p3.test_publication import _changed
 from tests.p3.test_registration_proof import registration_chain
 from tests.p3.test_replica_execution import _seal

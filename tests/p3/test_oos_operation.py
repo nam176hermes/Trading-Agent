@@ -14,7 +14,6 @@ from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import PublicationProposal
 from tests.p3.test_baseline_operation import _cli_authorization
-from tests.p3.test_qualification import synthetic_oos
 from tests.p3.test_replica_execution import _seal
 
 

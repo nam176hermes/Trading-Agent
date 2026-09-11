@@ -17,7 +17,6 @@ from packages.alpha_lifecycle.primary_selection import family_disclosure_digest
 from packages.alpha_lifecycle.replay import run_replays
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.engine_contracts.serialization import canonical_json_bytes
-from tests.p3.test_qualification import synthetic_oos
 from tests.p3.test_candidate_closure import _candidate_closure
 from tests.p3.test_publication import _changed
 from tests.p3.test_replica_execution import _seal
