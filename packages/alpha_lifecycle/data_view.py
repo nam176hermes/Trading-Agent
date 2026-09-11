@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pyarrow.parquet as pq
@@ -20,6 +20,7 @@ from packages.data_contracts import (
     PITQueryV1,
 )
 from packages.engine_contracts.serialization import canonical_json_bytes
+from packages.domain import require_utc
 
 
 class DatasetSealError(ValueError):
@@ -86,6 +87,15 @@ def _daily_bar(
         "partition_ref": partition_ref,
         "row_ordinal": 0,
     }
+    for name in ('opened_at', 'closed_at_exclusive', 'provider_published_at',
+                 'system_observed_at', 'ingested_at'):
+        value = payload[name]
+        if value is not None:
+            if not isinstance(value, datetime):
+                raise DatasetSealError('daily partition timestamp must be a UTC datetime')
+            payload[name] = require_utc(value).astimezone(UTC).isoformat().replace('+00:00', 'Z')
+    if type(payload['date']) is date:
+        payload['date'] = payload['date'].isoformat()
     payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return DailyBar.model_validate(payload)
 
@@ -123,14 +133,14 @@ def seal_research_dataset(
         "snapshot_ref": snapshot_ref,
         "query_digest": query.canonical_digest,
         "segment": segment,
-        "date_range": {"start": bars[0].date, "end": bars[-1].date},
+        "date_range": {"start": bars[0].date.isoformat(), "end": bars[-1].date.isoformat()},
         "usable_rows": len(bars),
         "row_refs": row_refs,
         "ordered_rows_digest": hashlib.sha256(
             canonical_json_bytes([item.content_sha256 for item in row_refs])
         ).hexdigest(),
         "vintage_class": "RETROSPECTIVE_CURRENT_ARCHIVE",
-        "observed_cutoff": query.cutoff,
+        "observed_cutoff": query.cutoff.isoformat().replace('+00:00', 'Z'),
         "limitations": ("retrospective.current_archive",),
     }
     payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()

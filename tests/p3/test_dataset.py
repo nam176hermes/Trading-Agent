@@ -56,3 +56,67 @@ def test_daily_close_uses_end_exclusive_minus_one_microsecond() -> None:
     close = to_daily_close(bar)
     assert close.closed_at == bar.closed_at_exclusive - timedelta(microseconds=1)
     assert close.closed_at.date() == bar.date
+
+
+def _materialized_daily(store, day):
+    import pyarrow as pa
+    from uuid import UUID
+    from packages.data_catalog.v3 import materialize_arrow_partition_v3
+    from packages.data_contracts import ArrowSchemaV1, ArrowFieldV1
+    expected=_bar(day)
+    row=expected.model_dump(mode='json',exclude={'schema_version','digest','partition_ref',
+        'row_ordinal','system_observed_at','ingested_at'})
+    row['opened_at']=expected.opened_at
+    row['closed_at_exclusive']=expected.closed_at_exclusive
+    row['ts_event']=expected.closed_at_exclusive
+    fields=tuple(ArrowFieldV1(field_id=i,name=name,data_type=(
+        'timestamp[ns,UTC]' if name in {'opened_at','closed_at_exclusive','provider_published_at','ts_event'}
+        else 'int64' if name in {'raw_close_time','trade_count'} else 'string'),
+        nullable=name=='provider_published_at') for i,name in enumerate(row,1))
+    schema=ArrowSchemaV1(schema_id='fixture.daily.v1',data_api_epoch=2,fields=fields)
+    from packages.data_catalog.v2 import _expected_schema
+    partition=materialize_arrow_partition_v3(pa.Table.from_pylist([row],schema=_expected_schema(schema)),
+        schema=schema,store=store,partition_id=UUID(int=day.toordinal()),dataset='p3.research.daily',
+        partition_key=('BTCUSDT.BINANCE',day.isoformat()),partition_spec_version='fixture.v1',
+        source_available_at=expected.system_observed_at,system_observed_at=expected.system_observed_at,
+        ingested_at=expected.ingested_at,raw_evidence_sha256s=('a'*64,),
+        transform_receipt_sha256='b'*64,quality_receipt_sha256='c'*64,
+        revision_series_id=UUID(int=day.toordinal()+1000000),revision_ordinal=1)
+    return schema, partition
+
+
+def test_daily_view_reads_real_arrow_timestamps_without_changing_digest(tmp_path):
+    from packages.alpha_lifecycle.data_view import _daily_bar
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    root=tmp_path/'store'
+    root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    expected=_bar(date(2025,1,6))
+    _,partition=_materialized_daily(store,expected.date)
+    actual=_daily_bar(partition.manifest,store)
+    payload=expected.model_dump(mode='json',exclude={'digest'})
+    payload['partition_ref']=partition.artifact.model_dump(mode='json')
+    payload['digest']=hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    assert actual==DailyBar.model_validate(payload)
+
+
+def test_research_sealer_reconstructs_complete_synthetic_v3_dataset(tmp_path):
+    from packages.alpha_lifecycle.data_view import seal_research_dataset
+    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.data_contracts import PITQueryV1
+    root=tmp_path/'store'
+    root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    start,end=date(2018,1,1),date(2025,8,31)
+    days=tuple(start+timedelta(days=i) for i in range((end-start).days+1))
+    assert len(days)==2800
+    built=tuple(_materialized_daily(store,day) for day in days)
+    schema=built[0][0]
+    partitions=tuple(partition.manifest for _,partition in built)
+    query=PITQueryV1.model_validate_json('{"mode":"SYSTEM_OBSERVED","valid_at":"2025-09-01T00:00:00Z","cutoff":"2026-09-05T12:00:02Z"}')
+    evidence=seal_research_dataset(partitions,query,schema,store)
+    assert evidence.usable_rows==len(days)
+    assert evidence.date_range.start==start and evidence.date_range.end==end
+    assert evidence==seal_research_dataset(partitions,query,schema,ReadbackStore(store,store))
