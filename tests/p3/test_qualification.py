@@ -30,7 +30,7 @@ def synthetic_oos(tmp_path_factory):
     from packages.alpha_lifecycle.publication import build_registration_proof
     from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
     from packages.alpha_lifecycle.replay import run_replays
-    from packages.alpha_lifecycle.pit_suite import build_pit_suite_receipt
+    from packages.alpha_lifecycle.pit_suite import build_pit_suite_receipt,PIT_EVIDENCE_MEDIA
     from packages.alpha_lifecycle.contracts.data import PITProof
     from tests.p3.test_pit_suite import suite_inputs
     from scripts.generate_p3_specs import _candidate_specs,POLICY_SOURCE
@@ -46,11 +46,11 @@ def synthetic_oos(tmp_path_factory):
         helper=root.parent/'pit-helper'
         helper.mkdir(mode=0o700)
         pit_store,suite_ref,_,report,metadata=suite_inputs(helper)
-        store.put_bytes(pit_store.read_bytes(suite_ref),media_type='application/json')
+        store.put_bytes(pit_store.read_bytes(suite_ref),media_type=PIT_EVIDENCE_MEDIA)
         collection={**report,'collection_only':True,'summary':{'collected':14},
             'tests':[{**row,'outcome':'collected','phase':'collection'} for row in report['tests']]}
         collection_ref=store.put_bytes(canonical_json_bytes(collection),media_type='application/json')
-        report_ref=store.put_bytes((json.dumps(report,indent=2,sort_keys=True)+'\n').encode(),media_type='application/json')
+        report_ref=store.put_bytes((json.dumps(report,indent=2,sort_keys=True)+'\n').encode(),media_type=PIT_EVIDENCE_MEDIA)
         suite=build_pit_suite_receipt(inputs.source,suite_ref,collection_ref,report_ref,metadata,store=store)
         suite_ref=store.put_bytes(canonical_json_bytes(suite),media_type='application/json')
         pit=_changed(pit,no_future_suite_ref=suite_ref.model_dump(mode='json'))
