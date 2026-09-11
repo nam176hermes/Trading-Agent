@@ -11,7 +11,7 @@ from psycopg import OperationalError
 from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
-from packages.alpha_lifecycle.sandbox_policy import MAX_OUTPUT_INVENTORY_BYTES
+from packages.alpha_lifecycle.sandbox_policy import MAX_OUTPUT_INVENTORY_BYTES, MAX_ATTEMPT_OUTPUT_BYTES
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token, StrictModel
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationReceipt, PublicationRequest
 from packages.data_contracts import ArtifactRefV1
@@ -173,12 +173,30 @@ class P3PublicationRepository:
 
     def _read_inventory(self, ref: ArtifactRefV1) -> None:
         import json
+        import re
         if ref.media_type != 'application/json' or not 0 < ref.size_bytes <= MAX_OUTPUT_INVENTORY_BYTES:
             raise ValueError('P3 output custody inventory bound differs')
         raw = self._store.read_bytes(ref)
         value = json.loads(raw)
-        if not isinstance(value,list) or canonical_json_bytes(value) != raw:
+        if not isinstance(value,list) or len(value)>8192 or canonical_json_bytes(value) != raw:
             raise ValueError('P3 output custody inventory is not canonical')
+        paths=set()
+        total=0
+        for item in value:
+            if not isinstance(item,dict) or set(item)!={'path','artifact_ref'}:
+                raise ValueError('P3 output custody inventory entry differs')
+            path=item['path']
+            if (not isinstance(path,str) or path in paths or not re.fullmatch(
+                r'(?:(?:r[123]/)?artifacts/[0-9a-f]{64}\.blob|r[123]/(?:manifest-ref|result)\.json)',path)):
+                raise ValueError('P3 output custody inventory path differs')
+            paths.add(path)
+            artifact=ArtifactRefV1.model_validate_json(canonical_json_bytes(item['artifact_ref']))
+            if artifact.media_type!='application/json' or ('/artifacts/' in '/'+path and path.rsplit('/',1)[1]!=artifact.locator):
+                raise ValueError('P3 output custody artifact identity differs')
+            total+=artifact.size_bytes
+            if total>MAX_ATTEMPT_OUTPUT_BYTES:
+                raise ValueError('P3 output custody artifact bytes exceed the bound')
+            self._store.read_bytes(artifact)
 
     def _commit_result(self, value, request, *, output_inventory_ref=None, attempt_id=None):
         if isinstance(value,dict) and 'result' in value:

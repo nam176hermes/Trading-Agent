@@ -680,7 +680,7 @@ def _check_publication(sock, name, root, source, mark):
         altered['expected_heads'][0].update(sequence=1,event_digest='a'*64)
         with _rejected(psycopg.errors.UniqueViolation):
             publisher.publish(PublicationRequest.model_validate_json(_sealed(altered)),claim,entries,output_inventory_ref=output_inventory,trace_id='test:changed-idempotent-request')
-        changed_inventory=store.put_bytes(b'[{}]',media_type='application/json')
+        changed_inventory=store.put_bytes(b'[]',media_type='application/json')
         for alternate_claim,alternate_inventory in ((claim,changed_inventory),(replace(claim,attempt_id='attempt_other'),output_inventory)):
             with _rejected(psycopg.errors.UniqueViolation):
                 publisher.publish(request,alternate_claim,entries,output_inventory_ref=alternate_inventory,trace_id='test:changed-output-binding')
