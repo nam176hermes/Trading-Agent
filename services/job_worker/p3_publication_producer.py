@@ -1,19 +1,16 @@
 """Stage unprivileged P3 proposals; only the existing SQL capability commits."""
 from datetime import datetime
 import hashlib
-from uuid import UUID, uuid5
+from uuid import uuid5
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.lifecycle import ExpectedHead, PrePublicationEvidence, PublicationRequest
-from packages.alpha_lifecycle.lifecycle import to_domain_payload
+from packages.alpha_lifecycle.lifecycle import to_domain_payload, publication_event_ids, P3_NAMESPACE
 from packages.alpha_lifecycle.registry import AlphaRegistryEventV1
 from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.domain.events import EventEnvelope
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationProposal
-
-
-_P3_NAMESPACE = UUID('5d3f7ad6-7372-5cb7-80a7-68a179f1fdb2')
 
 
 def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
@@ -49,47 +46,10 @@ def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
 
 def prepare_candidate_oos(intent, evaluation, proof, *, job_id: str, observed_at: datetime,
     expires_at: datetime, store: ArtifactStore) -> PublicationProposal:
-    from packages.alpha_lifecycle.baseline_campaign import _read
-    from packages.alpha_lifecycle.contracts.execution import EvaluationManifest,InputSet
-    from packages.alpha_lifecycle.contracts.results import EvaluationResult,ReplayProof,ReplayReceipt
-    from packages.alpha_lifecycle.lifecycle import plan_transition,read_registry_event
-    from packages.alpha_lifecycle.operation_input import P3OperationInput,CandidateOOSInput
-    from packages.alpha_lifecycle.qualification import qualify
-    from packages.alpha_lifecycle.protocol import AlphaQualificationResultV1
-    from packages.alpha_lifecycle.registry import AlphaLifecycleStatus,QualificationDecision
-    intent=P3OperationInput.model_validate(intent)
-    evaluation=EvaluationResult.model_validate(evaluation)
-    proof=ReplayProof.model_validate(proof)
-    if not isinstance(intent.body,CandidateOOSInput) or intent.body.evaluation_manifest_ref!=evaluation.manifest_ref:
-        raise ValueError('OOS result does not belong to the exact operation intent')
-    manifest=_read(store,evaluation.manifest_ref,EvaluationManifest)
-    inputs=_read(store,manifest.input_set_ref,InputSet)
-    head=read_registry_event(store,manifest.candidate_head_ref)
-    if (manifest.input_set_ref!=intent.input_set_ref or intent.allowed_alpha_ids!=(head.record.alpha_id,)
-        or any(_read(store,ref, ReplayReceipt).logical_trial_id!=intent.workflow_operation for ref in proof.receipt_refs)):
-        raise ValueError('OOS input, candidate or replay operation differs')
-    bundle=qualify(evaluation,proof,store)
-    result=_read(store,bundle.legacy_result_ref,AlphaQualificationResultV1)
-    bundle_ref=store.put_bytes(canonical_json_bytes(bundle),media_type='application/json')
-    record_ref=store.put_bytes(canonical_json_bytes(head.record),media_type='application/json')
-    value=dict(schema_version='p3-pre-publication-evidence-v1',stage='RESEARCH_DECISION',
-        input_set_ref=intent.input_set_ref,baseline_selection_ref=manifest.baseline_selection_ref,
-        qualification_bundle_ref=bundle_ref,exit_result_ref=None,candidate_record_refs=(record_ref,))
-    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-    evidence=PrePublicationEvidence.model_validate_json(canonical_json_bytes(value))
-    passed=bundle.alpha_verdict=='PASS'
-    metrics=hashlib.sha256(canonical_json_bytes(evaluation.base.aggregate_metrics)).hexdigest() if passed else None
-    record=head.record.model_copy(update=dict(lifecycle_status=AlphaLifecycleStatus.RESEARCHED,
-        qualification_decision=QualificationDecision.PASS if passed else QualificationDecision.FAIL,
-        qualification_reason='C01-C16 passed' if passed else ','.join(result.failure_codes),
-        metrics_sha256=metrics,
-        robustness_sha256=bundle_ref.content_sha256 if passed else None))
-    researched=plan_transition(record,head,evidence)
-    terminal=plan_transition(record.model_copy(update=dict(lifecycle_status=AlphaLifecycleStatus.OOS_PASS if passed else AlphaLifecycleStatus.REJECTED)),researched,evidence)
-    expected=ExpectedHead(alpha_id=head.record.alpha_id,version=head.record.version,
-        sequence=head.sequence,event_digest=head.event_sha256)
-    return build_publication_proposal(events=(researched,terminal),expected_heads=(expected,),evidence=evidence,
-        epoch_id=inputs.epoch_id,job_id=job_id,observed_at=observed_at,expires_at=expires_at,store=store)
+    from packages.alpha_lifecycle.qualification import prepare_oos_evidence
+    events,heads,evidence,epoch_id=prepare_oos_evidence(intent,evaluation,proof,store=store)
+    return build_publication_proposal(events=events,expected_heads=heads,evidence=evidence,
+        epoch_id=epoch_id,job_id=job_id,observed_at=observed_at,expires_at=expires_at,store=store)
 
 
 def build_publication_proposal(
@@ -127,16 +87,15 @@ def build_publication_proposal(
         if ref != event.artifact:
             raise ValueError('publication registry artifact differs from planned event')
         refs.append(ref)
-        stream_id = uuid5(_P3_NAMESPACE,canonical_json_bytes([epoch_id,*key]).decode())
-        event_id = uuid5(stream_id,canonical_json_bytes([event.sequence,event.event_sha256]).decode())
+        stream_id, event_id = publication_event_ids(epoch_id,event)
         envelope = EventEnvelope[AlphaRegistryTransitionRecordedV1](
             event_id=event_id,event_type='AlphaRegistryTransitionRecordedV1',schema_version='event-envelope-v1',
             source='p3-alpha-lifecycle',stream_id=stream_id,sequence=event.sequence,
             observed_at=observed_at,ingested_at=observed_at,produced_at=observed_at,
             effective_at=observed_at,expires_at=expires_at,
-            correlation_id=uuid5(_P3_NAMESPACE,epoch_id),
-            causation_id=uuid5(_P3_NAMESPACE,evidence_ref.content_sha256),
-            trace_id=uuid5(_P3_NAMESPACE,job_id),payload=payload,
+            correlation_id=uuid5(P3_NAMESPACE,epoch_id),
+            causation_id=uuid5(P3_NAMESPACE,evidence_ref.content_sha256),
+            trace_id=uuid5(P3_NAMESPACE,job_id),payload=payload,
         )
         entries.append(DomainAppendEntry(event_id=event_id,stream_id=stream_id,sequence=event.sequence,
             event_type='AlphaRegistryTransitionRecordedV1',canonical_event_text=canonical_json_bytes(envelope).decode(),

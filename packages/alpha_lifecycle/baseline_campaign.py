@@ -53,6 +53,8 @@ Model = TypeVar("Model", bound=BaseModel)
 
 
 def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model:
+    if ref.media_type != "application/json":
+        raise ValueError("typed research artifact must declare application/json")
     raw = store.read_bytes(ref)
     value = model.model_validate_json(raw)
     if canonical_json_bytes(value) != raw:

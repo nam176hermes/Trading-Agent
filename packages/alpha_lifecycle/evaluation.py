@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from decimal import Decimal
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs, _read
 from packages.alpha_lifecycle.candidates import run_candidate
 from packages.alpha_lifecycle.contracts.data import DailyBar, FoldManifest, PITProof
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, EvaluationManifest
@@ -27,10 +27,6 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 
 class EvaluationError(ValueError):
     """Evaluation inputs are not one preregistered, source-bound computation."""
-
-
-def _read(store: ArtifactStore, ref: ArtifactRefV1, model):
-    return model.model_validate_json(store.read_bytes(ref))
 
 
 def _seal(store: ArtifactStore, value):

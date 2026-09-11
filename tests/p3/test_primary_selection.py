@@ -40,6 +40,23 @@ def test_ranking_preserves_frozen_precision_without_changing_caller():
         assert context.prec==6
 
 
+def test_selection_recomputes_candidate_closure_before_ranking(monkeypatch):
+    from packages.alpha_lifecycle import primary_selection as selection
+    refs=tuple(ArtifactRefV1(content_sha256=str(i)*64,size_bytes=2,
+        media_type='application/json',locator=str(i)*64+'.blob') for i in range(1,8))
+    value=dict(schema_version='p3-family-review-v1',input_set_ref=refs[0],candidate_report_refs=refs[1:5],
+        trial_outcome_refs=(refs[5],),review_ref=refs[6],complete_disclosure=True)
+    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    def reject(*a,**k):
+        raise ValueError('candidate recomputation rejected')
+    monkeypatch.setattr(selection,'validate_candidate_closure',reject)
+    class NoUnvalidatedRead:
+        def read_bytes(self,*a,**k):
+            raise AssertionError('selection read an unvalidated candidate')
+    with pytest.raises(ValueError,match='candidate recomputation rejected'):
+        select_primary(FamilyReview.model_validate_json(canonical_json_bytes(value)),NoUnvalidatedRead())
+
+
 @pytest.mark.parametrize('case',['selected_precision','none_qualified','wrong_order','wrong_version'])
 def test_selection_family_and_aggregate_ordering_unit(tmp_path,monkeypatch,case):
     """Isolate selection arithmetic with stubbed graph reads; no authority proof."""
@@ -77,6 +94,11 @@ def test_selection_family_and_aggregate_ordering_unit(tmp_path,monkeypatch,case)
             baseline_result=SimpleNamespace(total_return=Decimal('1.00000001')))
         objects[(ref(i+12).content_sha256,PublicationReceipt)]=SimpleNamespace(registry_event_refs=(ref(i+16),))
     monkeypatch.setattr(selection,'_read',lambda store,reference,model:objects[(reference.content_sha256,model)])
+    def candidate(reference,**kwargs):
+        i=reports.index(reference)
+        return (objects[(ref(i+4).content_sha256,QualificationBundle)],
+            objects[(ref(i+8).content_sha256,AlphaQualificationEvidenceV1)],ref(i+16))
+    monkeypatch.setattr(selection,'validate_candidate_closure',candidate)
     root=tmp_path/'store'
     root.mkdir(mode=0o700)
     store=LocalArtifactStore(root)
@@ -117,7 +139,7 @@ def test_distinct_reports_for_one_candidate_cannot_replace_complete_family(synth
     request=proposal.request
     commit_ref=_seal(store,schema_version='p3-job-commit-result-v1',job_id=request.job_id,
         idempotency_key=request.idempotency_key,semantic_request_digest=request.semantic_request_digest,
-        prepublication_ref=request.evidence_ref,ledger_event_ids=[str(uuid4()),str(uuid4())],
+        prepublication_ref=request.evidence_ref,ledger_event_ids=[str(item.event_id) for item in proposal.entries],
         registry_event_refs=request.proposed_event_refs,alpha_outcome='FAIL')
     request_ref=store.put_bytes(canonical_json_bytes(request),media_type='application/json')
     receipt=build_publication_receipt(request_ref,_read(store,commit_ref,JobCommitResult),committed_at=now,store=store)

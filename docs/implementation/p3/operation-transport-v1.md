@@ -400,3 +400,28 @@ when four distinct reports represent that same candidate. Independent review
 passed this bounded source scope; static retains 117 existing diagnostics.
 Complete qualification/closure/head validation, trial disclosure, current review,
 SQL admission and select-primary dispatch remain HELD.
+
+The downstream candidate closure consumer now reconstructs the frozen OOS
+qualification, retained prepublication evidence, expected predecessors, registry
+transitions, semantic request, idempotency key and ordered deterministic ledger
+UUIDs. It reads both actual registry blobs before returning a terminal head.
+The producer reuses the unchanged OOS evidence and UUID formulas. Recalculation
+uses readback-only storage under a cumulative 1 GiB read budget, with direct JSON
+reference bounds. Publication and evaluation reuse the common canonical JSON
+reader, which rejects non-JSON media before I/O throughout typed reads.
+
+Genuine regressions covered a completely rehashed false PASS, bypassed closure
+validation, arbitrary event IDs, missing event blobs, and direct/nested JSON
+media. The initial 28-test suite passed, independent review found three further
+holes, and the corrected 42-test suite passed in 140.90 seconds. A later
+shared-reader regression reproduced two alternate reader bypasses (2 FAIL,
+1 PASS); after removing duplicate readers, all 20 JSON/publication/registration
+checks passed in 9.48 seconds. Synthetic committed identities in these tests do
+not authenticate SQL custody. Current SQL heads, complete trial history,
+protected independent review and select-primary dispatch still remain HELD.
+
+The final adjacent closure/baseline/replica suite passed 81 tests in 221.24
+seconds. Independent review passed the bounded correction after the shared
+reader fix; static remains at 117 pre-existing diagnostics and canonical
+contracts checked successfully. No SQL schema or transactional write path was
+changed by this packet.
