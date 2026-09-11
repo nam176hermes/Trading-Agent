@@ -24,9 +24,9 @@ from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
 
-LOCKED_INVENTORY_SHA256 = "b2aeb789b4f02ddea27f2a1fa2599184f3713951f86ac561168c985528723ba8"
+LOCKED_INVENTORY_SHA256 = "1f7d406039e0f54eff57b7e6478e732f93580489e61f3cda1eb8b18465cde155"
 LOCKED_CLOSURE_SHA256 = "9b4b02af2972651f75d07b1758232a186041749598518e41ae40d6e34ca2aa88"
-LOCKED_GOVERNED_NODE_IDS_SHA256 = "bcfc9ec8723e4d51d470a7c9e173f66c105b7846e275158862180867e93d7769"
+LOCKED_GOVERNED_NODE_IDS_SHA256 = "f1d693e9bff3c79b88bcb810ddd67172e4e59727026d9692cd95ddd56b99d98c"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
 NATIVE_MULTI_RECEIPT_SCHEMA = "t-g03a-native-multi-authority-receipt/v3"
@@ -880,11 +880,11 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
             raise TopologyError(f"inventory row {index} has unknown classification or code")
         seen.add(node_id)
         rows.append(InventoryRow(node_id, classification, code))
-    if len(rows) != 317:
+    if len(rows) != 318:
         raise TopologyError("inventory row count drift")
     counts = {code: sum(row.code == code for row in rows) for code in CODE_CLASSIFICATION}
     if counts != {
-        "NATIVE-BWRAP-OS-SANDBOX": 18,
+        "NATIVE-BWRAP-OS-SANDBOX": 19,
         "NATIVE-USERNS-ROOT-PROVISION": 8,
         "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": 22,
         "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": 10,
@@ -1047,7 +1047,7 @@ def load_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 366 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 367 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("active and closure governed-node set drift")
     return active, closed
 
@@ -2063,7 +2063,7 @@ def _installed_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 366 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 367 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("installed active and closure governed-node set drift")
     return active, closed
 

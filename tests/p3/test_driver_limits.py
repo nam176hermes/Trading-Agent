@@ -6,6 +6,15 @@ import subprocess
 import sys
 
 
+def test_real_bwrap_transport_probe_is_in_native_capability_lane():
+    from scripts.t_g03_capability_topology import load_inventory
+    rows=load_inventory(Path('tests/fixtures/t-g03a-hosted-failure-inventory.tsv'))
+    matches=[row for row in rows if row.node_id=='tests/p3/test_driver_limits.py::test_real_bwrap_drops_transport_descriptors']
+    assert len(matches)==1
+    assert matches[0].classification=='NATIVE_CAPABILITY_REQUIRED'
+    assert matches[0].code=='NATIVE-BWRAP-OS-SANDBOX'
+
+
 def test_campaign_timeout_includes_parent_budget_after_three_replicas():
     from types import SimpleNamespace
     from services.job_worker.command_registry import p3_command_spec
@@ -65,9 +74,6 @@ def test_driver_entry_applies_bounds_and_exec_preserves_pid(tmp_path):
 
 
 def test_real_bwrap_drops_transport_descriptors(tmp_path):
-    import pytest
-    if os.environ.get('TRADING_P3_LOCAL_SANDBOX_PROBE') != '1':
-        pytest.skip('explicit disposable host sandbox probe required')
     from packages.alpha_lifecycle.sandbox_policy import ROOT_READONLY_ARGS
     inputs=tmp_path/'input'
     inputs.mkdir(mode=0o700)

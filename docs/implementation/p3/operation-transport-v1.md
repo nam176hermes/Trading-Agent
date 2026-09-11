@@ -347,3 +347,20 @@ Any prior host/source receipts must be refreshed against the final merged
 source before official InputSet issuance. LIVE_ELIGIBLE=false;
 LIVE_ENABLED=false. No scheduler, retained research store, dataset, production
 service or broker was activated by this source packet.
+
+Foundation run 34581120051 at 5bbe0000 passed 9,895 root tests but rejected one
+unclassified skip: the real P3 Bubblewrap transport probe had incorrectly been
+left in the portable remainder. The correction adds that exact node to the
+existing NATIVE-BWRAP-OS-SANDBOX lane and removes its environment opt-in skip.
+The existing native preflight now determines execution versus unavailable
+capability; portable PASS cannot stand in for this native proof. All 317 prior
+inventory rows and the 49 portable-closure rows are preserved. The current
+inventory has 318 active nodes, 19 in the Bubblewrap lane, and 367 governed nodes;
+both exact inventory and governed-set hashes are updated.
+
+The missing-routing regression failed before correction. Afterwards 34 focused
+tests passed, including the real local transport probe and inventory/closure
+checks. The wider topology and failure-diagnostic suite passed 290 tests and
+exposed one stale count assertion; its corrected exact 19+8 count test passed
+separately. Static remains at 117 pre-existing diagnostics. No skip allowance,
+runtime receipt, host capability or economic policy was fabricated by this fix.
