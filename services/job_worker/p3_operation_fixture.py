@@ -299,9 +299,14 @@ def check_operations(sock, name, root, payload, mark):
 def _check_output_migration_drift(sock,name,engine):
     """Every hostile catalog edit is local to the disposable cluster and restored."""
     with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
-        Path('/tmp/p3-output-reviewed-constraints.json').write_text(json.dumps(owner.execute("SELECT conname,contype,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass ORDER BY conname").fetchall()))
+        Path('/tmp/p3-output-reviewed-trigger-acl.json').write_text(json.dumps(owner.execute("SELECT a.grantee::regrole::text,a.privilege_type,a.is_grantable FROM pg_proc p,LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE p.oid='public.reject_p3_accepted_mutation()'::regprocedure ORDER BY 1").fetchall()))
         ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
+        result_constraint=_first(owner.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass AND conname='p3_alpha_job_commits_result_text_check'").fetchone())
     faults=(
+        ('helper_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) TO trading_reader','REVOKE EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) FROM trading_reader'),
+        ('reverse_worker_membership','GRANT trading_job_worker TO trading_reader','REVOKE trading_job_worker FROM trading_reader'),
+        ('result_constraint','ALTER TABLE public.p3_alpha_job_commits DROP CONSTRAINT p3_alpha_job_commits_result_text_check; ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_alpha_job_commits_result_text_check CHECK (true)',
+         'ALTER TABLE public.p3_alpha_job_commits DROP CONSTRAINT p3_alpha_job_commits_result_text_check; ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_alpha_job_commits_result_text_check '+result_constraint),
         ('ref_body',"CREATE OR REPLACE FUNCTION job_plane.p3_valid_ref(ref jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $$ SELECT true $$",ref_definition),
         ('append_trigger','ALTER TABLE public.p3_alpha_job_commits DISABLE TRIGGER p3_alpha_job_commits_append_only','ALTER TABLE public.p3_alpha_job_commits ENABLE TRIGGER p3_alpha_job_commits_append_only'),
         ('table_dml','GRANT UPDATE ON public.p3_alpha_job_commits TO trading_job_worker','REVOKE UPDATE ON public.p3_alpha_job_commits FROM trading_job_worker'),
