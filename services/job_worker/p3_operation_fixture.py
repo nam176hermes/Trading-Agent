@@ -299,7 +299,6 @@ def check_operations(sock, name, root, payload, mark):
 def _check_output_migration_drift(sock,name,engine):
     """Every hostile catalog edit is local to the disposable cluster and restored."""
     with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
-        Path('/tmp/p3-output-reviewed-trigger-acl.json').write_text(json.dumps(owner.execute("SELECT a.grantee::regrole::text,a.privilege_type,a.is_grantable FROM pg_proc p,LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE p.oid='public.reject_p3_accepted_mutation()'::regprocedure ORDER BY 1").fetchall()))
         ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
         result_constraint=_first(owner.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass AND conname='p3_alpha_job_commits_result_text_check'").fetchone())
     faults=(
@@ -334,6 +333,28 @@ def _check_output_migration_drift(sock,name,engine):
         finally:
             with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
                 owner.execute(SQL(restore))
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+    with engine.connect() as connection:
+        transaction=connection.begin()
+        try:
+            config=Config(str(ROOT/'alembic.ini'))
+            config.attributes['connection']=connection
+            command.upgrade(config,'head')
+            connection.execute(text('SET LOCAL ROLE trading_p3_owner'))
+            try:
+                with connection.begin_nested():
+                    inserted=connection.execute(text("""INSERT INTO public.p3_alpha_job_commits
+                        (job_id,idempotency_key,semantic_request_digest,result_json,result_text,result_digest)
+                        SELECT job_id,'old-body-after-0023',semantic_request_digest,result_json,result_text,repeat('8',64)
+                        FROM public.p3_alpha_job_commits WHERE job_id='job_publication' RETURNING job_id""")).fetchall()
+                    assert len(inserted)==1
+            except IntegrityError as error:
+                assert error.orig.sqlstate=='23514'
+            else:
+                accepted.append('new_commit_without_custody')
+        finally:
+            transaction.rollback()
     assert not accepted, '0023 accepted catalog drift: '+','.join(accepted)
 
 def _sealed(value):
