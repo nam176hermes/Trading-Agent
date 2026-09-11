@@ -425,3 +425,15 @@ seconds. Independent review passed the bounded correction after the shared
 reader fix; static remains at 117 pre-existing diagnostics and canonical
 contracts checked successfully. No SQL schema or transactional write path was
 changed by this packet.
+
+The unprivileged operation CLI now handles fixed candidate OOS intents. It
+checks complete retained registration and the exact allowed candidate before
+constructing its executor, runs all three replicas, and retains the existing
+OOS publication proposal in private CAS. No SQL transaction or publication
+identity changed. The missing-branch regression failed with HELD E_OPERATION
+before implementation. The real portable three-child test then passed in
+86.06 seconds, preserved shared input CAS, and retained ALPHA_FAIL. Six adjacent
+baseline/environment tests passed in 68.40 seconds. Independent review passed
+this bounded source path; static retains 117 existing diagnostics. Worker
+provider dispatch and parent OOS output validation remain HELD until their
+source and admission checks are implemented and qualified.
