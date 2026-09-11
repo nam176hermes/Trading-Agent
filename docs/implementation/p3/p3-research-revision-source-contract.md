@@ -202,3 +202,53 @@ rows. No fold ranges, legacy identities or economic policies changed.
 Independent gpt-5.6-sol/high review passed the reconstruction and fold correction
 scope. Contract generation check passed; static retained the same 117 existing
 diagnostics. Protected provenance, backup and official admission remain HELD.
+
+## Compact commitment representation (structural source only)
+
+The private `research_custody.py` models describe a compact commitment and its
+small backup receipt. They are not connected to official dispatch or C01 yet.
+`P3ResearchBatchCommitment` binds source/policy, RESEARCH, the exact query,
+inventory content SHA/byte size/entry count, DatasetEvidence content SHA and
+semantic digest, snapshot content SHA, batch ordinal, predecessor commitment
+content SHA, inventory frozen/completed times, issuance time, producer
+repository/workflow/run/attempt, backup receipt reference, status and safe
+authority. FIRST has ordinal one and no predecessor; a later protected producer
+must compare the actual prior ordinal plus one and exact content SHA.
+
+Every `content_sha256` is the hash of complete canonical artifact bytes,
+including a model's `digest`. `digest` retains the existing DigestModel semantic
+meaning. Inventory and predecessor hashes are commitments, not recursive
+ArtifactRefs. The backup receipt is an ordinary bounded JSON reference (at most
+65,536 bytes), so it remains visible to the closed artifact graph.
+
+`P3ResearchBackupReceipt` binds source, inventory/dataset/snapshot content SHAs,
+the full backup object-inventory content SHA, logical destination
+`p3.research.backup`, immutable object version equal to that object-inventory SHA,
+object count/byte total, verification time and producer identity. It intentionally
+does not bind the future commitment hash; the commitment references this earlier
+receipt. This avoids a hash cycle. Its object inventory, physical destination
+and readback remain external evidence that protected admission must verify.
+
+The inventory's `completed_at` is the query cutoff after acquisition and
+materialization freeze. Dataset sealing/reconstruction and backup follow;
+commitment issuance is after backup verification. Thus the dataset cutoff never
+depends on completing its own backup or commitment. The structural validator
+requires `frozen_at <= completed_at <= backup.verified_at <= issued_at`, exact
+source/run/attempt and fixed 2,800-day retrospective dataset bindings.
+
+The proposed producer identity is a separate protected standalone
+`p3-research-inputs.yml` workflow. That workflow, its approved pre-run request,
+serialization/no-clobber, actual backup producer and attestation/admission checks
+are still missing. Recorded workflow strings and a self-digest cannot replace
+them. The later existing P3 authority review must cover both operation-input and
+commitment digests, with authentic source/producer evidence checked before
+enqueue and spawn. No new official operation, SQL catalog, job authority or
+unvalidated artifact leaf is introduced by these structural models.
+
+The consumer checks bounded child references, exact retrospective disclosure,
+distinct daily rows, the existing ordered-row digest formula, consistent sizes
+for shared content hashes and lower bounds for backup object/byte accounting.
+Regression tests first reproduced acceptance of invalid closure/accounting and
+an arbitrary ordered-row digest. The final compact suite passed 39 tests in
+11.26 seconds; independent gpt-5.6-sol/high review passed this structural scope.
+These synthetic tests do not authenticate the declared producer or custody.
