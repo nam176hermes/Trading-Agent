@@ -18,6 +18,8 @@ from typing import Any, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_POLICY = ROOT / "tests/critical-coverage-policy.json"
 DEFAULT_REPORT_DIR = Path("/tmp/trading-agent-test-evidence/critical-coverage")
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -871,6 +873,12 @@ def run_coverage(
         "TEST_GOVERNANCE_COMPONENT": "root",
         "TEST_GOVERNANCE_REPORT": str(python_tests_json),
     }
+    # Native observations belong to the locked capability lane, not this portable rerun.
+    from scripts.t_g03_capability_topology import load_inventory
+    native_nodes={row.node_id for row in load_inventory(ROOT/'tests/fixtures/t-g03a-hosted-failure-inventory.tsv')
+        if row.classification=='NATIVE_CAPABILITY_REQUIRED'}
+    if native_nodes.intersection(node for nodes in _SEALED_REQUIRED_CASES.values() for node in nodes):
+        raise CoverageGateError('required critical coverage case cannot be routed out of its suite')
     python_command = [
         "uv",
         "run",
@@ -887,6 +895,7 @@ def run_coverage(
         "not runtime_postgres and not host_coupled",
         "-p",
         "scripts.test_governance_pytest",
+        *("--deselect="+node for node in sorted(native_nodes)),
         *python_policy["pytest_paths"],
     ]
     python_test_exit = _run(

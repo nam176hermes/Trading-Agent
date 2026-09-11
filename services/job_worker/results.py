@@ -193,6 +193,8 @@ class ResultValidator:
         *,
         stream: ArtifactMetadata,
         exit_code: int,
+        output_custody=None,
+        output_inventory_ref=None,
     ) -> ValidatedResult | ValidatedP3Publication:
         """Validate the bounded stdout of an explicitly composed P3 worker."""
 
@@ -205,6 +207,15 @@ class ResultValidator:
             raise ResultValidationError("P3 result validator differs from fixed operation")
         raw = self._read_p3_stream(job, stream)
         result = validate_p3_result_bytes(validator_id, raw)
+        if validator_id != 'p3-integration-qualified-v1':
+            from .p3_output import P3OutputCustody
+            from .p3_output_validation import validate_official_output
+            if type(output_custody) is not P3OutputCustody or output_inventory_ref is None:
+                raise ResultValidationError('P3 official result requires its exact output custody')
+            try:
+                validate_official_output(job,result,output_custody,output_inventory_ref)
+            except (OSError,ValueError) as exc:
+                raise ResultValidationError('P3 output custody or operation closure is invalid') from exc
         from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
 
         if isinstance(result, IntegrationReceipt) and result.source != job.payload.expected_source:

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, LiteralString
+from typing import Any, LiteralString, cast
 from uuid import UUID, NAMESPACE_URL, uuid5, uuid4
 
 import psycopg
@@ -34,6 +34,8 @@ REQUIRED_OPERATION_CHECKS = frozenset({
     'OFFICIAL_INTENT_INPUT_REVIEW_AND_JOB_BINDING_PASS',
     'ENQUEUE_TWO_CONNECTION_AUTHORIZATION_EXPIRY_PASS',
     'OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS',
+    'OFFICIAL_ATTEMPT_OUTPUT_BINDING_PASS',
+    'OFFICIAL_OUTPUT_LOST_COMMIT_RESPONSE_PASS',
     'RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS',
     'HOLDOUT_CANNOT_START_WITHOUT_DURABLE_CONSUMPTION_PASS',
 })
@@ -245,6 +247,11 @@ def check_operations(sock, name, root, payload, mark):
         with engine.begin() as connection:
             config = Config(str(ROOT / 'alembic.ini'))
             config.attributes['connection'] = connection
+            command.upgrade(config, '0022_p3_worker_lane_isolation')
+        _check_output_migration_drift(sock,name,engine)
+        with engine.begin() as connection:
+            config = Config(str(ROOT / 'alembic.ini'))
+            config.attributes['connection'] = connection
             command.upgrade(config, 'head')
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             for signature in ('worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean)',
@@ -287,6 +294,71 @@ def check_operations(sock, name, root, payload, mark):
     _check_claim_lane_isolation(sock, name, payload, mark)
     _check_holdout_denial(sock, name, payload.expected_source, mark)
 
+
+
+def _check_output_migration_drift(sock,name,engine):
+    """Every hostile catalog edit is local to the disposable cluster and restored."""
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+        ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
+        result_constraint=_first(owner.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass AND conname='p3_alpha_job_commits_result_text_check'").fetchone())
+    faults=(
+        ('api_indirect_owner_membership','GRANT trading_owner TO trading_job_api','REVOKE trading_owner FROM trading_job_api'),
+        ('owner_inherits_reader','GRANT trading_reader TO trading_p3_owner','REVOKE trading_reader FROM trading_p3_owner'),
+        ('api_owner_membership','GRANT trading_p3_owner TO trading_job_api','REVOKE trading_p3_owner FROM trading_job_api'),
+        ('helper_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) TO trading_reader','REVOKE EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) FROM trading_reader'),
+        ('reverse_worker_membership','GRANT trading_job_worker TO trading_reader','REVOKE trading_job_worker FROM trading_reader'),
+        ('result_constraint','ALTER TABLE public.p3_alpha_job_commits DROP CONSTRAINT p3_alpha_job_commits_result_text_check; ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_alpha_job_commits_result_text_check CHECK (true)',
+         'ALTER TABLE public.p3_alpha_job_commits DROP CONSTRAINT p3_alpha_job_commits_result_text_check; ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_alpha_job_commits_result_text_check '+result_constraint),
+        ('ref_body',"CREATE OR REPLACE FUNCTION job_plane.p3_valid_ref(ref jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $$ SELECT true $$",ref_definition),
+        ('append_trigger','ALTER TABLE public.p3_alpha_job_commits DISABLE TRIGGER p3_alpha_job_commits_append_only','ALTER TABLE public.p3_alpha_job_commits ENABLE TRIGGER p3_alpha_job_commits_append_only'),
+        ('table_dml','GRANT UPDATE ON public.p3_alpha_job_commits TO trading_job_worker','REVOKE UPDATE ON public.p3_alpha_job_commits FROM trading_job_worker'),
+        ('worker_membership','GRANT trading_p3_owner TO trading_job_worker','REVOKE trading_p3_owner FROM trading_job_worker'),
+        ('commit_strict','ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) STRICT','ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) CALLED ON NULL INPUT'),
+    )
+    accepted=[]
+    for label,damage,restore in faults:
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            owner.execute(SQL(cast(LiteralString,damage)))
+        try:
+            with engine.connect() as connection:
+                transaction=connection.begin()
+                try:
+                    config=Config(str(ROOT/'alembic.ini'))
+                    config.attributes['connection']=connection
+                    try:
+                        command.upgrade(config,'head')
+                    except RuntimeError as error:
+                        assert 'drift' in str(error)
+                    else:
+                        accepted.append(label)
+                finally:
+                    transaction.rollback()
+        finally:
+            with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+                owner.execute(SQL(cast(LiteralString,restore)))
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+    with engine.connect() as connection:
+        transaction=connection.begin()
+        try:
+            config=Config(str(ROOT/'alembic.ini'))
+            config.attributes['connection']=connection
+            command.upgrade(config,'head')
+            connection.execute(text('SET LOCAL ROLE trading_p3_owner'))
+            try:
+                with connection.begin_nested():
+                    inserted=connection.execute(text("""INSERT INTO public.p3_alpha_job_commits
+                        (job_id,idempotency_key,semantic_request_digest,result_json,result_text,result_digest)
+                        SELECT job_id,'old-body-after-0023',semantic_request_digest,result_json,result_text,repeat('8',64)
+                        FROM public.p3_alpha_job_commits WHERE job_id='job_publication' RETURNING job_id""")).fetchall()
+                    assert len(inserted)==1
+            except IntegrityError as error:
+                assert isinstance(error.orig,psycopg.Error) and error.orig.sqlstate=='23514'
+            else:
+                accepted.append('new_commit_without_custody')
+        finally:
+            transaction.rollback()
+    assert not accepted, '0023 accepted catalog drift: '+','.join(accepted)
 
 def _sealed(value):
     value = {key: item for key, item in value.items() if key != 'digest'}
@@ -482,6 +554,8 @@ def _check_publication(sock, name, root, source, mark):
     store = LocalArtifactStore(store_root)
     evidence = store.put_bytes(b'{"purpose":"synthetic-operation-source-test"}',media_type='application/json')
     entries, refs, heads = publication_entries(store,evidence,FAMILY_IDS,source_sha=source.commit_sha)
+    output_inventory=store.put_bytes(canonical_json_bytes([dict(path='artifacts/'+ref.locator,artifact_ref=ref)
+        for ref in sorted((evidence,*refs),key=lambda item:item.locator)]),media_type='application/json')
     with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=2,kwargs={'row_factory':dict_row}) as pool:
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
@@ -492,6 +566,36 @@ def _check_publication(sock, name, root, source, mark):
         request = PublicationRequest.model_validate_json(_sealed(dict(schema_version='p3-publication-request-v1',
             idempotency_key='source-official-registration',semantic_request_digest=hashlib.sha256(canonical_json_bytes(refs)).hexdigest(),stage='REGISTER',evidence_ref=evidence.model_dump(mode='json'),expected_heads=heads,proposed_event_refs=[r.model_dump(mode='json') for r in refs],job_id=claim.job_id)))
         publisher = P3PublicationRepository(pool,store)
+        legacy_transport=canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
+            worker_id=claim.worker_id,lease_token=claim.lease_token,request=request,entries=entries)).decode()
+        with _rejected(psycopg.errors.InvalidParameterValue,match='output custody'), pool.connection() as connection:
+            with connection.transaction(force_rollback=True):
+                connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                    claim.worker_id,claim.lease_token,legacy_transport,'test:missing-output-custody'))
+        for fault in ('null','extra','missing','oversized','zero','media'):
+            ref_value=output_inventory.model_dump(mode='json')
+            if fault == 'null':
+                ref_value=None
+            elif fault == 'extra':
+                ref_value['unexpected']=True
+            elif fault == 'missing':
+                del ref_value['locator']
+            elif fault == 'oversized':
+                ref_value['size_bytes']=4194305
+            elif fault == 'zero':
+                ref_value['size_bytes']=0
+            else:
+                ref_value['media_type']='text/plain'
+            bad_transport=json.loads(legacy_transport)
+            bad_transport['output_inventory_ref']=ref_value
+            with _rejected(psycopg.errors.InvalidParameterValue,match='output custody'), pool.connection() as connection:
+                with connection.transaction(force_rollback=True):
+                    connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                        claim.worker_id,claim.lease_token,canonical_json_bytes(bad_transport).decode(),'test:output-'+fault))
+        from dataclasses import replace
+        with _rejected(psycopg.Error,match='E_STALE_FENCE'):
+            publisher.publish(request,replace(claim,attempt_id='attempt_other'),entries,
+                output_inventory_ref=output_inventory,trace_id='test:output-wrong-attempt')
         assert not worker.finalize(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             expected_state='RUNNING',expected_attempt_outcome='RUNNING',final_state='SUCCEEDED',
             reason_code='PROCESS_EXITED',trace_id='test:no-generic-publication',alpha_campaign=True)
@@ -499,7 +603,7 @@ def _check_publication(sock, name, root, source, mark):
         wrong_event['payload']['evidence_sha256'] = 'e'*64
         wrong_evidence_entries = (entries[0].model_copy(update={'canonical_event_text':canonical_json_bytes(wrong_event).decode()}),*entries[1:])
         transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
-            worker_id=claim.worker_id,lease_token=claim.lease_token,request=request,entries=wrong_evidence_entries)).decode()
+            worker_id=claim.worker_id,lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=request,entries=wrong_evidence_entries)).decode()
         with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
             connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
                 claim.worker_id,claim.lease_token,transport,'test:wrong-prepublication-evidence'))
@@ -516,7 +620,7 @@ def _check_publication(sock, name, root, source, mark):
             else:
                 del malformed['evidence_ref']['size_bytes']
             transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
-                worker_id=claim.worker_id,lease_token=claim.lease_token,
+                worker_id=claim.worker_id,lease_token=claim.lease_token,output_inventory_ref=output_inventory,
                 request=json.loads(_sealed(malformed)),entries=entries)).decode()
             with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
                 connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
@@ -526,11 +630,29 @@ def _check_publication(sock, name, root, source, mark):
         wrong['proposed_event_refs'] = [r.model_dump(mode='json') for r in wrong_refs]
         wrong['semantic_request_digest'] = hashlib.sha256(canonical_json_bytes(wrong_refs)).hexdigest()
         with _rejected(psycopg.Error):
-            publisher.publish(PublicationRequest.model_validate_json(_sealed(wrong)),claim,wrong_entries,trace_id='test:wrong-record-source')
+            publisher.publish(PublicationRequest.model_validate_json(_sealed(wrong)),claim,wrong_entries,output_inventory_ref=output_inventory,trace_id='test:wrong-record-source')
         bad_entries = (*entries[:-1],entries[-1].model_copy(update={'outbox_payload_text':canonical_json_bytes({'event_id':str(entries[0].event_id)}).decode()}))
         with _rejected(psycopg.errors.InvalidParameterValue):
-            publisher.publish(request,claim,bad_entries,trace_id='test:atomic-rollback')
+            publisher.publish(request,claim,bad_entries,output_inventory_ref=output_inventory,trace_id='test:atomic-rollback')
         event_ids = [entry.event_id for entry in entries]
+        from threading import Lock
+        class DisconnectOncePool:
+            pending=True
+            disconnected=False
+            lock=Lock()
+            @contextmanager
+            def connection(self):
+                with self.lock:
+                    disconnect=self.pending
+                    self.pending=False
+                with psycopg.Connection[dict[str,Any]].connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
+                    yield connection
+                    if disconnect:
+                        connection.close()
+                        self.disconnected=True
+                        raise psycopg.OperationalError('fixture disconnect after real 0023 COMMIT')
+        disconnect_pool=DisconnectOncePool()
+        concurrent_publisher=P3PublicationRepository(disconnect_pool,store)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres',autocommit=True) as observer, psycopg.connect(host=str(sock),dbname=name,user='postgres') as blocker:
             for table in ('domain_events','event_outbox'):
                 assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id=ANY(%s)',(event_ids,)).fetchone() == (0,)
@@ -539,7 +661,7 @@ def _check_publication(sock, name, root, source, mark):
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             blocker.execute('SELECT job_id FROM public.jobs WHERE job_id=%s FOR UPDATE',(claim.job_id,))
             with ThreadPoolExecutor(max_workers=2) as threads:
-                futures = [threads.submit(publisher.publish,request,claim,entries,trace_id='test:concurrent-publication') for _ in range(2)]
+                futures = [threads.submit(concurrent_publisher.publish,request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:concurrent-publication') for _ in range(2)]
                 try:
                     deadline = time.monotonic()+3
                     while time.monotonic()<deadline:
@@ -553,12 +675,19 @@ def _check_publication(sock, name, root, source, mark):
                 first, second = [future.result(timeout=5) for future in futures]
                 assert first == second
                 result = first
+        assert disconnect_pool.disconnected
+        mark('OFFICIAL_OUTPUT_LOST_COMMIT_RESPONSE_PASS')
         with _rejected(RuntimeError, match='custody unavailable'):
             recover_publication_receipt('job_publication',repository=publisher,store=store)
         altered = request.model_dump(mode='json')
         altered['expected_heads'][0].update(sequence=1,event_digest='a'*64)
         with _rejected(psycopg.errors.UniqueViolation):
-            publisher.publish(PublicationRequest.model_validate_json(_sealed(altered)),claim,entries,trace_id='test:changed-idempotent-request')
+            publisher.publish(PublicationRequest.model_validate_json(_sealed(altered)),claim,entries,output_inventory_ref=output_inventory,trace_id='test:changed-idempotent-request')
+        changed_inventory=store.put_bytes(b'[]',media_type='application/json')
+        for alternate_claim,alternate_inventory in ((claim,changed_inventory),(replace(claim,attempt_id='attempt_other'),output_inventory)):
+            with _rejected(psycopg.errors.UniqueViolation):
+                publisher.publish(request,alternate_claim,entries,output_inventory_ref=alternate_inventory,trace_id='test:changed-output-binding')
+        assert publisher.read_commit(request,output_inventory_ref=output_inventory,attempt_id=claim.attempt_id) == result
         receipt = recover_publication_receipt(claim.job_id,repository=publisher,store=store)
         assert receipt == recover_publication_receipt(claim.job_id,repository=publisher,store=store)
         assert result.registry_event_refs == receipt.registry_event_refs
@@ -567,6 +696,9 @@ def _check_publication(sock, name, root, source, mark):
             assert stored is not None
             assert stored == (canonical_json_bytes(request).decode(),result.model_dump(mode='json'),receipt.committed_at)
             assert _first(observer.execute('SELECT result_metadata FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone()) == stored[1]
+            assert observer.execute('SELECT output_inventory_ref_text,output_attempt_id FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (canonical_json_bytes(output_inventory).decode(),claim.attempt_id)
+            assert observer.execute("SELECT output_inventory_ref_text,output_attempt_id FROM public.p3_alpha_job_commits WHERE job_id='job_publication'").fetchone() == (None,None)
+
             for table in ('domain_events','event_outbox'):
                 assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id = ANY(%s)',(list(result.ledger_event_ids),)).fetchone() == (8,)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
@@ -575,13 +707,14 @@ def _check_publication(sock, name, root, source, mark):
             while (remaining := (expiry-datetime.now(UTC)).total_seconds()) > 0:
                 observer.execute('SELECT pg_sleep(%s)',(min(5,remaining)+.1,))
                 mark('OPERATION_AUTHORIZATION_EXPIRY_WAIT',flush=True)
-        assert publisher.publish(request,claim,entries,trace_id='test:expired-commit-readback') == result
+        assert publisher.publish(request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:expired-commit-readback') == result
         assert publisher.recover_receipt(claim.job_id) == receipt
         for role in ('trading_job_api','trading_p3_authority'):
             with psycopg.connect(host=str(sock),dbname=name,user=role) as denied:
                 with _rejected(psycopg.errors.InsufficientPrivilege):
                     denied.execute('SELECT * FROM job_plane.worker_read_alpha_publication(%s)',(claim.job_id,))
     mark('OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS')
+    mark('OFFICIAL_ATTEMPT_OUTPUT_BINDING_PASS')
 
 
 def _check_research_batch(sock, name, root, source, mark, index, outcome):
@@ -632,6 +765,8 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             event_type='AlphaRegistryTransitionRecordedV1',canonical_event_text=canonical_json_bytes(event).decode(),
             topic='p3.alpha-registry',outbox_payload_text=canonical_json_bytes({'event_id':str(event_id)}).decode()))
         previous = ref.content_sha256
+    output_inventory=store.put_bytes(canonical_json_bytes([dict(path='artifacts/'+ref.locator,artifact_ref=ref)
+        for ref in sorted((evidence,*refs),key=lambda item:item.locator)]),media_type='application/json')
     with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=1,kwargs={'row_factory':dict_row}) as pool:
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
@@ -645,7 +780,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
                 stage='RESEARCH_DECISION',evidence_ref=evidence,
                 expected_heads=[dict(alpha_id=alpha,version='1.0.0',sequence=2,event_digest=row[2])],proposed_event_refs=refs[:count])))
         transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
-            lease_token=claim.lease_token,request=request_for(1),entries=entries[:1])).decode()
+            lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=request_for(1),entries=entries[:1])).decode()
         with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
             connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:incomplete-research'))
         for decision,metrics in (('NOT_EVALUATED',None),('FAIL','a'*64),('PASS',None)):
@@ -660,7 +795,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             bad_request['proposed_event_refs'][-1] = bad_ref.model_dump(mode='json')
             bad_request['semantic_request_digest'] = hashlib.sha256(canonical_json_bytes(bad_request['proposed_event_refs'])).hexdigest()
             transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
-                lease_token=claim.lease_token,request=json.loads(_sealed(bad_request)),entries=[entries[0],bad_entry])).decode()
+                lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=json.loads(_sealed(bad_request)),entries=[entries[0],bad_entry])).decode()
             with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
                 connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:contradictory-oos-decision'))
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
@@ -669,7 +804,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             assert observer.execute('SELECT registry_sequence FROM public.p3_alpha_heads WHERE alpha_id=%s',(alpha,)).fetchone() == (2,)
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (0,)
-        result = P3PublicationRepository(pool,store).publish(PublicationRequest.model_validate_json(canonical_json_bytes(request_for(2))),claim,tuple(entries),trace_id='test:complete-research')
+        result = P3PublicationRepository(pool,store).publish(PublicationRequest.model_validate_json(canonical_json_bytes(request_for(2))),claim,tuple(entries),output_inventory_ref=output_inventory,trace_id='test:complete-research')
         assert len(result.ledger_event_ids) == 2 and result.alpha_outcome == outcome
     mark('RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS')
 

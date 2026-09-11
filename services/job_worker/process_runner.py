@@ -33,11 +33,20 @@ from .environment import (
     build_child_environment,
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker
+from .p3_spawn_interface import P3PreparedSpawnMarker
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
 
 if TYPE_CHECKING:
+    from packages.data_contracts import ArtifactRefV1
     from .engine_spawn import PreparedEngineSpawn
+    from .p3_spawn import PreparedP3Spawn
+    from .p3_output import P3OutputCustody
+
+
+def consume_prepared_p3_spawn(prepared: PreparedP3Spawn):
+    from .p3_spawn import consume_prepared_p3_spawn as consume
+    return consume(prepared)
 
 
 def consume_prepared_engine_spawn(prepared: PreparedEngineSpawn):
@@ -207,6 +216,8 @@ class ProcessOutcome:
     backend_revision: str
     lineage: ProcessLineage
     safety_reason_code: str | None = None
+    p3_output_custody: P3OutputCustody | None = None
+    p3_output_inventory_ref: ArtifactRefV1 | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,7 +385,7 @@ class ProcessRunner:
 
     def run(
         self,
-        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn],
+        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn],
         environment: ResearchEnvironmentSettings,
         timeout_seconds: int | None,
         heartbeat: Callable[
@@ -406,6 +417,11 @@ class ProcessRunner:
         # This marker only selects the lazy engine branch. It carries no
         # authority: that branch still requires the exact provider token type.
         engine_authority = isinstance(prepared, EnginePreparedSpawnMarker)
+        p3_authority = isinstance(prepared, P3PreparedSpawnMarker)
+        if p3_authority:
+            from .p3_spawn import PreparedP3Spawn
+            if type(prepared) is not PreparedP3Spawn or engine_authority:
+                raise ValueError('exact P3 spawn authority type is required')
         if engine_authority:
             # Engine provider code is deliberately absent from the paper
             # projection. Resolve exact types only at engine consumption.
@@ -420,14 +436,46 @@ class ProcessRunner:
         # Legacy root and credential policy validation remains in its original
         # position. Engine authority has no ambient/legacy environment path.
         child_environment = (
-            None if engine_authority else build_child_environment(environment)
+            None if engine_authority or p3_authority else build_child_environment(environment)
         )
         reserve_fd = os.open(
             "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
         )
         close_after_spawn_fds: tuple[int, ...] = ()
+        p3_output = None
         try:
-            if engine_authority:
+            if p3_authority:
+                from .p3_spawn import P3BuiltSpawn, P3SpawnLineage
+                from .p3_output import P3OutputCustody
+                p3_built = consume_prepared_p3_spawn(cast(PreparedP3Spawn, prepared))
+                close_after_spawn_fds = p3_built.close_after_spawn_fds
+                if type(p3_built) is not P3BuiltSpawn:
+                    raise ValueError('exact P3 built spawn is required')
+                if type(p3_built.output_custody) is not P3OutputCustody:
+                    raise ValueError('exact P3 output custody is required')
+                p3_output = p3_built.output_custody
+                if (p3_built.job_id != job_id or p3_built.attempt_id != attempt_id
+                    or not p3_output.matches(job_id,attempt_id)
+                    or p3_built.cwd != Path('/') or p3_built.environment != {}
+                    or not isinstance(p3_built.argv,tuple) or not p3_built.argv
+                    or any(not isinstance(a,str) or not a or '\x00' in a for a in p3_built.argv)
+                    or not isinstance(p3_built.pass_fds,tuple) or not p3_built.pass_fds
+                    or p3_built.close_after_spawn_fds != p3_built.pass_fds
+                    or len(set(p3_built.pass_fds)) != len(p3_built.pass_fds)
+                    or any(type(fd) is not int or fd < 0 for fd in p3_built.pass_fds)
+                    or p3_built.argv[0] != f'/proc/self/fd/{p3_built.pass_fds[0]}'
+                    or type(p3_built.lineage) is not P3SpawnLineage
+                    or type(p3_built.timeout_seconds) is not int or p3_built.timeout_seconds <= 0
+                    or _COMMIT.fullmatch(p3_built.source_revision) is None
+                    or timeout_seconds not in {None,p3_built.timeout_seconds}):
+                    raise ValueError('attested P3 spawn shape is unsafe')
+                timeout_seconds = p3_built.timeout_seconds
+                argv, cwd, child_environment, pass_fds = p3_built.argv,p3_built.cwd,p3_built.environment,p3_built.pass_fds
+                capability_fingerprint = p3_built.capability_fingerprint
+                result_validator_id = p3_built.result_validator_id
+                source_revision = p3_built.source_revision
+                command_lineage = p3_built.lineage.as_metadata()
+            elif engine_authority:
                 engine_built = consume_prepared_engine_spawn(
                     cast(PreparedEngineSpawn, prepared)
                 )
@@ -555,6 +603,8 @@ class ProcessRunner:
                         pass
                 close_after_spawn_fds = ()
         except BaseException:
+            if p3_output is not None:
+                p3_output.abandon()
             for descriptor in close_after_spawn_fds:
                 try:
                     os.close(descriptor)
@@ -734,7 +784,17 @@ class ProcessRunner:
                 kind: self._persist_state(job_id, attempt_id, kind, state)
                 for kind, state in states.items()
             }
-            return ProcessOutcome(
+            inventory_ref = None
+            if (p3_output is not None and reason is None and exit_code == 0
+                and cleanup_proven and reaped and not cleanup_errors):
+                try:
+                    from packages.engine_contracts.serialization import canonical_json_bytes
+                    inventory_ref = p3_output.retain()
+                    command_lineage = {**command_lineage,
+                        'p3_output_inventory_ref':canonical_json_bytes(inventory_ref).decode()}
+                except (OSError,ValueError):
+                    reason = reason or 'P3_OUTPUT_INVALID'
+            result = ProcessOutcome(
                 exit_code, reason, identity, captured["stdout"], captured["stderr"],
                 capability_fingerprint, result_validator_id,
                 source_revision,
@@ -744,7 +804,12 @@ class ProcessRunner:
                     final_safety_metadata,
                 ),
                 safety_reason_code,
+                p3_output if inventory_ref is not None else None,
+                inventory_ref,
             )
+            if inventory_ref is not None:
+                p3_output = None
+            return result
         except BaseException:
             if identity is not None:
                 self._cleanup_session_bounded(identity, session_cleanup, cleanup_errors)
@@ -752,6 +817,8 @@ class ProcessRunner:
                 self._best_effort(lambda: process.send_signal(signal.SIGKILL), cleanup_errors)
             raise
         finally:
+            if p3_output is not None:
+                p3_output.abandon()
             if reserve_fd >= 0:
                 self._best_effort(lambda fd=reserve_fd: os.close(fd), cleanup_errors)
             if identity is not None and not session_cleanup.complete:

@@ -103,7 +103,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
     root.mkdir(mode=0o700)
     source = job.payload.expected_source
     authorization = SimpleNamespace(issuer_run_id=1,issuer_attempt=1)
-    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0022_p3_worker_lane_isolation')
+    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0023_p3_output_custody')
     stages = []
     def attest(self, actual_job):
         assert actual_job is job
@@ -133,7 +133,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
         run.request = Request(run.request)
     monkeypatch.setattr(module,'run_native_fixture',lambda *args,**kwargs:native)
     sql = {'checks':sorted(module.REQUIRED_SQL_CHECKS),'cleanup':{'root_absent':True,'server_stopped':True},
-           'source':source.model_dump(mode='json'),'sql_revision':'0022_p3_worker_lane_isolation'}
+           'source':source.model_dump(mode='json'),'sql_revision':'0023_p3_output_custody'}
     if sql_mutation == 'old_revision':
         sql['sql_revision'] = '0020_p3_alpha_campaign_authority'
     elif sql_mutation == 'wrong_source':

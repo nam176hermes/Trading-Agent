@@ -302,3 +302,90 @@ before and after replacement. The trusted-language regression failed in 30.64s;
 the correction at 7e9aacc8 passed the real disposable fixture in 69.56s with
 cleanup. Independent gpt-5.6-sol/high review passed this bounded packet. The
 separate root static check retained 118 pre-existing errors; it was not PASS.
+
+## Driver output custody (T-P3-030/031/040/043/052 correction)
+
+The source now provides an explicit P3 spawn capability for BASELINES and
+REGISTER_FAMILY. The parent verifies a complete reviewed source/runtime closure,
+seals its executable bytes, mounts inputs read-only and gives each attempt a
+private output directory. The existing ProcessRunner owns process creation,
+lease checks, termination and reaping. This does not install an official host
+attestor or enable the remaining operation executors.
+
+The parent retains and reconstructs each successful attempt's result before
+publication. Migration 0023 stores its canonical inventory reference and attempt
+ID in the existing append-only publication commit row, in the same transaction
+as canonical events, outbox, registry heads and job result. Idempotent retries
+must match the request and both custody fields. Recovery rereads every retained
+inventory artifact before issuing the derived receipt. Private outputs are
+removed only after durable job finalization/publication and receipt retention;
+failed finalization, lost output bytes or unproved cleanup preserve evidence.
+Neither receipt timestamps nor future receipt/report hashes enter upstream
+publication identity. Existing result, metrics and registry identities remain
+unchanged.
+
+The forward migration checks the reviewed function bodies/catalog, table/column
+privileges, both directions of worker membership, direct/transitive P3 owner
+membership, append-only trigger, exact constraints/indexes and final temporary
+privilege revocation. An additional NOT VALID non-null constraint preserves
+legacy rows while refusing every new custody-less INSERT, including an old
+function body admitted around migration. Legacy rows are never backfilled into
+current qualification evidence. The P3 disposable database profile requires
+0023; production and P1 database profiles are unchanged.
+
+Source checks: 591 P3/ProcessRunner/worker tests passed with two explicit host
+checks skipped. The selected real PostgreSQL 16 fixture subsequently passed in
+79.77s at 387ec1a5, exercising catalog drift, atomic rollback, two competing
+connections, loss of the COMMIT response, exact custody readback and actual
+cluster cleanup. The real local bubblewrap transport probe passed in 0.38s.
+Contracts generation check and lint passed. Root static retains 117 existing
+errors; it is not PASS. None of these checks is T-P3-060 or pinned native parity.
+
+Official composition, actual-data revision/acquisition closure for C01, OOS,
+primary selection, holdout, native parity and phase-exit execution remain HELD.
+Any prior host/source receipts must be refreshed against the final merged
+source before official InputSet issuance. LIVE_ELIGIBLE=false;
+LIVE_ENABLED=false. No scheduler, retained research store, dataset, production
+service or broker was activated by this source packet.
+
+Foundation run 34581120051 at 5bbe0000 passed 9,895 root tests but rejected one
+unclassified skip: the real P3 Bubblewrap transport probe had incorrectly been
+left in the portable remainder. The correction adds that exact node to the
+existing NATIVE-BWRAP-OS-SANDBOX lane and removes its environment opt-in skip.
+The existing native preflight now determines execution versus unavailable
+capability; portable PASS cannot stand in for this native proof. All 317 prior
+inventory rows and the 49 portable-closure rows are preserved. The current
+inventory has 318 active nodes, 19 in the Bubblewrap lane, and 367 governed nodes;
+both exact inventory and governed-set hashes are updated.
+
+The missing-routing regression failed before correction. Afterwards 34 focused
+tests passed, including the real local transport probe and inventory/closure
+checks. The wider topology and failure-diagnostic suite passed 290 tests and
+exposed one stale count assertion; its corrected exact 19+8 count test passed
+separately. Static remains at 117 pre-existing diagnostics. No skip allowance,
+runtime receipt, host capability or economic policy was fabricated by this fix.
+
+Foundation run 34584920196 at a99807de then found stale count consumers in the
+P0 closure checker and artifact-firewall fixture: 82 failures, 9,814 passes.
+The source checker now requires the accepted 318 active/59 native/259 external
+counts, and the firewall fixture binds 367 governed nodes. P0's historical table
+is retained with the current delta stated separately. Two focused failures were
+reproduced locally before correction; both then passed, and all three affected
+suites passed 265 tests in 79.83 seconds. Independent review passed this count
+repair without changing any gate, classification, closure row or status rule.
+
+Foundation run 34588600068 at 1aa08866 completed 9,896 root tests and 10,653
+aggregate passing observations, then failed the separate critical-coverage rerun:
+the latter attempted the governed native bwrap transport test on a host without
+/usr/bin/bwrap. Coverage now derives exact native deselections from the existing
+hash-locked capability inventory and rejects overlap with any sealed required
+critical case. Native qualification, inventory/classifications, coverage sources,
+paths, floors and required cases remain unchanged. The genuine routing test
+failed before correction; 85 focused governance/native tests then passed in
+37.35 seconds, including the real local bwrap probe. Independent review passed.
+
+The first local full coverage attempt exposed missing dashboard generator tools
+while their frozen install was still completing; it was not a source failure.
+After npm ci completed, the full gate was rerun successfully. Transition
+repositories measured 96.9136% line and 92.3611% branch coverage. No threshold
+was lowered and no native capability receipt was inferred from portable coverage.

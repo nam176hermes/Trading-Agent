@@ -147,7 +147,7 @@ def test_publication_rejects_other_ledger_event_even_with_valid_result_digest(tm
     assert len(pool.commits) == 1
 
 
-@pytest.mark.parametrize('edge', [None, 'missing', 'legacy', 'wrong_job', 'noncanonical', 'wrong_result', 'missing_time', 'non_utc_zone', 'noncanonical_result'])
+@pytest.mark.parametrize('edge', [None, 'missing', 'legacy', 'wrong_job', 'noncanonical', 'wrong_result', 'missing_time', 'non_utc_zone', 'noncanonical_result', 'missing_inventory', 'missing_attempt', 'unretained_inventory', 'unretained_output', 'malformed_inventory'])
 def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge):
     from datetime import UTC, datetime
     from tests.p3.test_publication import _chain, _changed
@@ -183,12 +183,67 @@ def test_receipt_recovery_uses_only_the_committed_database_record(tmp_path, edge
     output = tmp_path / 'recovered-cas'
     output.mkdir(mode=0o700)
     store = LocalArtifactStore(output)
+    output_ref=store.put_bytes(b'{}',media_type='application/json')
+    inventory=store.put_bytes(canonical_json_bytes([dict(path='artifacts/'+output_ref.locator,artifact_ref=output_ref)]),media_type='application/json')
+    if edge=='malformed_inventory':
+        inventory=store.put_bytes(b'[{}]',media_type='application/json')
+    row['output_inventory_ref_text']=canonical_json_bytes(inventory).decode()
+    row['output_attempt_id']='attempt_committed'
+    if edge == 'missing_inventory':
+        row['output_inventory_ref_text']=None
+    elif edge == 'missing_attempt':
+        row['output_attempt_id']=None
+    elif edge == 'unretained_inventory':
+        (output/inventory.locator).unlink()
+    if edge=='unretained_output':
+        (output/output_ref.locator).unlink()
     repository = P3PublicationRepository(Pool(), store)
     before = set(output.glob('*'))
     if edge is None:
         assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
         assert recover_publication_receipt(request.job_id, repository=repository, store=store) == expected
     else:
-        with pytest.raises((ValueError, RuntimeError)):
+        with pytest.raises((ValueError, RuntimeError, OSError)):
             recover_publication_receipt(request.job_id, repository=repository, store=store)
         assert set(output.glob('*')) == before
+
+
+@pytest.mark.parametrize('fault',[None,'inventory','attempt','missing_binding','lost_connection'])
+def test_publication_binds_attempt_inventory_before_return(tmp_path,fault):
+    repository,pool,request,claimed,entry,expected=_publication(tmp_path,[])
+    inventory=repository._store.put_bytes(b'[]',media_type='application/json')
+    original=pool.execute
+    def execute(sql,parameters):
+        row=original(sql,parameters)
+        if sql == repository.COMMIT_SQL:
+            assert json.loads(parameters[4])['output_inventory_ref'] == inventory.model_dump(mode='json')
+        response=dict(result=expected.model_dump(mode='json'),output_attempt_id=claimed.attempt_id,
+            output_inventory_ref=inventory.model_dump(mode='json'))
+        if fault == 'inventory':
+            response['output_inventory_ref']=request.evidence_ref.model_dump(mode='json')
+        elif fault == 'attempt':
+            response['output_attempt_id']='attempt_other'
+        elif fault == 'missing_binding':
+            response=expected.model_dump(mode='json')
+        elif fault == 'lost_connection' and sql == repository.COMMIT_SQL:
+            pool.commit_error=OperationalError('connection lost after commit')
+        return SimpleNamespace(fetchone=lambda:{'result':response})
+    pool.execute=execute
+    if fault in {'inventory','attempt','missing_binding'}:
+        with pytest.raises(ValueError,match='output custody'):
+            repository.publish(request,claimed,(entry,),trace_id='test:inventory',output_inventory_ref=inventory)
+        assert pool.transactions_committed == 0
+    else:
+        assert repository.publish(request,claimed,(entry,),trace_id='test:inventory',output_inventory_ref=inventory) == expected
+        assert pool.reads == (1 if fault == 'lost_connection' else 0)
+
+
+@pytest.mark.parametrize('missing',['inventory','attempt','both'])
+def test_current_commit_read_requires_both_expected_custody_fields(tmp_path,missing):
+    repository,_,request,claim,_,result=_publication(tmp_path,[])
+    ref=repository._store.put_bytes(b'[]',media_type='application/json')
+    wrapper=dict(result=result.model_dump(mode='json'),output_inventory_ref=ref.model_dump(mode='json'),output_attempt_id=claim.attempt_id)
+    with pytest.raises(ValueError,match='output custody'):
+        repository._commit_result(wrapper,request,
+            output_inventory_ref=None if missing in {'inventory','both'} else ref,
+            attempt_id=None if missing in {'attempt','both'} else claim.attempt_id)

@@ -9,7 +9,7 @@ from services.job_store.worker_repository import WorkerRepository
 def test_database_revisions_remain_profile_specific() -> None:
     assert CANONICAL_DATABASE_REVISION == "0011_engine_backtest_worker_authority"
     assert P1_DISPOSABLE_DATABASE_REVISION == "0018_p1_paper_closure_rotation"
-    assert P3_DISPOSABLE_DATABASE_REVISION == "0022_p3_worker_lane_isolation"
+    assert P3_DISPOSABLE_DATABASE_REVISION == "0023_p3_output_custody"
 
 
 def test_p3_runtime_identity_is_an_explicit_worker_capability() -> None:

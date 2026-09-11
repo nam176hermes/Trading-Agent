@@ -1317,3 +1317,21 @@ def test_report_writer_rejects_foreign_owned_parent_without_mutation(
     assert str(caught.value) == error_message
     assert foreign_parent.stat().st_mode & 0o777 == original_mode
     assert list(foreign_parent.iterdir()) == []
+
+
+def test_critical_coverage_leaves_native_nodes_in_the_governed_capability_lane(tmp_path,monkeypatch):
+    from scripts.t_g03_capability_topology import load_inventory
+    rows=load_inventory(Path('tests/fixtures/t-g03a-hosted-failure-inventory.tsv'))
+    expected={'--deselect='+row.node_id for row in rows if row.classification=='NATIVE_CAPABILITY_REQUIRED'}
+    class Captured(Exception):
+        pass
+    def capture(command,**kwargs):
+        assert {item for item in command if item.startswith('--deselect=')}==expected
+        assert len(expected)==59
+        assert '-m' in command and 'not runtime_postgres and not host_coupled' in command
+        raise Captured
+    monkeypatch.setattr(critical_coverage,'_node_major',lambda:22)
+    monkeypatch.setattr(critical_coverage,'_run',capture)
+    policy=json.loads(critical_coverage.DEFAULT_POLICY.read_bytes())
+    with pytest.raises(Captured):
+        critical_coverage.run_coverage(policy,tmp_path/'coverage')

@@ -69,3 +69,10 @@ substituted for another condition:
 `PENDING` is not a deferred runtime PASS. E11 is promoted only in the transient
 completion verdict above; its committed source row remains truthful. E12
 cannot be earned by this source checker.
+
+P3 source routing update (2026-09-11): the P0-11 table above is the historical
+snapshot. Adding the exact native transport-descriptor test to the existing
+NATIVE-BWRAP-OS-SANDBOX lane gives 318 active authority nodes: 59 native and
+259 external, with the same 49 portable-defect closure nodes and 367 governed
+nodes. The source checker and firewall fixture use these current counts.
+No old inventory row, closure proof, outcome rule or qualification claim changes.

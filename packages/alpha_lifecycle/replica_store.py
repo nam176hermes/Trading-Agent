@@ -10,6 +10,10 @@ from packages.data_catalog.artifact_store import (
     LocalArtifactStore,
 )
 from packages.data_contracts import ArtifactRefV1
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.engine_contracts.serialization import canonical_json_bytes
 
 
@@ -33,7 +37,7 @@ class ReplicaArtifactStore:
 
 
 def retain_replica_outputs(
-    output_root: Path, destination: LocalArtifactStore, result_ref: ArtifactRefV1
+    output_root: Path, destination: 'ArtifactStore', result_ref: ArtifactRefV1
 ) -> str:
     """Verify child CAS files before retaining them; this grants no job authority."""
     source = LocalArtifactStore(output_root)

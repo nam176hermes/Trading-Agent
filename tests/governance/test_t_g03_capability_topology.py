@@ -51,7 +51,7 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
         "portable_root_remainder_status": "PASS",
-        "baseline_candidate_count": "366",
+        "baseline_candidate_count": "367",
     }
     receipts = [{
         "capability_or_authority_code": "NATIVE-BWRAP-OS-SANDBOX",
@@ -1095,8 +1095,8 @@ def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fa
             foundation_context_path=context, exact_runner=exact,
             native_probe_factory=_available_native_probe_factory(Path(raw)),
         )
-        assert sorted(len(nodes) for nodes in selected) == [8, 18]
-        assert len({node for group in selected for node in group}) == 26
+        assert sorted(len(nodes) for nodes in selected) == [8, 19]
+        assert len({node for group in selected for node in group}) == 27
         assert len(receipts) == 4
         assert sorted(
             topology.parse_receipt(path.read_bytes())["outcome"]
@@ -1981,12 +1981,12 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
         assert installed.read_bytes() == tracked.read_bytes()
         with pytest.raises(FileExistsError):
             topology.install_inventory(tracked, evidence)
-    assert len(rows) == 317
+    assert len(rows) == 318
     assert {
         code: sum(row.code == code for row in rows)
         for code in topology.CODE_CLASSIFICATION
     } == {
-        "NATIVE-BWRAP-OS-SANDBOX": 18,
+        "NATIVE-BWRAP-OS-SANDBOX": 19,
         "NATIVE-USERNS-ROOT-PROVISION": 8,
         "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": 22,
         "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": 10,

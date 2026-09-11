@@ -34,7 +34,7 @@ def retained_baseline(tmp_path_factory):
         patch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
         executor = BubblewrapExecutor(store=store,store_root=root/'inputs',release_root=release,
             python=Path(sys.executable),source=inputs.source,environment_ref=inputs.environment_ref,sandbox_policy_digest='c'*64)
-        patch.setattr(executor,'_argv',lambda request,result,output:(sys.executable,'-I','-B',
+        patch.setattr(executor,'_argv',lambda request,result,output,seccomp_fd:(sys.executable,'-I','-B',
             str(release/'scripts/run_p3_evaluation_child.py'),str(request),str(root/'inputs'),str(result)))
         selection = execute_baseline_manifest(manifest_ref,executor,logical_trial_id='synthetic-baselines',output_root=root/'runs')
     return store,manifest.input_set_ref,selection
