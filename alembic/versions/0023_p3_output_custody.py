@@ -99,7 +99,7 @@ def _catalog(*, upgraded=False):
     constraints=connection.execute(text("""
         SELECT c.conname,c.contype,pg_catalog.pg_get_constraintdef(c.oid),c.convalidated
         FROM pg_catalog.pg_constraint c WHERE c.conrelid='public.p3_alpha_job_commits'::regclass
-          AND NOT c.condeferrable AND NOT c.condeferred AND NOT c.connoinherit
+          AND NOT c.condeferrable AND NOT c.condeferred AND c.connoinherit=(c.contype<>'c')
           AND c.conislocal AND c.coninhcount=0 AND c.conparentid=0
     """)).fetchall()
     expected_constraints=dict(_PARENT_CONSTRAINTS)
@@ -113,7 +113,7 @@ def _catalog(*, upgraded=False):
         for name,kind,definition,validated in constraints}
     total=connection.execute(text("SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass")).scalar()
     if actual != expected_constraints or len(actual)!=total:
-        raise RuntimeError('0023 publication constraints drift: '+repr(constraints))
+        raise RuntimeError('0023 publication constraints drift: '+repr([tuple(row) for row in constraints]))
     if connection.execute(text("""
         SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c
           LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
