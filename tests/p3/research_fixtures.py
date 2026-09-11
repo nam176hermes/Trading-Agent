@@ -103,4 +103,3 @@ def build_synthetic_oos(tmp_path_factory):
     receipt=_read(store,proof.receipt_refs[0],ReplayReceipt)
     evaluation=_read(store,receipt.result_ref,EvaluationResult)
     return store,evaluation,proof
-
