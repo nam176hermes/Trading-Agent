@@ -246,6 +246,11 @@ def check_operations(sock, name, root, payload, mark):
         with engine.begin() as connection:
             config = Config(str(ROOT / 'alembic.ini'))
             config.attributes['connection'] = connection
+            command.upgrade(config, '0022_p3_worker_lane_isolation')
+        _check_output_migration_drift(sock,name,engine)
+        with engine.begin() as connection:
+            config = Config(str(ROOT / 'alembic.ini'))
+            config.attributes['connection'] = connection
             command.upgrade(config, 'head')
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             for signature in ('worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean)',
@@ -288,6 +293,41 @@ def check_operations(sock, name, root, payload, mark):
     _check_claim_lane_isolation(sock, name, payload, mark)
     _check_holdout_denial(sock, name, payload.expected_source, mark)
 
+
+
+def _check_output_migration_drift(sock,name,engine):
+    """Every hostile catalog edit is local to the disposable cluster and restored."""
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+        ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
+    faults=(
+        ('ref_body',"CREATE OR REPLACE FUNCTION job_plane.p3_valid_ref(ref jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $$ SELECT true $$",ref_definition),
+        ('append_trigger','ALTER TABLE public.p3_alpha_job_commits DISABLE TRIGGER p3_alpha_job_commits_append_only','ALTER TABLE public.p3_alpha_job_commits ENABLE TRIGGER p3_alpha_job_commits_append_only'),
+        ('table_dml','GRANT UPDATE ON public.p3_alpha_job_commits TO trading_job_worker','REVOKE UPDATE ON public.p3_alpha_job_commits FROM trading_job_worker'),
+        ('worker_membership','GRANT trading_p3_owner TO trading_job_worker','REVOKE trading_p3_owner FROM trading_job_worker'),
+        ('commit_strict','ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) STRICT','ALTER FUNCTION job_plane.worker_commit_alpha_campaign(text,text,text,text,text,text) CALLED ON NULL INPUT'),
+    )
+    accepted=[]
+    for label,damage,restore in faults:
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            owner.execute(SQL(damage))
+        try:
+            with engine.connect() as connection:
+                transaction=connection.begin()
+                try:
+                    config=Config(str(ROOT/'alembic.ini'))
+                    config.attributes['connection']=connection
+                    try:
+                        command.upgrade(config,'head')
+                    except RuntimeError as error:
+                        assert 'drift' in str(error)
+                    else:
+                        accepted.append(label)
+                finally:
+                    transaction.rollback()
+        finally:
+            with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+                owner.execute(SQL(restore))
+    assert not accepted, '0023 accepted catalog drift: '+','.join(accepted)
 
 def _sealed(value):
     value = {key: item for key, item in value.items() if key != 'digest'}

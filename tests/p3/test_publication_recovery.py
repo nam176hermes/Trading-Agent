@@ -222,3 +222,14 @@ def test_publication_binds_attempt_inventory_before_return(tmp_path,fault):
     else:
         assert repository.publish(request,claimed,(entry,),trace_id='test:inventory',output_inventory_ref=inventory) == expected
         assert pool.reads == (1 if fault == 'lost_connection' else 0)
+
+
+@pytest.mark.parametrize('missing',['inventory','attempt','both'])
+def test_current_commit_read_requires_both_expected_custody_fields(tmp_path,missing):
+    repository,_,request,claim,_,result=_publication(tmp_path,[])
+    ref=repository._store.put_bytes(b'[]',media_type='application/json')
+    wrapper=dict(result=result.model_dump(mode='json'),output_inventory_ref=ref.model_dump(mode='json'),output_attempt_id=claim.attempt_id)
+    with pytest.raises(ValueError,match='output custody'):
+        repository._commit_result(wrapper,request,
+            output_inventory_ref=None if missing in {'inventory','both'} else ref,
+            attempt_id=None if missing in {'attempt','both'} else claim.attempt_id)
