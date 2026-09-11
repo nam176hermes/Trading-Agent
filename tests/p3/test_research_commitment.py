@@ -44,6 +44,7 @@ def inputs(tmp_path_factory):
     backup=_sealed(schema_version='p3-research-backup-receipt-v1',source=source,
         inventory_content_sha256='7'*64,dataset_content_sha256=dataset_ref.content_sha256,
         snapshot_content_sha256=placeholder.content_sha256,object_inventory_content_sha256='8'*64,
+        object_inventory_size_bytes=1000000,
         destination_namespace='p3.research.backup',object_version='8'*64,
         object_count=20000,total_bytes=10000000,verified_at='2026-09-11T12:01:00Z',
         status='READBACK_VERIFIED',authority=authority,**producer)
@@ -172,3 +173,19 @@ def test_later_commitment_has_a_predecessor_content_hash(inputs):
     assert result.batch_ordinal==2
     # Matching that hash to a real protected predecessor is a separate admission check.
     assert result.predecessor_commitment_content_sha256=='9'*64
+
+
+def test_backup_receipt_requires_bounded_out_of_band_inventory_size(inputs):
+    from packages.alpha_lifecycle.research_custody import P3ResearchBackupReceipt
+    backup=dict(inputs[-2])
+    backup.pop('digest')
+    backup.pop('object_inventory_size_bytes')
+    with pytest.raises(ValueError):
+        P3ResearchBackupReceipt.model_validate_json(canonical_json_bytes(_sealed(**backup)))
+    for size in (0,67108865):
+        with pytest.raises(ValueError):
+            P3ResearchBackupReceipt.model_validate_json(canonical_json_bytes(
+                _sealed(**backup,object_inventory_size_bytes=size)))
+    result=P3ResearchBackupReceipt.model_validate_json(canonical_json_bytes(inputs[-2]))
+    assert result.object_inventory_size_bytes==1000000
+    assert 'object_inventory_ref' not in result.model_dump()

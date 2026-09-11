@@ -275,3 +275,12 @@ none in owned files; independent gpt-5.6-sol/high review passed this bounded sco
 This helper does not authenticate the declared workflow/run, protect against
 privileged mount replacement, qualify the retained SQL store, or admit an
 official InputSet. Those protected host and producer checks remain HELD.
+
+The private backup receipt also binds the exact out-of-band object-inventory
+size (positive and at most 64 MiB). The producer copies the actual retained
+reference's size; no recursive ArtifactRef edge is introduced. Missing size
+was accepted in a genuine failing test before correction. The compact binding
+and actual 2,800-day synthetic reconstruction/copy/readback suite then passed
+50 tests in 204.67 seconds; independent structural review passed. Protected
+admission still must compare actual inventory SHA and size in the backup
+namespace. This source test is not a retained official research-store receipt.

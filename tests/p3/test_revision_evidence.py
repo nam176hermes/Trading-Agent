@@ -189,6 +189,7 @@ def test_full_research_backup_reconstructs_then_copies_and_reads_destination(
         ref,source=SOURCE,policy_digest=POLICY,query=query,dataset_ref=dataset_ref,
         store=store,backup=backup,producer_run_id=1,producer_attempt=1)
     inventory_raw=backup.read_bytes(object_inventory_ref)
+    assert receipt.object_inventory_size_bytes==object_inventory_ref.size_bytes==len(inventory_raw)
     objects=tuple(ArtifactRefV1.model_validate(item) for item in json.loads(inventory_raw))
     assert inventory_raw==canonical_json_bytes(objects)
     assert tuple(map(key,objects))==tuple(sorted(set(map(key,expected))))

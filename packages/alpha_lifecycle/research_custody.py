@@ -31,6 +31,7 @@ class P3ResearchBackupReceipt(_ProducerReceipt):
     dataset_content_sha256: Sha256
     snapshot_content_sha256: Sha256
     object_inventory_content_sha256: Sha256
+    object_inventory_size_bytes: Annotated[int, Field(ge=1, le=67108864)]
     destination_namespace: Literal['p3.research.backup']
     object_version: Sha256
     object_count: Annotated[int, Field(ge=1, le=1000000)]
@@ -178,6 +179,7 @@ def backup_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,
         inventory_content_sha256=ref.content_sha256,dataset_content_sha256=dataset_ref.content_sha256,
         snapshot_content_sha256=dataset.snapshot_ref.content_sha256,
         object_inventory_content_sha256=inventory_ref.content_sha256,
+        object_inventory_size_bytes=inventory_ref.size_bytes,
         destination_namespace='p3.research.backup',object_version=inventory_ref.content_sha256,
         object_count=len(sizes),total_bytes=total_bytes,
         verified_at=datetime.now(UTC).isoformat().replace('+00:00','Z'),status='READBACK_VERIFIED')
