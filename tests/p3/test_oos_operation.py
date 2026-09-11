@@ -2,6 +2,7 @@
 import hashlib
 from pathlib import Path
 import sys
+import pytest
 
 from packages.alpha_lifecycle.baseline_campaign import _read
 from packages.alpha_lifecycle.contracts.execution import EvaluationManifest,InputSet
@@ -60,3 +61,52 @@ def test_oos_cli_runs_three_children_and_retains_failed_candidate_proposal(synth
     assert tuple(_read(reader,ref,ReplayReceipt).replicate for ref in proof.receipt_refs)==('R1','R2','R3')
     raw=canonical_json_bytes(proposal)
     assert (tmp_path/'runs'/'artifacts'/(hashlib.sha256(raw).hexdigest()+'.blob')).read_bytes()==raw
+
+    # Worker readback is a separate seam; this fixture still grants no SQL authority.
+    import os
+    from datetime import UTC,datetime,timedelta
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
+    from packages.job_contracts import JobType
+    from services.job_store.records import ClaimedJob
+    from services.job_worker.p3_output import P3OutputCustody
+    from services.job_worker.p3_output_validation import validate_official_output
+    intent=_read(store,intent_ref,P3OperationInput)
+    auth=_read(store,auth_ref,RunAuthorization)
+    payload=build_alpha_campaign_payload(auth,inputs.source,intent.workflow_operation,operation_input=intent)
+    job=ClaimedJob('synthetic_oos_job',JobType.ALPHA_CAMPAIGN,payload,'attempt_'+'2'*32,1,
+        'synthetic-worker','synthetic-token',datetime.now(UTC)+timedelta(hours=1),1)
+    parent=tmp_path/'owned'
+    parent.mkdir(mode=0o700)
+    name=hashlib.sha256(f'{job.job_id}/{job.attempt_id}'.encode()).hexdigest()
+    (tmp_path/'runs').rename(parent/name)
+    pfd=os.open(parent,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+    ofd=os.open(parent/name,os.O_RDONLY|os.O_DIRECTORY|os.O_CLOEXEC)
+    try:
+        custody=P3OutputCustody(pfd,ofd,name,store)
+    finally:
+        os.close(pfd)
+        os.close(ofd)
+    try:
+        inventory_ref=custody.retain()
+        validate_official_output(job,proposal,custody,inventory_ref)
+        from services.job_worker.p3_output_validation import _validate_replicas,_reference
+        output_refs=tuple(ref for path,ref in custody.inventory.items() if path.startswith('artifacts/'))
+        receipt=_read(store,proof.receipt_refs[1],ReplayReceipt)
+        for fault in ('wrong_result','wrong_manifest','missing_inventory','extra_file'):
+            inventory=dict(custody.inventory)
+            refs=output_refs
+            if fault=='wrong_result':
+                inventory['r2/result.json']=_reference(b'{}')
+            elif fault=='wrong_manifest':
+                inventory['r2/manifest-ref.json']=_reference(b'{}')
+            elif fault=='missing_inventory':
+                refs=tuple(ref for ref in refs if ref.content_sha256!=receipt.output_inventory_digest)
+            else:
+                inventory['undeclared.json']=_reference(b'{}')
+            with pytest.raises(ValueError):
+                _validate_replicas(proof,evaluation.manifest_ref,bundle.evaluation_ref,job,
+                    inventory,refs,store)
+    finally:
+        custody.abandon()

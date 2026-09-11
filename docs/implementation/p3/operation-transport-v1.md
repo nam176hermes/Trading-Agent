@@ -437,3 +437,15 @@ baseline/environment tests passed in 68.40 seconds. Independent review passed
 this bounded source path; static retains 117 existing diagnostics. Worker
 provider dispatch and parent OOS output validation remain HELD until their
 source and admission checks are implemented and qualified.
+
+Parent output validation now admits candidate OOS proposals through the current
+attempt's retained output whitelist, reconstructs qualification and publication,
+and binds all three physical replica results, manifests and artifact inventories.
+The existing baseline replica check is reused. SQL publication remains the same
+single transaction. The initial CLI-to-custody regression reached the missing
+operation branch and failed; its test cleanup was corrected to use abandon().
+The real three-child case then passed in 101.90 seconds, and the final OOS/output
+adjacent suite passed 14 tests in 252.49 seconds, including altered physical
+result, manifest, inventory and extra-file rejection. Independent review passed;
+static retains 117 existing diagnostics. Provider admission, protected profile,
+source qualification and official execution remain HELD.

@@ -38,6 +38,7 @@ def synthetic_oos(tmp_path_factory):
     baseline_inputs=baseline_fixture.baseline_inputs
     from tests.p3 import test_replica_execution as replica_fixture
     original_bar=replica_fixture._bar
+    from services.job_worker.p3_output_validation import _reference
     def prepared_inputs(root):
         store,ref=baseline_inputs(root,return_count=90)
         manifest=_read(store,ref,BaselineManifest)
@@ -61,7 +62,7 @@ def synthetic_oos(tmp_path_factory):
         return store,store.put_bytes(canonical_json_bytes(manifest),media_type='application/json')
     with pytest.MonkeyPatch.context() as patch:
         # Valid high-volume synthetic market; production participation remains uncapped.
-        patch.setattr(replica_fixture,'_bar',lambda day:_changed(original_bar(day),quote_volume='100000000'))
+        patch.setattr(replica_fixture,'_bar',lambda day:_changed(original_bar(day),quote_volume='100000000',partition_ref=_reference(b'{}').model_dump(mode='json')))
         patch.setattr(baseline_fixture,'baseline_inputs',prepared_inputs)
         baseline=retained_baseline.__wrapped__(tmp_path_factory)
     store,evidence,_,receipt=registration_chain(baseline)
