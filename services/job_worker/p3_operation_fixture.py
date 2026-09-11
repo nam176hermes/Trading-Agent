@@ -302,6 +302,8 @@ def _check_output_migration_drift(sock,name,engine):
         ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
         result_constraint=_first(owner.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass AND conname='p3_alpha_job_commits_result_text_check'").fetchone())
     faults=(
+        ('api_indirect_owner_membership','GRANT trading_owner TO trading_job_api','REVOKE trading_owner FROM trading_job_api'),
+        ('owner_inherits_reader','GRANT trading_reader TO trading_p3_owner','REVOKE trading_reader FROM trading_p3_owner'),
         ('api_owner_membership','GRANT trading_p3_owner TO trading_job_api','REVOKE trading_p3_owner FROM trading_job_api'),
         ('helper_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) TO trading_reader','REVOKE EXECUTE ON FUNCTION job_plane.p3_valid_ref(jsonb) FROM trading_reader'),
         ('reverse_worker_membership','GRANT trading_job_worker TO trading_reader','REVOKE trading_job_worker FROM trading_reader'),

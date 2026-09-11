@@ -79,6 +79,17 @@ def _catalog(*, upgraded=False):
           AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole
           AND NOT r.rolreplication AND NOT r.rolbypassrls
           AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid))
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+          WHERE m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_p3_owner'))
+        AND (SELECT count(*) FROM pg_catalog.pg_auth_members m
+          WHERE m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_p3_owner'))=1
+        AND EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m
+          WHERE m.roleid=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_p3_owner')
+            AND m.member=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_owner')
+            AND NOT m.admin_option AND NOT m.inherit_option AND m.set_option)
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
+          WHERE NOT r.rolsuper AND r.rolname NOT IN ('trading_owner','trading_p3_owner')
+            AND pg_catalog.pg_has_role(r.oid,'trading_p3_owner','MEMBER'))
         AND EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
           WHERE c.oid='public.p3_alpha_job_commits'::regclass AND c.relkind='r'
           AND r.rolname='trading_p3_owner' AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity
