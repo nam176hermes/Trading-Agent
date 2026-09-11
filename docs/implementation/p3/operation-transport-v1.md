@@ -364,3 +364,12 @@ checks. The wider topology and failure-diagnostic suite passed 290 tests and
 exposed one stale count assertion; its corrected exact 19+8 count test passed
 separately. Static remains at 117 pre-existing diagnostics. No skip allowance,
 runtime receipt, host capability or economic policy was fabricated by this fix.
+
+Foundation run 34584920196 at a99807de then found stale count consumers in the
+P0 closure checker and artifact-firewall fixture: 82 failures, 9,814 passes.
+The source checker now requires the accepted 318 active/59 native/259 external
+counts, and the firewall fixture binds 367 governed nodes. P0's historical table
+is retained with the current delta stated separately. Two focused failures were
+reproduced locally before correction; both then passed, and all three affected
+suites passed 265 tests in 79.83 seconds. Independent review passed this count
+repair without changing any gate, classification, closure row or status rule.
