@@ -29,7 +29,7 @@ def _reviewed(name, signature, digest, *, arguments, language, volatility, paral
           AND NOT r.rolcreaterole AND NOT r.rolreplication AND NOT r.rolbypassrls
           AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
-            WHERE a.grantee NOT IN (p.proowner,(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker' AND :worker))
+            WHERE (a.grantee<>p.proowner AND NOT (:worker AND a.grantee=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker')))
               OR a.privilege_type<>'EXECUTE' OR a.is_grantable)
           AND :worker = EXISTS (SELECT 1 FROM pg_catalog.aclexplode(p.proacl) a
             WHERE a.grantee=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname='trading_job_worker')
@@ -115,7 +115,7 @@ def upgrade():
     if op.get_bind().execute(text("""SELECT current_user='trading_owner' AND session_user='trading_owner'
         AND (SELECT version_num FROM public.alembic_version)='0022_p3_worker_lane_isolation'""")).scalar() is not True:
         raise RuntimeError('0023 requires the reviewed P3 parent and owner')
-    op.execute('LOCK TABLE public.jobs,public.p3_alpha_job_commits IN SHARE ROW EXCLUSIVE MODE')
+    op.execute('LOCK TABLE public.jobs IN SHARE ROW EXCLUSIVE MODE; SET LOCAL ROLE trading_p3_owner; LOCK TABLE public.p3_alpha_job_commits IN SHARE ROW EXCLUSIVE MODE; RESET ROLE')
     _catalog()
     commit=_reviewed('worker_commit_alpha_campaign','text,text,text,text,text,text',
         '7a31bf44f779b51220d2ab0e432025028dfa46a607f94d276becec64f230429a',

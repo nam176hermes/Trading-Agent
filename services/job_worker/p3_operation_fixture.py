@@ -299,6 +299,7 @@ def check_operations(sock, name, root, payload, mark):
 def _check_output_migration_drift(sock,name,engine):
     """Every hostile catalog edit is local to the disposable cluster and restored."""
     with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+        Path('/tmp/p3-output-reviewed-constraints.json').write_text(json.dumps(owner.execute("SELECT conname,contype,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass ORDER BY conname").fetchall()))
         ref_definition=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_valid_ref(jsonb)'::regprocedure)").fetchone())
     faults=(
         ('ref_body',"CREATE OR REPLACE FUNCTION job_plane.p3_valid_ref(ref jsonb) RETURNS boolean LANGUAGE sql IMMUTABLE SET search_path=pg_catalog AS $$ SELECT true $$",ref_definition),
