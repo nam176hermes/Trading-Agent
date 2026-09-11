@@ -743,7 +743,8 @@ class JobWorker:
             from .results import ValidatedP3Publication
             if isinstance(result, ValidatedP3Publication):
                 self._p3_publisher.publish(
-                    result.request, claimed, result.entries, trace_id=trace_id
+                    result.request, claimed, result.entries, trace_id=trace_id,
+                    output_inventory_ref=outcome.p3_output_inventory_ref,
                 )
                 # SQL is already terminal. A retention failure must not finalize
                 # again or rerun research; recover from immutable SQL custody.
@@ -757,9 +758,9 @@ class JobWorker:
                     outcome=outcome, result=result,
                     stream_artifacts=(outcome.stdout, outcome.stderr),
                 )
-            if finalized and outcome.p3_output_custody is not None and not isinstance(result, ValidatedP3Publication):
-                # The terminal SQL result now binds the retained inventory through
-                # ProcessOutcome lineage. Cleanup failure cannot undo that commit.
+            if finalized and outcome.p3_output_custody is not None:
+                # The terminal SQL result or publication commit binds the retained
+                # inventory. Cleanup failure cannot undo that commit.
                 outcome.p3_output_custody.cleanup()
         finally:
             if outcome.p3_output_custody is not None:

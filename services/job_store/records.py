@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Mapping
@@ -11,6 +12,24 @@ from packages.job_contracts import (
     JobState,
     JobType,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedJob:
+    job_id: str
+    job_type: JobType
+    payload: JobPayload
+    attempt_id: str
+    attempt_number: int
+    worker_id: str
+    lease_token: str = field(repr=False)
+    lease_expires_at: datetime
+    max_attempts: int
+
+    @property
+    def lease_token_sha256(self) -> str:
+        return hashlib.sha256(self.lease_token.encode("utf-8")).hexdigest()
+
 
 
 class EnqueueOutcome(StrEnum):

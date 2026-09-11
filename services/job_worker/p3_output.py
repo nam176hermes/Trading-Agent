@@ -10,7 +10,7 @@ import stat
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES
+from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES
 
 _MAX_FILES = 8192
 _FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -149,6 +149,8 @@ class P3OutputCustody:
                     raise ValueError('P3 retained output readback differs')
                 inventory.append(dict(path=relative+'/'+name,artifact_ref=ref))
             inventory_raw=canonical_json_bytes(inventory)
+            if len(inventory_raw) > MAX_OUTPUT_INVENTORY_BYTES:
+                raise ValueError('P3 output inventory exceeds its serialized bound')
             inventory_ref=self._store.put_bytes(inventory_raw,media_type='application/json')
             if self._store.read_bytes(inventory_ref) != inventory_raw:
                 raise ValueError('P3 retained output inventory differs')
@@ -179,6 +181,12 @@ class P3OutputCustody:
         directories,listing,files,_=self._retained
         try:
             self._check()
+            expected_inventory=canonical_json_bytes([dict(path=relative+'/'+name,artifact_ref=ref)
+                for relative,name,_,ref in files])
+            if self._store.read_bytes(self.inventory_ref) != expected_inventory:
+                raise ValueError('P3 retained inventory changed before cleanup')
+            for _,_,_,ref in files:
+                self._store.read_bytes(ref)
             if any(sorted(os.listdir(fd)) != listing[relative] for relative,fd in directories.items()):
                 raise ValueError('P3 output inventory changed before cleanup')
             for relative,name,expected,_ in files:

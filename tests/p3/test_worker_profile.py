@@ -323,6 +323,7 @@ def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
         def publish(self,*args,**kwargs):
             events.append('commit')
             assert 'cleanup' not in events
+            assert kwargs['output_inventory_ref'] is inventory
             if fault in {'commit_error','lost_fence'}:
                 raise RuntimeError('SQL unavailable')
         def recover_receipt(self,job_id):
@@ -342,5 +343,13 @@ def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
     assert events[-1] == 'close'
     if raises or fault == 'lost_fence':
         assert 'cleanup' not in events
-    elif not publication:
-        assert events.index('cleanup') > events.index('commit')
+    else:
+        assert events.index('cleanup') > events.index('receipt' if publication else 'commit')
+
+
+def test_claim_record_has_no_worker_implementation_dependency():
+    from services.job_store.records import ClaimedJob
+    from services.job_store.worker_repository import ClaimedJob as CompatibleClaim
+    assert ClaimedJob is CompatibleClaim
+    assert type(claim()) is ClaimedJob
+    assert 'lease_token=' not in repr(claim())

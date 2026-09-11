@@ -40,7 +40,7 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload, JobType
 from packages.pre_p3_provenance import canonical_source_identity, _git, _parse_tree, _read_blobs
 from packages.runtime_release.v2 import inspect_python_runtime
-from services.job_store.worker_repository import ClaimedJob
+from services.job_store.records import ClaimedJob
 from .command_registry import p3_command_spec
 from .engine_spawn import _sealed_memfd
 from .p3_spawn_interface import P3PreparedSpawnMarker, P3SpawnError

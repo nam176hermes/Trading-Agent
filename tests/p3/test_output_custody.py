@@ -146,3 +146,22 @@ def test_partial_retention_failure_preserves_complete_private_evidence(tmp_path,
         handle.retain()
     handle.abandon()
     assert {p.name:p.read_bytes() for p in (output/'artifacts').iterdir()} == original
+
+
+@pytest.mark.parametrize('lost',['inventory','artifact'])
+def test_cleanup_requires_retained_readback_after_commit(tmp_path,lost):
+    handle,output,store=custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw=b'{"synthetic":true}'
+    name=hashlib.sha256(raw).hexdigest()+'.blob'
+    private=output/'artifacts'/name
+    private.write_bytes(raw)
+    private.chmod(0o600)
+    inventory=handle.retain()
+    (store._root/(inventory.locator if lost == 'inventory' else name)).unlink()
+    try:
+        with pytest.raises((ValueError,OSError)):
+            handle.cleanup()
+        assert private.read_bytes() == raw
+    finally:
+        handle.abandon()

@@ -11,12 +11,13 @@ from psycopg import OperationalError
 from psycopg.errors import DeadlockDetected, SerializationFailure
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
+from packages.alpha_lifecycle.sandbox_policy import MAX_OUTPUT_INVENTORY_BYTES
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, Text, Token, StrictModel
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationReceipt, PublicationRequest
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationTransport
-from services.job_store.worker_repository import ClaimedJob
+from services.job_store.records import ClaimedJob
 
 
 def _tuple(value: object) -> tuple[object, ...]:
@@ -164,7 +165,7 @@ class P3PublicationRepository:
 
     def _read_inventory(self, ref: ArtifactRefV1) -> None:
         import json
-        if ref.media_type != 'application/json' or not 0 < ref.size_bytes <= 4_194_304:
+        if ref.media_type != 'application/json' or not 0 < ref.size_bytes <= MAX_OUTPUT_INVENTORY_BYTES:
             raise ValueError('P3 output custody inventory bound differs')
         raw = self._store.read_bytes(ref)
         value = json.loads(raw)

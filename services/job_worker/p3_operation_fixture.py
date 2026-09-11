@@ -34,6 +34,7 @@ REQUIRED_OPERATION_CHECKS = frozenset({
     'OFFICIAL_INTENT_INPUT_REVIEW_AND_JOB_BINDING_PASS',
     'ENQUEUE_TWO_CONNECTION_AUTHORIZATION_EXPIRY_PASS',
     'OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS',
+    'OFFICIAL_ATTEMPT_OUTPUT_BINDING_PASS',
     'RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS',
     'HOLDOUT_CANNOT_START_WITHOUT_DURABLE_CONSUMPTION_PASS',
 })
@@ -482,6 +483,8 @@ def _check_publication(sock, name, root, source, mark):
     store = LocalArtifactStore(store_root)
     evidence = store.put_bytes(b'{"purpose":"synthetic-operation-source-test"}',media_type='application/json')
     entries, refs, heads = publication_entries(store,evidence,FAMILY_IDS,source_sha=source.commit_sha)
+    output_inventory=store.put_bytes(canonical_json_bytes([dict(path='artifacts/'+ref.locator,artifact_ref=ref)
+        for ref in sorted((evidence,*refs),key=lambda item:item.locator)]),media_type='application/json')
     with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=2,kwargs={'row_factory':dict_row}) as pool:
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
@@ -498,6 +501,30 @@ def _check_publication(sock, name, root, source, mark):
             with connection.transaction(force_rollback=True):
                 connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
                     claim.worker_id,claim.lease_token,legacy_transport,'test:missing-output-custody'))
+        for fault in ('null','extra','missing','oversized','zero','media'):
+            ref_value=output_inventory.model_dump(mode='json')
+            if fault == 'null':
+                ref_value=None
+            elif fault == 'extra':
+                ref_value['unexpected']=True
+            elif fault == 'missing':
+                del ref_value['locator']
+            elif fault == 'oversized':
+                ref_value['size_bytes']=4194305
+            elif fault == 'zero':
+                ref_value['size_bytes']=0
+            else:
+                ref_value['media_type']='text/plain'
+            bad_transport=json.loads(legacy_transport)
+            bad_transport['output_inventory_ref']=ref_value
+            with _rejected(psycopg.errors.InvalidParameterValue,match='output custody'), pool.connection() as connection:
+                with connection.transaction(force_rollback=True):
+                    connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
+                        claim.worker_id,claim.lease_token,canonical_json_bytes(bad_transport).decode(),'test:output-'+fault))
+        from dataclasses import replace
+        with _rejected(psycopg.Error,match='E_STALE_FENCE'):
+            publisher.publish(request,replace(claim,attempt_id='attempt_other'),entries,
+                output_inventory_ref=output_inventory,trace_id='test:output-wrong-attempt')
         assert not worker.finalize(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             expected_state='RUNNING',expected_attempt_outcome='RUNNING',final_state='SUCCEEDED',
             reason_code='PROCESS_EXITED',trace_id='test:no-generic-publication',alpha_campaign=True)
@@ -505,7 +532,7 @@ def _check_publication(sock, name, root, source, mark):
         wrong_event['payload']['evidence_sha256'] = 'e'*64
         wrong_evidence_entries = (entries[0].model_copy(update={'canonical_event_text':canonical_json_bytes(wrong_event).decode()}),*entries[1:])
         transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
-            worker_id=claim.worker_id,lease_token=claim.lease_token,request=request,entries=wrong_evidence_entries)).decode()
+            worker_id=claim.worker_id,lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=request,entries=wrong_evidence_entries)).decode()
         with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
             connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
                 claim.worker_id,claim.lease_token,transport,'test:wrong-prepublication-evidence'))
@@ -522,7 +549,7 @@ def _check_publication(sock, name, root, source, mark):
             else:
                 del malformed['evidence_ref']['size_bytes']
             transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,
-                worker_id=claim.worker_id,lease_token=claim.lease_token,
+                worker_id=claim.worker_id,lease_token=claim.lease_token,output_inventory_ref=output_inventory,
                 request=json.loads(_sealed(malformed)),entries=entries)).decode()
             with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
                 connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,
@@ -532,10 +559,10 @@ def _check_publication(sock, name, root, source, mark):
         wrong['proposed_event_refs'] = [r.model_dump(mode='json') for r in wrong_refs]
         wrong['semantic_request_digest'] = hashlib.sha256(canonical_json_bytes(wrong_refs)).hexdigest()
         with _rejected(psycopg.Error):
-            publisher.publish(PublicationRequest.model_validate_json(_sealed(wrong)),claim,wrong_entries,trace_id='test:wrong-record-source')
+            publisher.publish(PublicationRequest.model_validate_json(_sealed(wrong)),claim,wrong_entries,output_inventory_ref=output_inventory,trace_id='test:wrong-record-source')
         bad_entries = (*entries[:-1],entries[-1].model_copy(update={'outbox_payload_text':canonical_json_bytes({'event_id':str(entries[0].event_id)}).decode()}))
         with _rejected(psycopg.errors.InvalidParameterValue):
-            publisher.publish(request,claim,bad_entries,trace_id='test:atomic-rollback')
+            publisher.publish(request,claim,bad_entries,output_inventory_ref=output_inventory,trace_id='test:atomic-rollback')
         event_ids = [entry.event_id for entry in entries]
         with psycopg.connect(host=str(sock),dbname=name,user='postgres',autocommit=True) as observer, psycopg.connect(host=str(sock),dbname=name,user='postgres') as blocker:
             for table in ('domain_events','event_outbox'):
@@ -545,7 +572,7 @@ def _check_publication(sock, name, root, source, mark):
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             blocker.execute('SELECT job_id FROM public.jobs WHERE job_id=%s FOR UPDATE',(claim.job_id,))
             with ThreadPoolExecutor(max_workers=2) as threads:
-                futures = [threads.submit(publisher.publish,request,claim,entries,trace_id='test:concurrent-publication') for _ in range(2)]
+                futures = [threads.submit(publisher.publish,request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:concurrent-publication') for _ in range(2)]
                 try:
                     deadline = time.monotonic()+3
                     while time.monotonic()<deadline:
@@ -564,7 +591,12 @@ def _check_publication(sock, name, root, source, mark):
         altered = request.model_dump(mode='json')
         altered['expected_heads'][0].update(sequence=1,event_digest='a'*64)
         with _rejected(psycopg.errors.UniqueViolation):
-            publisher.publish(PublicationRequest.model_validate_json(_sealed(altered)),claim,entries,trace_id='test:changed-idempotent-request')
+            publisher.publish(PublicationRequest.model_validate_json(_sealed(altered)),claim,entries,output_inventory_ref=output_inventory,trace_id='test:changed-idempotent-request')
+        changed_inventory=store.put_bytes(b'[{}]',media_type='application/json')
+        for alternate_claim,alternate_inventory in ((claim,changed_inventory),(replace(claim,attempt_id='attempt_other'),output_inventory)):
+            with _rejected(psycopg.errors.UniqueViolation):
+                publisher.publish(request,alternate_claim,entries,output_inventory_ref=alternate_inventory,trace_id='test:changed-output-binding')
+        assert publisher.read_commit(request,output_inventory_ref=output_inventory,attempt_id=claim.attempt_id) == result
         receipt = recover_publication_receipt(claim.job_id,repository=publisher,store=store)
         assert receipt == recover_publication_receipt(claim.job_id,repository=publisher,store=store)
         assert result.registry_event_refs == receipt.registry_event_refs
@@ -573,6 +605,9 @@ def _check_publication(sock, name, root, source, mark):
             assert stored is not None
             assert stored == (canonical_json_bytes(request).decode(),result.model_dump(mode='json'),receipt.committed_at)
             assert _first(observer.execute('SELECT result_metadata FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone()) == stored[1]
+            assert observer.execute('SELECT output_inventory_ref_text,output_attempt_id FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (canonical_json_bytes(output_inventory).decode(),claim.attempt_id)
+            assert observer.execute("SELECT output_inventory_ref_text,output_attempt_id FROM public.p3_alpha_job_commits WHERE job_id='job_publication'").fetchone() == (None,None)
+
             for table in ('domain_events','event_outbox'):
                 assert observer.execute(f'SELECT count(*) FROM public.{table} WHERE event_id = ANY(%s)',(list(result.ledger_event_ids),)).fetchone() == (8,)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
@@ -581,13 +616,14 @@ def _check_publication(sock, name, root, source, mark):
             while (remaining := (expiry-datetime.now(UTC)).total_seconds()) > 0:
                 observer.execute('SELECT pg_sleep(%s)',(min(5,remaining)+.1,))
                 mark('OPERATION_AUTHORIZATION_EXPIRY_WAIT',flush=True)
-        assert publisher.publish(request,claim,entries,trace_id='test:expired-commit-readback') == result
+        assert publisher.publish(request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:expired-commit-readback') == result
         assert publisher.recover_receipt(claim.job_id) == receipt
         for role in ('trading_job_api','trading_p3_authority'):
             with psycopg.connect(host=str(sock),dbname=name,user=role) as denied:
                 with _rejected(psycopg.errors.InsufficientPrivilege):
                     denied.execute('SELECT * FROM job_plane.worker_read_alpha_publication(%s)',(claim.job_id,))
     mark('OFFICIAL_PUBLICATION_ATOMIC_CUSTODY_AND_RECEIPT_PASS')
+    mark('OFFICIAL_ATTEMPT_OUTPUT_BINDING_PASS')
 
 
 def _check_research_batch(sock, name, root, source, mark, index, outcome):
@@ -638,6 +674,8 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             event_type='AlphaRegistryTransitionRecordedV1',canonical_event_text=canonical_json_bytes(event).decode(),
             topic='p3.alpha-registry',outbox_payload_text=canonical_json_bytes({'event_id':str(event_id)}).decode()))
         previous = ref.content_sha256
+    output_inventory=store.put_bytes(canonical_json_bytes([dict(path='artifacts/'+ref.locator,artifact_ref=ref)
+        for ref in sorted((evidence,*refs),key=lambda item:item.locator)]),media_type='application/json')
     with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=1,kwargs={'row_factory':dict_row}) as pool:
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
@@ -651,7 +689,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
                 stage='RESEARCH_DECISION',evidence_ref=evidence,
                 expected_heads=[dict(alpha_id=alpha,version='1.0.0',sequence=2,event_digest=row[2])],proposed_event_refs=refs[:count])))
         transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
-            lease_token=claim.lease_token,request=request_for(1),entries=entries[:1])).decode()
+            lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=request_for(1),entries=entries[:1])).decode()
         with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
             connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:incomplete-research'))
         for decision,metrics in (('NOT_EVALUATED',None),('FAIL','a'*64),('PASS',None)):
@@ -666,7 +704,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             bad_request['proposed_event_refs'][-1] = bad_ref.model_dump(mode='json')
             bad_request['semantic_request_digest'] = hashlib.sha256(canonical_json_bytes(bad_request['proposed_event_refs'])).hexdigest()
             transport = canonical_json_bytes(dict(job_id=claim.job_id,attempt_id=claim.attempt_id,worker_id=claim.worker_id,
-                lease_token=claim.lease_token,request=json.loads(_sealed(bad_request)),entries=[entries[0],bad_entry])).decode()
+                lease_token=claim.lease_token,output_inventory_ref=output_inventory,request=json.loads(_sealed(bad_request)),entries=[entries[0],bad_entry])).decode()
             with _rejected(psycopg.Error,match='P3 source or operation publication authority rejected'), pool.connection() as connection:
                 connection.execute(P3PublicationRepository.COMMIT_SQL,(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,transport,'test:contradictory-oos-decision'))
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
@@ -675,7 +713,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
             assert observer.execute('SELECT registry_sequence FROM public.p3_alpha_heads WHERE alpha_id=%s',(alpha,)).fetchone() == (2,)
             assert observer.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
             assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(claim.job_id,)).fetchone() == (0,)
-        result = P3PublicationRepository(pool,store).publish(PublicationRequest.model_validate_json(canonical_json_bytes(request_for(2))),claim,tuple(entries),trace_id='test:complete-research')
+        result = P3PublicationRepository(pool,store).publish(PublicationRequest.model_validate_json(canonical_json_bytes(request_for(2))),claim,tuple(entries),output_inventory_ref=output_inventory,trace_id='test:complete-research')
         assert len(result.ledger_event_ids) == 2 and result.alpha_outcome == outcome
     mark('RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS')
 

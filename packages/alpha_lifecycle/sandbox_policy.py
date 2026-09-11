@@ -28,6 +28,7 @@ RO_FILE_FLAG, RO_PATH_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG = '--ro-bind-da
 DRIVER_ENTRY = ('/p3/python/bin/python3.11','-I','-B','/p3/release/scripts/run_p3_driver_entry.py')
 CHILD_ENTRY = 'scripts/run_p3_evaluation_child.py'
 MAX_ATTEMPT_OUTPUT_BYTES = 4 * CHILD_POLICY['child_output_bytes']
+MAX_OUTPUT_INVENTORY_BYTES = 4_194_304
 BWRAP_CAPABILITIES = tuple(sorted(set(
     arg for arg in (*SANDBOX_ARGS,*FILESYSTEM_ARGS,*ENVIRONMENT_ARGS,*ROOT_READONLY_ARGS,
         RO_FILE_FLAG,RO_PATH_FLAG,RO_DIRECTORY_FLAG,RW_DIRECTORY_FLAG,'--dir','--chdir','--seccomp','--bind','--perms')

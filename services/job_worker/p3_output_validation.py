@@ -13,7 +13,7 @@ from packages.alpha_lifecycle.operation_input import P3OperationInput,BaselinesI
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload,JobType
-from services.job_store.worker_repository import ClaimedJob
+from services.job_store.records import ClaimedJob
 from .p3_output import P3OutputCustody
 from .p3_publication_producer import prepare_family_registration
 

@@ -740,7 +740,7 @@ services/job_scheduler/scheduler.py|92|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_store/config.py|57|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_store/config.py|115|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_store/config.py|201|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_store/worker_repository.py|170|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/worker_repository.py|153|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|66|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|87|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|118|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -764,7 +764,7 @@ services/job_worker/p3_fixture_native.py|106|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_sql.py|674|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|203|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|40|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_output.py|157|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_output.py|159|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|234|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|360|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|92|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -794,9 +794,9 @@ services/job_worker/worker.py|436|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_worker/worker.py|608|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|618|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|669|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|883|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|906|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|931|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|884|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|907|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|932|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE

@@ -7,7 +7,6 @@ import json
 from functools import wraps
 import re
 import secrets
-from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
 from typing import Any
@@ -26,6 +25,7 @@ from .config import (
     JobStoreSettings,
 )
 from .errors import InvalidTraceId
+from .records import ClaimedJob as ClaimedJob
 
 
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
@@ -71,23 +71,6 @@ def _rollback_fence_loss_as_false(function):
         except _FinalizeFenceLost:
             return False
     return wrapped
-
-
-@dataclass(frozen=True, slots=True)
-class ClaimedJob:
-    job_id: str
-    job_type: JobType
-    payload: JobPayload
-    attempt_id: str
-    attempt_number: int
-    worker_id: str
-    lease_token: str = field(repr=False)
-    lease_expires_at: datetime
-    max_attempts: int
-
-    @property
-    def lease_token_sha256(self) -> str:
-        return hashlib.sha256(self.lease_token.encode("utf-8")).hexdigest()
 
 
 class WorkerRepository:

@@ -31,7 +31,7 @@ class FixturePlan(DigestModel):
     purpose: Literal['SYNTHETIC_ONLY']
     native_request_digest: Sha256
     policy_set_sha256: Sha256
-    sql_revision: Literal['0022_p3_worker_lane_isolation']
+    sql_revision: Literal['0023_p3_output_custody']
     cleanup_policy: Literal['OWNED_ROOTS_ONLY']
 
 
