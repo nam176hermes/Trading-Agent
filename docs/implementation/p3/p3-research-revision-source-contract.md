@@ -284,3 +284,21 @@ and actual 2,800-day synthetic reconstruction/copy/readback suite then passed
 50 tests in 204.67 seconds; independent structural review passed. Protected
 admission still must compare actual inventory SHA and size in the backup
 namespace. This source test is not a retained official research-store receipt.
+
+InputSet structural consumption now resolves its exact PIT proof and compact
+revision commitment before baseline/evaluation calculation can proceed. The
+resolver binds source, policy, dataset, fold reference, vintage and limitations;
+retrospective current-archive data cannot claim historical-vintage verification.
+It does not treat commitment/backup hashes as authenticated host provenance.
+The prior opaque-JSON acceptance failed a focused test before correction.
+
+The shared ArtifactStore, ReadbackStore and canonical typed JSON reader moved
+unchanged into existing replica_store; baseline reexports preserve callers and
+the revision modules avoid an import cycle. Portable fixtures now disclose all
+2,800 synthetic research rows and explicit synthetic commitment/backup records,
+with no production authority or economic policy change. Validation: 50 compact
+resolver tests, 11 first integration/negative tests, then 52 adjacent replica and
+qualification tests passed in 313.24 seconds. Independent structural review
+passed; static retains 117 existing diagnostics. Protected producer, reviewer,
+backup custody and official admission still remain HELD. C01 reaches its existing
+PIT-suite check only after calculation has traversed this revision validation.

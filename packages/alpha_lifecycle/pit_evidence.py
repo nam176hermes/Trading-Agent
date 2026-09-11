@@ -82,7 +82,7 @@ def validate_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,
         daily_arrow_table, normalize_daily_acquisition, retain_daily_quality_receipt,
         retain_normalization_receipt, validate_acquisition_receipt,
     )
-    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore, _read
+    from packages.alpha_lifecycle.replica_store import ReadbackStore, _read
     from packages.alpha_lifecycle.data_view import _partition_ref, seal_research_dataset, validate_dates
     from packages.data_catalog.v3 import build_snapshot_v3, materialize_arrow_partition_v3
 

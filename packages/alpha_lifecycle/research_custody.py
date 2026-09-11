@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, _read
+from packages.alpha_lifecycle.replica_store import ArtifactStore, _read
 from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity
 from packages.alpha_lifecycle.contracts.data import DatasetEvidence
 from packages.alpha_lifecycle.pit_evidence import _ReadBudget, _reference
@@ -125,6 +125,26 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
         or not commitment.completed_at<=backup.verified_at<=commitment.issued_at):
         raise ValueError('research backup subject, producer or timing differs')
     return commitment
+
+
+def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment:
+    """Resolve the exact structural commitment; producer and reviewer admission is separate."""
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.contracts.data import PITProof
+
+    _reference(input_set_ref,65536)
+    reader=_ReadBudget(store)
+    inputs=_read(reader,input_set_ref,InputSet)
+    _reference(inputs.pit_proof_ref,65536)
+    _reference(inputs.dataset_evidence_ref,2097152)
+    pit=_read(reader,inputs.pit_proof_ref,PITProof)
+    dataset=_read(reader,inputs.dataset_evidence_ref,DatasetEvidence)
+    if (pit.dataset_ref!=inputs.dataset_evidence_ref or pit.fold_manifest_ref!=inputs.fold_manifest_ref
+        or pit.vintage_class!=dataset.vintage_class or pit.limitations!=dataset.limitations
+        or pit.historical_vintage_verified):
+        raise ValueError('InputSet PIT proof does not bind the current-archive research dataset')
+    return validate_research_batch_commitment(pit.revision_proof_ref,source=inputs.source,
+        policy_digest=inputs.policy_digest,dataset_ref=inputs.dataset_evidence_ref,dataset=dataset,store=reader)
 
 
 def backup_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,

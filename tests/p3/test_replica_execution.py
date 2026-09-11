@@ -3,7 +3,7 @@
 import hashlib
 import json
 import math
-from datetime import date, timedelta
+from datetime import UTC, datetime, date, timedelta
 from decimal import Decimal, localcontext
 from pathlib import Path
 import sys
@@ -12,7 +12,7 @@ import pytest
 
 from packages.alpha_lifecycle.contracts.results import BaselinePack
 from packages.data_catalog.artifact_store import LocalArtifactStore
-from packages.data_contracts import ArtifactRefV1
+from packages.data_contracts import ArtifactRefV1, PITQueryV1, PITQueryMode
 from packages.engine_contracts.serialization import canonical_json_bytes
 from scripts.run_p3_evaluation_child import main
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor, SandboxHeld
@@ -28,9 +28,11 @@ def baseline_inputs(root, *, return_count=2):
     root.mkdir(mode=0o700)
     store = LocalArtifactStore(root)
     placeholder = store.put_bytes(b"{}", media_type="application/json")
-    start = date(2020, 1, 1)
+    start = date(2018, 1, 1)
+    query=PITQueryV1(mode=PITQueryMode.SYSTEM_OBSERVED,valid_at=datetime(2025,9,1,tzinfo=UTC),
+        cutoff=datetime(2026,9,5,12,tzinfo=UTC))
     rows = []
-    for i in range(750):
+    for i in range(2800):
         bar = _bar(start + timedelta(days=i)).model_dump(
             mode="json", exclude={"digest"}
         )
@@ -44,15 +46,15 @@ def baseline_inputs(root, *, return_count=2):
         store,
         schema_version="p3-dataset-evidence-v1",
         snapshot_ref=placeholder,
-        query_digest="a" * 64,
+        query_digest=query.canonical_digest,
         segment="RESEARCH",
-        usable_rows=750,
+        usable_rows=2800,
         row_refs=rows,
-        date_range={"start": str(start), "end": str(start + timedelta(days=749))},
-        ordered_rows_digest="b" * 64,
+        date_range={"start": str(start), "end": str(start + timedelta(days=2799))},
+        ordered_rows_digest=hashlib.sha256(canonical_json_bytes([row.content_sha256 for row in rows])).hexdigest(),
         vintage_class="RETROSPECTIVE_CURRENT_ARCHIVE",
         observed_cutoff="2026-09-05T12:00:00Z",
-        limitations=[],
+        limitations=["retrospective.current_archive"],
     )
     folds = []
     for n, offset in enumerate((400, 500, 600), 1):
@@ -102,6 +104,24 @@ def baseline_inputs(root, *, return_count=2):
         platform="linux-x86_64",
         decimal_precision=50,
     )
+    # Structural fixture declarations only; no authenticated producer or backup custody.
+    source=dict(commit_sha='a'*40,tree_sha='b'*40,closure_schema_version='v1',
+        closure_policy_sha256='c'*64,closure_sha256='d'*64)
+    producer=dict(source=source,producer_repository='nam176hermes/Trading-Agent',
+        producer_workflow_ref='nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main',
+        producer_run_id=1,producer_attempt=1,authority=dict(broker=False,live=False,network=False,production=False))
+    backup=_seal(store,schema_version='p3-research-backup-receipt-v1',**producer,
+        inventory_content_sha256='8'*64,dataset_content_sha256=dataset.content_sha256,
+        snapshot_content_sha256=placeholder.content_sha256,object_inventory_content_sha256='9'*64,
+        object_inventory_size_bytes=1000000,destination_namespace='p3.research.backup',object_version='9'*64,
+        object_count=20000,total_bytes=10000000,verified_at='2026-09-05T12:00:01Z',status='READBACK_VERIFIED')
+    revision=_seal(store,schema_version='p3-research-batch-commitment-v1',**producer,
+        policy_digest='c'*64,segment='RESEARCH',query=query,inventory_content_sha256='8'*64,
+        inventory_size_bytes=1,inventory_entry_count=2800,dataset_content_sha256=dataset.content_sha256,
+        dataset_digest=json.loads(store.read_bytes(dataset))['digest'],snapshot_content_sha256=placeholder.content_sha256,
+        batch_ordinal=1,predecessor_commitment_content_sha256=None,
+        frozen_at='2026-09-05T11:59:59Z',completed_at='2026-09-05T12:00:00Z',issued_at='2026-09-05T12:00:02Z',
+        backup_receipt_ref=backup,status='PASS')
     pit = _seal(
         store,
         schema_version="p3-p-i-t-proof-v1",
@@ -109,9 +129,9 @@ def baseline_inputs(root, *, return_count=2):
         fold_manifest_ref=manifest,
         vintage_class="RETROSPECTIVE_CURRENT_ARCHIVE",
         historical_vintage_verified=False,
-        revision_proof_ref=placeholder,
+        revision_proof_ref=revision,
         no_future_suite_ref=placeholder,
-        limitations=[],
+        limitations=["retrospective.current_archive"],
     )
     inputs = _seal(
         store,
