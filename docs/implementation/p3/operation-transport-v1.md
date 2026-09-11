@@ -389,3 +389,14 @@ while their frozen install was still completing; it was not a source failure.
 After npm ci completed, the full gate was rerun successfully. Transition
 repositories measured 96.9136% line and 92.3611% branch coverage. No threshold
 was lowered and no native capability receipt was inferred from portable coverage.
+The bounded primary-selection repair rejects duplicate report/trial references
+before storage and requires the ordered frozen A0–A3/version1.0.0 family before
+publication. Ranking and aggregate excess subtraction use Decimal50/HALF_EVEN
+without changing the caller context. Focused tests reproduced duplicate-family
+acceptance and precision-dependent wrong selection before correction. Nine tests
+then passed in 27.38 seconds, including explicitly stubbed SELECTED/NONE_QUALIFIED,
+permutation/version failures, and an actual synthetic A0 qualification rejection
+when four distinct reports represent that same candidate. Independent review
+passed this bounded source scope; static retains 117 existing diagnostics.
+Complete qualification/closure/head validation, trial disclosure, current review,
+SQL admission and select-primary dispatch remain HELD.
