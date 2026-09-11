@@ -42,6 +42,8 @@ def _reviewed(name, signature, digest, *, arguments, language, volatility, paral
     return rows[0][1]
 
 
+_PARENT_CONSTRAINTS={'p3_alpha_job_commits_check': ('c', '828198534b5227f0916cb4a76ed633ecf99dad88bf226f8aa2300e6fa7a61c4a', True), 'p3_alpha_job_commits_job_id_fkey': ('f', '36739895ab79faa1eea76ce9e7d23591e487ba129000db3db6c87b9884685562', True), 'p3_alpha_job_commits_pkey': ('p', '1cfd28865f81d3ea9eee531f4f43fa1748e122a9e210b1902ad62aa6e5d3758a', True), 'p3_alpha_job_commits_result_digest_check': ('c', 'cda46c3ac56206f7e531d434b232133f028514ad9823f74c36a2b4125f9e860e', True), 'p3_alpha_job_commits_result_digest_key': ('u', 'abbffe4c964329484493278908c55ba7e6931bcd5f592d7c4f8615e923936f9e', True), 'p3_alpha_job_commits_result_text_check': ('c', 'af458e6adf09568bcf5840da21eb767b49d04a8047003b6ad37296120aa3e24f', True), 'p3_alpha_job_commits_semantic_request_digest_check': ('c', '59e290293f578ecfc73101cee176ba3349348aec1d35e899b09840ff1f4dfa59', True), 'p3_publication_custody': ('c', 'd810837f060a44c185b97f0c57ac97a4a1422d9b413fd4a9b130903ad2c0ea4c', True)}
+
 def _catalog(*, upgraded=False):
     connection=op.get_bind()
     _reviewed('p3_valid_ref','jsonb',
@@ -57,6 +59,8 @@ def _catalog(*, upgraded=False):
           AND p.provolatile='v' AND p.proparallel='u' AND p.prokind='f'
           AND NOT p.proretset AND p.pronargs=0 AND p.pronargdefaults=0
           AND p.proconfig=ARRAY['search_path=pg_catalog'] AND p.prorettype='trigger'::regtype
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(p.proacl,pg_catalog.acldefault('f',p.proowner))) a
+            WHERE a.grantee<>p.proowner OR a.privilege_type<>'EXECUTE' OR a.is_grantable)
     """)).scalar()
     if trigger is None or hashlib.sha256(trigger.encode()).hexdigest()!='051dd0e20f1712cc653430c1831be32ce9e78100d8599e1e3d74a998b732dd74':
         raise RuntimeError('0023 append-only function drift')
@@ -64,7 +68,7 @@ def _catalog(*, upgraded=False):
         SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r WHERE r.rolname='trading_job_worker'
           AND r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole
           AND NOT r.rolreplication AND NOT r.rolbypassrls
-          AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid))
+          AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid OR m.roleid=r.oid))
         AND EXISTS (SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.oid=c.relowner
           WHERE c.oid='public.p3_alpha_job_commits'::regclass AND c.relkind='r'
           AND r.rolname='trading_p3_owner' AND NOT c.relrowsecurity AND NOT c.relforcerowsecurity
@@ -92,6 +96,36 @@ def _catalog(*, upgraded=False):
         expected += [('output_inventory_ref_text','text',False,None),('output_attempt_id','character varying(64)',False,None)]
     if [tuple(row) for row in columns] != [(*row,'','') for row in expected]:
         raise RuntimeError('0023 publication columns drift')
+    constraints=connection.execute(text("""
+        SELECT c.conname,c.contype,pg_catalog.pg_get_constraintdef(c.oid),c.convalidated
+        FROM pg_catalog.pg_constraint c WHERE c.conrelid='public.p3_alpha_job_commits'::regclass
+          AND NOT c.condeferrable AND NOT c.condeferred AND NOT c.connoinherit
+          AND c.conislocal AND c.coninhcount=0 AND c.conparentid=0
+    """)).fetchall()
+    expected_constraints=dict(_PARENT_CONSTRAINTS)
+    if upgraded:
+        expected_constraints.update({
+            'p3_alpha_job_commits_output_attempt_id_fkey':('f',hashlib.sha256(b'FOREIGN KEY (output_attempt_id) REFERENCES job_attempts(attempt_id) ON DELETE RESTRICT').hexdigest(),True),
+            'p3_output_custody_bound':('c','PENDING_REVIEWED_DEPARSE',True),
+            'p3_output_custody_new_rows':('c',hashlib.sha256(b'CHECK (((output_inventory_ref_text IS NOT NULL) AND (output_attempt_id IS NOT NULL))) NOT VALID').hexdigest(),False),
+        })
+    actual={name:(kind,hashlib.sha256(definition.encode()).hexdigest(),validated)
+        for name,kind,definition,validated in constraints}
+    total=connection.execute(text("SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid='public.p3_alpha_job_commits'::regclass")).scalar()
+    if actual != expected_constraints or len(actual)!=total:
+        raise RuntimeError('0023 publication constraints drift: '+repr(constraints))
+    if connection.execute(text("""
+        SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c
+          LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=c.conindid
+          WHERE c.conrelid='public.p3_alpha_job_commits'::regclass AND c.contype IN ('p','u','f')
+            AND (i.indexrelid IS NULL OR NOT i.indisvalid OR NOT i.indisready OR NOT i.indisunique
+              OR i.indpred IS NOT NULL OR i.indexprs IS NOT NULL
+              OR (c.contype IN ('p','u') AND (i.indrelid<>c.conrelid OR i.indisprimary<>(c.contype='p')))
+              OR (c.contype='f' AND (i.indrelid<>c.confrelid OR c.confdeltype<>'r' OR c.confupdtype<>'a'
+                OR c.confmatchtype<>'s' OR c.confkey<>ARRAY(SELECT unnest(i.indkey))))))
+    """)).scalar() is not True:
+        raise RuntimeError('0023 publication constraint index or foreign key drift')
+
 
 
 def _body_digest(definition):
@@ -179,6 +213,8 @@ def upgrade():
            AND job_plane.p3_valid_ref(output_inventory_ref_text::jsonb)
            AND output_inventory_ref_text::jsonb->>'media_type'='application/json'
            AND (output_inventory_ref_text::jsonb->>'size_bytes')::numeric BETWEEN 1 AND 4194304) IS TRUE);
+        ALTER TABLE public.p3_alpha_job_commits ADD CONSTRAINT p3_output_custody_new_rows
+          CHECK (output_inventory_ref_text IS NOT NULL AND output_attempt_id IS NOT NULL) NOT VALID;
         """)
     op.execute('DROP FUNCTION job_plane.worker_read_alpha_publication(text)')
     for definition in (commit,read,custody):
@@ -195,10 +231,14 @@ def upgrade():
         arguments='p_job_id,request_text,result_text,committed_at,output_inventory_ref_text,output_attempt_id',language='plpgsql',
         volatility='s',parallel='u',result='TABLE(request_text text, result_text text, committed_at timestamp with time zone, output_inventory_ref_text text, output_attempt_id text)',
         modes=['i','t','t','t','t','t'])
-    _catalog(upgraded=True)
     op.execute("""RESET ROLE;
         REVOKE CREATE ON SCHEMA job_plane FROM trading_p3_owner;
         REVOKE REFERENCES ON TABLE public.job_attempts FROM trading_p3_owner;""")
+    _catalog(upgraded=True)
+    if op.get_bind().execute(text("""SELECT current_user=session_user AND current_user='trading_owner'
+        AND NOT pg_catalog.has_schema_privilege('trading_p3_owner','job_plane','CREATE')
+        AND NOT pg_catalog.has_table_privilege('trading_p3_owner','public.job_attempts','REFERENCES')""")).scalar() is not True:
+        raise RuntimeError('0023 temporary migration privileges drift')
 
 
 def downgrade():
