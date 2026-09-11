@@ -302,3 +302,48 @@ before and after replacement. The trusted-language regression failed in 30.64s;
 the correction at 7e9aacc8 passed the real disposable fixture in 69.56s with
 cleanup. Independent gpt-5.6-sol/high review passed this bounded packet. The
 separate root static check retained 118 pre-existing errors; it was not PASS.
+
+## Driver output custody (T-P3-030/031/040/043/052 correction)
+
+The source now provides an explicit P3 spawn capability for BASELINES and
+REGISTER_FAMILY. The parent verifies a complete reviewed source/runtime closure,
+seals its executable bytes, mounts inputs read-only and gives each attempt a
+private output directory. The existing ProcessRunner owns process creation,
+lease checks, termination and reaping. This does not install an official host
+attestor or enable the remaining operation executors.
+
+The parent retains and reconstructs each successful attempt's result before
+publication. Migration 0023 stores its canonical inventory reference and attempt
+ID in the existing append-only publication commit row, in the same transaction
+as canonical events, outbox, registry heads and job result. Idempotent retries
+must match the request and both custody fields. Recovery rereads every retained
+inventory artifact before issuing the derived receipt. Private outputs are
+removed only after durable job finalization/publication and receipt retention;
+failed finalization, lost output bytes or unproved cleanup preserve evidence.
+Neither receipt timestamps nor future receipt/report hashes enter upstream
+publication identity. Existing result, metrics and registry identities remain
+unchanged.
+
+The forward migration checks the reviewed function bodies/catalog, table/column
+privileges, both directions of worker membership, direct/transitive P3 owner
+membership, append-only trigger, exact constraints/indexes and final temporary
+privilege revocation. An additional NOT VALID non-null constraint preserves
+legacy rows while refusing every new custody-less INSERT, including an old
+function body admitted around migration. Legacy rows are never backfilled into
+current qualification evidence. The P3 disposable database profile requires
+0023; production and P1 database profiles are unchanged.
+
+Source checks: 591 P3/ProcessRunner/worker tests passed with two explicit host
+checks skipped. The selected real PostgreSQL 16 fixture subsequently passed in
+79.77s at 387ec1a5, exercising catalog drift, atomic rollback, two competing
+connections, loss of the COMMIT response, exact custody readback and actual
+cluster cleanup. The real local bubblewrap transport probe passed in 0.38s.
+Contracts generation check and lint passed. Root static retains 117 existing
+errors; it is not PASS. None of these checks is T-P3-060 or pinned native parity.
+
+Official composition, actual-data revision/acquisition closure for C01, OOS,
+primary selection, holdout, native parity and phase-exit execution remain HELD.
+Any prior host/source receipts must be refreshed against the final merged
+source before official InputSet issuance. LIVE_ELIGIBLE=false;
+LIVE_ENABLED=false. No scheduler, retained research store, dataset, production
+service or broker was activated by this source packet.
