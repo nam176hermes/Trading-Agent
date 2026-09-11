@@ -180,6 +180,8 @@ def test_normalization_binds_retained_daily_values_without_writing(tmp_path,monk
     if column is not None and column[0]!=1:
         with pytest.raises(AcquisitionError):
             acquisition.normalize_daily_acquisition(receipt.artifact_ref,store)
+        with pytest.raises(AcquisitionError):
+            acquisition.retain_normalization_receipt(receipt.artifact_ref,store)
     else:
         result=acquisition.normalize_daily_acquisition(receipt.artifact_ref,store)
         assert result==dict(schema_version='p3-normalized-daily-row-v1',row=dict(
@@ -188,3 +190,39 @@ def test_normalization_binds_retained_daily_values_without_writing(tmp_path,monk
             raw_close_time=1735862399999999,raw_timestamp_unit='MICROSECONDS',
             open='100',high='110',low='90',close='105',base_volume='1',quote_volume='100',
             trade_count=1,provider_published_at=None))
+
+
+def test_provider_receipt_binds_exact_query_raw_pair_and_normalized_document(tmp_path):
+    from uuid import NAMESPACE_URL,uuid5
+    from packages.alpha_lifecycle import acquisition
+    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore
+    from packages.data_contracts import ProviderReceiptV1
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    day=date(2025,1,2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    acquired=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    ref=acquisition.retain_normalization_receipt(acquired.artifact_ref,store)
+    receipt=ProviderReceiptV1.model_validate_json(store.read_bytes(ref))
+    assert canonical_json_bytes(receipt)==store.read_bytes(ref)
+    query=dict(schema_version='p3-daily-acquisition-query-v1',provider='binance.public-archive',
+        day=day.isoformat(),instrument='BTCUSDT.BINANCE',interval='1d',
+        archive_url=base+filename,checksum_url=base+filename+'.CHECKSUM')
+    assert receipt.query_sha256==hashlib.sha256(canonical_json_bytes(query)).hexdigest()
+    normalized=acquisition.normalize_daily_acquisition(acquired.artifact_ref,store)
+    assert receipt.output_sha256s==(hashlib.sha256(canonical_json_bytes(normalized)).hexdigest(),)
+    assert receipt.provider=='binance.public-archive'
+    assert receipt.capability.value=='MARKET_BARS'
+    assert receipt.normalization_version=='p3.binance.12-column.daily.v1'
+    for url,rawref in ((base+filename,acquired.archive_ref),(base+filename+'.CHECKSUM',acquired.checksum_ref)):
+        evidence=next(e for e in receipt.evidence if e.evidence_id==uuid5(NAMESPACE_URL,url+'#sha256='+rawref.content_sha256))
+        assert (evidence.content_sha256,evidence.byte_length,evidence.media_type)==(rawref.content_sha256,rawref.size_bytes,rawref.media_type)
+        assert evidence.source_available_at==evidence.system_observed_at==acquired.system_observed_at
+        assert evidence.fetched_at==acquired.fetched_at
+    assert acquisition.retain_normalization_receipt(acquired.artifact_ref,ReadbackStore(store,store))==ref
+    normalized_digest=receipt.output_sha256s[0]
+    (store._root/(normalized_digest+'.blob')).unlink()
+    with pytest.raises(ArtifactIntegrityError):
+        acquisition.retain_normalization_receipt(acquired.artifact_ref,ReadbackStore(store,store))

@@ -245,8 +245,41 @@ def normalize_daily_acquisition(ref: ArtifactRefV1, store) -> dict[str, object]:
         trade_count=trades,provider_published_at=None))
 
 
+def retain_normalization_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
+    """Retain the existing P2 provider identity after complete raw validation."""
+    from uuid import NAMESPACE_URL, uuid5
+    from packages.data_contracts import ProviderCapabilityV1, ProviderReceiptV1, RawEvidenceArtifactV1
+    acquired=validate_acquisition_receipt(ref,store)
+    normalized=normalize_daily_acquisition(ref,store)
+    archive_url=_BASE+f'BTCUSDT-1d-{acquired.day.isoformat()}.zip'
+    checksum_url=archive_url+'.CHECKSUM'
+    query=dict(schema_version='p3-daily-acquisition-query-v1',provider='binance.public-archive',
+        day=acquired.day.isoformat(),instrument='BTCUSDT.BINANCE',interval='1d',
+        archive_url=archive_url,checksum_url=checksum_url)
+    evidence=tuple(RawEvidenceArtifactV1(
+        evidence_id=uuid5(NAMESPACE_URL,url+'#sha256='+raw.content_sha256),
+        provider='binance.public-archive',media_type=raw.media_type,byte_length=raw.size_bytes,
+        content_sha256=raw.content_sha256,source_available_at=acquired.system_observed_at,
+        system_observed_at=acquired.system_observed_at,fetched_at=acquired.fetched_at)
+        for url,raw in ((archive_url,acquired.archive_ref),(checksum_url,acquired.checksum_ref)))
+    document=canonical_json_bytes(normalized)
+    receipt=ProviderReceiptV1(provider='binance.public-archive',
+        capability=ProviderCapabilityV1.MARKET_BARS,query_sha256=hashlib.sha256(canonical_json_bytes(query)).hexdigest(),
+        evidence=evidence,normalization_version='p3.binance.12-column.daily.v1',
+        output_sha256s=(hashlib.sha256(document).hexdigest(),))
+    normalized_ref=store.put_bytes(document,media_type='application/json')
+    if store.read_bytes(normalized_ref)!=document:
+        raise AcquisitionError('normalized document retention differs')
+    encoded=canonical_json_bytes(receipt)
+    receipt_ref=store.put_bytes(encoded,media_type='application/json')
+    if store.read_bytes(receipt_ref)!=encoded:
+        raise AcquisitionError('provider receipt retention differs')
+    return receipt_ref
+
+
 __all__ = [
     "AcquiredDailyRow", "AcquisitionError", "ApprovedHttpTransport", "DailyAcquisitionReceipt",
     "RetryableTransportError", "acquire_day", "acquire_day_receipt", "parse_daily_archive", "validate_acquisition_receipt",
     "normalize_daily_acquisition",
+    "retain_normalization_receipt",
 ]
