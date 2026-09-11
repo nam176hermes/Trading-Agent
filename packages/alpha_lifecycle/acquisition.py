@@ -267,14 +267,55 @@ def retain_normalization_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
         capability=ProviderCapabilityV1.MARKET_BARS,query_sha256=hashlib.sha256(canonical_json_bytes(query)).hexdigest(),
         evidence=evidence,normalization_version='p3.binance.12-column.daily.v1',
         output_sha256s=(hashlib.sha256(document).hexdigest(),))
-    normalized_ref=store.put_bytes(document,media_type='application/json')
-    if store.read_bytes(normalized_ref)!=document:
-        raise AcquisitionError('normalized document retention differs')
-    encoded=canonical_json_bytes(receipt)
-    receipt_ref=store.put_bytes(encoded,media_type='application/json')
-    if store.read_bytes(receipt_ref)!=encoded:
-        raise AcquisitionError('provider receipt retention differs')
-    return receipt_ref
+    _retain_json(document,store)
+    return _retain_json(canonical_json_bytes(receipt),store)
+
+
+def _retain_json(raw: bytes, store) -> ArtifactRefV1:
+    digest=hashlib.sha256(raw).hexdigest()
+    expected=ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),
+        media_type='application/json',locator=digest+'.blob')
+    if store.put_bytes(raw,media_type='application/json')!=expected or store.read_bytes(expected)!=raw:
+        raise AcquisitionError('retained JSON artifact identity or bytes differ')
+    return expected
+
+
+def daily_arrow_table(ref: ArtifactRefV1, store):
+    """Adapt the fixed daily representation to the existing P2 materializer."""
+    import pyarrow as pa
+    from packages.data_contracts import ArrowFieldV1, ArrowSchemaV1
+    normalized=normalize_daily_acquisition(ref,store)
+    row=normalized['row']
+    assert isinstance(row,dict)
+    fields=(('ts_event','timestamp[ns,UTC]'),('date','string'),('instrument','string'),
+        ('opened_at','timestamp[ns,UTC]'),('closed_at_exclusive','timestamp[ns,UTC]'),
+        ('raw_close_time','int64'),('raw_timestamp_unit','string'),('open','string'),
+        ('high','string'),('low','string'),('close','string'),('base_volume','string'),
+        ('quote_volume','string'),('trade_count','int64'),('provider_published_at','timestamp[ns,UTC]'))
+    schema=ArrowSchemaV1(schema_id='p3.binance.daily.v1',data_api_epoch=2,
+        fields=tuple(ArrowFieldV1(field_id=index,name=name,data_type=kind,
+            nullable=name=='provider_published_at') for index,(name,kind) in enumerate(fields,1)))
+    types={'timestamp[ns,UTC]':pa.timestamp('ns',tz='UTC'),'string':pa.string(),'int64':pa.int64()}
+    arrow_schema=pa.schema([pa.field(field.name,types[field.data_type],nullable=field.nullable)
+        for field in schema.fields])
+    values=dict(row)
+    for field in schema.fields:
+        if field.data_type=='timestamp[ns,UTC]' and values[field.name] is not None:
+            values[field.name]=datetime.fromisoformat(values[field.name].replace('Z','+00:00'))
+    return schema,pa.Table.from_pylist([values],schema=arrow_schema)
+
+
+def retain_daily_quality_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
+    """Retain exactly the existing P2 quality receipt's four-field digest input."""
+    from dataclasses import asdict
+    from packages.data_quality import validate_bar_rows
+    row=normalize_daily_acquisition(ref,store)['row']
+    assert isinstance(row,dict)
+    receipt=validate_bar_rows((dict(ts_event=datetime.fromisoformat(row['ts_event'].replace('Z','+00:00')),
+        open=row['open'],high=row['high'],low=row['low'],close=row['close'],volume=row['base_volume']),),
+        dataset='p3.research.daily')
+    raw=canonical_json_bytes(asdict(receipt))
+    return _retain_json(raw,store)
 
 
 __all__ = [
@@ -282,4 +323,6 @@ __all__ = [
     "RetryableTransportError", "acquire_day", "acquire_day_receipt", "parse_daily_archive", "validate_acquisition_receipt",
     "normalize_daily_acquisition",
     "retain_normalization_receipt",
+    "daily_arrow_table",
+    "retain_daily_quality_receipt",
 ]
