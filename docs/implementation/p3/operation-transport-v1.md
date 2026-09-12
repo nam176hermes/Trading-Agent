@@ -544,6 +544,13 @@ checks passed spawn transport (27), baseline operation (21), candidate closure
 final eight-file test diff. These local timings are not a hosted runtime estimate;
 the next real Foundation run must establish whether the job completes.
 
+The budget regression failed once in 0.18 seconds before the workflow change.
+The complete closure-validator suite then passed 153 tests in 54.45 seconds.
+Ruff, API contract generation checks, broad-handler inventory and diff checks
+pass. The canonical closure checker reports QUALIFICATION_PENDING with exit 0;
+static retains 117 pre-existing diagnostics. Independent review passed the
+four-file budget change. Hosted Foundation and coverage results remain pending.
+
 This is source-test verification only. Protected HWC/Pre-P3, T-P3-060 and official
 research remain unqualified for this head. LIVE_ELIGIBLE=false and
 LIVE_ENABLED=false.
