@@ -488,7 +488,8 @@ The guard, threshold arithmetic and production source are unchanged.
 Both Foundation runs for PR60 head ea9e8e1f reached their 60-minute job limit.
 The recorded root suite had 10,841 passes and no failures before critical
 coverage was cancelled. The coverage floors, required native inventory, test
-selection and workflow time limit are unchanged.
+selection and workflow time limit were unchanged in that fixture-only packet.
+The later Foundation budget repair below changes the limit with its canonical validator.
 
 A deterministic pytest collection probe failed with five independent
 registrations each for `retained_baseline` and `synthetic_oos`. Their canonical
@@ -517,9 +518,25 @@ preserve symlinks and fresh regular-file inodes. All real child runs, corruption
 readback, arithmetic, replica and custody assertions remain. The special 90-return
 and patched data builders are unchanged. Transport-only tests use small retained
 artifacts for refs they do not dereference. No production source, test selector,
-coverage floor or Foundation timeout changed.
+coverage floor or Foundation timeout changed in that fixture-only packet.
 
-The first four fixture optimizations passed the complete serial P3 suite:
+## Foundation budget after measured full-suite completion
+
+PR60 head b7d4cdc24217ae7329bafd6196fb49d008584b7d again reached the 60-minute
+limit in runs 34675342166 and 34675340428. The PR root suite passed all 10,084
+tests in 2398.67 seconds; governance finished 10,841 passes and no failures.
+Critical coverage began after about 50 minutes and was still running when the
+job was cancelled. The push run showed the same sequence (root: 2344.20 seconds).
+Neither run supplies a completed coverage verdict or Foundation PASS.
+
+Foundation's bounded verify budget and its exact structural validator now use
+90 minutes. This allows about 40 minutes after the measured preceding stages;
+actual hosted completion remains to be verified. The regression first failed
+against the old budget. No selector, coverage floor, permission, evidence route,
+required gate or cancel-in-progress behavior changes. This CI budget is separate
+from the fixed research policies and all runtime/holdout execution deadlines.
+
+Before this CI budget repair, the first four fixture optimizations passed the complete serial P3 suite:
 666 passed, 1 skipped in 1105.94 seconds. The final shared default seed change
 then passed its four affected modules: 55 passed in 93.42 seconds. Earlier focused
 checks passed spawn transport (27), baseline operation (21), candidate closure
