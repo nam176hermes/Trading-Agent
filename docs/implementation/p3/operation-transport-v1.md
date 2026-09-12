@@ -505,3 +505,28 @@ host gate skipped, 1638.27 seconds, versus 2007.49 seconds in the preceding full
 run (which also exposed the subsequently corrected stale training-date test).
 Static retains 117 existing diagnostics; independent fixture-reuse review passed.
 These source fixtures issue no protected qualification or research authority.
+
+
+## PR 60 repeated fixture construction
+
+Both previous Foundation jobs reached the 60-minute limit after the root suite
+passed 10,084 tests; the unchanged critical-coverage command then reran P3.
+Test-only changes now retain immutable candidate/selection seed preparation once
+and copy real baseline inputs into independent per-case directories. Copies
+preserve symlinks and fresh regular-file inodes. All real child runs, corruption,
+readback, arithmetic, replica and custody assertions remain. The special 90-return
+and patched data builders are unchanged. Transport-only tests use small retained
+artifacts for refs they do not dereference. No production source, test selector,
+coverage floor or Foundation timeout changed.
+
+The first four fixture optimizations passed the complete serial P3 suite:
+666 passed, 1 skipped in 1105.94 seconds. The final shared default seed change
+then passed its four affected modules: 55 passed in 93.42 seconds. Earlier focused
+checks passed spawn transport (27), baseline operation (21), candidate closure
+(17), and selection output reconstruction (2). Independent review passes the
+final eight-file test diff. These local timings are not a hosted runtime estimate;
+the next real Foundation run must establish whether the job completes.
+
+This is source-test verification only. Protected HWC/Pre-P3, T-P3-060 and official
+research remain unqualified for this head. LIVE_ELIGIBLE=false and
+LIVE_ENABLED=false.

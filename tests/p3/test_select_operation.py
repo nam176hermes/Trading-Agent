@@ -1,9 +1,12 @@
 """Four real synthetic candidate executions; no canonical SQL or protected authority."""
 from datetime import UTC,datetime,timedelta
 import hashlib
+import io
 import json
 from pathlib import Path
+import shutil
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,9 +71,10 @@ def retained_family(synthetic_oos,tmp_path_factory):
     return store,inputs,family_ref
 
 
-@pytest.mark.parametrize('fault',[None,'forged_primary'])
-def test_select_primary_cli_preserves_complete_failed_family(retained_family,tmp_path,monkeypatch,capsys,fault):
+@pytest.fixture(scope='module')
+def selection_run(retained_family,tmp_path_factory):
     from scripts import run_p3_alpha_campaign as command
+    tmp_path=tmp_path_factory.mktemp('synthetic-selection-cli')
     store,inputs,family_ref=retained_family
     family=_read(store,family_ref,FamilyReview)
     intent_ref=_seal(store,schema_version='p3-operation-input-v1',workflow_operation='p3-select-primary-v1',
@@ -80,20 +84,34 @@ def test_select_primary_cli_preserves_complete_failed_family(retained_family,tmp
         (tmp_path/name).write_bytes(canonical_json_bytes(value))
     root=Path(__file__).resolve().parents[2]
     def no_execution(**kwargs): raise AssertionError('selection started another research trial')
-    monkeypatch.setattr(command,'BubblewrapExecutor',no_execution)
-    monkeypatch.setattr(sys,'argv',[str(command.__file__),
+    argv=[str(command.__file__),
         '--manifest-ref',str(tmp_path/'manifest'),'--source',str(tmp_path/'source'),
         '--environment-ref',str(tmp_path/'environment'),'--authorization-ref',str(tmp_path/'authorization'),
         '--job-id','synthetic_select_job','--store',str(store._root),'--release',str(root),'--python',sys.executable,
-        '--sandbox-policy-digest','c'*64,'--logical-trial-id','p3-select-primary-v1','--output',str(tmp_path/'runs')])
+        '--sandbox-policy-digest','c'*64,'--logical-trial-id','p3-select-primary-v1','--output',str(tmp_path/'runs')]
     before={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in store._root.iterdir()}
-    command.main()
-    result=PrimarySelection.model_validate_json(capsys.readouterr().out)
+    captured=SimpleNamespace(buffer=io.BytesIO())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(command,'BubblewrapExecutor',no_execution)
+        patch.setattr(sys,'argv',argv)
+        patch.setattr(command.sys,'stdout',captured)
+        command.main()
+    result=PrimarySelection.model_validate_json(captured.buffer.getvalue())
     assert result.outcome=='NONE_QUALIFIED' and result.primary_alpha_id is None
     assert result.family_review_ref==family_ref and len(family.trial_outcome_refs)==28
     assert before=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in store._root.iterdir()}
     raw=canonical_json_bytes(result)
     assert (tmp_path/'runs'/'artifacts'/(hashlib.sha256(raw).hexdigest()+'.blob')).read_bytes()==raw
+    return store,inputs,family_ref,intent_ref,auth_ref,result,tmp_path/'runs'
+
+
+@pytest.mark.parametrize('fault',[None,'forged_primary'])
+def test_select_primary_cli_preserves_complete_failed_family(selection_run,tmp_path,fault):
+    store,inputs,family_ref,intent_ref,auth_ref,result,output=selection_run
+    family=_read(store,family_ref,FamilyReview)
+    # Each validator receives a fresh private copy, including the forged case.
+    shutil.copytree(output,tmp_path/'runs',symlinks=True)
+    raw=canonical_json_bytes(result)
 
     if fault=='forged_primary':
         from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport,PublicationReceipt

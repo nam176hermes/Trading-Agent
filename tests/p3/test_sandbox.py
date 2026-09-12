@@ -51,11 +51,10 @@ def test_inner_bwrap_requires_readonly_mount_when_owned_by_namespace_user(monkey
             require_official_sandbox(path)
 
 
-def test_memfd_failure_remains_a_p3_sandbox_hold(tmp_path,monkeypatch):
-    from tests.p3.test_replica_execution import baseline_inputs
+def test_memfd_failure_remains_a_p3_sandbox_hold(isolated_baseline_input,tmp_path,monkeypatch):
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest,InputSet
     from services.job_worker.engine_spawn_interface import EngineSpawnError
-    store,ref=baseline_inputs(tmp_path/'inputs')
+    store,ref=isolated_baseline_input
     manifest=BaselineManifest.model_validate_json(store.read_bytes(ref))
     inputs=InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
     monkeypatch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox',lambda path:path)

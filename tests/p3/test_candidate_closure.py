@@ -63,9 +63,15 @@ def _candidate_closure(inputs,*,forged=False,index=0):
     return store,retain(closure),manifest.input_set_ref,request.proposed_event_refs[-1]
 
 
+@pytest.fixture(scope='module')
+def candidate_closure(synthetic_oos):
+    # Identical immutable CAS refs; each case still runs the real recomputation.
+    return _candidate_closure(synthetic_oos)
+
+
 @pytest.mark.parametrize('forged',[False,True])
-def test_candidate_closure_recomputes_even_a_fully_rehashed_pass(synthetic_oos,monkeypatch,forged):
-    store,closure_ref,input_ref,head_ref=_candidate_closure(synthetic_oos,forged=forged)
+def test_candidate_closure_recomputes_even_a_fully_rehashed_pass(candidate_closure,synthetic_oos,monkeypatch,forged):
+    store,closure_ref,input_ref,head_ref=_candidate_closure(synthetic_oos,forged=True) if forged else candidate_closure
     monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('closure validation wrote artifacts')))
     arguments=dict(input_set_ref=input_ref,alpha_id=FAMILY_IDS[0],store=store)
     if forged:
@@ -79,8 +85,8 @@ def test_candidate_closure_recomputes_even_a_fully_rehashed_pass(synthetic_oos,m
 
 
 @pytest.mark.parametrize('fault',['media','input_set','commit_outcome','event_ids','event_order','request_media','commit_media'])
-def test_candidate_closure_rejects_scope_and_commit_drift(synthetic_oos,monkeypatch,fault):
-    store,closure_ref,input_ref,head_ref=_candidate_closure(synthetic_oos)
+def test_candidate_closure_rejects_scope_and_commit_drift(candidate_closure,monkeypatch,fault):
+    store,closure_ref,input_ref,head_ref=candidate_closure
     if fault=='media':
         closure_ref=closure_ref.model_copy(update={'media_type':'text/plain'})
     elif fault=='input_set':
@@ -116,8 +122,8 @@ def test_candidate_closure_rejects_scope_and_commit_drift(synthetic_oos,monkeypa
 
 @pytest.mark.parametrize('index',[0,1])
 @pytest.mark.parametrize('corrupt',[False,True])
-def test_candidate_closure_reads_each_actual_registry_event(synthetic_oos,monkeypatch,index,corrupt):
-    store,closure_ref,input_ref,_=_candidate_closure(synthetic_oos)
+def test_candidate_closure_reads_each_actual_registry_event(candidate_closure,monkeypatch,index,corrupt):
+    store,closure_ref,input_ref,_=candidate_closure
     closure=_read(store,closure_ref,CampaignClosureReport)
     receipt=_read(store,closure.publication_ref,PublicationReceipt)
     missing=receipt.registry_event_refs[index]

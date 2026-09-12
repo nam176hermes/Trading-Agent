@@ -5,11 +5,10 @@ from packages.alpha_lifecycle.contracts.execution import BaselineManifest,InputS
 from packages.alpha_lifecycle.contracts.data import PITProof
 from packages.engine_contracts.serialization import canonical_json_bytes
 from tests.p3.test_publication import _changed
-from tests.p3.test_replica_execution import baseline_inputs
 
 
-def test_research_input_cannot_replace_revision_commitment_with_opaque_json(tmp_path):
-    store,manifest_ref=baseline_inputs(tmp_path/'inputs')
+def test_research_input_cannot_replace_revision_commitment_with_opaque_json(isolated_baseline_input):
+    store,manifest_ref=isolated_baseline_input
     manifest=_read(store,manifest_ref,BaselineManifest)
     inputs=_read(store,manifest.input_set_ref,InputSet)
     pit=_read(store,inputs.pit_proof_ref,PITProof)

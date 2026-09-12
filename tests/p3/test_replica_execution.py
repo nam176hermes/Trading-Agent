@@ -171,8 +171,8 @@ def baseline_inputs(root, *, return_count=2):
     return store, baseline
 
 
-def test_baseline_child_dispatches_and_preserves_the_input_store(tmp_path):
-    store, manifest = baseline_inputs(tmp_path / "inputs")
+def test_baseline_child_dispatches_and_preserves_the_input_store(isolated_baseline_input,tmp_path):
+    store, manifest = isolated_baseline_input
     before = {p.name: p.read_bytes() for p in (tmp_path / "inputs").iterdir()}
     replica = tmp_path / "replica"
     replica.mkdir(mode=0o700)
@@ -191,10 +191,10 @@ def test_baseline_child_dispatches_and_preserves_the_input_store(tmp_path):
 
 
 @pytest.mark.parametrize('fault',['source','environment','policy'])
-def test_executor_rejects_unbound_inputs_before_preparing_child_argv(tmp_path,monkeypatch,fault):
+def test_executor_rejects_unbound_inputs_before_preparing_child_argv(isolated_baseline_input,tmp_path,monkeypatch,fault):
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
     from packages.alpha_lifecycle import sandbox
-    store,manifest_ref = baseline_inputs(tmp_path/'inputs')
+    store,manifest_ref = isolated_baseline_input
     manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
     inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
     monkeypatch.setattr(sandbox,'require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
@@ -229,9 +229,9 @@ def test_executor_rejects_unbound_inputs_before_preparing_child_argv(tmp_path,mo
     ),
 )
 def test_parent_retains_child_artifacts_after_real_portable_child_exit(
-    tmp_path, monkeypatch, mutation
+    isolated_baseline_input, tmp_path, monkeypatch, mutation
 ):
-    store, manifest = baseline_inputs(tmp_path / "inputs")
+    store, manifest = isolated_baseline_input
     root = Path(__file__).resolve().parents[2]
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
 
@@ -539,12 +539,12 @@ def test_parent_rejects_tampered_replica_outputs(tmp_path, damage):
 
 
 @pytest.mark.parametrize('fault', ['session', 'streams', 'oversized', 'descriptor_read'])
-def test_replica_preserves_driver_custody_and_bounds_untrusted_io(tmp_path, monkeypatch, fault):
+def test_replica_preserves_driver_custody_and_bounds_untrusted_io(isolated_baseline_input,tmp_path, monkeypatch, fault):
     import subprocess
     from packages.alpha_lifecycle import sandbox
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
 
-    store, manifest_ref = baseline_inputs(tmp_path / 'inputs')
+    store, manifest_ref = isolated_baseline_input
     manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
     inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
     monkeypatch.setattr(sandbox, 'require_official_sandbox', lambda path: path)
