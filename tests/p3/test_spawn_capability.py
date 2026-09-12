@@ -14,23 +14,30 @@ def synthetic_provider(tmp_path, monkeypatch):
     from packages.alpha_lifecycle.contracts.authority import RunAuthorization
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
     from packages.alpha_lifecycle.operation_input import P3OperationInput
-    from packages.engine_contracts.serialization import canonical_json_bytes
     from packages.job_contracts import JobType
     from services.job_store.worker_repository import ClaimedJob
     from tests.p3.test_baseline_operation import _cli_authorization
-    from tests.p3.test_replica_execution import baseline_inputs, _seal
-    from tests.p3.test_publication import _changed
-    store, baseline_ref = baseline_inputs(tmp_path/'store')
-    baseline = BaselineManifest.model_validate_json(store.read_bytes(baseline_ref))
-    inputs = InputSet.model_validate_json(store.read_bytes(baseline.input_set_ref))
-    environment = module._read(store,inputs.environment_ref,module.EnvironmentIdentity)
-    environment = _changed(environment,root_lock_digest=hashlib.sha256(b'synthetic lock').hexdigest(),
-        sandbox_policy_digest=module.SANDBOX_PROFILE_SHA256)
-    environment_ref = store.put_bytes(canonical_json_bytes(environment),media_type='application/json')
-    inputs = _changed(inputs,environment_ref=environment_ref.model_dump(mode='json'))
-    input_ref = store.put_bytes(canonical_json_bytes(inputs),media_type='application/json')
-    baseline = _changed(baseline,input_set_ref=input_ref.model_dump(mode='json'))
-    baseline_ref = store.put_bytes(canonical_json_bytes(baseline),media_type='application/json')
+    from tests.p3.test_replica_execution import _seal
+    from tests.p3.test_job_api import _alpha_request
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    root=tmp_path/'store';root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    placeholder=store.put_bytes(b'{}',media_type='application/json')
+    # Transport tests never calculate or dereference dataset/PIT/fold artifacts.
+    environment_ref=_seal(store,schema_version='p3-environment-identity-v1',python_version='3.11',
+        root_lock_digest=hashlib.sha256(b'synthetic lock').hexdigest(),
+        native_manifest_digest=P1_REAL_BACKTEST_POLICY.closure_sha256,
+        sandbox_policy_digest=module.SANDBOX_PROFILE_SHA256,platform='linux-x86_64',decimal_precision=50)
+    input_ref=_seal(store,schema_version='p3-input-set-v1',source=_alpha_request().payload.expected_source,
+        epoch_id='synthetic',policy_digest='c'*64,family_digest='e'*64,
+        dataset_evidence_ref=placeholder,fold_manifest_ref=placeholder,pit_proof_ref=placeholder,
+        environment_ref=environment_ref,regime_threshold_ref=placeholder,integration_receipt_ref=placeholder,
+        cost_model=dict(fee_bps=0,spread_bps=0,slippage_bps=0,funding_bps=0,borrow_bps=0))
+    inputs=InputSet.model_validate_json(store.read_bytes(input_ref))
+    baseline_ref=_seal(store,schema_version='p3-baseline-manifest-v1',input_set_ref=input_ref,
+        required_baselines=['B0_CASH','B1_BUY_AND_HOLD','B2_EQUAL_WEIGHT','B3_SIMPLE_MOMENTUM','B4_SIMPLE_MEAN_REVERSION'])
+    baseline=BaselineManifest.model_validate_json(store.read_bytes(baseline_ref))
     intent_ref = _seal(store,schema_version='p3-operation-input-v1',workflow_operation='p3-baselines-v1',
         operation='BASELINES',input_set_ref=baseline.input_set_ref,allowed_alpha_ids=[],body={'baseline_manifest_ref':baseline_ref})
     intent = P3OperationInput.model_validate_json(store.read_bytes(intent_ref))
@@ -359,3 +366,26 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
     finally:
         process.stdout.close()
         process.stderr.close()
+
+
+def test_projected_driver_imports_official_calculation_owners(tmp_path):
+    """Import from only the reviewed projection; the repository is absent from sys.path."""
+    import json
+    import subprocess
+    import sys
+    root=Path(__file__).resolve().parents[2]
+    inventory=json.loads((root/'docs/implementation/p3/p3-driver-files-v1.json').read_bytes())
+    for relative in inventory['paths']:
+        target=tmp_path/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/relative).read_bytes())
+    probe="""import sys
+sys.path.insert(0,sys.argv[1])
+from scripts import run_p3_alpha_campaign
+from packages.alpha_lifecycle import primary_selection, qualification, research_custody, pit_evidence, pit_suite
+print('projected official owners imported')
+"""
+    result=subprocess.run([sys.executable,'-I','-B','-c',probe,str(tmp_path)],cwd=tmp_path,
+        capture_output=True,text=True,timeout=30,check=False)
+    assert result.returncode==0,result.stderr
+    assert result.stdout=='projected official owners imported\n'

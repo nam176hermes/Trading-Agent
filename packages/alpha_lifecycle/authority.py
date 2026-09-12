@@ -214,6 +214,17 @@ def stage_alpha_campaign_payload(store, authorization, source, workflow_operatio
                 or operation_input.digest not in review.subject_digests):
                 raise ValueError("operation input is not covered by a current independent review")
             store.read_bytes(review.evidence_ref)
+            from packages.alpha_lifecycle.operation_input import SelectPrimaryInput
+            if isinstance(operation_input.body,SelectPrimaryInput):
+                from packages.alpha_lifecycle.baseline_campaign import _read
+                from packages.alpha_lifecycle.contracts.authority import FamilyReview
+                from packages.alpha_lifecycle.primary_selection import validate_family_review_approval
+                family=_read(store,operation_input.body.family_review_ref,FamilyReview)
+                inner=validate_family_review_approval(family,source,store)
+                if (family.input_set_ref!=operation_input.input_set_ref
+                    or inner.operator_identity!=review.operator_identity
+                    or not inner.issued_at<=authorization.issued_at<=now<authorization.expires_at<=inner.expires_at):
+                    raise ValueError('family review is not current for this authorized selection')
         except (ValueError, OSError) as error:
             raise AuthorityHeld("HELD E_REVIEW_AUTHORITY: operation review is invalid") from error
     manifest_ref = store.put_bytes(manifest_bytes,media_type=reference.media_type)

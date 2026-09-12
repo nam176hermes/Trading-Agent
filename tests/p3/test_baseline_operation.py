@@ -7,9 +7,6 @@ from packages.alpha_lifecycle.contracts.execution import BaselineManifest,InputS
 from packages.alpha_lifecycle.contracts.results import BaselinePack,BaselineSelection,ReplayProof
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
-from tests.p3.test_replica_execution import baseline_inputs
-
-
 def _cli_authorization(store, intent_ref, source):
     """Synthetic review/authority for CLI source tests, never protected authority."""
     from datetime import UTC, datetime, timedelta
@@ -32,11 +29,11 @@ def _cli_authorization(store, intent_ref, source):
 
 
 @pytest.mark.parametrize('fault',['fold_policy','threshold_policy','threshold_dataset','fold_snapshot','pit_dataset','pit_folds','pit_vintage','fold_mode','dataset_segment','noncanonical_folds','training_before_dataset','training_overlaps_oos','pit_limitations','missing_revision','missing_no_future'])
-def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monkeypatch,fault):
+def test_baseline_rejects_misbound_input_graph_before_any_replica(isolated_baseline_input,tmp_path,monkeypatch,fault):
     import json
     from packages.alpha_lifecycle import baseline_campaign as module
     from tests.p3.test_replica_execution import _seal
-    store, manifest_ref = baseline_inputs(tmp_path/'inputs')
+    store, manifest_ref = isolated_baseline_input
     def read(ref):
         return json.loads(store.read_bytes(ref))
     def seal(value):
@@ -54,7 +51,8 @@ def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monke
     elif fault == 'threshold_dataset':
         threshold['training_dataset_ref'] = other
     elif fault == 'training_before_dataset':
-        threshold['training_range']['start'] = '2019-12-31'
+        from datetime import date, timedelta
+        threshold['training_range']['start'] = (date.fromisoformat(dataset['date_range']['start']) - timedelta(days=1)).isoformat()
     elif fault == 'training_overlaps_oos':
         threshold['training_range']['end'] = folds['folds'][0]['decision_start']
     elif fault == 'pit_limitations':
@@ -100,10 +98,10 @@ def test_baseline_rejects_misbound_input_graph_before_any_replica(tmp_path,monke
 
 
 @pytest.mark.parametrize('entrypoint',['helper','cli','cli_without_authorization'])
-def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_path,monkeypatch,capsys,entrypoint):
+def test_baseline_operation_returns_selection_after_three_real_child_runs(isolated_baseline_input,tmp_path,monkeypatch,capsys,entrypoint):
     from packages.alpha_lifecycle.baseline_campaign import execute_baseline_manifest
     from packages.alpha_lifecycle import sandbox
-    store, manifest_ref = baseline_inputs(tmp_path/'inputs')
+    store, manifest_ref = isolated_baseline_input
     manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
     inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
     root = Path(__file__).resolve().parents[2]
@@ -165,12 +163,12 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(tmp_pa
 
 
 @pytest.mark.parametrize('fault',['missing_environment','noncanonical_environment','sandbox_policy'])
-def test_cli_rejects_environment_before_executor_construction(tmp_path,monkeypatch,fault):
+def test_cli_rejects_environment_before_executor_construction(isolated_baseline_input,tmp_path,monkeypatch,fault):
     import json
     from scripts import run_p3_alpha_campaign as command
     from tests.p3.test_publication import _changed
     from tests.p3.test_replica_execution import _seal
-    store,manifest_ref = baseline_inputs(tmp_path/'inputs')
+    store,manifest_ref = isolated_baseline_input
     manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
     inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
     if fault == 'missing_environment':

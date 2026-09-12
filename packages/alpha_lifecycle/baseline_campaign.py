@@ -6,10 +6,10 @@ import hashlib
 from collections.abc import Mapping
 from decimal import Decimal
 from pathlib import Path
-from typing import Protocol, TypeVar
 
 from pydantic import BaseModel
 
+from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore, _read
 from packages.alpha_lifecycle.baselines import BaselineId, BaselineResultV1, baseline_weights_with_reset
 from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence, FoldManifest, PITProof
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet, EnvironmentIdentity
@@ -24,40 +24,6 @@ from packages.alpha_lifecycle.regimes import assign_regimes
 from packages.alpha_lifecycle.replay import SandboxExecutor, run_replays, validate_replay_proof
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-
-
-class ArtifactStore(Protocol):
-    def read_bytes(self, ref: ArtifactRefV1, /) -> bytes: ...
-    def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1: ...
-
-
-class ReadbackStore:
-    """Recompute with existing builders while requiring already retained bytes."""
-
-    def __init__(self, reader: ArtifactStore, outputs: ArtifactStore) -> None:
-        self._reader, self._outputs = reader, outputs
-
-    def read_bytes(self, ref: ArtifactRefV1) -> bytes:
-        return self._reader.read_bytes(ref)
-
-    def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
-        digest = hashlib.sha256(value).hexdigest()
-        ref = ArtifactRefV1(content_sha256=digest, size_bytes=len(value),
-            media_type=media_type, locator=f"{digest}.blob")
-        if self._outputs.read_bytes(ref) != value:
-            raise ValueError("recomputation differs from retained artifacts")
-        return ref
-
-
-Model = TypeVar("Model", bound=BaseModel)
-
-
-def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model:
-    raw = store.read_bytes(ref)
-    value = model.model_validate_json(raw)
-    if canonical_json_bytes(value) != raw:
-        raise ValueError('research input artifact is not canonical')
-    return value
 
 
 def _seal(store: ArtifactStore, value: BaseModel) -> ArtifactRefV1:
@@ -88,7 +54,8 @@ def validate_research_inputs(input_set_ref: ArtifactRefV1, reader: ArtifactStore
         or pit.vintage_class != dataset.vintage_class or pit.limitations != dataset.limitations
     ):
         raise ValueError('research input graph binding differs')
-    reader.read_bytes(pit.revision_proof_ref)
+    from packages.alpha_lifecycle.research_custody import validate_input_commitment
+    validate_input_commitment(input_set_ref,store=reader)
     reader.read_bytes(pit.no_future_suite_ref)
     return inputs,folds,dataset,threshold
 

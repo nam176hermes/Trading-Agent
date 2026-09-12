@@ -6,16 +6,18 @@ import json
 from decimal import ROUND_HALF_EVEN,localcontext
 
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore,_read,run_baseline_pack,validate_baseline_selection,baseline_manifest_ref
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RunAuthorization,FamilyReview,PrimarySelection
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest
-from packages.alpha_lifecycle.contracts.results import BaselinePack,BaselineSelection,ReplayProof,ReplayReceipt
-from packages.alpha_lifecycle.operation_input import P3OperationInput,BaselinesInput,RegisterFamilyInput
+from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
+from services.job_store.p3_sql import PublicationProposal
+from packages.alpha_lifecycle.contracts.results import BaselinePack,BaselineSelection,ReplayProof,ReplayReceipt,QualificationBundle,EvaluationResult
+from packages.alpha_lifecycle.operation_input import P3OperationInput,BaselinesInput,RegisterFamilyInput,CandidateOOSInput,SelectPrimaryInput
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload,JobType
 from services.job_store.records import ClaimedJob
 from .p3_output import P3OutputCustody
-from .p3_publication_producer import prepare_family_registration
+from .p3_publication_producer import prepare_family_registration,prepare_candidate_oos
 
 _REF_FIELDS={'content_sha256','size_bytes','media_type','locator'}
 _MAX_REFS=8192
@@ -64,6 +66,8 @@ def _closure(initial, store, *, output_refs=()):
         if len(found) >= _MAX_REFS or total > _MAX_BYTES:
             raise ValueError('P3 result closure exceeds its bound')
         raw=store.read_bytes(ref)
+        if len(raw)!=ref.size_bytes or hashlib.sha256(raw).hexdigest()!=ref.content_sha256:
+            raise ValueError('P3 closure artifact bytes differ from their reference')
         found[key]=ref
         if ref.media_type != 'application/json':
             continue
@@ -77,6 +81,11 @@ def _closure(initial, store, *, output_refs=()):
             if _key(inventory) not in found:
                 pending[_key(inventory)]=inventory
         values=[(value,0)]
+        if isinstance(value,dict) and value.get('schema_version')=='p3-evaluation-result-v1':
+            evaluation=EvaluationResult.model_validate_json(raw)
+            # These exact embedded values are separately retained by build_robustness.
+            values.extend((_reference(canonical_json_bytes(item)).model_dump(mode='json'),0)
+                for item in (*evaluation.perturbations,evaluation.double_cost,evaluation.delayed))
         while values:
             item,depth=values.pop()
             if depth > 64:
@@ -96,6 +105,29 @@ def _closure(initial, store, *, output_refs=()):
     return found
 
 
+def _validate_replicas(proof,manifest_ref,result_ref,job,inventory,output_refs,outputs):
+    expected_paths={path for path in inventory if path.startswith('artifacts/')}
+    for replica,receipt_ref in zip(('r1','r2','r3'),proof.receipt_refs,strict=True):
+        receipt=_read(outputs,receipt_ref,ReplayReceipt)
+        if receipt.logical_trial_id != job.payload.logical_trial_id:
+            raise ValueError('P3 replay belongs to another operation')
+        if (inventory.get(replica+'/result.json') != result_ref
+            or inventory.get(replica+'/manifest-ref.json') != _reference(canonical_json_bytes(manifest_ref))):
+            raise ValueError('P3 replica files do not prove this operation attempt')
+        expected_paths.update((replica+'/result.json',replica+'/manifest-ref.json'))
+        replica_inventory_ref=next((ref for ref in output_refs if ref.content_sha256 == receipt.output_inventory_digest),None)
+        if replica_inventory_ref is None:
+            raise ValueError('P3 replica inventory is missing')
+        physical={path:ref for path,ref in inventory.items() if path.startswith(replica+'/artifacts/')}
+        expected_inventory=canonical_json_bytes(sorted((result_ref,*physical.values()),key=lambda ref:ref.locator))
+        if (outputs.read_bytes(replica_inventory_ref) != expected_inventory
+            or replica_inventory_ref != _reference(expected_inventory)):
+            raise ValueError('P3 replica inventory differs from exact physical output')
+        expected_paths.update(physical)
+    if set(inventory) != expected_paths:
+        raise ValueError('P3 operation output contains unexpected replica files')
+
+
 def validate_official_output(job, result, custody: P3OutputCustody, inventory_ref: ArtifactRefV1):
     if (type(job) is not ClaimedJob or job.job_type is not JobType.ALPHA_CAMPAIGN
         or type(job.payload) is not AlphaCampaignPayload or type(custody) is not P3OutputCustody
@@ -108,7 +140,7 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
     if result_ref not in output_refs:
         raise ValueError('P3 terminal result is absent from this attempt output')
     intent=_read(store,job.payload.manifest_ref,P3OperationInput)
-    if not isinstance(intent.body,(BaselinesInput,RegisterFamilyInput)):
+    if not isinstance(intent.body,(BaselinesInput,RegisterFamilyInput,CandidateOOSInput,SelectPrimaryInput)):
         raise ValueError('HELD E_OPERATION: complete output validation is unavailable')
     inputs=_closure((job.payload.manifest_ref,job.payload.authorization_ref,baseline_manifest_ref(intent.input_set_ref)),store)
     reader=_ClosedReader(store,(*inputs.values(),*output_refs))
@@ -133,26 +165,29 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
             if validate_baseline_selection(result_ref,intent.input_set_ref,reader) != result:
                 raise ValueError('P3 baseline selection differs from this attempt')
             proof=_read(outputs,result.baseline_replay_proof_ref,ReplayProof)
-            expected_paths={path for path in inventory if path.startswith('artifacts/')}
-            for replica,receipt_ref in zip(('r1','r2','r3'),proof.receipt_refs,strict=True):
-                receipt=_read(outputs,receipt_ref,ReplayReceipt)
-                if receipt.logical_trial_id != job.payload.logical_trial_id:
-                    raise ValueError('P3 replay belongs to another operation')
-                if (inventory.get(replica+'/result.json') != result.pack_ref
-                    or inventory.get(replica+'/manifest-ref.json') != _reference(canonical_json_bytes(intent.body.baseline_manifest_ref))):
-                    raise ValueError('P3 replica files do not prove this baseline attempt')
-                expected_paths.update((replica+'/result.json',replica+'/manifest-ref.json'))
-                replica_inventory_ref=next((ref for ref in output_refs if ref.content_sha256 == receipt.output_inventory_digest),None)
-                if replica_inventory_ref is None:
-                    raise ValueError('P3 replica inventory is missing')
-                physical={path:ref for path,ref in inventory.items() if path.startswith(replica+'/artifacts/')}
-                expected_inventory=canonical_json_bytes(sorted((result.pack_ref,*physical.values()),key=lambda ref:ref.locator))
-                if (outputs.read_bytes(replica_inventory_ref) != expected_inventory
-                    or replica_inventory_ref != _reference(expected_inventory)):
-                    raise ValueError('P3 replica inventory differs from exact physical output')
-                expected_paths.update(physical)
-            if set(inventory) != expected_paths:
-                raise ValueError('P3 baseline output contains unexpected replica files')
+            _validate_replicas(proof,intent.body.baseline_manifest_ref,result.pack_ref,
+                job,inventory,output_refs,outputs)
+        elif isinstance(intent.body,SelectPrimaryInput) and isinstance(result,PrimarySelection):
+            from packages.alpha_lifecycle.primary_selection import select_primary
+            family=_read(reader,intent.body.family_review_ref,FamilyReview)
+            if (family.input_set_ref!=intent.input_set_ref
+                or any(not path.startswith('artifacts/') for path in inventory)):
+                raise ValueError('P3 selection differs from its InputSet or produced replica files')
+            if result!=select_primary(family,ReadbackStore(reader,outputs)):
+                raise ValueError('P3 primary selection differs from complete family recomputation')
+        elif isinstance(intent.body,CandidateOOSInput) and isinstance(result,PublicationProposal):
+            evidence=_read(outputs,result.request.evidence_ref,PrePublicationEvidence)
+            if evidence.qualification_bundle_ref is None:
+                raise ValueError('OOS publication has no qualification bundle')
+            bundle=_read(outputs,evidence.qualification_bundle_ref,QualificationBundle)
+            evaluation=_read(outputs,bundle.evaluation_ref,EvaluationResult)
+            proof=_read(outputs,bundle.replay_proof_ref,ReplayProof)
+            expected=prepare_candidate_oos(intent,evaluation,proof,job_id=job.job_id,
+                observed_at=authorization.issued_at,expires_at=authorization.expires_at,store=ReadbackStore(reader,outputs))
+            if result!=expected:
+                raise ValueError('OOS proposal differs from this attempt and frozen recomputation')
+            _validate_replicas(proof,intent.body.evaluation_manifest_ref,bundle.evaluation_ref,
+                job,inventory,output_refs,outputs)
         elif isinstance(intent.body,RegisterFamilyInput):
             if any(not path.startswith('artifacts/') for path in inventory):
                 raise ValueError('P3 registration must not produce replica files')

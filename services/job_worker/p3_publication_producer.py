@@ -1,19 +1,16 @@
 """Stage unprivileged P3 proposals; only the existing SQL capability commits."""
 from datetime import datetime
 import hashlib
-from uuid import UUID, uuid5
+from uuid import uuid5
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.lifecycle import ExpectedHead, PrePublicationEvidence, PublicationRequest
-from packages.alpha_lifecycle.lifecycle import to_domain_payload
+from packages.alpha_lifecycle.lifecycle import to_domain_payload, publication_event_ids, P3_NAMESPACE
 from packages.alpha_lifecycle.registry import AlphaRegistryEventV1
 from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.domain.events import EventEnvelope
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationProposal
-
-
-_P3_NAMESPACE = UUID('5d3f7ad6-7372-5cb7-80a7-68a179f1fdb2')
 
 
 def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
@@ -45,6 +42,14 @@ def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
         heads.append(ExpectedHead(alpha_id=record.alpha_id,version=record.version,sequence=0,event_digest=None))
     return build_publication_proposal(events=tuple(events),expected_heads=tuple(heads),evidence=evidence,
         epoch_id=inputs.epoch_id,job_id=job_id,observed_at=observed_at,expires_at=expires_at,store=store)
+
+
+def prepare_candidate_oos(intent, evaluation, proof, *, job_id: str, observed_at: datetime,
+    expires_at: datetime, store: ArtifactStore) -> PublicationProposal:
+    from packages.alpha_lifecycle.qualification import prepare_oos_evidence
+    events,heads,evidence,epoch_id=prepare_oos_evidence(intent,evaluation,proof,store=store)
+    return build_publication_proposal(events=events,expected_heads=heads,evidence=evidence,
+        epoch_id=epoch_id,job_id=job_id,observed_at=observed_at,expires_at=expires_at,store=store)
 
 
 def build_publication_proposal(
@@ -82,16 +87,15 @@ def build_publication_proposal(
         if ref != event.artifact:
             raise ValueError('publication registry artifact differs from planned event')
         refs.append(ref)
-        stream_id = uuid5(_P3_NAMESPACE,canonical_json_bytes([epoch_id,*key]).decode())
-        event_id = uuid5(stream_id,canonical_json_bytes([event.sequence,event.event_sha256]).decode())
+        stream_id, event_id = publication_event_ids(epoch_id,event)
         envelope = EventEnvelope[AlphaRegistryTransitionRecordedV1](
             event_id=event_id,event_type='AlphaRegistryTransitionRecordedV1',schema_version='event-envelope-v1',
             source='p3-alpha-lifecycle',stream_id=stream_id,sequence=event.sequence,
             observed_at=observed_at,ingested_at=observed_at,produced_at=observed_at,
             effective_at=observed_at,expires_at=expires_at,
-            correlation_id=uuid5(_P3_NAMESPACE,epoch_id),
-            causation_id=uuid5(_P3_NAMESPACE,evidence_ref.content_sha256),
-            trace_id=uuid5(_P3_NAMESPACE,job_id),payload=payload,
+            correlation_id=uuid5(P3_NAMESPACE,epoch_id),
+            causation_id=uuid5(P3_NAMESPACE,evidence_ref.content_sha256),
+            trace_id=uuid5(P3_NAMESPACE,job_id),payload=payload,
         )
         entries.append(DomainAppendEntry(event_id=event_id,stream_id=stream_id,sequence=event.sequence,
             event_type='AlphaRegistryTransitionRecordedV1',canonical_event_text=canonical_json_bytes(envelope).decode(),

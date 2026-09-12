@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from uuid import UUID, uuid5
 
 from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
 from packages.alpha_lifecycle.registry import (
@@ -13,6 +14,16 @@ from packages.alpha_lifecycle.registry import (
 from packages.data_contracts import ArtifactRefV1
 from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.engine_contracts.serialization import canonical_json_bytes
+
+
+P3_NAMESPACE = UUID('5d3f7ad6-7372-5cb7-80a7-68a179f1fdb2')
+
+
+def publication_event_ids(epoch_id: str, event: AlphaRegistryEventV1) -> tuple[UUID, UUID]:
+    stream_id = uuid5(P3_NAMESPACE, canonical_json_bytes(
+        [epoch_id, event.record.alpha_id, event.record.version]).decode())
+    return stream_id, uuid5(stream_id, canonical_json_bytes(
+        [event.sequence, event.event_sha256]).decode())
 
 
 _STAGE_TARGETS = {

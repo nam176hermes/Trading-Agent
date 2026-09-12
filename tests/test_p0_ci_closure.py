@@ -469,7 +469,7 @@ def test_make_execution_semantic_mutations_fail_closed(
 def test_foundation_timeout_covers_portable_gate_and_hwc_evidence() -> None:
     """The protected-main HWC proof must fit after the full portable gate."""
     workflow = (ROOT / ".github/workflows/foundation.yml").read_text(encoding="utf-8")
-    assert "    timeout-minutes: 60\n" in workflow
+    assert "    timeout-minutes: 90\n" in workflow
 
 
 @pytest.mark.parametrize(
@@ -479,7 +479,7 @@ def test_foundation_timeout_covers_portable_gate_and_hwc_evidence() -> None:
         ("foundation.yml", b"runs-on: ubuntu-24.04", b"runs-on: self-hosted", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b'name: verify-${{ github.event_name }}', b'name: verify', "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"contents: read", b"contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
-        ("foundation.yml", b"    timeout-minutes: 60", b"    timeout-minutes: 60\n    permissions:\n      contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"    timeout-minutes: 90", b"    timeout-minutes: 90\n    permissions:\n      contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"      attestations: read", b"      attestations: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"          GH_TOKEN: ${{ github.token }}", b"          GH_TOKEN: untrusted", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"  pull_request:\n", b"  schedule:\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),

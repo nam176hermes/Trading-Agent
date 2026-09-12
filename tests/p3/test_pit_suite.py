@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
+from packages.alpha_lifecycle.pit_suite import PIT_EVIDENCE_MEDIA
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.engine_contracts.serialization import canonical_json_bytes
 from tests.p3.test_publication import _changed
@@ -18,7 +19,7 @@ def suite_inputs(tmp_path):
     (tmp_path/'artifacts').mkdir(mode=0o700)
     store = LocalArtifactStore(tmp_path/'artifacts')
     suite = json.loads(SUITE.read_bytes())
-    manifest_ref = store.put_bytes(SUITE.read_bytes(), media_type='application/json')
+    manifest_ref = store.put_bytes(SUITE.read_bytes(), media_type=PIT_EVIDENCE_MEDIA)
     source = SourceIdentity(commit_sha='a'*40, tree_sha='b'*40,
         closure_schema_version='synthetic-source', closure_policy_sha256='c'*64, closure_sha256='d'*64)
     report = dict(schema_version=1, component='root', collection_only=False, pytest_exit_status=0,
@@ -71,7 +72,7 @@ def test_pit_suite_requires_exact_executed_nodes(tmp_path, fault):
     elif fault == 'float_summary':
         report['summary'] = {'passed':14.0}
     raw = (json.dumps(report, indent=2, sort_keys=True)+'\n').encode()
-    report_ref = store.put_bytes(raw, media_type='application/json')
+    report_ref = store.put_bytes(raw, media_type=PIT_EVIDENCE_MEDIA)
     if fault:
         with pytest.raises(ValueError):
             build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
@@ -130,7 +131,7 @@ def test_pit_suite_cannot_drop_one_collected_parameter(tmp_path):
     collection_ref = store.put_bytes(canonical_json_bytes(collection), media_type='application/json')
     report['tests'] = [row for index,row in enumerate(report['tests']) if index != 3]
     report['summary'] = {'passed':13}
-    report_ref = store.put_bytes((json.dumps(report,indent=2,sort_keys=True)+'\n').encode(), media_type='application/json')
+    report_ref = store.put_bytes((json.dumps(report,indent=2,sort_keys=True)+'\n').encode(), media_type=PIT_EVIDENCE_MEDIA)
     with pytest.raises(ValueError):
         build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
 
@@ -196,7 +197,7 @@ def test_pit_refs_rejected_before_read(tmp_path, role, fault):
     collection = {**report, 'collection_only':True, 'summary':{'collected':14},
         'tests':[{**row, 'outcome':'collected', 'phase':'collection'} for row in report['tests']]}
     collection_ref = store.put_bytes(canonical_json_bytes(collection), media_type='application/json')
-    report_ref = store.put_bytes((json.dumps(report, indent=2, sort_keys=True)+'\n').encode(), media_type='application/json')
+    report_ref = store.put_bytes((json.dumps(report, indent=2, sort_keys=True)+'\n').encode(), media_type=PIT_EVIDENCE_MEDIA)
     receipt = build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
     refs = dict(suite=manifest_ref, collection=collection_ref, execution=report_ref)
     outer = store.put_bytes(canonical_json_bytes(receipt), media_type='application/json')
@@ -228,3 +229,21 @@ def test_pit_refs_rejected_before_read(tmp_path, role, fault):
     with pytest.raises(ValueError):
         validate_pit_suite_receipt(forged_ref, source=source, store=observed)
     assert reads == [forged_ref]
+
+
+def test_real_pit_producer_receipt_fits_worker_input_closure(tmp_path,monkeypatch):
+    from scripts import qualify_pre_p3 as producer
+    from services.job_worker.p3_output_validation import _closure
+    from packages.alpha_lifecycle.pit_suite import validate_pit_suite_receipt
+    store,_,source,_,qualification=suite_inputs(tmp_path)
+    monkeypatch.setattr(producer,'_source_v2',lambda:source.model_dump(mode='json'))
+    receipt=producer._execute_pit_suite(source.model_dump(mode='json'),qualification,store)
+    ref=store.put_bytes(canonical_json_bytes(receipt),media_type='application/json')
+    assert validate_pit_suite_receipt(ref,source=source,store=store)==receipt
+    assert receipt.suite_manifest_ref.media_type==receipt.report_ref.media_type==PIT_EVIDENCE_MEDIA
+    assert receipt.collection_ref.media_type==ref.media_type=='application/json'
+    assert store.read_bytes(receipt.suite_manifest_ref)==SUITE.read_bytes()
+    closed=_closure((ref,),store)
+    assert {item.content_sha256 for item in closed.values()}=={
+        ref.content_sha256,receipt.suite_manifest_ref.content_sha256,
+        receipt.collection_ref.content_sha256,receipt.report_ref.content_sha256}

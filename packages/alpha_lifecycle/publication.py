@@ -6,11 +6,10 @@ import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
-from typing import TypeVar
 
 from pydantic import BaseModel
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, ReadbackStore
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, ReadbackStore, _read
 from packages.alpha_lifecycle.contracts.lifecycle import (
     CampaignClosureReport,
     PrePublicationEvidence,
@@ -21,17 +20,6 @@ from packages.alpha_lifecycle.contracts.lifecycle import (
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_publication_repository import JobCommitResult, P3PublicationRepository
-
-
-Model = TypeVar("Model", bound=BaseModel)
-
-
-def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model:
-    raw = store.read_bytes(ref)
-    value = model.model_validate_json(raw)
-    if canonical_json_bytes(value) != raw:
-        raise ValueError("publication artifact is not canonical")
-    return value
 
 
 def _seal(store: ArtifactStore, value: object) -> ArtifactRefV1:

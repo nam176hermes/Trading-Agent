@@ -651,7 +651,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         direct = _direct_map(job, 4)
         if direct != {
             "name": "verify-${{ github.event_name }}",
-            "runs-on": "ubuntu-24.04", "timeout-minutes": "60",
+            "runs-on": "ubuntu-24.04", "timeout-minutes": "90",
             "permissions": "", "outputs": "", "env": "", "steps": "",
         }:
             return False

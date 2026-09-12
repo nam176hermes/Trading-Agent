@@ -9,7 +9,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 import pytest
 
 from packages.alpha_lifecycle.acquisition import AcquisitionError, acquire_day, parse_daily_archive
-from packages.data_catalog.artifact_store import LocalArtifactStore
+from packages.data_catalog.artifact_store import LocalArtifactStore, ArtifactIntegrityError
 
 
 class FixtureTransport:
@@ -25,12 +25,15 @@ class FixtureTransport:
         return value
 
 
-def _archive(day: date, *, member: str | None = None) -> tuple[str, bytes]:
+def _archive(day: date, *, member: str | None = None, column: tuple[int,str] | None = None) -> tuple[str, bytes]:
     stem = f"BTCUSDT-1d-{day.isoformat()}"
     unit = 1_000_000 if day.year >= 2025 else 1_000
     opened = int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp()) * unit
     closed = opened + 86_400 * unit - 1
-    row = f"{opened},100,110,90,105,1,{closed},100,1,0,0,0\n".encode()
+    columns=f"{opened},100,110,90,105,1,{closed},100,1,0,0,0".split(',')
+    if column is not None:
+        columns[column[0]]=column[1]
+    row = (','.join(columns)+'\n').encode()
     output = io.BytesIO()
     with ZipFile(output, "w", ZIP_DEFLATED) as archive:
         archive.writestr(member or f"{stem}.csv", row)
@@ -76,3 +79,217 @@ def test_acquire_day_quarantines_ambiguous_or_tampered_bytes(
 
     with pytest.raises(AcquisitionError):
         acquire_day(day, transport, _store(tmp_path / "artifacts"))
+
+
+def test_acquisition_receipt_retains_and_revalidates_zip_and_checksum(tmp_path):
+    from packages.alpha_lifecycle import acquisition
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    day=date(2025,1,2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    transport=FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum})
+    before=datetime.now(UTC)
+    receipt=acquisition.acquire_day_receipt(day,transport,store)
+    after=datetime.now(UTC)
+    assert before<=receipt.system_observed_at<=receipt.fetched_at<=after
+    assert receipt.provider_published_at is None
+    assert receipt.vintage_class=='RETROSPECTIVE_CURRENT_ARCHIVE'
+    assert store.read_bytes(receipt.archive_ref)==zipped
+    assert store.read_bytes(receipt.checksum_ref)==checksum
+    ref=receipt.artifact_ref
+    assert store.read_bytes(ref)==canonical_json_bytes(receipt)
+    assert acquisition.validate_acquisition_receipt(ref,store)==receipt
+    (store._root/receipt.checksum_ref.locator).unlink()
+    with pytest.raises(ArtifactIntegrityError):
+        acquisition.validate_acquisition_receipt(ref,store)
+
+
+def test_acquisition_refuses_uncompleted_day_before_retaining_bytes(tmp_path):
+    from datetime import timedelta
+    from packages.alpha_lifecycle import acquisition
+    day=datetime.now(UTC).date()+timedelta(days=2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    with pytest.raises(AcquisitionError):
+        acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    assert list(store._root.iterdir())==[]
+
+
+@pytest.mark.parametrize('fault',['day','archive_media','checksum_media','archive_size','checksum_size','observation','checksum_bytes','archive_bytes','noncanonical'])
+def test_acquisition_consumer_rejects_substitution_without_writing(tmp_path,monkeypatch,fault):
+    from packages.alpha_lifecycle import acquisition
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    day=date(2025,1,2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    receipt=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    value=receipt.model_dump(mode='json',exclude={'digest'})
+    if fault=='day':
+        value['day']='2025-01-03'
+    elif fault.endswith('_media'):
+        value[fault.removesuffix('_media')+'_ref']['media_type']='application/octet-stream'
+    elif fault.endswith('_size'):
+        value[fault.removesuffix('_size')+'_ref']['size_bytes']=2**40
+    elif fault=='observation':
+        value['system_observed_at']='2025-01-02T00:00:00Z'
+    elif fault=='checksum_bytes':
+        value['checksum_ref']=store.put_bytes(b'0  wrong.zip\n',media_type='text/plain').model_dump(mode='json')
+    elif fault=='archive_bytes':
+        value['archive_ref']=store.put_bytes(_archive(date(2025,1,3))[1],media_type='application/zip').model_dump(mode='json')
+    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    ref=store.put_bytes(canonical_json_bytes(value)+(b' ' if fault=='noncanonical' else b''),media_type='application/json')
+    monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('consumer wrote an artifact')))
+    with pytest.raises(ValueError):
+        acquisition.validate_acquisition_receipt(ref,store)
+
+
+def test_acquisition_consumer_rejects_wrong_locator_before_read():
+    from packages.alpha_lifecycle.acquisition import validate_acquisition_receipt
+    from packages.data_contracts import ArtifactRefV1
+    class NoRead:
+        def read_bytes(self,ref):
+            raise AssertionError('invalid reference reached storage')
+    ref=ArtifactRefV1(content_sha256='a'*64,size_bytes=100,
+        media_type='application/json',locator='b'*64+'.blob')
+    with pytest.raises(AcquisitionError):
+        validate_acquisition_receipt(ref,NoRead())
+
+
+@pytest.mark.parametrize('column',[(0,'9'*129),(0,'-1'),(6,'9223372036854775808')])
+def test_archive_rejects_timestamp_representation_before_conversion(column):
+    with pytest.raises(AcquisitionError):
+        parse_daily_archive(date(2025,1,2),_archive(date(2025,1,2),column=column)[1])
+
+
+@pytest.mark.parametrize('column', [None,(1,'100.0000'),(2,'99'),(7,'-1'),(9,'NaN'),(10,'1e3'),(11,'1'),(8,'1.5'),(7,'9'*129)])
+def test_normalization_binds_retained_daily_values_without_writing(tmp_path,monkeypatch,column):
+    from packages.alpha_lifecycle import acquisition
+    day=date(2025,1,2)
+    filename,zipped=_archive(day,column=column)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    receipt=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('normalizer wrote an artifact')))
+    if column is not None and column[0]!=1:
+        with pytest.raises(AcquisitionError):
+            acquisition.normalize_daily_acquisition(receipt.artifact_ref,store)
+        with pytest.raises(AcquisitionError):
+            acquisition.retain_normalization_receipt(receipt.artifact_ref,store)
+        with pytest.raises(AcquisitionError):
+            acquisition.retain_daily_quality_receipt(receipt.artifact_ref,store)
+    else:
+        result=acquisition.normalize_daily_acquisition(receipt.artifact_ref,store)
+        assert result==dict(schema_version='p3-normalized-daily-row-v1',row=dict(
+            ts_event='2025-01-03T00:00:00Z',date='2025-01-02',instrument='BTCUSDT.BINANCE',
+            opened_at='2025-01-02T00:00:00Z',closed_at_exclusive='2025-01-03T00:00:00Z',
+            raw_close_time=1735862399999999,raw_timestamp_unit='MICROSECONDS',
+            open='100',high='110',low='90',close='105',base_volume='1',quote_volume='100',
+            trade_count=1,provider_published_at=None))
+
+
+def test_provider_receipt_binds_exact_query_raw_pair_and_normalized_document(tmp_path):
+    from uuid import NAMESPACE_URL,uuid5
+    from packages.alpha_lifecycle import acquisition
+    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore
+    from packages.data_contracts import ProviderReceiptV1
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    day=date(2025,1,2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    acquired=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    ref=acquisition.retain_normalization_receipt(acquired.artifact_ref,store)
+    receipt=ProviderReceiptV1.model_validate_json(store.read_bytes(ref))
+    assert canonical_json_bytes(receipt)==store.read_bytes(ref)
+    query=dict(schema_version='p3-daily-acquisition-query-v1',provider='binance.public-archive',
+        day=day.isoformat(),instrument='BTCUSDT.BINANCE',interval='1d',
+        archive_url=base+filename,checksum_url=base+filename+'.CHECKSUM')
+    assert receipt.query_sha256==hashlib.sha256(canonical_json_bytes(query)).hexdigest()
+    normalized=acquisition.normalize_daily_acquisition(acquired.artifact_ref,store)
+    assert receipt.output_sha256s==(hashlib.sha256(canonical_json_bytes(normalized)).hexdigest(),)
+    assert receipt.provider=='binance.public-archive'
+    assert receipt.capability.value=='MARKET_BARS'
+    assert receipt.normalization_version=='p3.binance.12-column.daily.v1'
+    for url,rawref in ((base+filename,acquired.archive_ref),(base+filename+'.CHECKSUM',acquired.checksum_ref)):
+        evidence=next(e for e in receipt.evidence if e.evidence_id==uuid5(NAMESPACE_URL,url+'#sha256='+rawref.content_sha256))
+        assert (evidence.content_sha256,evidence.byte_length,evidence.media_type)==(rawref.content_sha256,rawref.size_bytes,rawref.media_type)
+        assert evidence.source_available_at==evidence.system_observed_at==acquired.system_observed_at
+        assert evidence.fetched_at==acquired.fetched_at
+    assert acquisition.retain_normalization_receipt(acquired.artifact_ref,ReadbackStore(store,store))==ref
+    normalized_digest=receipt.output_sha256s[0]
+    (store._root/(normalized_digest+'.blob')).unlink()
+    with pytest.raises(ArtifactIntegrityError):
+        acquisition.retain_normalization_receipt(acquired.artifact_ref,ReadbackStore(store,store))
+
+
+@pytest.mark.parametrize('day',[date(2024,1,2),date(2025,1,2)])
+def test_normalized_arrow_table_materializes_through_existing_p2_and_daily_view(tmp_path,day):
+    from uuid import UUID
+    from packages.alpha_lifecycle import acquisition
+    from packages.alpha_lifecycle.data_view import _daily_bar
+    from packages.data_catalog.v3 import materialize_arrow_partition_v3
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    acquired=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    schema,table=acquisition.daily_arrow_table(acquired.artifact_ref,store)
+    assert schema.schema_id=='p3.binance.daily.v1' and schema.data_api_epoch==2
+    assert table.num_rows==1 and table.schema.names==[field.name for field in schema.fields]
+    assert [field.name for field in schema.fields if field.nullable]==['provider_published_at']
+    provider_ref=acquisition.retain_normalization_receipt(acquired.artifact_ref,store)
+    quality_ref=acquisition.retain_daily_quality_receipt(acquired.artifact_ref,store)
+    import json
+    quality=json.loads(store.read_bytes(quality_ref))
+    assert set(quality)=={'dataset','row_count','issue_codes','canonical_rows_sha256'}
+    assert quality['dataset']=='p3.research.daily' and quality['row_count']==1 and quality['issue_codes']==[]
+    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore
+    assert acquisition.retain_daily_quality_receipt(acquired.artifact_ref,ReadbackStore(store,store))==quality_ref
+    from packages.data_quality import validate_bar_rows
+    quality_row=table.to_pylist()[0]
+    quality_row['volume']=quality_row['base_volume']
+    assert quality_ref.content_sha256==validate_bar_rows((quality_row,),dataset='p3.research.daily').digest
+    materialized_at=datetime.now(UTC)
+    materialized=materialize_arrow_partition_v3(table,schema=schema,store=store,
+        partition_id=UUID(int=1),dataset='p3.research.daily',
+        partition_key=('BTCUSDT.BINANCE',day.isoformat()),partition_spec_version='p3.utc-day.v1',
+        source_available_at=acquired.system_observed_at,system_observed_at=acquired.system_observed_at,
+        ingested_at=materialized_at,raw_evidence_sha256s=(acquired.archive_ref.content_sha256,acquired.checksum_ref.content_sha256),
+        transform_receipt_sha256=provider_ref.content_sha256,quality_receipt_sha256=quality_ref.content_sha256,
+        revision_series_id=UUID(int=2),revision_ordinal=1)
+    bar=_daily_bar(materialized.manifest,store)
+    assert bar.date==day and bar.close=='105' and bar.partition_ref==materialized.artifact
+    assert bar.system_observed_at==acquired.system_observed_at
+    assert bar.ingested_at==materialized_at and bar.ingested_at>=acquired.fetched_at
+    assert canonical_json_bytes(bar)
+
+
+@pytest.mark.parametrize('producer,index',[('retain_normalization_receipt',0),('retain_normalization_receipt',1),('retain_daily_quality_receipt',0)])
+def test_daily_producers_reject_a_different_returned_artifact_identity(tmp_path,producer,index):
+    from packages.alpha_lifecycle import acquisition
+    day=date(2025,1,2)
+    filename,zipped=_archive(day)
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    checksum=f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()
+    store=_store(tmp_path/'artifacts')
+    acquired=acquisition.acquire_day_receipt(day,FixtureTransport({base+filename:zipped,base+filename+'.CHECKSUM':checksum}),store)
+    class WrongReference:
+        count=0
+        def read_bytes(self,ref):
+            return store.read_bytes(ref)
+        def put_bytes(self,raw,*,media_type):
+            ref=store.put_bytes(raw,media_type=media_type)
+            selected=self.count==index
+            self.count+=1
+            return ref.model_copy(update={'media_type':'text/plain'}) if selected else ref
+    with pytest.raises(AcquisitionError):
+        getattr(acquisition,producer)(acquired.artifact_ref,WrongReference())

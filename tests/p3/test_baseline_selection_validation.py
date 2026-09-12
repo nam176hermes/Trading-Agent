@@ -1,43 +1,10 @@
 """Retained baseline evidence must be closed before registration or qualification."""
-from pathlib import Path
-import sys
-from datetime import timedelta
 
 import pytest
 
-from packages.alpha_lifecycle.baseline_campaign import execute_baseline_manifest
-from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
 from packages.alpha_lifecycle.contracts.results import ReplayProof, ReplayReceipt
-from packages.alpha_lifecycle.contracts.results import RegimeThreshold
-from packages.alpha_lifecycle.sandbox import BubblewrapExecutor
 from packages.engine_contracts.serialization import canonical_json_bytes
 from tests.p3.test_publication import _changed
-from tests.p3.test_replica_execution import baseline_inputs
-
-
-@pytest.fixture(scope='module')
-def retained_baseline(tmp_path_factory):
-    root = tmp_path_factory.mktemp('synthetic-baseline-selection')
-    store,manifest_ref = baseline_inputs(root/'inputs')
-    manifest = BaselineManifest.model_validate_json(store.read_bytes(manifest_ref))
-    inputs = InputSet.model_validate_json(store.read_bytes(manifest.input_set_ref))
-    threshold = RegimeThreshold.model_validate_json(store.read_bytes(inputs.regime_threshold_ref))
-    threshold = _changed(threshold,training_range={'start':str(threshold.training_range.start),
-        'end':str(threshold.training_range.start+timedelta(days=299))},sample_count=280)
-    threshold_ref = store.put_bytes(canonical_json_bytes(threshold),media_type='application/json')
-    inputs = _changed(inputs,regime_threshold_ref=threshold_ref.model_dump(mode='json'))
-    input_ref = store.put_bytes(canonical_json_bytes(inputs),media_type='application/json')
-    manifest = _changed(manifest,input_set_ref=input_ref.model_dump(mode='json'))
-    manifest_ref = store.put_bytes(canonical_json_bytes(manifest),media_type='application/json')
-    release = Path(__file__).resolve().parents[2]
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
-        executor = BubblewrapExecutor(store=store,store_root=root/'inputs',release_root=release,
-            python=Path(sys.executable),source=inputs.source,environment_ref=inputs.environment_ref,sandbox_policy_digest='c'*64)
-        patch.setattr(executor,'_argv',lambda request,result,output,seccomp_fd:(sys.executable,'-I','-B',
-            str(release/'scripts/run_p3_evaluation_child.py'),str(request),str(root/'inputs'),str(result)))
-        selection = execute_baseline_manifest(manifest_ref,executor,logical_trial_id='synthetic-baselines',output_root=root/'runs')
-    return store,manifest.input_set_ref,selection
 
 
 @pytest.mark.parametrize('fault',[None,'duplicate_replica','wrong_manifest','wrong_source','wrong_environment',

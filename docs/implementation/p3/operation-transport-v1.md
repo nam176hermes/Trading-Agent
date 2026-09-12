@@ -389,3 +389,168 @@ while their frozen install was still completing; it was not a source failure.
 After npm ci completed, the full gate was rerun successfully. Transition
 repositories measured 96.9136% line and 92.3611% branch coverage. No threshold
 was lowered and no native capability receipt was inferred from portable coverage.
+The bounded primary-selection repair rejects duplicate report/trial references
+before storage and requires the ordered frozen A0–A3/version1.0.0 family before
+publication. Ranking and aggregate excess subtraction use Decimal50/HALF_EVEN
+without changing the caller context. Focused tests reproduced duplicate-family
+acceptance and precision-dependent wrong selection before correction. Nine tests
+then passed in 27.38 seconds, including explicitly stubbed SELECTED/NONE_QUALIFIED,
+permutation/version failures, and an actual synthetic A0 qualification rejection
+when four distinct reports represent that same candidate. Independent review
+passed this bounded source scope; static retains 117 existing diagnostics.
+Complete qualification/closure/head validation, trial disclosure, current review,
+SQL admission and select-primary dispatch remain HELD.
+
+The downstream candidate closure consumer now reconstructs the frozen OOS
+qualification, retained prepublication evidence, expected predecessors, registry
+transitions, semantic request, idempotency key and ordered deterministic ledger
+UUIDs. It reads both actual registry blobs before returning a terminal head.
+The producer reuses the unchanged OOS evidence and UUID formulas. Recalculation
+uses readback-only storage under a cumulative 1 GiB read budget, with direct JSON
+reference bounds. Publication and evaluation reuse the common canonical JSON
+reader, which rejects non-JSON media before I/O throughout typed reads.
+
+Genuine regressions covered a completely rehashed false PASS, bypassed closure
+validation, arbitrary event IDs, missing event blobs, and direct/nested JSON
+media. The initial 28-test suite passed, independent review found three further
+holes, and the corrected 42-test suite passed in 140.90 seconds. A later
+shared-reader regression reproduced two alternate reader bypasses (2 FAIL,
+1 PASS); after removing duplicate readers, all 20 JSON/publication/registration
+checks passed in 9.48 seconds. Synthetic committed identities in these tests do
+not authenticate SQL custody. Current SQL heads, complete trial history,
+protected independent review and select-primary dispatch still remain HELD.
+
+The final adjacent closure/baseline/replica suite passed 81 tests in 221.24
+seconds. Independent review passed the bounded correction after the shared
+reader fix; static remains at 117 pre-existing diagnostics and canonical
+contracts checked successfully. No SQL schema or transactional write path was
+changed by this packet.
+
+The unprivileged operation CLI now handles fixed candidate OOS intents. It
+checks complete retained registration and the exact allowed candidate before
+constructing its executor, runs all three replicas, and retains the existing
+OOS publication proposal in private CAS. No SQL transaction or publication
+identity changed. The missing-branch regression failed with HELD E_OPERATION
+before implementation. The real portable three-child test then passed in
+86.06 seconds, preserved shared input CAS, and retained ALPHA_FAIL. Six adjacent
+baseline/environment tests passed in 68.40 seconds. Independent review passed
+this bounded source path; static retains 117 existing diagnostics. Worker
+provider dispatch and parent OOS output validation remain HELD until their
+source and admission checks are implemented and qualified.
+
+Parent output validation now admits candidate OOS proposals through the current
+attempt's retained output whitelist, reconstructs qualification and publication,
+and binds all three physical replica results, manifests and artifact inventories.
+The existing baseline replica check is reused. SQL publication remains the same
+single transaction. The initial CLI-to-custody regression reached the missing
+operation branch and failed; its test cleanup was corrected to use abandon().
+The real three-child case then passed in 101.90 seconds, and the final OOS/output
+adjacent suite passed 14 tests in 252.49 seconds, including altered physical
+result, manifest, inventory and extra-file rejection. Independent review passed;
+static retains 117 existing diagnostics. Provider admission, protected profile,
+source qualification and official execution remain HELD.
+
+Primary selection now verifies the complete frozen 28-trial disclosure and
+retained historical receipt/results, then reuses the existing deterministic
+ranking. Family approval binds the disclosure projection without a hash cycle;
+staging additionally requires its actual validity interval to cover the issued
+operation authorization. The unprivileged CLI and parent validator both use
+this selection owner. Parent validation admits no replica paths and recomputes
+through readback-only retained custody. The bounded closure walker verifies
+artifact bytes before parsing and derives the six existing embedded scenario
+references from typed EvaluationResult, preserving every published identity.
+
+Genuine red evidence includes missing disclosure (1 FAIL), expired inner review
+(1 FAIL), six historical receipt gaps (6 FAIL), missing CLI operation (1 FAIL),
+missing isolated driver projection (1 FAIL), missing parent branch (1 FAIL), and
+missing derived scenario closure (1 FAIL). The reviewed disclosure/CLI/authority
+suite passed 79 tests in 448.82 seconds. Final real portable CLI-to-custody,
+forged-selection rejection and derived-closure checks passed 3 tests in 317.52
+seconds; adjacent OOS/baseline/PIT checks passed 15 tests in 243.45 seconds.
+Canonical contracts passed; static retains 117 pre-existing diagnostics.
+Independent source review passed this bounded packet. Driver inventory adds
+only the five existing selection/qualification/custody/PIT owners. SQL atomic
+publication and fixed policy values are unchanged. Synthetic SQL identities
+and review fixtures are not protected authority. Current canonical attempt
+completeness, SQL heads, protected reviewer admission, worker profile, host
+qualification and all official research execution remain HELD.
+
+The broad P3 suite exposed one stale negative-test date after the synthetic
+research fixture expanded to the frozen 2018 start. Its hardcoded 2019 date
+formed an inverted training range and failed at schema parsing instead of the
+intended dataset-boundary guard. The test now derives one day before the actual
+dataset start. The original case reproduced 1 FAIL in 12.94 seconds; both
+training-boundary cases passed in 26.23 seconds after the test-only correction.
+The guard, threshold arithmetic and production source are unchanged.
+
+## Foundation research fixture reuse
+
+Both Foundation runs for PR60 head ea9e8e1f reached their 60-minute job limit.
+The recorded root suite had 10,841 passes and no failures before critical
+coverage was cancelled. The coverage floors, required native inventory, test
+selection and workflow time limit were unchanged in that fixture-only packet.
+The later Foundation budget repair below changes the limit with its canonical validator.
+
+A deterministic pytest collection probe failed with five independent
+registrations each for `retained_baseline` and `synthetic_oos`. Their canonical
+session fixtures now live in tests/p3/conftest.py, with plain seed builders and
+no imported fixture registrations. The ordinary baseline recipe and the distinct
+high-volume/PIT OOS recipe retain their exact inputs and three real children;
+A1-A3 still execute three replicas each. The 28-case disclosure seed is shared
+only within its module. Consumers append CAS objects or use restored method
+patches; destructive test cases keep private stores.
+
+The same probe now reports one registration per seed and all 667 collected
+nodes. Full source P3 verification passed: 666 passed, one explicit disposable
+host gate skipped, 1638.27 seconds, versus 2007.49 seconds in the preceding full
+run (which also exposed the subsequently corrected stale training-date test).
+Static retains 117 existing diagnostics; independent fixture-reuse review passed.
+These source fixtures issue no protected qualification or research authority.
+
+
+## PR 60 repeated fixture construction
+
+Both previous Foundation jobs reached the 60-minute limit after the root suite
+passed 10,084 tests; the unchanged critical-coverage command then reran P3.
+Test-only changes now retain immutable candidate/selection seed preparation once
+and copy real baseline inputs into independent per-case directories. Copies
+preserve symlinks and fresh regular-file inodes. All real child runs, corruption,
+readback, arithmetic, replica and custody assertions remain. The special 90-return
+and patched data builders are unchanged. Transport-only tests use small retained
+artifacts for refs they do not dereference. No production source, test selector,
+coverage floor or Foundation timeout changed in that fixture-only packet.
+
+## Foundation budget after measured full-suite completion
+
+PR60 head b7d4cdc24217ae7329bafd6196fb49d008584b7d again reached the 60-minute
+limit in runs 34675342166 and 34675340428. The PR root suite passed all 10,084
+tests in 2398.67 seconds; governance finished 10,841 passes and no failures.
+Critical coverage began after about 50 minutes and was still running when the
+job was cancelled. The push run showed the same sequence (root: 2344.20 seconds).
+Neither run supplies a completed coverage verdict or Foundation PASS.
+
+Foundation's bounded verify budget and its exact structural validator now use
+90 minutes. This allows about 40 minutes after the measured preceding stages;
+actual hosted completion remains to be verified. The regression first failed
+against the old budget. No selector, coverage floor, permission, evidence route,
+required gate or cancel-in-progress behavior changes. This CI budget is separate
+from the fixed research policies and all runtime/holdout execution deadlines.
+
+Before this CI budget repair, the first four fixture optimizations passed the complete serial P3 suite:
+666 passed, 1 skipped in 1105.94 seconds. The final shared default seed change
+then passed its four affected modules: 55 passed in 93.42 seconds. Earlier focused
+checks passed spawn transport (27), baseline operation (21), candidate closure
+(17), and selection output reconstruction (2). Independent review passes the
+final eight-file test diff. These local timings are not a hosted runtime estimate;
+the next real Foundation run must establish whether the job completes.
+
+The budget regression failed once in 0.18 seconds before the workflow change.
+The complete closure-validator suite then passed 153 tests in 54.45 seconds.
+Ruff, API contract generation checks, broad-handler inventory and diff checks
+pass. The canonical closure checker reports QUALIFICATION_PENDING with exit 0;
+static retains 117 pre-existing diagnostics. Independent review passed the
+four-file budget change. Hosted Foundation and coverage results remain pending.
+
+This is source-test verification only. Protected HWC/Pre-P3, T-P3-060 and official
+research remain unqualified for this head. LIVE_ELIGIBLE=false and
+LIVE_ENABLED=false.
