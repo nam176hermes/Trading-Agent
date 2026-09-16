@@ -359,12 +359,16 @@ class JobWorker:
                     return HeartbeatDecision.STALE_LEASE
                 started = True
                 active_identity = identity
-            elif (
-                self._p3_profile
-                and claimed.payload.logical_trial_id == "p3-integration-fixture-v1"
-                and identity != active_identity
-            ):
-                if not self._repository.replace_alpha_fixture_process(
+            elif self._p3_profile and identity != active_identity:
+                if claimed.payload.operation != 'PARITY' or active_identity is None:
+                    return HeartbeatDecision.STALE_LEASE
+                if claimed.payload.logical_trial_id == 'p3-integration-fixture-v1':
+                    replace_process = self._repository.replace_alpha_fixture_process
+                elif claimed.payload.logical_trial_id == 'p3-native-parity-v1':
+                    replace_process = self._repository.replace_alpha_native_process
+                else:
+                    return HeartbeatDecision.STALE_LEASE
+                if not replace_process(
                     claimed, active_identity, identity, trace_id,
                 ):
                     return HeartbeatDecision.STALE_LEASE

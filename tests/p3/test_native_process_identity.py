@@ -63,6 +63,55 @@ def test_uncertain_native_process_update_is_not_retried(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('accepted', [True, False])
+@pytest.mark.parametrize('operation', ['PARITY', 'BASELINES'])
+def test_worker_replaces_native_identity_before_renewing_lease(accepted, operation):
+    from services.job_worker.process_runner import HeartbeatDecision
+    from services.job_worker.worker import JobWorker
+    from tests.jobs.test_worker_lifecycle import safety_evidence
+    from tests.p3.test_worker_profile import P3Repository
+
+    first = outcome().identity
+    second = replace(first, pid=first.pid+1, process_group=first.pid+1)
+
+    class Repository(P3Repository):
+        def start_attempt(self, *args, **kwargs):
+            self.calls.append(('start', args))
+            return True
+
+        def heartbeat_control(self, *args, **kwargs):
+            self.calls.append(('heartbeat', args))
+            return 'CONTINUE'
+
+        def replace_alpha_native_process(self, claimed, previous, current, trace_id):
+            self.calls.append(('native', previous, current))
+            return accepted
+
+    claimed = native_claim()
+    if operation == 'BASELINES':
+        claimed = replace(claimed, payload=claimed.payload.model_copy(update={
+            'operation': operation, 'logical_trial_id': 'p3-baselines-v1'}))
+    repository = Repository(claimed)
+    renewed = accepted and operation == 'PARITY'
+
+    class Runner:
+        def run(self, prepare, environment, timeout, heartbeat, **kwargs):
+            assert heartbeat(first) is HeartbeatDecision.CONTINUE
+            assert heartbeat(first) is HeartbeatDecision.CONTINUE
+            assert heartbeat(second) is (HeartbeatDecision.CONTINUE if renewed else HeartbeatDecision.STALE_LEASE)
+            return replace(outcome('STALE_LEASE'), identity=second)
+
+    worker = JobWorker(repository, Runner(), object(), worker_id='worker-1',
+        code_commit='e'*40, environment=object(), safety_preflight=lambda: safety_evidence('4'*64),
+        prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=object())
+    assert worker.run_once()
+    calls = [c for c in repository.calls if c[0] in {'start', 'native', 'heartbeat'}]
+    assert [c[0] for c in calls] == ['start', 'heartbeat', 'heartbeat'] + (
+        ['native'] if operation == 'PARITY' else []) + (['heartbeat'] if renewed else [])
+    assert [c for c in calls if c[0] == 'native'] == (
+        [('native', first, second)] if operation == 'PARITY' else [])
+
+
 @pytest.mark.runtime_postgres
 @pytest.mark.skipif(os.environ.get('P3_NATIVE_SQL_SOURCE_TEST') != '1',
     reason='explicit disposable native process SQL source selection required')

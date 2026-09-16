@@ -191,6 +191,20 @@ source capability still requires a separately pinned session catalog/admission
 and consumption by the actual coordinator. No production migration, protected
 launch, official receipt or new milestone completion is implied.
 
+The existing JobWorker heartbeat now uses the native capability before renewing
+the lease for a different native child. Rejection stops renewal; other P3
+operations cannot silently substitute their child. Fixture replacement keeps
+its own capability. Two regressions reproduced renewal under the old identity;
+167 focused worker/native checks pass after the repair. This connects process
+attribution, not the official native executor or coordinator.
+
+Before pinning the final session catalog, finish private HOLDOUT claim admission:
+the ordinary bound claim and `p3_payload_authorized(payload, bound_job)` still
+reject HOLDOUT. Current SQL disclosure fixtures explicitly simulate that claim
+as the disposable database owner. They cannot establish a functioning official
+claim path. Reuse the existing accepted operation/job bindings and one-attempt
+policy; preserve ordinary-lane rejection and require fresh stage/session fences.
+
 ## Closure conditions
 
 - M8: reviewed session ownership plus actual protected cross-UID release,
