@@ -21,6 +21,7 @@ from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
+from services.job_worker.p3_spawn_interface import parent_replica_fence
 
 
 def main() -> None:
@@ -105,7 +106,7 @@ def main() -> None:
         runtime_mounts = tuple(Path(value) for value in values)
     executor = BubblewrapExecutor(
         store=store, store_root=args.store, release_root=args.release, python=args.python,
-        source=source, environment_ref=environment,
+        source=source, environment_ref=environment, before_spawn=parent_replica_fence(),
         sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox, runtime_mounts=runtime_mounts,
     )
     if isinstance(intent.body,CandidateOOSInput):

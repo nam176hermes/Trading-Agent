@@ -31,6 +31,8 @@ def test_oos_cli_runs_three_children_and_retains_failed_candidate_proposal(synth
     root=Path(__file__).resolve().parents[2]
     monkeypatch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
     calls=[]
+    grants=[]
+    monkeypatch.setattr(command,'parent_replica_fence',lambda:lambda:grants.append(len(calls)))
     def executor(**kwargs):
         result=BubblewrapExecutor(**kwargs)
         def argv(request,result_path,output,seccomp_fd):
@@ -49,6 +51,7 @@ def test_oos_cli_runs_three_children_and_retains_failed_candidate_proposal(synth
     command.main()
     proposal=PublicationProposal.model_validate_json(capsys.readouterr().out)
     assert calls==['r1','r2','r3']
+    assert grants==[1,2,3]
     assert before=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in store._root.iterdir()}
     reader=ReplicaArtifactStore(store._root,tmp_path/'runs'/'artifacts')
     evidence=_read(reader,proposal.request.evidence_ref,PrePublicationEvidence)

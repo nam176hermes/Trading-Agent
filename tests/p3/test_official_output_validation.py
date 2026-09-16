@@ -81,6 +81,7 @@ def portable_attempt(tmp_path_factory):
     captured=SimpleNamespace(buffer=io.BytesIO())
     with pytest.MonkeyPatch.context() as patch:
         # Real deterministic children; portable transport intentionally replaces host isolation.
+        patch.setattr(command,'parent_replica_fence',lambda:lambda:None)
         patch.setattr(sandbox,'require_official_sandbox',lambda path:path)
         patch.setattr(sandbox.BubblewrapExecutor,'_argv',lambda self,request,result,output,seccomp_fd:
             (sys.executable,'-I','-B',str(release/'scripts/run_p3_evaluation_child.py'),str(request),str(root/'store'),str(result)))

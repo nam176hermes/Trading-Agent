@@ -114,6 +114,7 @@ class P3BuiltSpawn:
     source_revision: str
     lineage: P3SpawnLineage
     output_custody: P3OutputCustody
+    replica_fence: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
@@ -361,9 +362,15 @@ class P3SpawnProvider:
             os.close(output_parent)
             descriptors.remove(output_parent)
             output_parent = -1
+            def replica_fence() -> None:
+                # SQL lease/safety belongs to the heartbeat before each grant.
+                if (self._attest_closure() != closure
+                    or tuple(_directory_identity(p) for p in (self._store_root,self._output_root)) != identities):
+                    raise ValueError('P3 replica profile or transport changed')
+
             return P3BuiltSpawn(job.job_id,job.attempt_id,tuple(argv),Path('/'),MappingProxyType({}),tuple(descriptors),tuple(descriptors),
                 spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,
-                P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody)
+                P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody,replica_fence)
         except BaseException as error:
             if custody is not None:
                 custody.abandon()

@@ -466,3 +466,102 @@ print('projected official owners imported')
         capture_output=True,text=True,timeout=30,check=False)
     assert result.returncode==0,result.stderr
     assert result.stdout=='projected official owners imported\n'
+
+
+@pytest.mark.parametrize('fault', ['closure', 'transport'])
+def test_replica_fence_rechecks_consumed_profile_and_transport(synthetic_provider, fault):
+    from services.job_worker.p3_spawn import consume_prepared_p3_spawn
+    provider, job, closure = synthetic_provider
+    built = consume_prepared_p3_spawn(provider.prepare(job))
+    try:
+        built.replica_fence()
+        if fault == 'closure':
+            provider._attest_closure = lambda: replace(closure, closure_sha256='9'*64)
+        else:
+            provider._store_root.chmod(0o755)
+        with pytest.raises(ValueError):
+            built.replica_fence()
+    finally:
+        provider._store_root.chmod(0o700)
+        for fd in built.close_after_spawn_fds: os.close(fd)
+        built.output_custody.abandon()
+
+
+@pytest.mark.parametrize('fault', ['none', 'profile', 'cancel', 'lease', 'safety', 'timeout', 'frame', 'pipe',
+    'profile_lease', 'profile_cancel', 'profile_safety'])
+def test_runner_grants_replica_only_after_fresh_parent_checks(synthetic_provider, tmp_path, monkeypatch, fault):
+    from services.job_worker import process_runner as module
+    from tests.jobs.test_process_runner import runner, FakeProcess, Inspector, identity
+    provider, job, closure = synthetic_provider
+    token = provider.prepare(job)
+    process = FakeProcess([None, 0], stderr=b'\x00P3_REPLICA_FENCE_V1:'+ (b'2' if fault == 'frame' else b'1')+b'\n')
+    read_fd, write_fd = os.pipe()
+    process.stdin = os.fdopen(write_fd, 'wb', buffering=0)
+    events = []
+    original = provider._attest_closure
+    def attest():
+        events.append('profile')
+        if fault.startswith('profile') and len(events) > 1:
+            return replace(closure, closure_sha256='9'*64)
+        return original()
+    provider._attest_closure = attest
+    def heartbeat(_identity):
+        events.append('heartbeat')
+        return {'cancel': module.HeartbeatDecision.CANCEL,
+            'lease': module.HeartbeatDecision.STALE_LEASE,
+            'safety': module.HeartbeatDecision.SAFETY_DRIFT}.get(fault.split('_')[-1], module.HeartbeatDecision.CONTINUE)
+    captured = []
+    execution = runner(tmp_path, process, Inspector([identity()]), captured,
+        clock_values=[0, 0.1, 1201, 1201.1, 1201.2] if fault == 'timeout' else None)
+    if fault == 'pipe': os.close(read_fd)
+    try:
+        outcome = execution.run(lambda: token, None, 1200, heartbeat,
+            job_id=job.job_id, attempt_id=job.attempt_id)
+        assert captured[0][1]['stdin'] == module.subprocess.PIPE
+        assert process.stdin.closed
+        ack = b'' if fault == 'pipe' else os.read(read_fd, 128)
+        if fault == 'none':
+            assert ack == b'P3_REPLICA_GO_V1:1\n'
+            assert events[:3] == ['profile', 'profile', 'heartbeat']
+            assert outcome.termination_reason is None
+            outcome.p3_output_custody.abandon()
+        else:
+            assert ack == b''
+            assert outcome.termination_reason == {'cancel': 'CANCELLED', 'lease': 'STALE_LEASE',
+                'safety': 'SAFETY_DRIFT', 'timeout': 'TIMEOUT'}.get(fault.split('_')[-1], 'P3_REPLICA_FENCE_REJECTED')
+            assert outcome.p3_output_custody is None
+    finally:
+        process.stdin.close()
+        if fault != 'pipe': os.close(read_fd)
+
+
+def test_profile_revocation_between_replicas_never_reuses_first_grant(synthetic_provider, tmp_path):
+    from services.job_worker import process_runner as module
+    from tests.jobs.test_process_runner import runner, FakeProcess, Inspector, identity
+    provider, job, closure = synthetic_provider
+    token = provider.prepare(job)
+    process = FakeProcess([None, None, 0], stderr=b'\x00P3_REPLICA_FENCE_V1:1\n', hold_pipes=True)
+    read_fd, write_fd = os.pipe()
+    process.stdin = os.fdopen(write_fd, 'wb', buffering=0)
+    observations = []
+    def attest():
+        observations.append('profile')
+        return replace(closure, closure_sha256='9'*64) if observations.count('profile') > 2 else closure
+    provider._attest_closure = attest
+    def heartbeat(_identity):
+        observations.append('heartbeat')
+        if observations.count('heartbeat') == 1:
+            os.write(process.held_writes[1], b'\x00P3_REPLICA_FENCE_V1:2\n')
+            process.close_descendant_pipes()
+        return module.HeartbeatDecision.CONTINUE
+    try:
+        outcome = runner(tmp_path, process, Inspector([identity()]), []).run(
+            lambda: token, None, 1200, heartbeat, job_id=job.job_id, attempt_id=job.attempt_id)
+        assert os.read(read_fd, 128) == b'P3_REPLICA_GO_V1:1\n'
+        assert observations[:5] == ['profile', 'profile', 'heartbeat', 'profile', 'heartbeat']
+        assert outcome.termination_reason == 'P3_REPLICA_FENCE_REJECTED'
+        assert outcome.p3_output_custody is None and process.stdin.closed
+    finally:
+        process.close_descendant_pipes()
+        process.stdin.close()
+        os.close(read_fd)

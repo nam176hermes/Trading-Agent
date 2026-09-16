@@ -110,3 +110,28 @@ separate actions even after source approval.
   capability checks committed disclosure, exact request and live job itself.
   Unique commitment prevents release retries, including restart or lost commit
   acknowledgement. An uncertain release is HELD; it is never repeated.
+
+## Per-replica parent fence (source implementation)
+
+The existing BASELINES/OOS driver now requests a sequence-bound grant on its
+stderr pipe immediately before each replica. Its worker re-reads the protected
+profile and transport identities, then checks current SQL lease/cancellation
+and safety through the existing heartbeat before replying on stdin. Timeout,
+revocation, malformed/replayed frames and pipe loss deny the grant and follow
+bounded process cleanup. Replica children receive DEVNULL streams; they cannot
+inherit this channel. The private sandbox profile digest binds this protocol.
+
+This uses the existing worker/driver pipes and adds no service or persistent
+permission. Grants are ephemeral control messages, not receipts. Tests cover
+real pipe exchange and synthetic worker authority separately; neither is
+protected-host qualification. HOLDOUT/PARITY/PHASE_EXIT remain closed: this
+fence does not solve the retained released-view lifetime across those jobs.
+
+## Complete native trace admission (source implementation)
+
+Native results must contain the exact requested day/event sequence, source,
+timestamps, side, per-event numeric fields and terminal position shape. Summary
+validation completes before any trace artifact is retained, so rejected native
+output cannot leave a partial trace in the artifact store. Both-role pinned
+engine tests exercise this normalization, without granting protected launch
+or official parity authority.

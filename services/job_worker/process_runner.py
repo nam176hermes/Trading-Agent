@@ -33,7 +33,9 @@ from .environment import (
     build_child_environment,
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker
-from .p3_spawn_interface import P3PreparedSpawnMarker
+from .p3_spawn_interface import (
+    P3PreparedSpawnMarker, P3SpawnError, ReplicaFenceRequests, replica_fence_ack,
+)
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
 
@@ -261,6 +263,7 @@ class _Digest(Protocol):
 
 class _Process(Protocol):
     pid: int
+    stdin: BinaryIO | None
     stdout: BinaryIO | None
     stderr: BinaryIO | None
 
@@ -445,6 +448,8 @@ class ProcessRunner:
         )
         close_after_spawn_fds: tuple[int, ...] = ()
         p3_output = None
+        replica_fence = None
+        fence_requests = ReplicaFenceRequests() if p3_authority else None
         try:
             if p3_authority:
                 from .p3_spawn import P3BuiltSpawn, P3SpawnLineage
@@ -457,6 +462,7 @@ class ProcessRunner:
                     raise ValueError('exact P3 output custody is required')
                 p3_output = p3_built.output_custody
                 if (p3_built.job_id != job_id or p3_built.attempt_id != attempt_id
+                    or not callable(p3_built.replica_fence)
                     or not p3_output.matches(job_id,attempt_id)
                     or p3_built.cwd != Path('/') or p3_built.environment != {}
                     or not isinstance(p3_built.argv,tuple) or not p3_built.argv
@@ -471,6 +477,7 @@ class ProcessRunner:
                     or _COMMIT.fullmatch(p3_built.source_revision) is None
                     or timeout_seconds not in {None,p3_built.timeout_seconds}):
                     raise ValueError('attested P3 spawn shape is unsafe')
+                replica_fence = p3_built.replica_fence
                 timeout_seconds = p3_built.timeout_seconds
                 argv, cwd, child_environment, pass_fds = p3_built.argv,p3_built.cwd,p3_built.environment,p3_built.pass_fds
                 capability_fingerprint = p3_built.capability_fingerprint
@@ -589,7 +596,7 @@ class ProcessRunner:
                 "env": child_environment,
                 "shell": False,
                 "start_new_session": True,
-                "stdin": subprocess.DEVNULL,
+                "stdin": subprocess.PIPE if p3_authority else subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
             }
@@ -694,6 +701,7 @@ class ProcessRunner:
                     events = ()
                     cleanup_proven = False
                     reason = reason or "PROCESS_GROUP_CLEANUP_UNPROVEN"
+                pending_fence = None
                 for key, _ in events:
                     state = states[key.data]
                     try:
@@ -706,6 +714,15 @@ class ProcessRunner:
                     if chunk:
                         state.digest.update(chunk)
                         state.observed += len(chunk)
+                        if key.data == 'stderr' and fence_requests is not None and reason is None:
+                            try:
+                                request = fence_requests.feed(chunk)
+                                if request is not None:
+                                    if pending_fence is not None:
+                                        raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'pipelined replica request')
+                                    pending_fence = request
+                            except P3SpawnError:
+                                reason = 'P3_REPLICA_FENCE_REJECTED'
                         if len(state.retained) < MAX_STREAM_BYTES:
                             state.retained.extend(chunk[: MAX_STREAM_BYTES - len(state.retained)])
                     else:
@@ -725,6 +742,14 @@ class ProcessRunner:
                         reason = reason or "PROCESS_GROUP_CLEANUP_UNPROVEN"
                         session_cleanup.uncertain = True
 
+                if pending_fence is not None and reason is None and not leader_exited:
+                    try:
+                        assert replica_fence is not None
+                        replica_fence()
+                    except Exception:
+                        # Post-Popen authority failures require RUNNING cleanup.
+                        reason = 'P3_REPLICA_FENCE_REJECTED'
+
                 try:
                     instruction = heartbeat(identity)
                     if isinstance(instruction, HeartbeatInstruction):
@@ -733,15 +758,31 @@ class ProcessRunner:
                         decision = HeartbeatDecision(instruction)
                 except BaseException:
                     raise
-                if decision is not HeartbeatDecision.CONTINUE and reason is None:
+                if (decision is not HeartbeatDecision.CONTINUE
+                    and reason in {None, 'P3_REPLICA_FENCE_REJECTED'}):
                     reason = self._decision_reason(decision)
                     if (
                         decision is HeartbeatDecision.SAFETY_DRIFT
                         and isinstance(instruction, HeartbeatInstruction)
                     ):
                         safety_reason_code = instruction.reason_code
+                if pending_fence is not None:
+                    now = self._monotonic()
                 if reason is None and now - started >= timeout_seconds:
                     reason = "TIMEOUT"
+
+                if pending_fence is not None and reason is None and not leader_exited:
+                    try:
+                        stream = process.stdin
+                        if stream is None:
+                            raise ValueError('P3 parent grant pipe is missing')
+                        fd = stream.fileno()
+                        os.set_blocking(fd, False)
+                        ack = replica_fence_ack(pending_fence)
+                        if os.write(fd, ack) != len(ack):
+                            raise OSError('incomplete P3 parent grant')
+                    except (OSError, ValueError):
+                        reason = 'P3_REPLICA_FENCE_REJECTED'
 
                 pipes_done = all(state.eof for state in states.values())
                 cleanup_active = cleanup_active or leader_exited or reason is not None
@@ -842,6 +883,8 @@ class ProcessRunner:
                 self._best_effort(lambda: process.send_signal(signal.SIGKILL), cleanup_errors)
             raise
         finally:
+            if p3_authority and (grant_pipe := getattr(process, 'stdin', None)) is not None:
+                self._best_effort(grant_pipe.close, cleanup_errors)
             if p3_output is not None:
                 p3_output.abandon()
             if reserve_fd >= 0:

@@ -124,7 +124,10 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
             workflow_operation='p3-baselines-v1',operation='BASELINES',
             input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],
             body={'baseline_manifest_ref':manifest_ref})
+        grants = []
+        monkeypatch.setattr(command,'parent_replica_fence',lambda:lambda:grants.append(len(calls)))
         def child_executor(**kwargs):
+            executor._before_spawn = kwargs['before_spawn']
             executor._store = kwargs['store']
             return executor
         monkeypatch.setattr(command,'BubblewrapExecutor',child_executor)
@@ -147,6 +150,7 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
         import hashlib
         before = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()}
         command.main()
+        assert grants == [1,2,3]
         assert {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()} == before
         from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
         store = ReplicaArtifactStore(tmp_path/'inputs',tmp_path/'runs'/'artifacts')

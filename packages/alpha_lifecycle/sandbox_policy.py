@@ -55,6 +55,7 @@ SANDBOX_PROFILE_SHA256 = hashlib.sha256(canonical_json_bytes(dict(
         sealed_file_mode_flag='--perms',reference_mode='400',sandbox_mode='500'),
     outer=dict(namespaces='UNSHARE_ALL',environment=ENVIRONMENT_ARGS,
         inputs='READ_ONLY_DIRECTORY_DESCRIPTOR',outputs='EXCLUSIVE_ATTEMPT_DIRECTORY_DESCRIPTOR',
+        replica_fence='P3_REPLICA_FENCE_V1_STDERR_STDIN',
         runtime='SEALED_FILES',cpu_seconds=960,wall_seconds=DRIVER_WALL_SECONDS,
         memory_bytes=2147483648,open_files=256,processes=16,per_file_output_bytes=268435456,attempt_output_bytes=MAX_ATTEMPT_OUTPUT_BYTES),
     child=CHILD_POLICY,child_socket_filter_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest(),
