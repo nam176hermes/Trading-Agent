@@ -9,13 +9,12 @@ import re
 import secrets
 from datetime import datetime
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.job_contracts import JobPayload, JobState, JobType, parse_payload, validate_transition
 from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 
@@ -27,6 +26,9 @@ from .config import (
 )
 from .errors import InvalidTraceId
 from .records import ClaimedJob as ClaimedJob, validate_p3_job_id
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.replica_store import ArtifactStore
 
 
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
