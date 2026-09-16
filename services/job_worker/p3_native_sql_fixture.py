@@ -119,6 +119,8 @@ def check_native_process(sock: Path, name: str, source: SourceIdentity) -> dict[
             "UPDATE public.jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=%s",
             "UPDATE public.job_attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=%s",
             "UPDATE public.jobs SET attempt_count=attempt_count+1 WHERE job_id=%s",
+            "UPDATE public.jobs SET payload=jsonb_set(payload,'{logical_trial_id}','\"p3-integration-fixture-v1\"') WHERE job_id=%s",
+            "UPDATE public.jobs SET payload=jsonb_set(payload,'{operation}','\"BASELINES\"') WHERE job_id=%s",
         )
         for mutation in mutations:
             claimed = seed(repository)
@@ -132,5 +134,21 @@ def check_native_process(sock: Path, name: str, source: SourceIdentity) -> dict[
                     _ = locker.execute(mutation, (claimed.job_id,))
                 assert future.result() is False
             assert identity(claimed) == old
+
+        class AbsentProcess:
+            def inspect(self, pid: int) -> ProcessIdentity | None:
+                return None
+
+        claimed = seed(repository)
+        assert repository.replace_alpha_native_process(claimed, previous, current, 'test:recovery')
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+            _ = owner.execute("UPDATE public.jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=%s",
+                (claimed.job_id,))
+        assert repository.recover_expired_leases(AbsentProcess(), alpha_campaign=True,
+            fixture_only=False, job_id=claimed.job_id, trace_id='test:recovery') == (
+                (claimed.job_id, 'LEASE_EXPIRED_ATTEMPTS_EXHAUSTED'),)
+        assert repository.claim_next_alpha_campaign('native-worker', 30, 'test:retry',
+            fixture_only=False, job_id=claimed.job_id) is None
     return {'verdict': 'PASS', 'role_denials': 5, 'null_denials': 12,
-            'identity_denials': 8, 'lock_fences': len(mutations), 'concurrent_winners': 1}
+            'identity_denials': 8, 'lock_fences': len(mutations), 'concurrent_winners': 1,
+            'crash_recovery': 'TERMINAL_NO_RETRY'}
