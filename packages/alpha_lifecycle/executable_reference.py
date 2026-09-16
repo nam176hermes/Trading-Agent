@@ -310,12 +310,38 @@ def _result_from_rows(manifest: HoldoutManifest,spec: InstrumentSpec,
         payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
         trace_row = NativeTraceRow.model_validate(payload)
         trace.append(trace_row)
+    offset, previous_target = 0, 0
+    for step_index, step in enumerate(steps):
+        changed = step.target != previous_target
+        terminal = step_index == len(steps)-1 and changed and step.target == 0
+        kinds = ('SIGNAL', *(('ORDER', 'QUOTE', 'FILL') if changed else ()),
+            'LIQUIDATION' if terminal else 'MARK')
+        group = trace[offset:offset+len(kinds)]
+        if len(group) != len(kinds):
+            raise ValueError('native trace does not cover every requested step')
+        for index, (row, kind) in enumerate(zip(group, kinds, strict=True)):
+            boundary = step.boundary_ns + int(kind not in ('SIGNAL', 'ORDER'))
+            side = ('BUY' if step.target else 'SELL') if kind in ('ORDER', 'QUOTE', 'FILL') else 'NONE'
+            if (row.sequence != offset+index or row.kind != kind or row.side != side
+                or row.source_day != step.source_day or row.source_artifact_ref != step.source_artifact_ref
+                or row.event_time_ns != boundary or row.init_time_ns != boundary
+                or (row.price is not None, row.quantity is not None, row.fee_quote is not None)
+                != (kind not in ('SIGNAL', 'ORDER'), kind == 'FILL', kind == 'FILL')):
+                raise ValueError('native trace differs from the requested event sequence')
+        position = Decimal(group[-1].position_after)
+        if position < 0 or int(position > 0) != step.target:
+            raise ValueError('native trace position differs from the requested target')
+        offset += len(kinds)
+        previous_target = step.target
+    if offset != len(trace):
+        raise ValueError('native trace contains unrequested events')
+    summary = _trace_summary(tuple(trace))
     manifest_ref = _seal(reader, manifest)
     payload = {
         "schema_version":"p3-executable-result-v1","manifest_ref":manifest_ref,
         "parity_policy_digest":manifest.policy_digest,"instrument_spec_ref":_seal(reader,spec),
         "transition_trace_ref":_seal(reader,{"targets":[step.target for step in steps]}),
-        "fill_trace_ref":_seal(reader,trace), **_trace_summary(tuple(trace)),
+        "fill_trace_ref":_seal(reader,trace), **summary,
     }
     payload["digest"] = hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     return ExecutableResult.model_validate(payload)

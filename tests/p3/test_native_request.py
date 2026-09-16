@@ -39,6 +39,53 @@ def test_native_request_is_derived_from_exact_view_and_role(native_inputs,role):
     with pytest.raises(ValueError):prepare_native_request(manifest,spec,store,role=role)
 
 
+@pytest.mark.parametrize('fault', [None, 'missing_day', 'extra_row', 'sequence', 'event_time',
+    'init_time', 'event_order', 'source_day', 'side', 'early_liquidation', 'missing_fill',
+    'terminal_position', 'missing_mark_price', 'missing_quote_price', 'missing_fill_quantity',
+    'missing_fill_fee', 'unexpected_signal_price', 'unexpected_mark_quantity'])
+def test_native_output_requires_complete_ordered_request_before_retention(native_inputs, fault):
+    import json
+    from packages.alpha_lifecycle.native_request import prepare_native_request, native_result_from_output
+    from packages.alpha_lifecycle.executable_reference import run_selected_baseline_reference
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec
+    from packages.alpha_lifecycle.replica_store import _read
+
+    store, view, manifest_ref, spec_ref = native_inputs
+    request = prepare_native_request(manifest_ref, spec_ref, view, role='SELECTED_BASELINE')
+    reference = run_selected_baseline_reference(_read(view, manifest_ref, HoldoutManifest),
+        _read(view, spec_ref, InstrumentSpec), store)
+    rows = [{k: v for k, v in row.items() if k not in {'schema_version', 'digest', 'source_artifact_ref'}}
+        for row in json.loads(store.read_bytes(reference.fill_trace_ref))]
+    if fault == 'missing_day':
+        rows = [row for row in rows if row['source_day'] != str(request.steps[30].source_day)]
+    elif fault == 'extra_row': rows.append(dict(rows[-1]))
+    elif fault == 'sequence': rows[0]['sequence'] = 7
+    elif fault == 'event_time': rows[0]['event_time_ns'] += 1
+    elif fault == 'init_time': rows[0]['init_time_ns'] += 1
+    elif fault == 'event_order': rows[0]['kind'] = 'MARK'
+    elif fault == 'source_day': rows[0]['source_day'] = str(request.steps[1].source_day)
+    elif fault == 'side': rows[0]['side'] = 'BUY'
+    elif fault == 'early_liquidation':
+        next(row for row in rows if row['kind'] == 'MARK')['kind'] = 'LIQUIDATION'
+    elif fault == 'missing_fill':
+        rows.remove(next(row for row in rows if row['kind'] == 'FILL'))
+    elif fault == 'terminal_position': rows[-1]['position_after'] = '1'
+    elif fault == 'missing_mark_price': rows[-1]['price'] = None
+    elif fault == 'missing_quote_price': next(row for row in rows if row['kind'] == 'QUOTE')['price'] = None
+    elif fault == 'missing_fill_quantity': next(row for row in rows if row['kind'] == 'FILL')['quantity'] = None
+    elif fault == 'missing_fill_fee': next(row for row in rows if row['kind'] == 'FILL')['fee_quote'] = None
+    elif fault == 'unexpected_signal_price': rows[0]['price'] = '100'
+    elif fault == 'unexpected_mark_quantity': rows[-1]['quantity'] = '1'
+    before = set(store._root.iterdir())
+    raw = canonical_json_bytes(rows) + b'\n'
+    if fault is None:
+        assert native_result_from_output(request, raw, view, store) == reference
+    else:
+        with pytest.raises(ValueError, match='trace'):
+            native_result_from_output(request, raw, view, store)
+    assert set(store._root.iterdir()) == before
+
+
 @pytest.mark.host_coupled
 @pytest.mark.skipif(not __import__('os').environ.get('P3_NATIVE_TEST_PYTHON'),reason='pinned offline native Python required')
 @pytest.mark.parametrize('role',['PRIMARY','SELECTED_BASELINE'])
