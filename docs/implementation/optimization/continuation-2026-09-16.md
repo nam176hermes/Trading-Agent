@@ -169,6 +169,30 @@ separate. Evidence is in the external SESSION.json ledger.
 
 ## Closure conditions
 
+### Native SQL source checkpoint
+
+Migration `0028_p3_native_process` adds a separate worker-only compare-and-replace
+capability for native PARITY process identity. It preserves the fixture function
+and rejects wrong roles, malformed identities, stale previous identities, wrong
+lanes, cancellation, expired leases and a changed current attempt. Job/attempt
+row locks precede the fresh fence; the repository performs one transaction and
+does not retry an uncertain acknowledgement. The parent catalog is checked in
+the same `pg_catalog` search path used by custody admission; the expected digest
+is unchanged.
+
+The opt-in disposable PostgreSQL harness applies the real migration chain and
+uses real API enqueue, authority acceptance, worker claim/start and replacement
+transactions with synthetic inputs. It verifies one winner among concurrent
+replacements, denials after observed lock waits, and terminal crash recovery
+without another experiment. Final SQL check: one passed in 86.14s, four existing
+pool deprecation warnings; owned cluster cleanup asserted. Worker regressions:
+151 passed; portable runtime-test inventory and paper import checks: two passed.
+
+Existing worker admission stays at 0026 and custodian admission at 0027. This
+source capability still requires a separately pinned session catalog/admission
+and consumption by the actual coordinator. No production migration, protected
+launch, official receipt or new milestone completion is implied.
+
 - M8: reviewed session ownership plus actual protected cross-UID release,
   cancellation/death/expiry tests and official worker integration.
 - M9: protected P3 native owner, six parent-observed launches, both-role parity
