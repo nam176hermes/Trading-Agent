@@ -229,6 +229,24 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         check_boundaries(root, budget)
 
 
+@pytest.mark.parametrize("relative,source,message", [
+    ("engines/nautilus/p3_next_open.py", "from nautilus_trader.backtest.models import LatencyModel\n", None),
+    ("engines/nautilus/other.py", "import nautilus_trader\n", "root Nautilus"),
+    ("engines/nautilus/p3_next_open.py", "import socket\n", "network/client"),
+    ("engines/nautilus/p3_next_open.py", "__import__('socket')\n", "network/client"),
+    ("engines/nautilus/p3_next_open.py", "from .. import client\n", "network/client"),
+    ("packages/bad.py", "import engines.nautilus.p3_next_open\n", "P3 native entry"),
+    ("services/bad.py", "from engines.nautilus import p3_next_open\n", "P3 native entry"),
+])
+def test_p3_entry_is_one_isolated_native_module(tmp_path, relative, source, message):
+    root, budget = _fixture(tmp_path, source, relative=relative)
+    if message is None:
+        check_boundaries(root, budget)
+    else:
+        with pytest.raises(BoundaryError, match=message):
+            check_boundaries(root, budget)
+
+
 def test_p1_source_growth_budget_fails_before_a_module_becomes_a_monolith(
     tmp_path: Path,
 ) -> None:

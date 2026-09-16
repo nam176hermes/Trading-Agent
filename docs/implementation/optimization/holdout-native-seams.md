@@ -72,6 +72,9 @@ cross-UID and disposable SQL qualification require their separate runtime scope.
    `nautilus_trader.backtest.models.LatencyModel(base_latency_nanos=1)`; pinned
    engine timing tests exercise that setting. Source import coverage checks
    bind this extra API to that one P3 file. This grants no P1 launch authority.
+   The boundary checker applies the existing runtime import restrictions to this
+   exact entry and rejects core imports of it. Other engine files receive no new
+   import exemption; runtime_v1 membership and P1 launch policy stay frozen.
 3. Retain three parent-observed native runs for each role. Use an internal pair
    envelope containing the two existing ParityResult references and their
    exact role bindings. Keep accepted public ParityResult bytes unchanged.
