@@ -703,7 +703,7 @@ class JobWorker:
             if isinstance(result, ValidatedP3Publication):
                 if self._p3_publisher is None:
                     raise ResultValidationError("P3 publication repository is required")
-                self._p3_publisher.publish(
+                committed = self._p3_publisher.publish(
                     result.request, claimed, result.entries, trace_id=trace_id,
                     output_inventory_ref=outcome.p3_output_inventory_ref,
                 )
@@ -711,7 +711,8 @@ class JobWorker:
                 # again or rerun research; recover from immutable SQL custody.
                 if outcome.p3_output_custody is not None:
                     outcome.p3_output_custody.check_deadline()
-                self._p3_publisher.recover_receipt(claimed.job_id)
+                self._p3_publisher.recover_receipt(claimed.job_id,
+                    expected_request=result.request, expected_commit=committed)
                 finalized = True
             else:
                 finalized = self._repository_call("finalize_execution",

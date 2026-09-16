@@ -105,9 +105,13 @@ class P3PublicationRepository:
                 raise
         raise RuntimeError("P3 commit retries exhausted")
 
-    def recover_receipt(self, job_id: str) -> PublicationReceipt:
+    def recover_receipt(self, job_id: str, *,
+        expected_request: PublicationRequest | None = None,
+        expected_commit: JobCommitResult | None = None,
+    ) -> PublicationReceipt:
         from packages.alpha_lifecycle.publication import recover_publication_receipt
-        return recover_publication_receipt(job_id, repository=self, store=self._store)
+        return recover_publication_receipt(job_id, repository=self, store=self._store,
+            expected_request=expected_request, expected_commit=expected_commit)
 
     def read_publication(self, job_id: str) -> tuple[PublicationRequest, JobCommitResult, datetime]:
         """Read immutable SQL custody after commit, including after lease expiry."""

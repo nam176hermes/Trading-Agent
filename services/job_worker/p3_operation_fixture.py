@@ -782,7 +782,10 @@ def _check_publication(sock, name, root, source, mark):
                 observer.execute('SELECT pg_sleep(%s)',(min(5,remaining)+.1,))
                 mark('OPERATION_AUTHORIZATION_EXPIRY_WAIT',flush=True)
         assert publisher.publish(request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:expired-commit-readback') == result
-        assert publisher.recover_receipt(claim.job_id) == receipt
+        assert publisher.recover_receipt(claim.job_id, expected_request=request, expected_commit=result) == receipt
+        with _rejected(ValueError, match='readback'):
+            publisher.recover_receipt(claim.job_id,
+                expected_request=PublicationRequest.model_validate_json(_sealed(altered)), expected_commit=result)
         for role in ('trading_job_api','trading_p3_authority'):
             with psycopg.connect(host=str(sock),dbname=name,user=role) as denied:
                 with _rejected(psycopg.errors.InsufficientPrivilege):

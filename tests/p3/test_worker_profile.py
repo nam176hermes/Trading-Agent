@@ -157,9 +157,12 @@ def test_p3_publication_commits_without_generic_success_finalize(receipt_failure
 
         def publish(self, *args, **kwargs):
             self.calls.append((args, kwargs))
+            return 'exact-committed-result'
 
-        def recover_receipt(self, job_id):
+        def recover_receipt(self, job_id, *, expected_request, expected_commit):
             assert self.calls, "receipt must follow SQL commit"
+            assert expected_request == 'request'
+            assert expected_commit == 'exact-committed-result'
             self.recovered.append(job_id)
             if receipt_failure:
                 raise RuntimeError("retained CAS temporarily unavailable")
@@ -328,7 +331,7 @@ def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
             assert kwargs['output_inventory_ref'] is inventory
             if fault in {'commit_error','lost_fence'}:
                 raise RuntimeError('SQL unavailable')
-        def recover_receipt(self,job_id):
+        def recover_receipt(self,job_id,**kwargs):
             events.append('receipt')
             if fault == 'receipt_error':
                 raise RuntimeError('receipt unavailable')
@@ -403,7 +406,7 @@ def test_p3_postrun_expiry_never_repeats_or_falsely_finalizes_publication(tmp_pa
         def publish(self,*args,**kwargs):
             published.append(True)
             if expired_at=='publication': clock[0]=300.0
-        def recover_receipt(self,job_id):
+        def recover_receipt(self,job_id,**kwargs):
             pytest.fail('receipt recovery ran after the post-run deadline')
     worker=JobWorker(repository,Runner(replace(outcome(),p3_output_custody=handle,p3_output_inventory_ref=inventory)),
         Validator(),worker_id='worker-1',code_commit='e'*40,environment=object(),

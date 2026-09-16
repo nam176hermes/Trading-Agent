@@ -185,6 +185,11 @@ prevents a successful calculation from retaining further outputs after claim
 revocation; it does not replace the worker's active-child cancellation or SQL
 transaction fences.
 
+The existing worker also binds receipt recovery to the exact publication request
+and commit result returned by its SQL owner. A different canonical readback fails
+before writing receipt artifacts or marking local processing complete. Historical
+receipt recovery remains available after lease expiry and never reruns research.
+
 This source slice does **not** open the official late lane. Remaining source
 work is the consumed bounded workflow/worker coordinator, protected private P3
 native launcher with six observed processes, and complete SQL terminal readback

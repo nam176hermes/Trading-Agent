@@ -801,9 +801,9 @@ services/job_worker/worker.py|396|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_worker/worker.py|562|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|572|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|626|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|847|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|870|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|895|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|848|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|871|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|896|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE

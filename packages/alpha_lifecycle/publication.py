@@ -70,10 +70,15 @@ def build_publication_receipt(
 
 
 def recover_publication_receipt(
-    job_id: str, *, repository: PublicationReader, store: ArtifactStore
+    job_id: str, *, repository: PublicationReader, store: ArtifactStore,
+    expected_request: PublicationRequest | None = None,
+    expected_commit: JobCommitResult | None = None,
 ) -> PublicationReceipt:
     """Reproduce a receipt from committed SQL custody, never from caller time."""
     request, commit, committed_at = repository.read_publication(job_id)
+    if (expected_request is not None and request != expected_request
+        or expected_commit is not None and commit != expected_commit):
+        raise ValueError('publication readback differs from the committed operation')
     request_ref = _seal(store, request)
     receipt = build_publication_receipt(request_ref, commit, committed_at=committed_at, store=store)
     if _read(store, receipt.commit_result_ref, JobCommitResult) != commit:
