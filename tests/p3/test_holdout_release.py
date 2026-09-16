@@ -228,6 +228,77 @@ def test_parent_rejects_unapproved_metadata_before_sql_or_custodian(disclosure,m
     assert not calls
 
 
+@pytest.mark.parametrize('fault', [None, 'after_bundle', 'between_metadata', 'after_view'])
+def test_release_retention_rechecks_authority_and_revokes_failed_view(released, disclosure, tmp_path, monkeypatch, fault):
+    """Real custody/view validation; metadata approval, socket and SQL are synthetic."""
+    from dataclasses import replace
+    from packages.alpha_lifecycle import custody as custody_module, holdout
+    from packages.alpha_lifecycle.contracts.authority import HoldoutRequest
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from services.job_store.worker_repository import WorkerRepository
+    from services.job_worker import p3_holdout_release as wire
+    source, manifest_ref, spec_ref, protected, raw, _, custody = released
+    metadata, claim, graph, _ = disclosure
+    root = tmp_path/'release-metadata'; root.mkdir(mode=0o700)
+    for store in (source, metadata):
+        for path in store._root.iterdir():
+            if path.name not in {ref.locator for ref in protected}:
+                shutil.copy2(path, root/path.name)
+    store = LocalArtifactStore(root)
+    custody_ref = store.put_bytes(canonical_json_bytes(custody), media_type='application/json')
+    intent = _read(store, claim.payload.manifest_ref, P3OperationInput)
+    document = intent.model_dump(mode='json', exclude={'digest'})
+    document['body'].update(custody_record_ref=custody_ref.model_dump(mode='json'),
+        instrument_spec_ref=spec_ref.model_dump(mode='json'))
+    document['digest'] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
+    intent_ref = store.put_bytes(canonical_json_bytes(document), media_type='application/json')
+    claim = replace(claim, payload=claim.payload.model_copy(update={'manifest_ref': intent_ref}))
+    request, manifest = HoldoutRequest.model_validate_json(graph[0]), _read(store, manifest_ref, HoldoutManifest)
+    monkeypatch.setattr(holdout, 'validate_holdout_operation_input', lambda *args, **kwargs: (request, manifest))
+    endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1', socket_path='/run/p3/custodian.sock',
+        custodian_uid=17001, research_uid=17002, custodian_identity='custodian', research_identity='research')
+    current = True
+    events, writes, views = [], [], []
+    def fence():
+        if not current: raise ValueError('synthetic authority revoked')
+    monkeypatch.setattr(WorkerRepository, 'consume_p3_holdout', lambda *args, **kwargs: events.append('consume'))
+    def bundle(*args, **kwargs):
+        nonlocal current
+        kwargs['fence'](); kwargs['consume']()
+        events.append('bundle')
+        if fault == 'after_bundle': current = False
+        return raw
+    monkeypatch.setattr(wire, 'request_bundle', bundle)
+    put = store.put_bytes
+    def retain(value, *, media_type):
+        nonlocal current
+        ref = put(value, media_type=media_type); writes.append(ref)
+        if fault == 'between_metadata': current = False
+        return ref
+    monkeypatch.setattr(store, 'put_bytes', retain)
+    build = custody_module.released_view
+    def view(*args, **kwargs):
+        nonlocal current
+        result = build(*args, **kwargs); views.append(result)
+        if fault == 'after_view': current = False
+        return result
+    monkeypatch.setattr(custody_module, 'released_view', view)
+    def release():
+        return wire.release_holdout_view(claim, object.__new__(WorkerRepository), store,
+            endpoint=endpoint, fence=fence, trace_id='test:retention')
+    if fault:
+        with pytest.raises(ValueError, match='revoked'): release()
+        assert len(writes) == {'after_bundle': 0, 'between_metadata': 1, 'after_view': 2}[fault]
+        for value in views:
+            with pytest.raises(ValueError, match='closed'): _ = value.raw
+    else:
+        value, _, _ = release()
+        assert len(writes) == 2 and value.read_bytes(protected[0])
+        value.close()
+    assert events == ['consume', 'bundle']
+    assert all(not (root/ref.locator).exists() for ref in protected)
+
+
 def test_custodian_credentials_use_fixed_separate_role(monkeypatch):
     from services.job_store import p3_custodian_release as sql
     from services.job_store.config import JOB_PLANE_DATABASE_USERS

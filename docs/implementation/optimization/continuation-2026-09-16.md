@@ -184,6 +184,7 @@ write. Retention goes through the executor's fenced store interface. This
 prevents a successful calculation from retaining further outputs after claim
 revocation; it does not replace the worker's active-child cancellation or SQL
 transaction fences.
+The release helper also checks before retaining each request and manifest artifact.
 
 The existing worker also binds receipt recovery to the exact publication request
 and commit result returned by its SQL owner. A different canonical readback fails
