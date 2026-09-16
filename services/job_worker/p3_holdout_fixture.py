@@ -65,7 +65,7 @@ def _inputs(
 
 def _seed(
     sock: Path, name: str, source: SourceIdentity, label: str, authorization: tuple[str, str, str],
-    *, worker: str = 'worker_disclose', token: str = 'x' * 32,
+    *, worker: str = 'worker_disclose', token: str = 'x' * 32, legacy_claim: bool = True,
 ) -> tuple[str, str, str, str]:
     auth, intent, review = authorization
     job, attempt = 'job_disclose_'+label, 'attempt_disclose_'+label
@@ -81,6 +81,8 @@ def _seed(
     with psycopg.connect(host=str(sock), dbname=name, user='trading_job_worker') as connection:
         assert connection.execute('SELECT * FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
             (attempt,worker,token,30,'test:disclosure','event_claim_'+label,False,job)).fetchone() is None
+    if not legacy_claim:
+        return job, attempt, worker, token
     # Deliberately simulate a legacy claim. This is not workflow qualification.
     with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
         owner.execute("""UPDATE public.jobs SET state='CLAIMED',attempt_count=1,lease_owner=%s,

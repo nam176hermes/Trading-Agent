@@ -246,6 +246,25 @@ class WorkerRepository:
 
         if type(fixture_only) is not bool:
             raise ValueError("fixture_only must be boolean")
+        return self._claim_alpha_campaign(worker_id, lease_seconds, trace_id,
+            fixture_only=fixture_only, job_id=job_id)
+
+    def claim_session_holdout(
+        self, worker_id: str, lease_seconds: int, trace_id: str, *, job_id: str,
+        workflow_run_id: int, workflow_attempt: int,
+    ) -> ClaimedJob | None:
+        """Claim only the independently approved HOLDOUT for this workflow attempt."""
+        if any(type(value) is not int or not 0 < value < 2**63
+            for value in (workflow_run_id, workflow_attempt)):
+            raise ValueError('positive bounded workflow identities required')
+        validate_p3_job_id(job_id)
+        return self._claim_alpha_campaign(worker_id, lease_seconds, trace_id,
+            fixture_only=False, job_id=job_id, workflow=(workflow_run_id, workflow_attempt))
+
+    def _claim_alpha_campaign(
+        self, worker_id: str, lease_seconds: int, trace_id: str, *,
+        fixture_only: bool, job_id: str | None, workflow: tuple[int, int] | None = None,
+    ) -> ClaimedJob | None:
         self._validate_worker(worker_id)
         self._validate_lease_seconds(lease_seconds)
         self._validate_trace(trace_id)
@@ -256,7 +275,9 @@ class WorkerRepository:
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    """
+                    """SELECT job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at
+                    FROM job_plane.worker_claim_session_holdout(%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    """ if workflow is not None else """
                     SELECT job_id,job_type,payload,attempt_number,max_attempts,
                            lease_expires_at
                     FROM job_plane.worker_claim_alpha_campaign(
@@ -268,8 +289,9 @@ class WorkerRepository:
                     """,
                     (
                         attempt_id, worker_id, lease_token, lease_seconds,
-                        trace_id, self._new_id("event"), fixture_only,
-                    ) + (() if job_id is None else (job_id,)),
+                        trace_id, self._new_id("event"),
+                    ) + ((job_id, *workflow) if workflow is not None else
+                        (fixture_only,) + (() if job_id is None else (job_id,))),
                 ).fetchone()
                 if row is not None and job_id is not None and row['job_id'] != job_id:
                     raise ValueError("P3 claim returned another job")
