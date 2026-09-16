@@ -1,7 +1,7 @@
 """One bounded owner for an already approved three-job calculation lifetime.
 
-This private owner does not enqueue, approve, finalize jobs or enable the official
-late lane. The worker owns fresh lease/safety fences and SQL result recovery.
+This private owner never enqueues or approves jobs. The official coordinator and
+worker own fresh lease/safety fences, terminal SQL results and exact readback.
 """
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -31,6 +31,8 @@ from services.job_store.worker_repository import WorkerRepository
 from .recovery import ProcessIdentity, ProcProcessInspector
 
 if TYPE_CHECKING:
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from packages.alpha_lifecycle.contracts.results import ParityResult
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
     from .p3_host_profile import OfficialHostProfile
@@ -100,8 +102,15 @@ class P3HoldoutSession:
         self._store: LocalArtifactStore = store
         self._view: HoldoutCalculationView | None = None
         self._manifest: ArtifactRefV1 | None = None
+        self._request: ArtifactRefV1 | None = None
         self._spec: ArtifactRefV1 | None = None
         self.native_commitment_ref: ArtifactRefV1 | None = None
+        self.native_parent_proof_ref: ArtifactRefV1 | None = None
+        self.parity_pair_ref: ArtifactRefV1 | None = None
+        self.holdout_result: HoldoutOperationResult | None = None
+        self._outputs: dict[str, ArtifactRefV1] = {}
+        self.completed_jobs: list[str] = []
+        self._native_receipts: tuple[ArtifactRefV1, ...] = ()
         self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorization] | None = None
         self._closed: bool = False
         self._release_attempted: bool = False
@@ -216,6 +225,15 @@ class P3HoldoutSession:
                     raise ValueError('session parity differs from its released view')
             elif not isinstance(body, PhaseExitInput) or body.primary_selection_ref != self.profile.primary_selection_ref:
                 raise ValueError('session exit differs from its primary')
+            elif self.holdout_result is not None:
+                expected = self.holdout_result
+                if (body.holdout_request_ref != expected.holdout_request_ref
+                    or body.holdout_evaluation_ref != expected.holdout_evaluation_ref
+                    or body.holdout_replay_ref != expected.holdout_replay_ref
+                    or body.executable_ref != expected.executable_ref
+                    or body.baseline_executable_ref != expected.baseline_executable_ref
+                    or self.parity_pair_ref is None or body.parity_ref != self.parity_pair_ref):
+                    raise ValueError('session exit differs from its completed stages')
             self._active = claim, fence, digest, authorization
             self.fence()
             self._attempts.append(current)
@@ -255,6 +273,7 @@ class P3HoldoutSession:
                 or manifest.environment_ref != self.profile.environment_ref):
                 raise ValueError('released view differs from session')
             self._manifest, self._spec = manifest_ref, intent.body.instrument_spec_ref
+            self._request = request_ref
             view.bind_lifetime(self._check_view_access)
             from packages.alpha_lifecycle.native_request import prepare_native_commitment
             commitment = prepare_native_commitment(manifest_ref, self._spec, view)
@@ -264,6 +283,13 @@ class P3HoldoutSession:
         except BaseException:
             self.close()
             raise
+
+    def spawn_inputs(self, claim: ClaimedJob) -> tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]:
+        self.fence()
+        if (self._active is None or self._active[0] != claim or self._active[3].operation != 'HOLDOUT'
+            or self._request is None or self._manifest is None or self._spec is None):
+            raise ValueError('holdout driver differs from its released current claim')
+        return self.view, self._request, self._manifest, self._spec
 
     @property
     def view(self) -> HoldoutCalculationView:
@@ -293,7 +319,8 @@ class P3HoldoutSession:
             raise ValueError('session requires the exact campaign payload')
         return prepare_phase_exit(_read(self, payload.manifest_ref, P3OperationInput),
             expected_source=self.profile.source, job_id=claim.job_id,
-            observed_at=authorization.issued_at, expires_at=authorization.expires_at, store=self, holdout_view=view)
+            observed_at=authorization.issued_at, expires_at=authorization.expires_at, store=self, holdout_view=view,
+            native_parent_proof_ref=self.native_parent_proof_ref)
 
     def native_spawn_provider(self) -> 'P3NativeSpawnProvider':
         from .p3_native_spawn import P3NativeSpawnProvider
@@ -313,18 +340,57 @@ class P3HoldoutSession:
         preflight: Callable[[], 'SafetyEvidence'],
     ) -> tuple['NativeReplica', ...]:
         """Keep native execution and result retention inside the current parity stage."""
-        from .p3_native_runner import run_native_replicas
+        from .p3_native_runner import run_native_replicas, retain_native_proof
         try:
             provider = self.native_spawn_provider()
             active = self._active
             if active is None:
                 raise ValueError('native execution requires the active parity stage')
             profile = self._host(active[0], active[2])
-            return run_native_replicas(provider, view=self.view, output=self,
+            runs = run_native_replicas(provider, view=self.view, output=self,
                 artifact_root=Path(profile.output_root)/'native', heartbeat=heartbeat, preflight=preflight)
+            self.native_parent_proof_ref, self._native_receipts = retain_native_proof(provider, runs, self)
+            return runs
         except BaseException:
             self.close()
             raise
+
+    def calculate_parity(self, *,
+        heartbeat: Callable[[ProcessIdentity], 'HeartbeatDecision | HeartbeatInstruction'],
+        preflight: Callable[[], 'SafetyEvidence'],
+    ) -> 'ParityResult':
+        from decimal import Decimal
+        from packages.alpha_lifecycle.contracts.execution import InstrumentSpec
+        from packages.alpha_lifecycle.parity import compare_executable_results, build_parity_pair
+        self.fence()
+        active, held = self._active, self.holdout_result
+        if active is None or held is None or self._manifest is None or self._spec is None:
+            raise ValueError('native parity requires this session completed holdout')
+        payload = active[0].payload
+        if not isinstance(payload, AlphaCampaignPayload):
+            raise ValueError('session requires campaign payload')
+        intent = _read(self, payload.manifest_ref, P3OperationInput)
+        if (not isinstance(intent.body, NativeParityInput)
+            or intent.body.primary_reference_ref != held.executable_ref
+            or intent.body.baseline_reference_ref != held.baseline_executable_ref):
+            raise ValueError('native intent differs from this session reference results')
+        runs = self.execute_native(heartbeat=heartbeat, preflight=preflight)
+        spec = _read(self.view, self._spec, InstrumentSpec)
+        results = []
+        refs = []
+        for index, reference in enumerate((held.executable_ref, held.baseline_executable_ref)):
+            a, b, c = runs[index*3:index*3+3]
+            r1, r2, r3 = self._native_receipts[index*3:index*3+3]
+            result = compare_executable_results(reference, (a.result_ref, b.result_ref, c.result_ref),
+                (r1, r2, r3), self, quote_quantum=Decimal(spec.quote_quantum))
+            results.append(result)
+            refs.append(self.put_bytes(canonical_json_bytes(result), media_type='application/json'))
+        pair = build_parity_pair(manifest_ref=self._manifest, instrument_spec_ref=self._spec,
+            primary_reference_ref=held.executable_ref, baseline_reference_ref=held.baseline_executable_ref,
+            primary_parity_ref=refs[0], baseline_parity_ref=refs[1], store=self,
+            native_parent_proof_ref=self.native_parent_proof_ref)
+        self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
+        return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
         self._check_view_access()
@@ -332,7 +398,9 @@ class P3HoldoutSession:
 
     def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
         self.fence()
-        return self._store.put_bytes(value, media_type=media_type)
+        ref = self._store.put_bytes(value, media_type=media_type)
+        self._outputs[ref.content_sha256] = ref
+        return ref
 
     def close(self) -> None:
         self._closed = True

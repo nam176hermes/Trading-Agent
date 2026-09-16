@@ -67,7 +67,8 @@ def test_profiled_connection_rechecks_before_loading_plaintext(custodian_profile
     module,document,digest=custodian_profile
     _,_,_,_,raw,_,_=released
     calls=[]
-    def credentials(cls,values):
+    def credentials(cls,values, *, session=False):
+        assert session is False
         assert values=={'CREDENTIALS_DIRECTORY':document['credentials_directory']}
         return object.__new__(CustodianReleaseRepository)
     monkeypatch.setattr(CustodianReleaseRepository,'from_systemd_credentials',classmethod(credentials))
@@ -110,3 +111,15 @@ def test_wrong_process_uid_cannot_read_custodian_credentials(custodian_profile,m
             profile_digest=digest(),read_plaintext=lambda _:b'')
         assert not calls
     finally:reader.close();writer.close()
+
+
+@pytest.mark.parametrize('session', [False, True])
+def test_custodian_catalog_is_selected_by_explicit_profile_version(custodian_profile, session):
+    module, document, digest = custodian_profile
+    if session:
+        document['schema_version'] = 'p3-custodian-session-profile-v1'
+        document['catalog_sha256'] = module.SESSION_CATALOG_SHA256
+    assert module.read_custodian_profile(Path('/synthetic/profile'), digest()).schema_version == document['schema_version']
+    document['catalog_sha256'] = module.CUSTODIAN_CATALOG_SHA256 if session else module.SESSION_CATALOG_SHA256
+    with pytest.raises(ValueError, match='catalog'):
+        module.read_custodian_profile(Path('/synthetic/profile'), digest())

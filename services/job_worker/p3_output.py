@@ -9,7 +9,8 @@ import re
 import stat
 import time
 
-from packages.data_catalog.artifact_store import LocalArtifactStore
+from packages.data_catalog.artifact_store import LocalArtifactStore, ArtifactIntegrityError
+from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES
@@ -23,13 +24,18 @@ def _identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
 
 
 class P3OutputCustody:
-    def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore) -> None:
+    def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore, *,
+        before_retain: Callable[[dict[str, ArtifactRefV1], ArtifactStore], None] | None = None,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
         if type(store) is not LocalArtifactStore or re.fullmatch('[0-9a-f]{64}',name) is None:
             raise ValueError('P3 output custody requires the retained store and exact attempt directory')
         self._parent = self._output = -1
         self._retained = None
         self._postrun_deadline = None
         self._name,self._store = name,store
+        self._before_retain = before_retain
+        self._before_write = before_write
         self._identity = (os.fstat(output_fd).st_dev,os.fstat(output_fd).st_ino)
         try:
             self._parent = os.dup(parent_fd)
@@ -165,10 +171,28 @@ class P3OutputCustody:
                         files.append((relative,name,expected,ref))
                     else:
                         raise ValueError('P3 output contains an unexpected path')
+            if self._before_retain is not None:
+                locations = {ref: (relative, name, expected) for relative, name, expected, ref in files}
+                custody = self
+                class PinnedReader:
+                    def read_bytes(self, ref: ArtifactRefV1) -> bytes:
+                        check()
+                        if ref not in locations:
+                            raise ArtifactIntegrityError('private output is missing') from FileNotFoundError(ref.locator)
+                        relative, name, expected = locations[ref]
+                        return custody._read(directories[relative], name, expected)
+
+                    def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
+                        return ReadbackStore(self, self).put_bytes(value, media_type=media_type)
+                self._before_retain({relative+'/'+name: ref for relative, name, _, ref in files}, PinnedReader())
+                check()
             inventory=[]
             for relative,name,expected,ref in files:
                 check()
                 raw=self._read(directories[relative],name,expected)
+                if self._before_write is not None:
+                    self._before_write()
+                    check()
                 retained=self._store.put_bytes(raw,media_type=ref.media_type)
                 check()
                 if retained != ref or self._store.read_bytes(ref) != raw:
@@ -179,6 +203,9 @@ class P3OutputCustody:
             if len(inventory_raw) > MAX_OUTPUT_INVENTORY_BYTES:
                 raise ValueError('P3 output inventory exceeds its serialized bound')
             check()
+            if self._before_write is not None:
+                self._before_write()
+                check()
             inventory_ref=self._store.put_bytes(inventory_raw,media_type='application/json')
             check()
             if self._store.read_bytes(inventory_ref) != inventory_raw:

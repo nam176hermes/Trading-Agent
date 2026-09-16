@@ -104,3 +104,6 @@ CUSTODIAN_CATALOG_SQL = """WITH authority AS ("""+AUTHORITY_CATALOG_SQL.replace(
 
 # Populated only from the reviewed disposable migration result, never at runtime.
 CUSTODIAN_CATALOG_SHA256 = '9572607639ee26d2b294ce8468880fabe0fc9f6397eb739c1f6365b219b57c04'
+
+SESSION_REVISION = '0029_p3_session_holdout_claim'
+SESSION_CATALOG_SHA256 = 'bb704c68e3d2e60c01142ace4346f26ca4fc9b3b8b42cddb323f6aa45563225f'

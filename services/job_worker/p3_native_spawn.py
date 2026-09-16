@@ -79,6 +79,8 @@ class P3NativeSpawnProvider:
         self._pending: bool = False
         self._execution_started: bool = False
         self._last_launch: tuple[str, dict[str, str]] | None = None
+        self._completed_runs: tuple[object, ...] = ()
+        self._proof_retained: bool = False
         self._lock: Lock = Lock()
         self._issued: weakref.WeakKeyDictionary[PreparedP3NativeSpawn,
             tuple[NativeRequest, str, P1EngineClosureAttestation, tuple[bytes, bytes], float]] = weakref.WeakKeyDictionary()

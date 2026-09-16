@@ -200,6 +200,7 @@ class ResultValidator:
         output_custody=None,
         output_inventory_ref=None,
         progress: Callable[[], None] | None = None,
+        holdout_view=None,
     ) -> ValidatedResult | ValidatedP3Publication:
         """Validate the bounded stdout of an explicitly composed P3 worker."""
 
@@ -223,7 +224,8 @@ class ResultValidator:
             if type(output_custody) is not P3OutputCustody or output_inventory_ref is None:
                 raise ResultValidationError('P3 official result requires its exact output custody')
             try:
-                validate_official_output(job,result,output_custody,output_inventory_ref,progress=progress)
+                validate_official_output(job,result,output_custody,output_inventory_ref,progress=progress,
+                    holdout_view=holdout_view)
             except (OSError,ValueError) as exc:
                 raise ResultValidationError('P3 output custody or operation closure is invalid') from exc
         from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt

@@ -136,7 +136,81 @@ def _validate_replicas(proof,manifest_ref,result_ref,job,inventory,output_refs,o
         raise ValueError('P3 operation output contains unexpected replica files')
 
 
-def validate_official_output(job, result, custody: P3OutputCustody, inventory_ref: ArtifactRefV1, *, progress=None):
+def validate_holdout_output(job, inventory, outputs, store, view, *, progress=None):
+    """Recompute an exact allowlist before any child output reaches research CAS."""
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult, derive_holdout_request
+    from packages.alpha_lifecycle.operation_input import HoldoutInput
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
+    from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec, EnvironmentIdentity
+    from packages.alpha_lifecycle.contracts.results import HoldoutEvaluationResult
+    from packages.alpha_lifecycle.evaluation import evaluate_holdout
+    from packages.alpha_lifecycle.executable_reference import run_executable_reference, run_selected_baseline_reference
+    from packages.alpha_lifecycle.replay import validate_replay_proof
+    progress = progress or (lambda: None)
+    progress()
+    if type(view) is not HoldoutCalculationView or job.payload.operation != 'HOLDOUT':
+        raise ValueError('holdout validation requires the current released view')
+    top = tuple(ref for path, ref in inventory.items() if path.startswith('artifacts/'))
+    candidates = [ref for ref in top if isinstance(value := json.loads(outputs.read_bytes(ref)), dict)
+        and value.get('schema_version') == 'p3-holdout-operation-result-v1']
+    if len(candidates) != 1:
+        raise ValueError('holdout requires exactly one terminal result')
+    result_ref = candidates[0]
+    result = _read(outputs, result_ref, HoldoutOperationResult)
+    intent = _read(store, job.payload.manifest_ref, P3OperationInput)
+    authorization = _read(store, job.payload.authorization_ref, RunAuthorization)
+    if not isinstance(intent.body, HoldoutInput):
+        raise ValueError('holdout requires its exact intent')
+    request = derive_holdout_request(intent, authorization, expected_source=job.payload.expected_source)
+    if store.read_bytes(result.holdout_request_ref) != canonical_json_bytes(request):
+        raise ValueError('holdout result belongs to another disclosure request')
+    manifest = _read(view, result.holdout_manifest_ref, HoldoutManifest)
+    spec = _read(view, intent.body.instrument_spec_ref, InstrumentSpec)
+    if (manifest.source != job.payload.expected_source or manifest.primary_selection_ref != request.primary_selection_ref
+        or manifest.policy_digest != request.policy_digest or manifest.environment_ref != intent.body.environment_ref):
+        raise ValueError('holdout manifest differs from the current request')
+    inputs = ReplicaArtifactStore(store, view)
+    class CalculationReader(_ClosedReader):
+        def read_bytes(self, ref):
+            progress()
+            return outputs.read_bytes(ref) if _key(ref) in self._references else inputs.read_bytes(ref)
+    combined = CalculationReader(outputs, inventory.values(), progress=progress)
+    verified = set()
+    recompute = ReadbackStore(combined, outputs, verified_outputs=verified)
+    evaluation = evaluate_holdout(manifest, spec, recompute)
+    if evaluation != _read(outputs, result.holdout_evaluation_ref, HoldoutEvaluationResult):
+        raise ValueError('holdout evaluation differs from released inputs')
+    evaluation_outputs = set(verified)
+    for operation, ref in ((run_executable_reference, result.executable_ref),
+        (run_selected_baseline_reference, result.baseline_executable_ref)):
+        progress()
+        expected = operation(manifest, spec, recompute)
+        if outputs.read_bytes(ref) != canonical_json_bytes(expected):
+            raise ValueError('holdout reference differs from released inputs')
+        verified.add(ref.locator)
+    proof = _read(outputs, result.holdout_replay_ref, ReplayProof)
+    environment = _read(view, manifest.environment_ref, EnvironmentIdentity)
+    validate_replay_proof(proof, manifest_ref=result.holdout_manifest_ref, result_ref=result.holdout_evaluation_ref,
+        source=manifest.source, environment_ref=manifest.environment_ref,
+        sandbox_policy_digest=environment.sandbox_policy_digest, reader=outputs)
+    _validate_replicas(proof, result.holdout_manifest_ref, result.holdout_evaluation_ref,
+        job, inventory, top, outputs)
+    verified.update(ref.locator for ref in (result_ref, result.holdout_evaluation_ref,
+        result.holdout_replay_ref, *proof.receipt_refs))
+    for replica, receipt_ref in zip(('r1', 'r2', 'r3'), proof.receipt_refs, strict=True):
+        if {ref.locator for path, ref in inventory.items() if path.startswith(replica+'/artifacts/')} != evaluation_outputs:
+            raise ValueError('holdout replica contains unexpected artifacts')
+        receipt = _read(outputs, receipt_ref, ReplayReceipt)
+        verified.add(receipt.output_inventory_digest+'.blob')
+    if {ref.locator for ref in top} != verified:
+        raise ValueError('holdout driver contains artifacts outside recomputed outputs')
+    progress()
+    return result
+
+
+def validate_official_output(job, result, custody: P3OutputCustody, inventory_ref: ArtifactRefV1, *, progress=None,
+    holdout_view=None):
     progress=progress or (lambda: None)
     progress()
     if (type(job) is not ClaimedJob or job.job_type is not JobType.ALPHA_CAMPAIGN
@@ -146,6 +220,11 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
     store=custody._store
     inventory=custody.inventory
     output_refs=tuple(ref for path,ref in inventory.items() if path.startswith('artifacts/'))
+    if job.payload.operation == 'HOLDOUT':
+        if result != validate_holdout_output(job, inventory, _ClosedReader(store, inventory.values(), progress=progress),
+            store, holdout_view, progress=progress):
+            raise ValueError('holdout stdout differs from validated output')
+        return
     result_ref=_reference(canonical_json_bytes(result))
     if result_ref not in output_refs:
         raise ValueError('P3 terminal result is absent from this attempt output')

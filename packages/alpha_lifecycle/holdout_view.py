@@ -14,6 +14,7 @@ from packages.alpha_lifecycle.pit_evidence import _ReadBudget, _reference
 from packages.alpha_lifecycle.replica_store import ArtifactStore, _read
 from packages.alpha_lifecycle.sandbox_policy import MAX_VIEW_BYTES
 from packages.data_contracts import ArtifactRefV1
+from packages.data_catalog.artifact_store import ArtifactIntegrityError
 from packages.engine_contracts.serialization import canonical_json_bytes
 
 
@@ -99,7 +100,9 @@ class HoldoutCalculationView:
         ref=ArtifactRefV1.model_validate(ref)
         _reference(ref,MAX_VIEW_BYTES)
         raw=self._records.get(ref.locator)
-        if raw is None or len(raw)!=ref.size_bytes or hashlib.sha256(raw).hexdigest()!=ref.content_sha256:
+        if raw is None:
+            raise ArtifactIntegrityError('holdout calculation artifact is missing') from FileNotFoundError(ref.locator)
+        if len(raw)!=ref.size_bytes or hashlib.sha256(raw).hexdigest()!=ref.content_sha256:
             raise ValueError('holdout calculation artifact is missing or differs')
         return raw
 

@@ -1,5 +1,8 @@
 # M8/M9/M4/M7 continuation
 
+Current session source wiring is described in [bounded session source](session-source-2026-09-16.md).
+The implementation-in-progress statements below record the earlier checkpoint.
+
 Parent: `43931b262f58d2de50ac09fb17307f63c7e49df3`. The operator asked to
 continue these four milestones while that candidate's hosted CI runs. Work is
 isolated on `codex/optimization-continuation-20260916`; the existing candidate,

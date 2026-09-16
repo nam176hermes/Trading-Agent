@@ -58,7 +58,10 @@ def build_worker(
     p3_fixture_executor: object | None = None,
     p3_spawn_provider: object | None = None,
     p3_job_id: str | None = None,
+    p3_session: object | None = None,
 ) -> JobWorker:
+    if p3_session is not None and (p3_spawn_provider is None or p3_fixture_executor is not None):
+        raise ValueError('session requires its official provider')
     if p3_job_id is not None and p3_fixture_executor is None and p3_spawn_provider is None:
         raise ValueError("P3 job binding requires an explicit P3 profile")
     if p3_job_id is not None:
@@ -192,11 +195,11 @@ def build_worker(
     p3_profile = p3_fixture_executor is not None or p3_spawn_provider is not None
     p3_store = (p3_fixture_executor.store if p3_fixture_executor is not None
                 else p3_spawn_provider._store if p3_spawn_provider is not None else None)
-    if p3_profile:
+    if p3_profile and p3_session is None:
         repository.recover_expired_leases(ProcProcessInspector(),
             recovery_id="worker-startup-recovery",alpha_campaign=True,
             fixture_only=p3_fixture_executor is not None,
-            **({"job_id":p3_job_id} if p3_job_id is not None else {}))
+            job_id=p3_job_id)
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -211,6 +214,7 @@ def build_worker(
         p3_profile=p3_profile,
         p3_job_id=p3_job_id,
         p3_fixture_executor=p3_fixture_executor,
+        p3_session=p3_session,
         p3_publisher=repository.alpha_publication_repository(p3_store) if p3_profile else None,
         prepare_spawn=(p3_spawn_provider.prepare if p3_spawn_provider is not None
                        else reject_nonfixture if p3_fixture_executor is not None else prepare_immediate_spawn),

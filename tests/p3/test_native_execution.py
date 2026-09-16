@@ -111,6 +111,31 @@ def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
             assert run.request_sha256 == payload_digest(provider._requests[run.role != 'PRIMARY'])
             assert x.store.read_bytes(run.result_ref)
             assert run.outcome.lineage.command['os_sandbox_profile_sha256'] != 'd'*64
+        from services.job_worker.p3_native_runner import retain_native_proof
+        from packages.alpha_lifecycle.parity import NativeParentProof, validate_native_proof
+        proof_ref, receipt_refs = retain_native_proof(provider, runs, x.session)
+        proof = _read(x.store, proof_ref, NativeParentProof)
+        assert proof.session_sha256 == provider._session_digest
+        assert proof.job_id == provider._claim.job_id
+        assert proof.lease_token_sha256 == provider._claim.lease_token_sha256
+        assert tuple(record.receipt_ref for record in proof.runs) == receipt_refs
+        assert len({(record.pid, record.start_ticks) for record in proof.runs}) == 6
+        assert validate_native_proof(proof_ref, manifest_ref=request.manifest_ref,
+            instrument_spec_ref=request.instrument_spec_ref, store=x.store) == proof
+        x.session.native_parent_proof_ref = proof_ref
+        x.session._native_receipts = receipt_refs
+        monkeypatch.setattr(x.session, 'execute_native', lambda **kwargs: runs)
+        parity = x.session.calculate_parity(heartbeat=heartbeat, preflight=preflight)
+        assert parity.verdict == 'PASS'
+        from packages.alpha_lifecycle.parity import SessionParityPair, validate_parity_pair
+        pair = _read(x.store, x.session.parity_pair_ref, SessionParityPair)
+        assert pair.native_parent_proof_ref == proof_ref
+        assert validate_parity_pair(x.session.parity_pair_ref, manifest_ref=request.manifest_ref,
+            instrument_spec_ref=request.instrument_spec_ref, primary_reference_ref=pair.primary_reference_ref,
+            baseline_reference_ref=pair.baseline_reference_ref, store=x.store,
+            native_parent_proof_ref=proof_ref) == pair
+        with pytest.raises(ValueError):
+            retain_native_proof(provider, (*runs[:5], runs[0]), x.session)
         assert all(b'"steps"' not in raw for raw in writes)
         assert not list((tmp_path/'streams').rglob('request.log'))
     else:

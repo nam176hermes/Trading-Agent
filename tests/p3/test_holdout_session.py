@@ -37,6 +37,20 @@ def test_view_cannot_be_used_in_a_forked_parent(reference_seed):
     assert view.read_bytes(manifest)  # The owning parent remains usable.
 
 
+def test_released_view_combines_metadata_without_persisting_raw_inputs(reference_seed):
+    from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
+    root, manifest, spec, *_ = reference_seed
+    store = LocalArtifactStore(root)
+    view = HoldoutCalculationView(build_holdout_calculation_view(manifest, spec, store), manifest, spec)
+    metadata = store.put_bytes(b'{"metadata":true}', media_type='application/json')
+    combined = ReplicaArtifactStore(store, view)
+    assert combined.read_bytes(metadata) == b'{"metadata":true}'
+    assert combined.read_bytes(manifest) == view.read_bytes(manifest)
+    view.close()
+    with pytest.raises(ValueError, match='closed'):
+        combined.read_bytes(metadata)
+
+
 @pytest.fixture
 def session_inputs(reference_seed, tmp_path, monkeypatch):
     from dataclasses import asdict
@@ -296,12 +310,65 @@ def test_session_exit_recomputes_with_same_view_without_raw_cas(session_inputs, 
         with session.stage(x.claim('PARITY', holdout_manifest_ref=manifest,
             native_request_ref=session.native_commitment_ref), fence=lambda: None):
             assert len(session.native_requests()) == 2
-        with session.stage(x.claim('PHASE_EXIT', **{name: getattr(intent.body, name)
-            for name in type(intent.body).model_fields}), fence=lambda: None):
-            proposal = session.prepare_exit()
-            assert proposal.request.stage == 'EXIT_DECISION'
-            assert len(proposal.entries) == 1
-            assert 'REJECTED' in proposal.entries[0].canonical_event_text
+        exit_claim = x.claim('PHASE_EXIT', **{name: getattr(intent.body, name)
+            for name in type(intent.body).model_fields})
+        with session.stage(exit_claim, fence=lambda: None):
+            # Real worker -> proposal -> publication/readback. Only SQL transport
+            # is synthetic here; its capability has a disposable PostgreSQL suite.
+            from contextlib import contextmanager
+            from datetime import UTC, datetime
+            from types import SimpleNamespace
+            from psycopg import OperationalError
+            from packages.engine_contracts.serialization import canonical_json_bytes, payload_digest
+            from services.job_store.p3_publication_repository import P3PublicationRepository, JobCommitResult
+            from services.job_store.p3_sql import PublicationTransport
+            from services.job_worker.worker import JobWorker
+            from tests.p3.test_worker_profile import P3Repository
+            from tests.jobs.test_worker_lifecycle import safety_evidence
+            class Pool:
+                commits = 0
+                reads = 0
+                @contextmanager
+                def connection(self): yield self
+                @contextmanager
+                def transaction(self):
+                    yield self
+                    raise OperationalError('synthetic acknowledgement lost after committed exit')
+                def execute(self, query, parameters):
+                    if query == P3PublicationRepository.COMMIT_SQL:
+                        self.commits += 1
+                        self.transport = PublicationTransport.model_validate_json(parameters[4])
+                        request = self.transport.request
+                        value = dict(schema_version='p3-job-commit-result-v1', job_id=request.job_id,
+                            idempotency_key=request.idempotency_key, semantic_request_digest=request.semantic_request_digest,
+                            prepublication_ref=request.evidence_ref, ledger_event_ids=tuple(str(entry.event_id) for entry in self.transport.entries),
+                            registry_event_refs=request.proposed_event_refs, alpha_outcome='FAIL')
+                        self.result = JobCommitResult.model_validate_json(canonical_json_bytes(dict(value, digest=payload_digest(value))))
+                        self.bound = dict(result=self.result.model_dump(mode='json'), output_attempt_id=exit_claim.attempt_id,
+                            output_inventory_ref=self.transport.output_inventory_ref.model_dump(mode='json'))
+                        row = dict(result=self.bound)
+                    elif query == P3PublicationRepository.READ_SQL:
+                        self.reads += 1
+                        row = dict(result=self.bound)
+                    else:
+                        assert 'worker_read_alpha_publication' in query
+                        self.reads += 1
+                        row = dict(request_text=canonical_json_bytes(self.transport.request).decode(),
+                            result_text=canonical_json_bytes(self.result).decode(), committed_at=datetime.now(UTC),
+                            output_attempt_id=exit_claim.attempt_id,
+                            output_inventory_ref_text=canonical_json_bytes(self.transport.output_inventory_ref).decode())
+                    return SimpleNamespace(fetchone=lambda: row)
+            pool = Pool()
+            worker = JobWorker(P3Repository(exit_claim), object(), object(), worker_id=exit_claim.worker_id,
+                code_commit='e'*40, environment=object(), safety_preflight=lambda: safety_evidence('4'*64),
+                prepare_spawn=lambda _: pytest.fail('exit must use the current parent'), p3_profile=True,
+                p3_job_id=exit_claim.job_id, p3_publisher=P3PublicationRepository(pool, x.store), p3_session=session)
+            assert worker.run_once(session_claim=exit_claim)
+            assert pool.commits == 1 and pool.reads == 2
+            assert session.completed_jobs == [exit_claim.job_id]
+            assert pool.transport.request.stage == 'EXIT_DECISION'
+            assert len(pool.transport.entries) == 1
+            assert 'REJECTED' in pool.transport.entries[0].canonical_event_text
     assert all(not (x.store._root/ref.locator).exists() for ref in (*reference_seed[-2], reference_seed[-1]))
     with pytest.raises(ValueError, match='closed'):
         _ = view.raw

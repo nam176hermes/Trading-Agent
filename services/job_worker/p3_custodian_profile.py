@@ -13,7 +13,7 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.pre_p3_provenance import canonical_source_identity
 from packages.project_status import derive_project_status
 from packages.runtime_release.config import ProtectedAuthorityError,_absolute,read_protected_canonical_json_current
-from services.job_store.p3_catalog import CUSTODIAN_CATALOG_SHA256
+from services.job_store.p3_catalog import CUSTODIAN_CATALOG_SHA256, SESSION_CATALOG_SHA256
 from services.job_store.p3_custodian_release import CustodianReleaseRepository
 from .p3_holdout_release import CustodianEndpoint,_request_identity,serve_release
 from .p3_spawn import ROOT,_directory_identity
@@ -21,7 +21,7 @@ from typing import Literal
 
 
 class CustodianHostProfile(StrictModel):
-    schema_version: Literal['p3-custodian-host-profile-v1']
+    schema_version: Literal['p3-custodian-host-profile-v1', 'p3-custodian-session-profile-v1']
     request: ReleaseRequest
     endpoint: CustodianEndpoint
     metadata_root: str
@@ -37,8 +37,10 @@ def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProf
     if digest!=expected_digest:raise ValueError('custodian profile digest changed')
     profile=CustodianHostProfile.model_validate_json(canonical_json_bytes(document))
     _request_identity(profile.request,profile.endpoint)
+    catalog = (SESSION_CATALOG_SHA256 if profile.schema_version == 'p3-custodian-session-profile-v1'
+        else CUSTODIAN_CATALOG_SHA256)
     if (profile.request.source!=SourceIdentity.model_validate(canonical_source_identity(ROOT))
-        or profile.catalog_sha256!=CUSTODIAN_CATALOG_SHA256):
+        or profile.catalog_sha256!=catalog):
         raise ValueError('custodian source or catalog differs')
     status=derive_project_status(ROOT)
     if (status['gates']['HWC_SOURCE_READY']!='PASS' or status['gates']['PRE_P3_READY']!='PASS'
@@ -65,7 +67,8 @@ def serve_profiled_release(channel: socket.socket,*,profile_path: Path,profile_d
             raise ValueError('custodian profile or metadata root changed')
         return profile.endpoint
     repository=CustodianReleaseRepository.from_systemd_credentials(
-        {'CREDENTIALS_DIRECTORY':profile.credentials_directory})
+        {'CREDENTIALS_DIRECTORY':profile.credentials_directory},
+        session=profile.schema_version == 'p3-custodian-session-profile-v1')
     serve_release(channel,profile.endpoint,LocalArtifactStore(root),repository=repository,
         request_sha256=hashlib.sha256(canonical_json_bytes(profile.request)).hexdigest(),
         read_plaintext=read_plaintext,recheck_profile=recheck)

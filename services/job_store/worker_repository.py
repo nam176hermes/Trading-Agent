@@ -126,6 +126,29 @@ class WorkerRepository:
             raise ValueError("worker database revision authority is invalid")
         self._assert_database_identity(expected_user, expected_revision)
 
+    def session_attempt_state(self, claim: ClaimedJob) -> tuple[JobState, str] | None:
+        with self._pool.connection() as connection:
+            row = connection.execute("""SELECT j.state, a.outcome FROM public.jobs j
+                JOIN public.job_attempts a ON a.job_id=j.job_id
+                WHERE j.job_id=%s AND a.attempt_id=%s AND a.worker_id=%s
+                  AND a.lease_token=%s AND j.attempt_count=a.attempt_number""",
+                (claim.job_id, claim.attempt_id, claim.worker_id, claim.lease_token)).fetchone()
+        return None if row is None else (JobState(row['state']), row['outcome'])
+
+    def session_result_matches(self, claim: ClaimedJob, result_hash: str) -> bool:
+        """Read the exact terminal attempt after commit, including lost acknowledgement."""
+        if not _HASH.fullmatch(result_hash):
+            raise ValueError('invalid session result hash')
+        with self._pool.connection() as connection:
+            row = connection.execute("""
+                SELECT j.state, j.result_hash, a.outcome, a.finished_at
+                FROM public.jobs j JOIN public.job_attempts a ON a.job_id=j.job_id
+                WHERE j.job_id=%s AND a.attempt_id=%s AND a.worker_id=%s
+                  AND a.lease_token=%s AND j.attempt_count=a.attempt_number
+            """, (claim.job_id, claim.attempt_id, claim.worker_id, claim.lease_token)).fetchone()
+        return bool(row and row['state'] == 'SUCCEEDED' and row['outcome'] == 'SUCCEEDED'
+            and row['finished_at'] is not None and row['result_hash'] == result_hash)
+
     def assert_p1_disposable_runtime_identity(self) -> None:
         """Require the code-owned disposable P1 worker role and 0013 head."""
 
@@ -139,6 +162,20 @@ class WorkerRepository:
         self._assert_database_identity(
             "trading_job_worker", P3_DISPOSABLE_DATABASE_REVISION
         )
+
+    def assert_session_runtime_identity(self) -> None:
+        """Admit only the reviewed private lifecycle catalog; ordinary startup stays pinned."""
+        from .p3_catalog import CUSTODIAN_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+        from .p3_custodian_release import IDENTITY
+        with self._pool.connection() as connection:
+            with connection.transaction():
+                connection.execute("SET LOCAL search_path=pg_catalog")
+                identity = connection.execute(IDENTITY).fetchone()
+                if identity != {'current_user': 'trading_job_worker', 'session_user': 'trading_job_worker',
+                    'version_num': SESSION_REVISION, 'restricted': True}:
+                    raise ValueError('session database identity or revision differs')
+                if connection.execute(CUSTODIAN_CATALOG_SQL).fetchone() != {'catalog_sha256': SESSION_CATALOG_SHA256}:
+                    raise ValueError('session database catalog differs')
 
     def _assert_database_identity(
         self, expected_user: str, expected_revision: str
@@ -249,14 +286,21 @@ class WorkerRepository:
         return self._claim_alpha_campaign(worker_id, lease_seconds, trace_id,
             fixture_only=fixture_only, job_id=job_id)
 
+    @staticmethod
+    def _validate_session_workflow(workflow: tuple[int, int] | None, alpha_campaign: bool) -> tuple[int, ...]:
+        if workflow is None:
+            return ()
+        if (alpha_campaign is not True or type(workflow) is not tuple or len(workflow) != 2
+            or any(type(value) is not int or not 0 < value < 2**63 for value in workflow)):
+            raise ValueError('positive bounded workflow identities in the explicit alpha lane required')
+        return workflow
+
     def claim_session_holdout(
         self, worker_id: str, lease_seconds: int, trace_id: str, *, job_id: str,
         workflow_run_id: int, workflow_attempt: int,
     ) -> ClaimedJob | None:
         """Claim only the independently approved HOLDOUT for this workflow attempt."""
-        if any(type(value) is not int or not 0 < value < 2**63
-            for value in (workflow_run_id, workflow_attempt)):
-            raise ValueError('positive bounded workflow identities required')
+        self._validate_session_workflow((workflow_run_id, workflow_attempt), True)
         validate_p3_job_id(job_id)
         return self._claim_alpha_campaign(worker_id, lease_seconds, trace_id,
             fixture_only=False, job_id=job_id, workflow=(workflow_run_id, workflow_attempt))
@@ -308,7 +352,9 @@ class WorkerRepository:
     def start_attempt(
         self, job_id: str, attempt_id: str, worker_id: str, lease_token: str,
         identity: ProcessIdentity, trace_id: str, *, alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> bool:
+        workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         self._validate_worker(worker_id)
         self._validate_trace(trace_id)
         if not isinstance(identity, ProcessIdentity) or not _HASH.fullmatch(identity.command_fingerprint):
@@ -316,6 +362,9 @@ class WorkerRepository:
         with self._pool.connection() as connection:
             with connection.transaction():
                 statement = (
+                    """SELECT job_plane.worker_start_session_holdout(
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+                    ) AS started""" if workflow else
                     """SELECT job_plane.worker_start_alpha_campaign(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     ) AS started"""
@@ -337,7 +386,7 @@ class WorkerRepository:
                         identity.command_fingerprint,
                         trace_id,
                         self._new_id("event"),
-                    ),
+                    ) + workflow,
                 ).fetchone()
                 return bool(row and row["started"])
 
@@ -418,6 +467,7 @@ class WorkerRepository:
     def heartbeat_control(
         self, job_id: str, attempt_id: str, worker_id: str,
         lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> str:
         """Renew the current fence and return cancellation without a race."""
 
@@ -430,12 +480,13 @@ class WorkerRepository:
             lease_token,
             lease_seconds,
             "RUNNING",
-            alpha_campaign=alpha_campaign,
+            alpha_campaign=alpha_campaign, session_workflow=session_workflow,
         )
 
     def pre_spawn_control(
         self, job_id: str, attempt_id: str, worker_id: str,
         lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> str:
         """Fence the CLAIMED-to-spawn boundary and observe cancellation."""
 
@@ -448,7 +499,7 @@ class WorkerRepository:
             lease_token,
             lease_seconds,
             "PRE_SPAWN",
-            alpha_campaign=alpha_campaign,
+            alpha_campaign=alpha_campaign, session_workflow=session_workflow,
         )
 
     def _control_snapshot_lease(
@@ -461,10 +512,15 @@ class WorkerRepository:
         phase: str,
         *,
         alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> str:
+        workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         with self._pool.connection() as connection:
             with connection.transaction():
                 statement = (
+                    """SELECT job_plane.worker_control_session_holdout(
+                        %s,%s,%s,%s,%s,%s,%s,%s
+                    ) AS control""" if workflow else
                     """SELECT job_plane.worker_control_alpha_campaign_lease(
                         %s, %s, %s, %s, %s, %s
                     ) AS control"""
@@ -482,7 +538,7 @@ class WorkerRepository:
                         lease_token,
                         lease_seconds,
                         phase,
-                    ),
+                    ) + workflow,
                 ).fetchone()
         if row is None or row["control"] not in {"CONTINUE", "CANCEL", "STALE"}:
             raise RuntimeError("worker lease authority returned an invalid result")
@@ -532,7 +588,9 @@ class WorkerRepository:
         error_code: str | None = None, error_message: str | None = None,
         artifacts: tuple[object, ...] = (), retry: bool = False,
         alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> bool:
+        workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         self._validate_worker(worker_id)
         self._validate_trace(trace_id)
         source, target = JobState(expected_state), JobState(final_state)
@@ -579,6 +637,9 @@ class WorkerRepository:
                         ),
                     )
                 statement = (
+                    """SELECT job_plane.worker_finalize_session_holdout(
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb,%s,%s
+                    ) AS finalized""" if workflow else
                     """SELECT job_plane.worker_finalize_alpha_campaign(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
@@ -611,7 +672,7 @@ class WorkerRepository:
                         retry,
                         retry_event_id,
                         event_metadata_json,
-                    ),
+                    ) + workflow,
                 ).fetchone()
                 if authority is None or not authority["finalized"]:
                     raise _FinalizeFenceLost
@@ -669,6 +730,7 @@ class WorkerRepository:
         reason_code: str, trace_id: str, outcome: object | None,
         result: object | None, stream_artifacts: tuple[object, ...],
         alpha_campaign: bool = False,
+        session_workflow: tuple[int, int] | None = None,
     ) -> bool:
         artifacts = (*stream_artifacts, *((result,) if result is not None else ()))
         result_metadata: dict[str, object] = {
@@ -719,6 +781,7 @@ class WorkerRepository:
             error_code=None if final_state is JobState.SUCCEEDED else reason_code,
             error_message=None,
             alpha_campaign=alpha_campaign,
+            session_workflow=session_workflow,
         )
 
     def finalize_retry(
@@ -756,9 +819,12 @@ class WorkerRepository:
             )
         return outcome
 
-    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None, job_id: str | None = None) -> tuple[tuple[str, str], ...]:
+    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None, job_id: str | None = None, session_workflow: tuple[int, int] | None = None) -> tuple[tuple[str, str], ...]:
         """Recover expired attempts only after process identity is resolved."""
 
+        workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
+        if workflow and (job_id is None or fixture_only is not False):
+            raise ValueError('private recovery requires an exact non-fixture job')
         if type(alpha_campaign) is not bool or (alpha_campaign and type(fixture_only) is not bool) or (not alpha_campaign and fixture_only is not None and (type(fixture_only) is not bool or fixture_only)):
             raise ValueError("fixture recovery requires the explicit alpha lane")
         if job_id is not None:
@@ -789,7 +855,7 @@ class WorkerRepository:
                   )
                 ORDER BY j.lease_expires_at, j.job_id
                 """.replace("j.job_type IN ('SNAPSHOT','BACKTEST')",
-                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else " AND job_plane.p3_worker_lane_matches(j.payload,false)")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')").replace("ORDER BY j.lease_expires_at",("AND j.job_id = %s " if job_id is not None else "")+"ORDER BY j.lease_expires_at"),
+                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else " AND j.payload->>'operation'='HOLDOUT' AND j.payload->>'logical_trial_id'='p3-holdout-primary-v1'" if workflow else " AND job_plane.p3_worker_lane_matches(j.payload,false)")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')").replace("ORDER BY j.lease_expires_at",("AND j.job_id = %s " if job_id is not None else "")+"ORDER BY j.lease_expires_at"),
                 (job_id,) if job_id is not None else None,
             ).fetchall()
         outcomes: list[tuple[str, str]] = []
@@ -809,7 +875,7 @@ class WorkerRepository:
             except (OSError, PermissionError, RuntimeError, ValueError):
                 observation = "UNVERIFIABLE"
             reason = self._recover_observed_candidate(
-                candidate, observation, run_trace, recovery_id, alpha_campaign=alpha_campaign, fixture_only=fixture_only
+                candidate, observation, run_trace, recovery_id, alpha_campaign=alpha_campaign, fixture_only=fixture_only, session_workflow=session_workflow
             )
             outcomes.append((candidate["job_id"], reason))
         return tuple(outcomes)
@@ -825,14 +891,17 @@ class WorkerRepository:
 
     def _recover_observed_candidate(
         self, candidate: dict[str, Any], observation: str,
-        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False, fixture_only: bool | None = None,
+        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False, fixture_only: bool | None = None, session_workflow: tuple[int, int] | None = None,
     ) -> str:
         """Lock and re-read the full fence after the potentially slow procfs read."""
 
+        workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         if alpha_campaign and type(fixture_only) is not bool:
             raise ValueError("P3 recovery requires an explicit lane")
         statement = "SELECT job_plane.worker_recover_expired_paper(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) AS outcome"
-        if alpha_campaign:
+        if workflow:
+            statement = statement.replace('worker_recover_expired_paper', 'worker_recover_session_holdout').replace(') AS outcome', ',%s,%s) AS outcome')
+        elif alpha_campaign:
             statement = statement.replace('worker_recover_expired_paper','worker_recover_expired_alpha_campaign').replace(') AS outcome',',%s) AS outcome')
         with self._pool.connection() as connection:
             with connection.transaction():
@@ -854,7 +923,7 @@ class WorkerRepository:
                         recovery_id,
                         self._new_id("event"),
                         self._new_id("event"),
-                    ) + ((fixture_only,) if alpha_campaign else ()),
+                    ) + (workflow if workflow else (fixture_only,) if alpha_campaign else ()),
                 ).fetchone()
         if row is None or not isinstance(row["outcome"], str):
             raise RuntimeError("worker recovery authority returned an invalid result")

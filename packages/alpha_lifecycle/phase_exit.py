@@ -35,6 +35,7 @@ def _economic_checks(evaluation: HoldoutEvaluationResult, primary: ExecutableRes
 
 def evaluate_phase_exit(intent: P3OperationInput, *, expected_source: SourceIdentity,
     store: ArtifactStore, holdout_view: HoldoutCalculationView,
+    native_parent_proof_ref: ArtifactRefV1 | None = None,
 ) -> ExitResult:
     """Require retained recomputation, including access to the already released view.
 
@@ -137,7 +138,8 @@ def evaluate_phase_exit(intent: P3OperationInput, *, expected_source: SourceIden
         raise ValueError('HELD E_REPLAY: holdout replay belongs to another experiment')
     pair = validate_parity_pair(body.parity_ref, manifest_ref=evaluation.manifest_ref,
         instrument_spec_ref=primary.instrument_spec_ref, primary_reference_ref=body.executable_ref,
-        baseline_reference_ref=body.baseline_executable_ref, store=reader)
+        baseline_reference_ref=body.baseline_executable_ref, store=reader,
+        native_parent_proof_ref=native_parent_proof_ref)
     native = _read(reader, _read(reader, pair.primary_parity_ref, ParityResult).native_result_refs[0], ExecutableResult)
     native_baseline = _read(reader, _read(reader, pair.baseline_parity_ref, ParityResult).native_result_refs[0], ExecutableResult)
     if any(Decimal(result.ending_position) != 0 for result in (primary, baseline, native, native_baseline)):

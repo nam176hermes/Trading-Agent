@@ -4,6 +4,30 @@ import os
 import pytest
 
 from tests.jobs.test_repository_transition_capabilities import _Connection, _worker
+from packages.job_contracts import JobState
+from services.job_worker.recovery import ProcessIdentity
+
+
+@pytest.mark.parametrize('action', ['start', 'control', 'finalize'])
+def test_holdout_lifecycle_uses_private_workflow_capability(action):
+    connection = _Connection({'started': True, 'control': 'CONTINUE', 'finalized': True})
+    repository = _worker(connection)
+    claim = ('job-session', 'attempt-session', 'worker-session', 'x'*32)
+    scope = dict(alpha_campaign=True, session_workflow=(123, 2))
+    if action == 'start':
+        assert repository.start_attempt(*claim, ProcessIdentity(71, 71, 99, 'a'*64), 'test:start', **scope)
+        name = 'worker_start_session_holdout'
+    elif action == 'control':
+        assert repository.pre_spawn_control(*claim, 30, **scope) == 'CONTINUE'
+        name = 'worker_control_session_holdout'
+    else:
+        assert repository.finalize(*claim, expected_state=JobState.CLAIMED,
+            expected_attempt_outcome='CLAIMED', final_state=JobState.BLOCKED,
+            reason_code='P3_AUTHORITY_HELD', trace_id='test:finalize', **scope)
+        name = 'worker_finalize_session_holdout'
+    query, parameters = connection.calls[-1]
+    assert name in query and parameters[-2:] == (123, 2)
+    assert connection.transaction_events == [('enter', None), ('exit', None)]
 
 
 def test_private_holdout_claim_is_workflow_and_job_bound():

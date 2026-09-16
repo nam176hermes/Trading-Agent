@@ -81,7 +81,7 @@ def test_official_entry_has_no_database_before_all_host_checks(synthetic_provide
         assert calls[-2:]==['run','closed']
 
 
-@pytest.mark.parametrize('operation',['p3-holdout-primary-v1','p3-native-parity-v1','p3-phase-exit-v1','p3-integration-fixture-v1','unknown'])
+@pytest.mark.parametrize('operation',['p3-native-parity-v1','p3-phase-exit-v1','p3-integration-fixture-v1','unknown'])
 def test_unimplemented_official_operation_never_reads_host_authority(monkeypatch,operation):
     from services.job_worker import p3_official as module
     monkeypatch.setattr(module,'read_enqueued_job',lambda *args,**kwargs:pytest.fail('unsupported operation reached authority'))

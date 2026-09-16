@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 import hashlib
-from typing import Literal
-from pydantic import TypeAdapter
+from typing import Annotated, Literal
+from pydantic import BeforeValidator, Field, TypeAdapter
 
 from packages.alpha_lifecycle.pit_evidence import _reference
 from packages.alpha_lifecycle.contracts.models import DigestModel
+from packages.alpha_lifecycle.contracts.base import StrictModel, SourceIdentity, Sha256, Text
+from packages.alpha_lifecycle.contracts.models import json_array
 
 from packages.alpha_lifecycle.contracts.results import (
     ExecutableResult,
@@ -19,6 +21,71 @@ from packages.alpha_lifecycle.contracts.results import (
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore, _read
+
+
+class NativeObservation(StrictModel):
+    role: Literal['PRIMARY', 'SELECTED_BASELINE']
+    replicate: Literal['R1', 'R2', 'R3']
+    request_sha256: Sha256
+    pid: Annotated[int, Field(gt=0)]
+    process_group: Annotated[int, Field(gt=0)]
+    start_ticks: Annotated[int, Field(ge=0)]
+    command_fingerprint: Sha256
+    capability_fingerprint: Sha256
+    closure_sha256: Sha256
+    sandbox_policy_sha256: Sha256
+    receipt_ref: ArtifactRefV1
+
+
+class NativeParentProof(DigestModel):
+    """Retained parent observations; admission still requires the protected owner."""
+    schema_version: Literal['p3-native-parent-proof-v1']
+    source: SourceIdentity
+    session_sha256: Sha256
+    profile_sha256: Sha256
+    job_id: Text
+    attempt_id: Text
+    worker_id: Text
+    lease_token_sha256: Sha256
+    commitment_ref: ArtifactRefV1
+    runs: Annotated[tuple[NativeObservation, ...], BeforeValidator(json_array), Field(min_length=6, max_length=6)]
+
+
+def validate_native_proof(ref: ArtifactRefV1, *, manifest_ref: ArtifactRefV1,
+    instrument_spec_ref: ArtifactRefV1, store: ArtifactStore,
+) -> NativeParentProof:
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
+    _reference(ref, 65536)
+    proof = _read(store, ref, NativeParentProof)
+    commitment = _read(store, proof.commitment_ref, NativeCommitment)
+    manifest = _read(store, manifest_ref, HoldoutManifest)
+    if (commitment.source != proof.source or proof.source != manifest.source
+        or commitment.environment_ref != manifest.environment_ref
+        or commitment.manifest_ref != manifest_ref or commitment.instrument_spec_ref != instrument_spec_ref):
+        raise ValueError('native parent proof differs from its calculation commitment')
+    expected = [(role, replica) for role in ('PRIMARY', 'SELECTED_BASELINE') for replica in ('R1', 'R2', 'R3')]
+    if ([(run.role, run.replicate) for run in proof.runs] != expected
+        or len({(run.pid, run.start_ticks) for run in proof.runs}) != 6
+        or len({run.receipt_ref.content_sha256 for run in proof.runs}) != 6
+        or len({(run.closure_sha256, run.sandbox_policy_sha256) for run in proof.runs}) != 1):
+        raise ValueError('native parent proof requires six ordered distinct processes')
+    for run in proof.runs:
+        receipt = _read(store, run.receipt_ref, ReplayReceipt)
+        result = _read(store, receipt.result_ref, ExecutableResult)
+        inventory = hashlib.sha256(canonical_json_bytes((receipt.result_ref, result.fill_trace_ref))).hexdigest()
+        if (run.process_group != run.pid or run.request_sha256 != (commitment.primary_request_sha256
+                if run.role == 'PRIMARY' else commitment.baseline_request_sha256)
+            or receipt.replicate != run.replicate or receipt.source != proof.source
+            or receipt.logical_trial_id != 'p3-native-parity-v1'
+            or receipt.manifest_digest != manifest_ref.content_sha256
+            or receipt.environment_ref != manifest.environment_ref
+            or receipt.sandbox_policy_digest != run.sandbox_policy_sha256
+            or receipt.output_inventory_digest != inventory
+            or receipt.completed_at < receipt.started_at
+            or result.manifest_ref != manifest_ref or result.instrument_spec_ref != instrument_spec_ref):
+            raise ValueError('native receipt differs from its parent observation')
+    return proof
 
 
 _EXACT = (
@@ -139,10 +206,14 @@ class ParityPair(DigestModel):
     verdict: Literal['PASS', 'FAIL']
 
 
+class SessionParityPair(ParityPair):
+    native_parent_proof_ref: ArtifactRefV1
+
+
 def build_parity_pair(*, manifest_ref: ArtifactRefV1, instrument_spec_ref: ArtifactRefV1,
     primary_reference_ref: ArtifactRefV1, baseline_reference_ref: ArtifactRefV1,
     primary_parity_ref: ArtifactRefV1, baseline_parity_ref: ArtifactRefV1,
-    store: ArtifactStore,
+    store: ArtifactStore, native_parent_proof_ref: ArtifactRefV1 | None = None,
 ) -> ParityPair:
     """Recompute both retained comparisons against exact expected role bindings."""
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec, EnvironmentIdentity
@@ -156,6 +227,9 @@ def build_parity_pair(*, manifest_ref: ArtifactRefV1, instrument_spec_ref: Artif
     spec = _read(reader, instrument_spec_ref, InstrumentSpec)
     _reference(manifest.environment_ref, 65536)
     environment = _read(reader, manifest.environment_ref, EnvironmentIdentity)
+    native = (validate_native_proof(native_parent_proof_ref, manifest_ref=manifest_ref,
+        instrument_spec_ref=instrument_spec_ref, store=reader) if native_parent_proof_ref is not None else None)
+    policy = native.runs[0].sandbox_policy_sha256 if native is not None else environment.sandbox_policy_digest
     seen: set[str] = set()
     comparisons: list[ParityResult] = []
     for reference_ref, parity_ref in ((primary_reference_ref, primary_parity_ref),
@@ -171,7 +245,7 @@ def build_parity_pair(*, manifest_ref: ArtifactRefV1, instrument_spec_ref: Artif
             receipt = _read(reader, ref, ReplayReceipt)
             if (ref.content_sha256 in seen or receipt.source != manifest.source
                 or receipt.environment_ref != manifest.environment_ref
-                or receipt.sandbox_policy_digest != environment.sandbox_policy_digest
+                or receipt.sandbox_policy_digest != policy
                 or receipt.logical_trial_id != 'p3-native-parity-v1'):
                 raise ValueError('native pair needs six independently bound receipts')
             seen.add(ref.content_sha256)
@@ -185,23 +259,32 @@ def build_parity_pair(*, manifest_ref: ArtifactRefV1, instrument_spec_ref: Artif
         if recomputed != parity:
             raise ValueError('native pair comparison differs from retained evidence')
         comparisons.append(parity)
+    if native is not None and tuple(run.receipt_ref for run in native.runs) != tuple(
+        ref for comparison in comparisons for ref in comparison.native_receipt_refs):
+        raise ValueError('native pair differs from parent-observed role receipts')
     payload = dict(schema_version='p3-parity-pair-v1', manifest_ref=manifest_ref,
         instrument_spec_ref=instrument_spec_ref, primary_reference_ref=primary_reference_ref,
         baseline_reference_ref=baseline_reference_ref, primary_parity_ref=primary_parity_ref,
         baseline_parity_ref=baseline_parity_ref,
         verdict='PASS' if all(item.verdict == 'PASS' for item in comparisons) else 'FAIL')
-    return ParityPair.model_validate({**payload, 'digest':hashlib.sha256(canonical_json_bytes(payload)).hexdigest()})
+    model = ParityPair
+    if native_parent_proof_ref is not None:
+        payload['native_parent_proof_ref'] = native_parent_proof_ref
+        model = SessionParityPair
+    return model.model_validate({**payload, 'digest':hashlib.sha256(canonical_json_bytes(payload)).hexdigest()})
 
 
 def validate_parity_pair(ref: ArtifactRefV1, *, manifest_ref: ArtifactRefV1,
     instrument_spec_ref: ArtifactRefV1, primary_reference_ref: ArtifactRefV1,
     baseline_reference_ref: ArtifactRefV1, store: ArtifactStore,
+    native_parent_proof_ref: ArtifactRefV1 | None = None,
 ) -> ParityPair:
     _reference(ref, 65536)
-    pair = _read(store, ref, ParityPair)
+    pair = _read(store, ref, SessionParityPair if native_parent_proof_ref is not None else ParityPair)
     expected = build_parity_pair(manifest_ref=manifest_ref, instrument_spec_ref=instrument_spec_ref,
         primary_reference_ref=primary_reference_ref, baseline_reference_ref=baseline_reference_ref,
-        primary_parity_ref=pair.primary_parity_ref, baseline_parity_ref=pair.baseline_parity_ref, store=store)
+        primary_parity_ref=pair.primary_parity_ref, baseline_parity_ref=pair.baseline_parity_ref, store=store,
+        native_parent_proof_ref=native_parent_proof_ref)
     if expected != pair:
         raise ValueError('native pair differs from its expected phase-exit bindings')
     return pair

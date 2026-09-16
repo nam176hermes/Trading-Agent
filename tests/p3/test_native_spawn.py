@@ -34,7 +34,21 @@ def native_provider(session_inputs, tmp_path, monkeypatch):
     x = session_inputs
     with x.session.stage(x.claim('HOLDOUT'), fence=lambda: None):
         x.session.release(object.__new__(WorkerRepository), trace_id='test:native')
-    claim = replace(x.claim('PARITY'), job_id='job_'+'1'*32, attempt_id='attempt_'+'2'*32)
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec
+    from packages.alpha_lifecycle.executable_reference import run_executable_reference, run_selected_baseline_reference
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from tests.p3.test_replica_execution import _seal
+    manifest = _read(x.store, x.manifest, HoldoutManifest)
+    spec = _read(x.store, x.spec, InstrumentSpec)
+    refs = tuple(x.store.put_bytes(canonical_json_bytes(calculate(manifest, spec, x.store)), media_type='application/json')
+        for calculate in (run_executable_reference, run_selected_baseline_reference))
+    placeholder = x.store.put_bytes(b'{}', media_type='application/json')
+    held = _seal(x.store, schema_version='p3-holdout-operation-result-v1', holdout_request_ref=placeholder,
+        holdout_manifest_ref=x.manifest, holdout_evaluation_ref=placeholder, holdout_replay_ref=placeholder,
+        executable_ref=refs[0], baseline_executable_ref=refs[1])
+    x.session.holdout_result = _read(x.store, held, HoldoutOperationResult)
+    claim = replace(x.claim('PARITY', primary_reference_ref=refs[0], baseline_reference_ref=refs[1]), job_id='job_'+'1'*32, attempt_id='attempt_'+'2'*32)
     x.host['job_id'] = claim.job_id
     x.stage_profile['attempts'][-1].update(job_id=claim.job_id, attempt_id=claim.attempt_id)
     x.stage_profile['host_profile_sha256'] = hashlib.sha256(canonical_json_bytes(x.host)).hexdigest()
