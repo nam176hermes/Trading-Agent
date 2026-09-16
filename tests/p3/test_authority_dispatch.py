@@ -7,6 +7,34 @@ from packages.job_contracts import AlphaCampaignOperation, AlphaCampaignPayload
 from scripts.p3_authority import build_enqueue_body
 
 
+@pytest.mark.parametrize('reader', ['token', 'approval'])
+def test_authority_readers_reject_fifo_without_waiting_for_a_writer(tmp_path, reader):
+    import os
+    import subprocess
+    import sys
+
+    path = tmp_path / 'authority.fifo'
+    os.mkfifo(path, mode=0o600)
+    code = '''
+from pathlib import Path
+import sys
+from scripts.p3_authority import _read_token
+from services.job_worker.p3_integration import _read_authority_bytes
+reader = _read_token if sys.argv[1] == 'token' else _read_authority_bytes
+try:
+    reader(Path(sys.argv[2]))
+except RuntimeError as error:
+    assert 'HELD' in str(error)
+else:
+    raise AssertionError('FIFO accepted as authority')
+'''
+    completed = subprocess.run(
+        [sys.executable, '-c', code, reader, str(path)],
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 def _ref(value: str) -> ArtifactRefV1:
     return ArtifactRefV1(
         content_sha256=value * 64,

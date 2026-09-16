@@ -57,7 +57,7 @@ def _read_authority_bytes(path: Path) -> bytes:
     parent = _open_directory_chain(path.parent)
     descriptor = -1
     try:
-        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent)
         info = os.fstat(descriptor)
         mode = stat.S_IMODE(info.st_mode)
         if (not path.is_absolute() or not stat.S_ISREG(info.st_mode) or info.st_uid != 0

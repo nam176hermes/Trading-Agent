@@ -69,7 +69,7 @@ def _bind_job_response(job: JobMetadata, body: EnqueueJobBody, operator: str, *,
 def _read_token(path: Path) -> str:
     descriptor = -1
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
         info = os.fstat(descriptor)
         if (
             not path.is_absolute() or not stat.S_ISREG(info.st_mode)
