@@ -1,6 +1,7 @@
 """Stage unprivileged P3 proposals; only the existing SQL capability commits."""
 from datetime import datetime
 import hashlib
+from typing import TYPE_CHECKING
 from uuid import uuid5
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
@@ -13,6 +14,9 @@ from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.domain.events import EventEnvelope
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationProposal
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 
 
 def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
@@ -55,7 +59,7 @@ def prepare_candidate_oos(intent, evaluation, proof, *, job_id: str, observed_at
 
 
 def prepare_phase_exit(intent: P3OperationInput, *, expected_source: SourceIdentity, job_id: str, observed_at: datetime,
-    expires_at: datetime, store: ArtifactStore) -> PublicationProposal:
+    expires_at: datetime, store: ArtifactStore, holdout_view: 'HoldoutCalculationView') -> PublicationProposal:
     from packages.alpha_lifecycle.phase_exit import evaluate_phase_exit
     from packages.alpha_lifecycle.operation_input import P3OperationInput, PhaseExitInput
     from packages.alpha_lifecycle.contracts.execution import InputSet
@@ -65,7 +69,7 @@ def prepare_phase_exit(intent: P3OperationInput, *, expected_source: SourceIdent
     intent = P3OperationInput.model_validate(intent)
     if not isinstance(intent.body, PhaseExitInput):
         raise ValueError('phase-exit publication requires its exact intent')
-    result = evaluate_phase_exit(intent, expected_source=expected_source, store=store)
+    result = evaluate_phase_exit(intent, expected_source=expected_source, store=store, holdout_view=holdout_view)
     if result.verdict == 'HELD':
         raise ValueError('HELD phase exit cannot publish a registry decision')
     body = intent.body

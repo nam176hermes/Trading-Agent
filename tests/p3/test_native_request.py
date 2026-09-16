@@ -99,7 +99,7 @@ def test_full_native_request_runs_both_roles_three_times(native_inputs,role,tmp_
     from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore,_read
     source,view,manifest_ref,spec_ref=native_inputs
     output=tmp_path/'results';output.mkdir(mode=0o700)
-    store=ReplicaArtifactStore(source._root,output)
+    store=ReplicaArtifactStore(view,output)
     manifest=_read(view,manifest_ref,HoldoutManifest);spec=_read(view,spec_ref,InstrumentSpec)
     reference=(run_executable_reference if role=='PRIMARY' else run_selected_baseline_reference)(manifest,spec,store)
     expected=json.loads(store.read_bytes(reference.fill_trace_ref))

@@ -12,11 +12,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
-from packages.safety_evidence import CanonicalKillSwitchState as KillSwitchState, resolve_kill_switch
+from packages.safety_evidence import (
+    CANONICAL_SAFETY_SOURCE_ROOT,
+    CanonicalKillSwitchState as KillSwitchState,
+    resolve_kill_switch,
+)
 
 from .errors import SafetyBlockedError
 
-APPROVED_DATA_ROOT = Path("/home/thenam176/.hermes/crypto-research")
+APPROVED_DATA_ROOT = CANONICAL_SAFETY_SOURCE_ROOT
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 

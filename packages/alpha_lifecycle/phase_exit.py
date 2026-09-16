@@ -5,7 +5,8 @@ import hashlib
 from packages.alpha_lifecycle.contracts.models import SourceIdentity
 from packages.alpha_lifecycle.contracts.results import ExitCheck, ExitResult, HoldoutEvaluationResult, ExecutableResult
 from packages.alpha_lifecycle.operation_input import P3OperationInput, PhaseExitInput
-from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore, _read
+from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore, ReplicaArtifactStore, _read
+from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -33,7 +34,7 @@ def _economic_checks(evaluation: HoldoutEvaluationResult, primary: ExecutableRes
 
 
 def evaluate_phase_exit(intent: P3OperationInput, *, expected_source: SourceIdentity,
-    store: ArtifactStore,
+    store: ArtifactStore, holdout_view: HoldoutCalculationView,
 ) -> ExitResult:
     """Require retained recomputation, including access to the already released view.
 
@@ -58,6 +59,8 @@ def evaluate_phase_exit(intent: P3OperationInput, *, expected_source: SourceIden
 
     intent = P3OperationInput.model_validate(intent)
     expected_source = SourceIdentity.model_validate(expected_source)
+    if type(holdout_view) is not HoldoutCalculationView:
+        raise ValueError('HELD E_IDENTITY: phase exit requires the released calculation view')
     if not isinstance(intent.body, PhaseExitInput):
         raise ValueError('phase exit requires its exact operation intent')
     body = intent.body
@@ -116,9 +119,13 @@ def evaluate_phase_exit(intent: P3OperationInput, *, expected_source: SourceIden
     baseline = _read(reader, body.baseline_executable_ref, ExecutableResult)
     _reference(primary.instrument_spec_ref, 65536)
     spec = _read(reader, primary.instrument_spec_ref, InstrumentSpec)
-    if (evaluate_holdout(manifest, spec, reader) != evaluation
-        or run_executable_reference(manifest, spec, reader) != primary
-        or run_selected_baseline_reference(manifest, spec, reader) != baseline):
+    if (_read(holdout_view, evaluation.manifest_ref, HoldoutManifest) != manifest
+        or _read(holdout_view, primary.instrument_spec_ref, InstrumentSpec) != spec):
+        raise ValueError('HELD E_IDENTITY: phase exit differs from its released view')
+    calculation = ReadbackStore(ReplicaArtifactStore(holdout_view, reader), reader)
+    if (evaluate_holdout(manifest, spec, calculation) != evaluation
+        or run_executable_reference(manifest, spec, calculation) != primary
+        or run_selected_baseline_reference(manifest, spec, calculation) != baseline):
         raise ValueError('HELD E_IDENTITY: retained holdout or executable calculation differs')
     proof = _read(reader, body.holdout_replay_ref, ReplayProof)
     _reference(manifest.environment_ref, 65536)

@@ -120,7 +120,11 @@ def parse_daily_archive(day: date, zipped: bytes) -> AcquiredDailyRow:
     expected_open = datetime(day.year, day.month, day.day, tzinfo=UTC)
     expected_raw=(expected_open-datetime(1970,1,1,tzinfo=UTC)).days*86400*scale
     if opened_raw!=expected_raw or closed_raw!=expected_raw+86400*scale-1:
-        raise AcquisitionError("daily timestamps do not match the requested UTC day")
+        raise AcquisitionError(
+            f"daily timestamps do not match the requested UTC day {day.isoformat()}: "
+            f"observed [{opened_raw}, {closed_raw}], "
+            f"expected [{expected_raw}, {expected_raw+86400*scale-1}] {unit}"
+        )
     try:
         closed_exclusive=expected_open+timedelta(days=1)
     except OverflowError as error:

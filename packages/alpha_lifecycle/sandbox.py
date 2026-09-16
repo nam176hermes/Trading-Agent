@@ -238,14 +238,19 @@ class BubblewrapExecutor:
             with localcontext() as context:
                 context.prec = 50
                 context.rounding = ROUND_HALF_EVEN
-                validate_replica_result(
+                verified_outputs = validate_replica_result(
                     result, manifest, self._store,
                     LocalArtifactStore(output_dir / "artifacts"),
-                    ReplicaArtifactStore(self._store_root, output_dir / "artifacts"),
+                    ReplicaArtifactStore(self._holdout_view if self._holdout_view is not None
+                        else self._store_root, output_dir / "artifacts"),
                     instrument_spec=spec,
                 )
         except (KeyError, TypeError, ValueError) as error:
             raise SandboxHeld("HELD E_SANDBOX: child result contract or binding is invalid") from error
+        if verified_outputs is not None and {
+            path.name for path in (output_dir / "artifacts").iterdir()
+        } != verified_outputs:
+            raise SandboxHeld("HELD E_SANDBOX: holdout output inventory differs from recomputation")
         result_ref = self._store.put_bytes(raw, media_type="application/json")
         inventory_digest = retain_replica_outputs(output_dir / "artifacts", self._store, result_ref)
         payload = {

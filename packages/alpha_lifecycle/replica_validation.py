@@ -55,15 +55,17 @@ def validate_replica_result(
     outputs: ArtifactStore,
     combined: ArtifactStore,
     *, instrument_spec: InstrumentSpec | None = None,
-) -> None:
+) -> frozenset[str] | None:
     if isinstance(manifest,HoldoutManifest):
         if not isinstance(result,HoldoutEvaluationResult) or instrument_spec is None:
             raise ValueError('holdout replica requires its result and instrument')
         from packages.alpha_lifecycle.evaluation import evaluate_holdout
-        expected=evaluate_holdout(manifest,instrument_spec,ReadbackStore(combined,outputs))
+        verified: set[str] = set()
+        expected=evaluate_holdout(manifest,instrument_spec,
+            ReadbackStore(combined,outputs,verified_outputs=verified))
         if canonical_json_bytes(result)!=canonical_json_bytes(expected):
             raise ValueError('holdout replica differs from recomputed H1 artifacts')
-        return
+        return frozenset(verified)
     if instrument_spec is not None or isinstance(result,HoldoutEvaluationResult):
         raise ValueError('replica instrument or result differs from its manifest type')
     input_set, folds, dataset, regime = validate_research_inputs(manifest.input_set_ref,inputs)

@@ -840,10 +840,10 @@ services/paper_runtime/nautilus_session.py|165|BaseException|PRODUCTION_CRITICAL
 services/paper_runtime/nautilus_session.py|385|BaseException|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/nautilus_session.py|399|BaseException|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/nautilus_session.py|434|BaseException|PRODUCTION_CRITICAL|RAISE
-services/semantic_input_refresher/main.py|61|Exception|PRODUCTION_CRITICAL|RAISE
-services/semantic_input_refresher/main.py|116|Exception|PRODUCTION_CRITICAL|RAISE
-services/semantic_input_refresher/main.py|164|Exception|PRODUCTION_CRITICAL|RAISE
-services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETURN
+services/semantic_input_refresher/main.py|62|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|117|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|165|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|213|Exception|PRODUCTION_CRITICAL|RETURN
 tests/foundation/test_package6_controller_closure.py|706|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|473|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|559|BaseException|TESTS|OTHER

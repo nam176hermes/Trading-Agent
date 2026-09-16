@@ -162,3 +162,42 @@ def test_holdout_requires_fresh_fence_before_each_child(reference_seed, tmp_path
     for descriptor in descriptors:
         with pytest.raises(OSError):
             os.fstat(descriptor)
+
+
+@pytest.mark.parametrize('extra', [None, 'holdout', 'unrelated'])
+def test_parent_recomputes_holdout_without_plaintext_in_research_cas(reference_seed, tmp_path, monkeypatch, extra):
+    """Exercise calculation/readback; the process launcher is synthetic."""
+    from packages.alpha_lifecycle.holdout_view import build_holdout_calculation_view, HoldoutCalculationView
+    import shutil
+    root, manifest_ref, spec_ref, _, holdout, buffer = reference_seed
+    root = Path(shutil.copytree(root, tmp_path / 'retained'))
+    store = LocalArtifactStore(root)
+    view = HoldoutCalculationView(build_holdout_calculation_view(manifest_ref, spec_ref, store), manifest_ref, spec_ref)
+    manifest = HoldoutManifest.model_validate_json(view.read_bytes(manifest_ref))
+    spec = InstrumentSpec.model_validate_json(view.read_bytes(spec_ref))
+    for ref in (*holdout, buffer):
+        (root / ref.locator).unlink()  # Synthetic fixture only; custody is the sole raw reader.
+    before = set(root.iterdir())
+    output = tmp_path / 'replica'; output.mkdir(mode=0o700)
+    artifacts = output / 'artifacts'; artifacts.mkdir(mode=0o700)
+    expected = evaluate_holdout(manifest, spec, ReplicaArtifactStore(view, artifacts))
+    if extra is not None:
+        LocalArtifactStore(artifacts).put_bytes(view.read_bytes(holdout[0]) if extra == 'holdout'
+            else b'{"unrequested":"output"}', media_type='application/json')
+    (output / 'result.json').write_bytes(canonical_json_bytes(expected))
+    monkeypatch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox', lambda path: path)
+    monkeypatch.setattr('packages.alpha_lifecycle.sandbox.subprocess.run', lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    executor = BubblewrapExecutor(store=store, store_root=root, release_root=Path('/p3/release'),
+        python=Path('/p3/python/bin/python3.11'), source=manifest.source,
+        environment_ref=manifest.environment_ref, sandbox_policy_digest='c' * 64,
+        instrument_spec_ref=spec_ref, holdout_view=view, before_spawn=lambda: None)
+    if extra is not None:
+        from packages.alpha_lifecycle.sandbox import SandboxHeld
+        with pytest.raises(SandboxHeld, match='output inventory'):
+            executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)
+        assert set(root.iterdir()) == before
+        return
+    receipt = executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)
+    assert store.read_bytes(receipt.result_ref) == canonical_json_bytes(expected)
+    assert before < set(root.iterdir())
+    assert all(not (root / ref.locator).exists() for ref in (*holdout, buffer))

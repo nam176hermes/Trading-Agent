@@ -56,13 +56,14 @@ def test_economic_failures_cannot_be_rounded_up_to_pass(fault, code):
 
 
 @pytest.fixture
-def exit_graph(reference_seed, monkeypatch):
+def exit_graph(reference_seed, monkeypatch, tmp_path):
     """Owner selection/qualification and native receipts are declared unit inputs.
 
     Holdout arithmetic, replay readback, executable traces, both comparisons and
     exit recomputation are real. This fixture cannot qualify an official run.
     """
     import hashlib
+    import shutil
     from packages.alpha_lifecycle import primary_selection, baseline_campaign
     from packages.alpha_lifecycle.contracts.authority import PrimarySelection, FamilyReview
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec, InputSet, EnvironmentIdentity
@@ -79,6 +80,7 @@ def exit_graph(reference_seed, monkeypatch):
     from tests.p3.test_lifecycle import _record
     from tests.p3.test_parity_pair import _change, _pair_inputs, _put
     root, manifest_ref, spec_ref, *_ = reference_seed
+    root = Path(shutil.copytree(root, tmp_path / 'retained'))
     store = LocalArtifactStore(root)
     def seal(**value):
         return _put(store, {**value, 'digest':hashlib.sha256(canonical_json_bytes(value)).hexdigest()})
@@ -130,14 +132,19 @@ def exit_graph(reference_seed, monkeypatch):
         holdout_request_ref=request, holdout_evaluation_ref=evaluation_ref, holdout_replay_ref=proof,
         executable_ref=arguments['primary_reference_ref'], baseline_executable_ref=arguments['baseline_reference_ref'],
         parity_ref=pair, current_primary_head_ref=head_ref))
-    return store, _read(store, intent_ref, P3OperationInput), inputs.source
+    # The raw holdout is available only through the one released view.
+    from packages.alpha_lifecycle.contracts.data import DatasetEvidence
+    dataset = _read(store, manifest.holdout_dataset_ref, DatasetEvidence)
+    for ref in (*dataset.row_refs, reference_seed[-1]):
+        (root / ref.locator).unlink()
+    return store, _read(store, intent_ref, P3OperationInput), inputs.source, view
 
 
 def test_parent_recomputes_all_thirteen_checks_and_keeps_failed_primary(exit_graph):
     from packages.alpha_lifecycle.phase_exit import evaluate_phase_exit
-    store, intent, source = exit_graph
+    store, intent, source, view = exit_graph
     before = set(store._root.iterdir())
-    result = evaluate_phase_exit(intent, expected_source=source, store=store)
+    result = evaluate_phase_exit(intent, expected_source=source, store=store, holdout_view=view)
     assert len(result.checks) == 13
     assert result.verdict == 'FAIL'  # Oscillating prices fail; no fallback selection.
     assert result.primary_selection_ref == intent.body.primary_selection_ref
@@ -150,7 +157,7 @@ def test_parent_recomputes_all_thirteen_checks_and_keeps_failed_primary(exit_gra
     from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
     arguments = dict(expected_source=source, job_id='p3-unit-exit', observed_at=datetime(2026,9,2,tzinfo=UTC),
         expires_at=datetime(2026,9,3,tzinfo=UTC))
-    proposal = prepare_phase_exit(intent, store=store, **arguments)
+    proposal = prepare_phase_exit(intent, store=store, holdout_view=view, **arguments)
     assert proposal.request.stage == 'EXIT_DECISION'
     assert len(proposal.entries) == len(proposal.request.proposed_event_refs) == len(proposal.request.expected_heads) == 1
     event = read_registry_event(store, proposal.request.proposed_event_refs[0])
@@ -158,7 +165,24 @@ def test_parent_recomputes_all_thirteen_checks_and_keeps_failed_primary(exit_gra
     assert event.predecessor_sha256 == intent.body.current_primary_head_ref.content_sha256
     evidence = _read(store, proposal.request.evidence_ref, PrePublicationEvidence)
     assert evidence.qualification_bundle_ref == intent.body.primary_qualification_ref
-    assert prepare_phase_exit(intent, store=ReadbackStore(store, store), **arguments) == proposal
+    assert prepare_phase_exit(intent, store=ReadbackStore(store, store), holdout_view=view, **arguments) == proposal
+
+
+@pytest.mark.parametrize('fault', ['missing', 'different_manifest'])
+def test_phase_exit_requires_its_exact_released_view(exit_graph, reference_seed, fault):
+    from packages.alpha_lifecycle.phase_exit import evaluate_phase_exit
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, build_holdout_calculation_view
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store, intent, source, _ = exit_graph
+    wrong_view = None
+    if fault == 'different_manifest':
+        root, manifest, spec, *_ = reference_seed
+        wrong_view = HoldoutCalculationView(build_holdout_calculation_view(manifest, spec,
+            LocalArtifactStore(root)), manifest, spec)
+    before = set(store._root.iterdir())
+    with pytest.raises(ValueError):
+        evaluate_phase_exit(intent, expected_source=source, store=store, holdout_view=wrong_view)
+    assert set(store._root.iterdir()) == before
 
 
 @pytest.mark.parametrize('fault', ['source', 'head', 'baseline_role', 'replay_trial', 'summary'])
@@ -168,7 +192,7 @@ def test_parent_rejects_unbound_exit_evidence_without_writing(exit_graph, fault)
     from packages.alpha_lifecycle.replica_store import _read
     from packages.alpha_lifecycle.contracts.results import ReplayProof
     from tests.p3.test_parity_pair import _change, _put
-    store, intent, source = exit_graph
+    store, intent, source, view = exit_graph
     body = intent.body.model_dump(mode='json')
     if fault == 'source': source = source.model_copy(update={'commit_sha':'9'*40})
     elif fault == 'head': body['current_primary_head_ref'] = intent.body.baseline_selection_ref
@@ -180,7 +204,7 @@ def test_parent_rejects_unbound_exit_evidence_without_writing(exit_graph, fault)
         body['holdout_replay_ref'] = _change(store, intent.body.holdout_replay_ref, receipt_refs=receipts)
     altered = _read(store, _change(store, _put(store, intent), body=body), P3OperationInput)
     before = set(store._root.iterdir())
-    with pytest.raises(ValueError): evaluate_phase_exit(altered, expected_source=source, store=store)
+    with pytest.raises(ValueError): evaluate_phase_exit(altered, expected_source=source, store=store, holdout_view=view)
     assert set(store._root.iterdir()) == before
 
 
@@ -195,7 +219,7 @@ def test_native_mismatch_is_held_and_cannot_publish(exit_graph):
     from packages.engine_contracts.serialization import canonical_json_bytes
     from services.job_worker.p3_publication_producer import prepare_phase_exit
     from tests.p3.test_parity_pair import _change, _put
-    store, intent, source = exit_graph
+    store, intent, source, view = exit_graph
     pair = _read(store, intent.body.parity_ref, ParityPair)
     parity = _read(store, pair.primary_parity_ref, ParityResult)
     native = _read(store, parity.native_result_refs[0], ExecutableResult)
@@ -213,10 +237,10 @@ def test_native_mismatch_is_held_and_cannot_publish(exit_graph):
     body = intent.body.model_dump(mode='json'); body['parity_ref'] = pair_ref
     intent = _read(store, _change(store, _put(store, intent), body=body), P3OperationInput)
     before = set(store._root.iterdir())
-    result = evaluate_phase_exit(intent, expected_source=source, store=store)
+    result = evaluate_phase_exit(intent, expected_source=source, store=store, holdout_view=view)
     assert result.verdict == 'HELD'
     assert not next(check for check in result.checks if check.check_id == 'PARITY').passed
     with pytest.raises(ValueError, match='HELD'):
         prepare_phase_exit(intent, expected_source=source, job_id='p3-unit-exit',
-            observed_at=datetime(2026,9,2,tzinfo=UTC), expires_at=datetime(2026,9,3,tzinfo=UTC), store=store)
+            observed_at=datetime(2026,9,2,tzinfo=UTC), expires_at=datetime(2026,9,3,tzinfo=UTC), store=store, holdout_view=view)
     assert set(store._root.iterdir()) == before
