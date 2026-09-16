@@ -93,7 +93,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         custody_record_ref=custody, holdout_commitment='c'*64, closure_sha256='f'*64,
         workflow_run_id=1, workflow_attempt=1, parent=asdict(ProcProcessInspector().inspect(os.getpid())),
         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-        issued_at=utc(now-timedelta(seconds=1)), expires_at=utc(now+timedelta(minutes=3)),
+        issued_at=utc(now-timedelta(minutes=1)), expires_at=utc(now+timedelta(minutes=3)),
         workflow_deadline=utc(now+timedelta(minutes=4)))
     host = {}
     stage_profile = {}
