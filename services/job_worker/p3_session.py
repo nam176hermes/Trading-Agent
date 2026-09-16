@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
     from .p3_host_profile import OfficialHostProfile
+    from .p3_native_spawn import P3NativeSpawnProvider
 
 _STAGES = ('HOLDOUT', 'PARITY', 'PHASE_EXIT')
 
@@ -101,6 +102,7 @@ class P3HoldoutSession:
         self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorization] | None = None
         self._closed: bool = False
         self._release_attempted: bool = False
+        self._native_spawn_issued: bool = False
         self._stage: int = 0
         self._attempts: list[SessionAttempt] = []
         self._stage_digest: str | None = None
@@ -289,6 +291,19 @@ class P3HoldoutSession:
         return prepare_phase_exit(_read(self, payload.manifest_ref, P3OperationInput),
             expected_source=self.profile.source, job_id=claim.job_id,
             observed_at=authorization.issued_at, expires_at=authorization.expires_at, store=self, holdout_view=view)
+
+    def native_spawn_provider(self) -> 'P3NativeSpawnProvider':
+        from .p3_native_spawn import P3NativeSpawnProvider
+        from packages.alpha_lifecycle.native_request import NativeCommitment
+        if self._native_spawn_issued:
+            raise ValueError('native launch owner was already issued for this session')
+        self._native_spawn_issued = True
+        requests = self.native_requests()
+        if self._active is None or self.native_commitment_ref is None:
+            raise ValueError('native launch requires the active parity stage')
+        return P3NativeSpawnProvider(self._path.with_name('native.json'), self._active[0],
+            session_sha256=self._digest, requests=requests,
+            commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self.fence)
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
         self._check_view_access()

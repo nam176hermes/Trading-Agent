@@ -12,6 +12,11 @@ class P3PreparedSpawnMarker:
     __slots__ = ()
 
 
+class P3NativePreparedSpawnMarker:
+    """Routing only; the concrete native provider checks one-use authority."""
+    __slots__ = ()
+
+
 class P3SpawnError(RuntimeError):
     def __init__(self, reason: str, message: str):
         super().__init__(f'{reason}: {message}')

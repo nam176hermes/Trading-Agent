@@ -34,7 +34,7 @@ from .environment import (
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker
 from .p3_spawn_interface import (
-    P3PreparedSpawnMarker, P3SpawnError, ReplicaFenceRequests, replica_fence_ack,
+    P3PreparedSpawnMarker, P3NativePreparedSpawnMarker, P3SpawnError, ReplicaFenceRequests, replica_fence_ack,
 )
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from packages.data_contracts import ArtifactRefV1
     from .engine_spawn import PreparedEngineSpawn
     from .p3_spawn import PreparedP3Spawn
+    from .p3_native_spawn import PreparedP3NativeSpawn
     from .p3_output import P3OutputCustody
 
 
@@ -388,7 +389,7 @@ class ProcessRunner:
 
     def run(
         self,
-        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn],
+        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn | PreparedP3NativeSpawn],
         environment: ResearchEnvironmentSettings | None,
         timeout_seconds: int | None,
         heartbeat: Callable[
@@ -419,7 +420,8 @@ class ProcessRunner:
         prepared = prepare_spawn()
         # This marker only selects the lazy engine branch. It carries no
         # authority: that branch still requires the exact provider token type.
-        engine_authority = isinstance(prepared, EnginePreparedSpawnMarker)
+        native_authority = isinstance(prepared, P3NativePreparedSpawnMarker)
+        engine_authority = isinstance(prepared, EnginePreparedSpawnMarker) or native_authority
         p3_authority = isinstance(prepared, P3PreparedSpawnMarker)
         if p3_authority:
             from .p3_spawn import PreparedP3Spawn
@@ -434,7 +436,11 @@ class ProcessRunner:
                 PreparedEngineSpawn,
             )
 
-            if type(prepared) is not PreparedEngineSpawn:
+            if native_authority:
+                from .p3_native_spawn import PreparedP3NativeSpawn
+                if type(prepared) is not PreparedP3NativeSpawn:
+                    raise ValueError('exact P3 native authority type is required')
+            elif type(prepared) is not PreparedEngineSpawn:
                 raise ValueError("attested spawn authority type is invalid")
         # Legacy root and credential policy validation remains in its original
         # position. Engine authority has no ambient/legacy environment path.
@@ -485,9 +491,12 @@ class ProcessRunner:
                 source_revision = p3_built.source_revision
                 command_lineage = p3_built.lineage.as_metadata()
             elif engine_authority:
-                engine_built = consume_prepared_engine_spawn(
-                    cast(PreparedEngineSpawn, prepared)
-                )
+                if native_authority:
+                    from .p3_native_spawn import consume_prepared_p3_native_spawn
+                    engine_built = consume_prepared_p3_native_spawn(
+                        cast(PreparedP3NativeSpawn, prepared), job_id=job_id, attempt_id=attempt_id)
+                else:
+                    engine_built = consume_prepared_engine_spawn(cast(PreparedEngineSpawn, prepared))
                 # The provider has transferred ownership. Claim every
                 # descriptor before any validation branch can raise.
                 close_after_spawn_fds = engine_built.close_after_spawn_fds

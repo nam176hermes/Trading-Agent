@@ -192,9 +192,26 @@ before writing receipt artifacts or marking local processing complete. Historica
 receipt recovery remains available after lease expiry and never reruns research.
 
 This source slice does **not** open the official late lane. Remaining source
-work is the consumed bounded workflow/worker coordinator, protected private P3
-native launcher with six observed processes, and complete SQL terminal readback
+work is the consumed bounded workflow/worker coordinator, six observed native
+processes with parent-bound results, and complete SQL terminal readback
 coordination. `stage()` returning normally is not a durable success receipt; the
 worker must finish canonical readback before admitting another stage. The new
 owner is not yet called by `run_official_once`, and cannot be counted as M8/M9
 completion. No new service, dependency, public contract or P1 inventory change.
+
+The session now admits one private native launch provider during PARITY using
+root-protected `native.json` alongside its other profiles. The profile binds the
+session, job/attempt, source, digest-only request commitment, runtime inventory
+locations and sandbox binary hash. Existing P1 closure verification and sealed
+file helpers verify the base engine; a separate P3 entry and adapter extend it.
+Requests travel only in bounded anonymous read-only memory. The existing
+`ProcessRunner` consumes exact one-use native tokens and owns process cleanup.
+Tokens enforce PRIMARY R1–R3 then SELECTED_BASELINE R1–R3, fresh admission and
+expiry checks, and no continuation after a preparation failure.
+
+The native launch has its own closure and sandbox policy digests, including its
+entry, resources, fixed arguments and socket-denial program. These must never
+be relabeled as the driver sandbox digest in a replay receipt. Tests of tokens,
+sealed descriptors and the synthetic runner do not prove six actual protected
+engine processes. That parent-observed orchestration and accurate result
+provenance remain required before enabling the late lane.
