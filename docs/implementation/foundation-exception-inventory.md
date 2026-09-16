@@ -454,6 +454,7 @@ ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1272|Exception|PRODUCTION_CRITICAL|RETURN
 packages/alpha_lifecycle/authority.py|112|Exception|PRODUCTION_CRITICAL|RAISE
+packages/alpha_lifecycle/holdout_view.py|76|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/alpha_lifecycle/sandbox.py|188|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|102|Exception|PRODUCTION_CRITICAL|RAISE
@@ -762,10 +763,14 @@ services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p1_engine_spawn.py|417|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_native.py|107|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_sql.py|707|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_holdout_release.py|153|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_host_profile.py|86|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|219|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|43|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|189|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|148|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|217|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|256|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|242|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|374|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|94|BaseException|PRODUCTION_CRITICAL|RAISE

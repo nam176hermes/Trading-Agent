@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+from collections.abc import Callable
 from pydantic import TypeAdapter
 from types import MappingProxyType
 
@@ -46,6 +48,9 @@ class HoldoutCalculationView:
     """Exact immutable input bytes with the existing ArtifactStore read interface."""
 
     def __init__(self, raw: bytes, manifest_ref: ArtifactRefV1, spec_ref: ArtifactRefV1) -> None:
+        self._owner_pid = os.getpid()
+        self._closed = False
+        self._lifetime: Callable[[], None] | None = None
         if not isinstance(raw,bytes) or not 0<len(raw)<=MAX_VIEW_BYTES:
             raise ValueError('holdout calculation view exceeds its transport bound')
         records=TypeAdapter(dict[str, str]).validate_json(raw, strict=True)
@@ -59,9 +64,38 @@ class HoldoutCalculationView:
 
     @property
     def raw(self) -> bytes:
+        self._check_open()
         return self._raw
 
+    def _check_open(self) -> None:
+        if self._closed or os.getpid() != self._owner_pid:
+            raise ValueError('holdout calculation view is closed or belongs to another process')
+        if self._lifetime is not None:
+            try:
+                self._lifetime()
+            except BaseException:
+                self.close()
+                raise
+
+    def bind_lifetime(self, check: Callable[[], None]) -> None:
+        self._check_open()
+        if self._lifetime is not None or not callable(check):
+            raise ValueError('holdout lifetime cannot be replaced')
+        self._lifetime = check
+
+    def close(self) -> None:
+        """Revoke this reader and drop its bytes; this is not memory zeroization.
+
+        Previously copied bytes and already launched children need their own
+        bounded lifetime. The parent must stop children before closing a view.
+        """
+        self._closed = True
+        self._records = MappingProxyType({})
+        self._raw = b''
+        self._lifetime = None
+
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
+        self._check_open()
         ref=ArtifactRefV1.model_validate(ref)
         _reference(ref,MAX_VIEW_BYTES)
         raw=self._records.get(ref.locator)

@@ -147,8 +147,12 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     manifest_ref=store.put_bytes(canonical_json_bytes(manifest),media_type='application/json')
     view=released_view(raw,attestation,custody,manifest_ref,intent.body.instrument_spec_ref,store,
         custodian_uid=endpoint.custodian_uid,research_uid=endpoint.research_uid)
-    fence()
-    return view,request_ref,manifest_ref
+    try:
+        fence()
+        return view,request_ref,manifest_ref
+    except BaseException:
+        view.close()
+        raise
 
 
 def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata: ArtifactStore, *,

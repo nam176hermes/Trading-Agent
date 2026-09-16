@@ -126,3 +126,27 @@ def test_full_native_request_runs_both_roles_three_times(native_inputs,role,tmp_
     assert observed[0]==observed[1]==observed[2]
     with pytest.raises(ValueError):native_result_from_output(request,process.stdout+b'\n',view,store)
     with pytest.raises(ValueError):native_result_from_output(request,b'[]\n',view,store)
+
+
+def test_retained_native_commitment_contains_no_steps_and_binds_both_roles(native_inputs):
+    from packages.alpha_lifecycle.native_request import (
+        prepare_native_commitment, prepare_native_request, validate_native_commitment,
+    )
+    store, view, manifest, spec = native_inputs
+    before = set(store._root.iterdir())
+    commitment = prepare_native_commitment(manifest, spec, view)
+    raw = canonical_json_bytes(commitment)
+    assert b'"steps"' not in raw and len(raw) < 4096
+    for role, field in [('PRIMARY', 'primary_request_sha256'), ('SELECTED_BASELINE', 'baseline_request_sha256')]:
+        request = prepare_native_request(manifest, spec, view, role=role)
+        assert getattr(commitment, field) == hashlib.sha256(canonical_json_bytes(request)).hexdigest()
+    ref = store.put_bytes(raw, media_type='application/json')
+    assert validate_native_commitment(ref, manifest, spec, view, store) == commitment
+    assert set(store._root.iterdir()) - before == {store._root/ref.locator}
+    changed = commitment.model_dump(mode='json', exclude={'digest'})
+    changed['primary_request_sha256'], changed['baseline_request_sha256'] = (
+        changed['baseline_request_sha256'], changed['primary_request_sha256'])
+    changed['digest'] = hashlib.sha256(canonical_json_bytes(changed)).hexdigest()
+    other = store.put_bytes(canonical_json_bytes(changed), media_type='application/json')
+    with pytest.raises(ValueError, match='commitment'):
+        validate_native_commitment(other, manifest, spec, view, store)

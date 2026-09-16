@@ -58,6 +58,7 @@ class NativeParityInput(StrictModel):
     primary_reference_ref: ArtifactRefV1
     baseline_reference_ref: ArtifactRefV1
     instrument_spec_ref: ArtifactRefV1
+    # Private NativeCommitment (both role digests), never plaintext NativeRequest.
     native_request_ref: ArtifactRefV1
 
 

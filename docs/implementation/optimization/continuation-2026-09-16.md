@@ -72,12 +72,13 @@ seconds. Rechecking identical bytes cannot repair this dataset. The retained
 research dataset still has 38 valid days out of 2,800; no new acquisition,
 holdout access, resampling, provider substitution or policy change occurred.
 
-## Remaining lifetime contract — design proposal, not implemented authority
+## Approved lifetime contract — source implementation in progress
 
 The accepted private interfaces cover release and native requests, but the
 current workflow runs one operation and destroys its worker afterward. Keep
 official late-operation admission closed until the following contract has
-been reviewed and implemented as a whole.
+been implemented and verified as a whole. The operator approved this design on
+2026-09-16 with “Duyệt, tiếp tục triển khai”; that approval covers source/tests.
 
 1. Use one bounded parent process within one genuine `p3-authority.yml` run.
    It owns the single released view until exit or failure. Reuse worker claim,
@@ -91,8 +92,7 @@ been reviewed and implemented as a whole.
    next step or extend an expired review.
 3. Bind the protected session to source, environment, primary selection,
    commitment, workflow run/attempt, process identity and the exact ordered job
-   attempts. Session continuity is a new private authority binding requiring
-   review. Changing the profile's current job must not allow replacement of
+   attempts. Session continuity uses the approved private authority binding. Changing the profile's current job must not allow replacement of
    the source, view, native runtime or process while retaining authority.
 4. Before every replica and each durable output commit, recheck that stage's
    current claim, safety, protected profile and approval. Completed earlier
@@ -131,10 +131,11 @@ been reviewed and implemented as a whole.
 | High-severity Bandit source scan | Passed; not an independent security review |
 | `make audit-portable` | Passed with strict component provenance |
 
-The linked worktree cannot run the standalone-root `make audit` gate:
-it rejects its `.git` pointer with `E_ROOT: .git`. Its supported portable audit
-passes. Full candidate validation and hosted qualification must be recorded
-separately; the test baseline and fixture receipts above are not authority.
+The initial linked checkout failed the standalone-root audit and was replaced
+with a verified standalone clone at the same HEAD/tree. Strict audit, contracts
+and dashboard build then passed. Its canonical `make test-all` remains separately
+tracked in the external evidence ledger. None of these checks grants runtime
+authority.
 
 ## Closure conditions
 
@@ -150,3 +151,37 @@ separately; the test baseline and fixture receipts above are not authority.
 - Hosted CI must cover the eventual continuation commit. Earlier candidate CI
   and local diagnostics do not qualify these changes. Independent security
   review and protected runtime qualification remain separate verdicts.
+
+## Session source slice (separate from checkpoint 67942d8)
+
+`services/job_worker/p3_session.py` owns a single view through three separately
+admitted stage contexts. It reads immutable root-protected `session.json` and
+rotating `stage.json`/`profile.json` under the same workflow run/attempt directory.
+The session binds source, environment, primary, custody commitment, closure,
+parent PID/start/command/group, boot ID and deadlines. Each stage binds the
+ordered job/attempt/worker/lease-token hashes and the current host profile digest.
+Current reviews are rechecked through the existing host-profile reader; the
+worker-supplied fence must query the current lease/cancellation and safety.
+
+The one release attempt is consumed before contacting the existing release
+helper. An uncertain acknowledgement closes the session. A released view is
+process-bound and revocable; existing reader aliases stop working after close,
+between stages, or on expiry. Closing drops owned references, not a claim of
+zeroizing copies already made. Children still require the existing bounded
+process cleanup owner. The monotonic deadline prevents wall-clock rollback
+from extending the session.
+
+The private `NativeParityInput.native_request_ref` identifies a
+`p3-native-commitment-v1` artifact containing the two ordered request hashes,
+source, environment and manifest/spec references. It contains no steps/prices.
+Requests are reconstructed from the same view in PARITY. Phase-exit proposal
+preparation uses that view and fences each retained write. SQL publication and
+acknowledgement recovery remain with their existing concrete owner.
+
+This source slice does **not** open the official late lane. Remaining source
+work is the consumed bounded workflow/worker coordinator, protected private P3
+native launcher with six observed processes, and complete SQL terminal readback
+coordination. `stage()` returning normally is not a durable success receipt; the
+worker must finish canonical readback before admitting another stage. The new
+owner is not yet called by `run_official_once`, and cannot be counted as M8/M9
+completion. No new service, dependency, public contract or P1 inventory change.

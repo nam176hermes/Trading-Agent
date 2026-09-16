@@ -34,6 +34,41 @@ class NativeRequest(DigestModel):
     steps: Annotated[tuple[NextOpenStep,...],BeforeValidator(json_array),Field(min_length=366,max_length=366)]
 
 
+class NativeCommitment(DigestModel):
+    """Retained review subject for both roles; contains no protected prices."""
+
+    schema_version: Literal['p3-native-commitment-v1']
+    source: SourceIdentity
+    environment_ref: ArtifactRefV1
+    manifest_ref: ArtifactRefV1
+    instrument_spec_ref: ArtifactRefV1
+    primary_request_sha256: Sha256
+    baseline_request_sha256: Sha256
+
+
+def prepare_native_commitment(manifest_ref: ArtifactRefV1, spec_ref: ArtifactRefV1,
+    view: HoldoutCalculationView,
+) -> NativeCommitment:
+    primary = prepare_native_request(manifest_ref, spec_ref, view, role='PRIMARY')
+    baseline = prepare_native_request(manifest_ref, spec_ref, view, role='SELECTED_BASELINE')
+    payload = dict(schema_version='p3-native-commitment-v1', source=primary.source,
+        environment_ref=primary.environment_ref, manifest_ref=manifest_ref, instrument_spec_ref=spec_ref,
+        primary_request_sha256=hashlib.sha256(canonical_json_bytes(primary)).hexdigest(),
+        baseline_request_sha256=hashlib.sha256(canonical_json_bytes(baseline)).hexdigest())
+    return NativeCommitment.model_validate({**payload, 'digest':hashlib.sha256(canonical_json_bytes(payload)).hexdigest()})
+
+
+def validate_native_commitment(reference: ArtifactRefV1, manifest_ref: ArtifactRefV1,
+    spec_ref: ArtifactRefV1, view: HoldoutCalculationView, store: ArtifactStore,
+) -> NativeCommitment:
+    from .pit_evidence import _reference
+    _reference(reference, 4096)
+    actual = _read(store, reference, NativeCommitment)
+    if actual != prepare_native_commitment(manifest_ref, spec_ref, view):
+        raise ValueError('native commitment differs from the released view or ordered roles')
+    return actual
+
+
 def prepare_native_request(manifest_ref: ArtifactRefV1,spec_ref: ArtifactRefV1,
     view: HoldoutCalculationView,*,role: NativeRole,
 ) -> NativeRequest:
