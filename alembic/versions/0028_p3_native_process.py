@@ -17,7 +17,15 @@ def upgrade() -> None:
         AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='job_plane' AND p.proname='worker_replace_alpha_native_process')""")).scalar() is not True:
         raise RuntimeError('0028 requires the exact parent, owner and absent native capability')
-    if connection.execute(text(CUSTODIAN_CATALOG_SQL)).scalar() != CUSTODIAN_CATALOG_SHA256:
+    # PostgreSQL deparses regclass names relative to search_path. Match custody's
+    # snapshot context before comparing the immutable parent fingerprint.
+    previous_path = connection.execute(text('SHOW search_path')).scalar()
+    try:
+        connection.execute(text("SELECT set_config('search_path','pg_catalog',true)"))
+        catalog = connection.execute(text(CUSTODIAN_CATALOG_SQL)).scalar()
+    finally:
+        connection.execute(text("SELECT set_config('search_path',:value,true)"), {'value': previous_path})
+    if catalog != CUSTODIAN_CATALOG_SHA256:
         raise RuntimeError('0028 parent authority catalog differs')
     op.execute("""GRANT CREATE ON SCHEMA job_plane TO trading_p3_owner;
       SET LOCAL ROLE trading_p3_owner;
