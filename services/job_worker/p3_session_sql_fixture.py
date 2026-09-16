@@ -111,6 +111,26 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
                 WHERE j.job_id=%s''', (expired,)).fetchone() == (True,)
         assert repository.claim_session_holdout('session-worker', 30, 'test:expired',
             job_id=expired, workflow_run_id=1, workflow_attempt=1) is None
+        expiring, _ = seed(expiry=datetime.now(UTC)+timedelta(seconds=2))
+        # Inject latency only in this disposable cluster, after the job/attempt
+        # writes. Expired authority must roll back all three claim writes.
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+            _ = owner.execute('''CREATE FUNCTION public.session_claim_delay() RETURNS trigger
+                LANGUAGE plpgsql AS $$BEGIN PERFORM pg_sleep(2.1); RETURN NEW; END$$;
+                CREATE TRIGGER session_claim_delay BEFORE INSERT ON public.job_events
+                FOR EACH ROW EXECUTE FUNCTION public.session_claim_delay()''')
+        try:
+            with _rejected(psycopg.errors.InvalidParameterValue, match='expired during claim'):
+                _ = repository.claim_session_holdout('session-worker', 30, 'test:mid-claim-expiry',
+                    job_id=expiring, workflow_run_id=1, workflow_attempt=1)
+        finally:
+            with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+                _ = owner.execute('DROP TRIGGER session_claim_delay ON public.job_events; DROP FUNCTION public.session_claim_delay()')
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as observer:
+            assert observer.execute('SELECT state,attempt_count FROM public.jobs WHERE job_id=%s', (expiring,)).fetchone() == ('QUEUED', 0)
+            assert observer.execute('SELECT count(*) FROM public.job_attempts WHERE job_id=%s', (expiring,)).fetchone() == (0,)
+            assert observer.execute("SELECT count(*) FROM public.job_events WHERE job_id=%s AND to_state='CLAIMED'", (expiring,)).fetchone() == (0,)
     return {'verdict': 'PASS', 'ordinary_holdout_claim': 'CLOSED', 'concurrent_winners': 1,
         'workflow_denials': 2, 'role_denials': 5, 'null_denials': 9,
-        'cancelled_and_expired': 'REJECTED', 'one_use_disclosure': 'ACTUAL_PRIVATE_CLAIM'}
+        'cancelled_and_expired': 'REJECTED', 'expired_during_claim': 'ROLLED_BACK',
+        'one_use_disclosure': 'ACTUAL_PRIVATE_CLAIM'}
