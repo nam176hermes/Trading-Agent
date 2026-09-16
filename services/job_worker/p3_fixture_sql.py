@@ -388,6 +388,7 @@ def _cleanup_cluster(root: Path, data: Path, sock: Path, started: bool, run, *, 
 
 def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root=None,
     custodian_release_source_checks: bool = False,
+    native_process_source_checks: bool = False,
 ) -> dict[str, object]:
     if not __debug__:
         raise RuntimeError("source checks require assertions enabled")
@@ -689,9 +690,13 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         from .p3_holdout_fixture import check_holdout_disclosure,check_disclosure_catalog
         check_disclosure_catalog(sock,name,mark)
         check_holdout_disclosure(sock,name,source,mark)
-        if custodian_release_source_checks:
+        native_checks: dict[str, object] = {}
+        if custodian_release_source_checks or native_process_source_checks:
             from .p3_custodian_fixture import check_custodian_release
             check_custodian_release(sock,name,source)
+        if native_process_source_checks:
+            from .p3_native_sql_fixture import check_native_process
+            native_checks = check_native_process(sock,name,source)
         with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
             revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
             if revision_row is None:
@@ -710,6 +715,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             raise SQLFixtureCleanupError(f"SQL cleanup unverified; retained {root}") from cause
     validate_sql_fixture_checks(checks,process_identity_bound=heartbeat is not None)
     return {"source": source.model_dump(mode="json"), "checks": checks, "sql_revision":sql_revision,
+            **({"native_process_checks": native_checks} if native_process_source_checks else {}),
             "postgres_binary_sha256": hashlib.sha256((BIN/'postgres').read_bytes()).hexdigest(),
             "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
             "cleanup": {"cluster_id": root.name, "root_absent": not root.exists(),

@@ -9,7 +9,7 @@ import re
 import secrets
 from datetime import datetime
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, LiteralString
 from uuid import uuid4
 
 from psycopg.rows import dict_row
@@ -324,6 +324,32 @@ class WorkerRepository:
         current: ProcessIdentity, trace_id: str,
     ) -> bool:
         """Compare and replace the recovery identity after a fixture child exits."""
+        return self._replace_alpha_process(
+            """SELECT job_plane.worker_replace_alpha_fixture_process(
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            ) AS replaced""", claimed, previous, current, trace_id)
+
+    def replace_alpha_native_process(
+        self, claimed: ClaimedJob, previous: ProcessIdentity,
+        current: ProcessIdentity, trace_id: str,
+    ) -> bool:
+        """Use only the separately qualified native process SQL capability."""
+        from packages.job_contracts import AlphaCampaignPayload
+        if (type(claimed) is not ClaimedJob or claimed.job_type is not JobType.ALPHA_CAMPAIGN
+            or type(claimed.payload) is not AlphaCampaignPayload
+            or claimed.payload.operation != 'PARITY'
+            or claimed.payload.logical_trial_id != 'p3-native-parity-v1'
+            or previous == current):
+            raise ValueError('distinct processes in the official native parity attempt required')
+        return self._replace_alpha_process(
+            """SELECT job_plane.worker_replace_alpha_native_process(
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            ) AS replaced""", claimed, previous, current, trace_id)
+
+    def _replace_alpha_process(
+        self, statement: LiteralString, claimed: ClaimedJob, previous: ProcessIdentity,
+        current: ProcessIdentity, trace_id: str,
+    ) -> bool:
         self._validate_worker(claimed.worker_id)
         self._validate_trace(trace_id)
         for identity in (previous, current):
@@ -332,10 +358,7 @@ class WorkerRepository:
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    """SELECT job_plane.worker_replace_alpha_fixture_process(
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s
-                    ) AS replaced""",
+                    statement,
                     (
                         claimed.job_id, claimed.attempt_id, claimed.worker_id, claimed.lease_token,
                         previous.pid, previous.process_group, previous.start_ticks, previous.command_fingerprint,
