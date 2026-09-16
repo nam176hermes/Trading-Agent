@@ -109,6 +109,9 @@ It is dispatched only to the protected Linux/x64 authority-host workflow and
 is never reachable from `make ci` or portable GitHub Actions.
 
 The narrower non-building aggregate remains available as `make test-all`.
+Run `uv run python scripts/dev.py static` once before its offline static-policy
+tests to populate the pinned checker cache. The error-level gate retains warning
+diagnostics and their baselines; warnings alone do not fail either local or CI output.
 Useful focused gates include:
 
 ```bash
