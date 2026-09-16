@@ -16,6 +16,11 @@ native/session/data custody. Neither changed the reviewed checkout.
 | P1 session enqueue profile (root follow-up) | Existing Job API rejects session schema 0029/0030, blocking later stage enqueue | Explicit session profile with fresh role/revision/catalog checks; HTTP and real SQL admission/drift regressions; old profiles preserved |
 | P1 catalog coverage | Session catalog omitted publication heads and append/retention dependencies | Expanded session-only catalog and separately measured pin; table ACL drift tests; old custodian pin preserved |
 
+Hermes follow-up source review reproduced a paper artifact import regression:
+new session imports ran before profile selection. Session dependencies now load
+only in the explicit session branch. A subprocess imports the exact paper mapping
+and rejects fallback to full-checkout modules; the paper inventory is unchanged.
+
 Repair review also reproduced an access-time false rejection in the new reader.
 The comparison now covers file identity, permissions, size, nanosecond modification
 and change times, excluding access time. A named snapshot with old access time

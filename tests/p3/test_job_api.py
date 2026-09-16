@@ -1,5 +1,9 @@
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
+import shutil
+import subprocess
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +15,23 @@ from tests.jobs.test_repository_transition_capabilities import (
     _job_row,
     _repository,
 )
+
+
+def test_paper_projection_does_not_import_session_authority(tmp_path):
+    from packages.runtime_release.v2 import PAPER_APPLICATION_SOURCE_MAPPING
+    root = Path(__file__).resolve().parents[2]
+    for destination, source in PAPER_APPLICATION_SOURCE_MAPPING:
+        path = tmp_path/destination
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root/source, path)
+    result = subprocess.run([sys.executable, '-I', '-B', '-c',
+        'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
+        'import apps.job_api.app; '
+        'assert "services.job_store.p3_catalog" not in sys.modules; '
+        'assert all(Path(m.__file__).is_relative_to(sys.argv[1]) for n,m in sys.modules.items() '
+        'if n.split(".")[0] in ("apps","services","packages") and getattr(m,"__file__",None))', str(tmp_path)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 def _alpha_request() -> EnqueueJobRequest:

@@ -46,8 +46,6 @@ from services.job_store.config import (
     P1_DISPOSABLE_DATABASE_REVISION,
     P3_DISPOSABLE_DATABASE_REVISION,
 )
-from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
-from services.job_store.p3_custodian_release import IDENTITY as SESSION_IDENTITY_SQL
 
 from .auth import BearerAuthenticator
 from .config import JobApiSettings
@@ -261,13 +259,17 @@ class RequestBoundaryMiddleware:
         )
 
 
-def _probe_repository(repository: Any, expected_revision: str) -> tuple[bool, bool]:
+def _probe_repository(repository: Any, expected_revision: str, *, session: bool = False) -> tuple[bool, bool]:
     if repository is None:
         return False, False
     pool = getattr(repository, "_pool", None)
     if pool is None:
         return False, False
-    if expected_revision == SESSION_REVISION:
+    if session:
+        from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+        from services.job_store.p3_custodian_release import IDENTITY as SESSION_IDENTITY_SQL
+        if expected_revision != SESSION_REVISION:
+            return False, False
         try:
             with pool.connection() as connection, connection.transaction():
                 connection.execute("SET LOCAL search_path=pg_catalog")
@@ -428,6 +430,7 @@ def _require_mutation_authority(
     authority: ValidatedJobPlaneAuthority,
     repository: Any,
     expected_revision: str,
+    *, session: bool = False,
 ) -> None:
     try:
         authority.recheck_mutation()
@@ -438,7 +441,7 @@ def _require_mutation_authority(
             "Job-plane mutation authority is unavailable.",
         ) from None
     database_ready, revision_ready = _probe_repository(
-        repository, expected_revision
+        repository, expected_revision, session=session
     )
     if not database_ready or not revision_ready:
         raise JobApiError(
@@ -462,6 +465,7 @@ def _create_app(
     authority: ValidatedJobPlaneAuthority,
     *,
     expected_revision: str,
+    session: bool = False,
 ) -> FastAPI:
     if not isinstance(authority, ValidatedJobPlaneAuthority):
         raise ProtectedAuthorityError("JOB_PLANE_AUTHORITY_INVALID") from None
@@ -543,7 +547,7 @@ def _create_app(
     )
     def health_ready(request: Request) -> JSONResponse:
         database_ready, revision_ready = _probe_repository(
-            repository, expected_revision
+            repository, expected_revision, session=session
         )
         ready = (
             settings.bearer_token is not None
@@ -577,14 +581,14 @@ def _create_app(
     )
     def create_job(request: Request, command: EnqueueJobBody) -> JSONResponse:
         if (command.job_type is JobType.ALPHA_CAMPAIGN) != (
-            expected_revision in {P3_DISPOSABLE_DATABASE_REVISION, SESSION_REVISION}
+            expected_revision == P3_DISPOSABLE_DATABASE_REVISION or session
         ):
             raise JobApiError(422, "JOB_TYPE_NOT_AUTHORIZED", "Job type is not authorized by this profile.")
         authenticated_command = EnqueueJobRequest.model_validate(
             {**command.model_dump(mode="json"), "actor": request.state.principal}
         )
         _require_mutation_authority(
-            authority, repository, expected_revision
+            authority, repository, expected_revision, session=session
         )
         result = _call_repository(
             lambda: repository.enqueue(
@@ -678,7 +682,7 @@ def _create_app(
         request: Request, job_id: str, command: CancelJobBody
     ) -> JobEnvelope:
         _require_mutation_authority(
-            authority, repository, expected_revision
+            authority, repository, expected_revision, session=session
         )
         job = _call_repository(
             lambda: repository.request_cancel(
@@ -741,4 +745,5 @@ def create_p3_session_app(
     authority: ValidatedJobPlaneAuthority,
 ) -> FastAPI:
     """Explicit session API; every mutation rechecks its role and full catalog."""
-    return _create_app(settings, repository, authority, expected_revision=SESSION_REVISION)
+    from services.job_store.p3_catalog import SESSION_REVISION
+    return _create_app(settings, repository, authority, expected_revision=SESSION_REVISION, session=True)

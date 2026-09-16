@@ -60,16 +60,16 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
     from services.job_store.repository import JobRepository
     api_settings = SocketSettings('localhost', 5432, name, 'trading_job_api', 'synthetic')
     with JobRepository(api_settings) as api_repository:
-        assert _probe_repository(api_repository, REVISION) == (True, True)
+        assert _probe_repository(api_repository, REVISION, session=True) == (True, True)
         # A real catalog mutation must invalidate the already-created API profile.
         with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
             _ = owner.execute('GRANT UPDATE ON public.p3_alpha_heads TO trading_job_worker')
         try:
-            assert _probe_repository(api_repository, REVISION) == (True, False)
+            assert _probe_repository(api_repository, REVISION, session=True) == (True, False)
         finally:
             with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
                 _ = owner.execute('REVOKE UPDATE ON public.p3_alpha_heads FROM trading_job_worker')
-        assert _probe_repository(api_repository, REVISION) == (True, True)
+        assert _probe_repository(api_repository, REVISION, session=True) == (True, True)
     with WorkerRepository(settings) as repository:
         _check_terminal_boundaries(sock, name, source, repository)
         repository.assert_session_runtime_identity()
