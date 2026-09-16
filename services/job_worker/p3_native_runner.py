@@ -1,6 +1,24 @@
-"""Pinned command identity for the separately qualified native P3 adapter."""
+"""Pinned native command and bounded, parent-owned six-replica execution."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, TYPE_CHECKING
+
+from packages.data_contracts import ArtifactRefV1
+from packages.engine_contracts.serialization import canonical_json_bytes, payload_digest
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
+    from packages.alpha_lifecycle.native_request import NativeRole
+    from packages.alpha_lifecycle.replica_store import ArtifactStore
+    from .p3_native_spawn import P3NativeSpawnProvider
+    from .process_runner import HeartbeatDecision, HeartbeatInstruction, ProcessOutcome
+    from .recovery import ProcessIdentity
+    from .safety_state import SafetyEvidence
 
 
 PINNED_ENGINE_VERSION = "1.231.0"
@@ -12,4 +30,106 @@ def native_parity_command(python: Path, release: Path) -> tuple[str, ...]:
     return (str(python), "-I", "-B", str(release / "scripts/run_p3_nautilus_parity.py"))
 
 
-__all__ = ["PINNED_ENGINE_VERSION", "native_parity_command"]
+@dataclass(frozen=True, slots=True)
+class NativeReplica:
+    """Parent observations; not a public replay receipt or SQL success proof."""
+    role: NativeRole
+    replica: Literal['R1', 'R2', 'R3']
+    request_sha256: str
+    started_at: datetime
+    completed_at: datetime
+    outcome: ProcessOutcome
+    result_ref: ArtifactRefV1
+
+
+class NativeExecutionError(RuntimeError):
+    """Preserve observed failure context for the owning worker's finalization."""
+    def __init__(self, message: str, *, completed: tuple[NativeReplica, ...],
+        outcome: ProcessOutcome | None, artifact_root: Path) -> None:
+        super().__init__(message)
+        self.completed = completed
+        self.outcome = outcome
+        self.artifact_root = artifact_root
+
+
+def run_native_replicas(provider: P3NativeSpawnProvider, *, view: HoldoutCalculationView, output: ArtifactStore,
+    artifact_root: Path, heartbeat: Callable[[ProcessIdentity], HeartbeatDecision | HeartbeatInstruction],
+    preflight: Callable[[], SafetyEvidence],
+) -> tuple[NativeReplica, ...]:
+    """Run both roles once, retaining only validated results through the fenced owner.
+
+    Each child reports its actual identity to the caller's SQL heartbeat. The
+    caller must support official process replacement; fixture SQL is not used.
+    """
+    from packages.alpha_lifecycle.native_request import native_result_from_output
+    from .artifacts import ArtifactWriter
+    from .p3_native_spawn import P3NativeSpawnProvider
+    from .process_runner import ProcessRunner
+    from .results import ResultValidator
+    if type(provider) is not P3NativeSpawnProvider:
+        raise ValueError('exact protected native launch owner required')
+    with provider._lock:
+        if provider._execution_started or provider._next or provider._failed:
+            raise ValueError('native execution is single-use and requires an unused launch owner')
+        provider._execution_started = True
+    runs: list[NativeReplica] = []
+    succeeded = False
+    outcome: ProcessOutcome | None = None
+    root = artifact_root
+    try:
+        for request in provider._requests:
+            for replica in ('R1', 'R2', 'R3'):
+                outcome = None
+                provider._fence()
+                root = artifact_root / request.role / replica
+                observed: list[ProcessIdentity] = []
+                def observe(identity: ProcessIdentity) -> HeartbeatDecision | HeartbeatInstruction:
+                    provider._fence()
+                    if ((observed and identity != observed[0])
+                        or any((r.outcome.identity.pid, r.outcome.identity.start_ticks)
+                            == (identity.pid, identity.start_ticks) for r in runs)):
+                        raise ValueError('native execution requires six fresh parent-observed processes')
+                    if not observed:
+                        observed.append(identity)
+                    return heartbeat(identity)
+
+                def safety() -> SafetyEvidence:
+                    provider._fence()
+                    return preflight()
+
+                provider._last_launch = None
+                started = datetime.now(UTC)
+                outcome = ProcessRunner(ArtifactWriter(root)).run(
+                    lambda: provider.prepare(request.role, replica), None, None, observe,
+                    job_id=provider._claim.job_id, attempt_id=provider._claim.attempt_id, preflight=safety)
+                completed = datetime.now(UTC)
+                provider._fence()
+                if (outcome.exit_code != 0 or outcome.termination_reason is not None
+                    or observed != [outcome.identity] or completed < started
+                    or outcome.result_validator_id != 'p3-native-output-v1'
+                    or outcome.backend_revision != request.source.commit_sha
+                    or provider._last_launch != (outcome.capability_fingerprint, outcome.lineage.command)):
+                    raise ValueError('native child outcome differs from its consumed launch or failed')
+                reader = ResultValidator(root, root, root)
+                raw = reader._read_p3_stream(provider._claim, outcome.stdout)
+                _ = reader._read_p3_stream(provider._claim, outcome.stderr, stream_name='stderr')
+                provider._fence()
+                result = native_result_from_output(request, raw, view, output)
+                provider._fence()
+                result_ref = output.put_bytes(canonical_json_bytes(result), media_type='application/json')
+                runs.append(NativeReplica(request.role, replica, payload_digest(request),
+                    started, completed, outcome, result_ref))
+        provider._fence()
+        succeeded = True
+        return tuple(runs)
+    except Exception as error:
+        raise NativeExecutionError(str(error), completed=tuple(runs), outcome=outcome,
+            artifact_root=root) from error
+    finally:
+        if not succeeded:
+            with provider._lock:
+                provider._failed = True
+
+
+__all__ = ["PINNED_ENGINE_VERSION", "native_parity_command", "run_native_replicas",
+    "NativeReplica", "NativeExecutionError"]

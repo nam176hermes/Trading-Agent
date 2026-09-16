@@ -77,6 +77,8 @@ class P3NativeSpawnProvider:
         self._next: int = 0
         self._failed: bool = False
         self._pending: bool = False
+        self._execution_started: bool = False
+        self._last_launch: tuple[str, dict[str, str]] | None = None
         self._lock: Lock = Lock()
         self._issued: weakref.WeakKeyDictionary[PreparedP3NativeSpawn,
             tuple[NativeRequest, str, P1EngineClosureAttestation, tuple[bytes, bytes], float]] = weakref.WeakKeyDictionary()
@@ -190,6 +192,7 @@ class P3NativeSpawnProvider:
             result = EngineBuiltSpawn(tuple(argv), Path('/'), MappingProxyType({}), tuple(descriptors),
                 tuple(descriptors), 300, 'p3-native-output-v1', fingerprint, request.source.commit_sha,
                 EngineSpawnLineage(extension, policy, request_sha))
+            self._last_launch = fingerprint, result.lineage.as_metadata()
             transferred = True
             return result
         finally:

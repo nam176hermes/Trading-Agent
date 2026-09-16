@@ -137,6 +137,36 @@ and dashboard build then passed. Its canonical `make test-all` remains separatel
 tracked in the external evidence ledger. None of these checks grants runtime
 authority.
 
+## Session native execution checkpoint
+
+The bounded session now consumes its private native provider through the existing
+ProcessRunner, in PRIMARY R1–R3 then SELECTED_BASELINE R1–R3 order. All six
+children use the actual parity job/attempt and separate protected stream roots.
+The parent checks distinct observed process identities, exact consumed launch
+fingerprint/request/closure/policy, successful cleanup and bounded stream bytes
+before normalizing each result into the session's fenced store. Failure poisons
+the launch owner, closes the session view and preserves observed outcomes for
+worker finalization. Raw requests remain sealed inputs; no public replay receipt
+is issued by this runner.
+
+Focused tests exercise real sealed launch consumption with synthetic host
+attestation, invalid results and revocation. An additional test executes six
+actual OS children through ProcessRunner using synthetic output; it does not run
+the protected engine. The official coordinator, SQL process replacement and
+private parent-proof publication are still required before opening a late lane.
+
+The session aggregate at b851970 failed two headless tests because this fresh
+checkout lacked the production dashboard build. Run `make build-dashboard`
+before headless qualification that sets `build_dashboard=False`. After building,
+all nine headless tests passed; the remaining legacy/dashboard tests, typecheck
+and lint also passed. These repairs do not relabel the original aggregate PASS
+or qualify the subsequent native-execution changes.
+
+Final focused regression: 323 passed in 165.04s; closed paper import graph: one
+passed. Root and legacy error-level typing, production Ruff and scoped Bandit
+passed. Independent security review and full candidate qualification remain
+separate. Evidence is in the external SESSION.json ledger.
+
 ## Closure conditions
 
 - M8: reviewed session ownership plus actual protected cross-UID release,

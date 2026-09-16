@@ -35,6 +35,9 @@ if TYPE_CHECKING:
     from services.job_store.p3_sql import PublicationProposal
     from .p3_host_profile import OfficialHostProfile
     from .p3_native_spawn import P3NativeSpawnProvider
+    from .p3_native_runner import NativeReplica
+    from .process_runner import HeartbeatDecision, HeartbeatInstruction
+    from .safety_state import SafetyEvidence
 
 _STAGES = ('HOLDOUT', 'PARITY', 'PHASE_EXIT')
 
@@ -304,6 +307,24 @@ class P3HoldoutSession:
         return P3NativeSpawnProvider(self._path.with_name('native.json'), self._active[0],
             session_sha256=self._digest, requests=requests,
             commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self.fence)
+
+    def execute_native(self, *,
+        heartbeat: Callable[[ProcessIdentity], 'HeartbeatDecision | HeartbeatInstruction'],
+        preflight: Callable[[], 'SafetyEvidence'],
+    ) -> tuple['NativeReplica', ...]:
+        """Keep native execution and result retention inside the current parity stage."""
+        from .p3_native_runner import run_native_replicas
+        try:
+            provider = self.native_spawn_provider()
+            active = self._active
+            if active is None:
+                raise ValueError('native execution requires the active parity stage')
+            profile = self._host(active[0], active[2])
+            return run_native_replicas(provider, view=self.view, output=self,
+                artifact_root=Path(profile.output_root)/'native', heartbeat=heartbeat, preflight=preflight)
+        except BaseException:
+            self.close()
+            raise
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
         self._check_view_access()
