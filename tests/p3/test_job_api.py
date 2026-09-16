@@ -17,19 +17,64 @@ from tests.jobs.test_repository_transition_capabilities import (
 )
 
 
-def test_paper_projection_does_not_import_session_authority(tmp_path):
+@pytest.mark.parametrize("scenario", ["entrypoint", "enqueue"])
+def test_paper_projection_does_not_import_session_authority(tmp_path, scenario):
     from packages.runtime_release.v2 import PAPER_APPLICATION_SOURCE_MAPPING
     root = Path(__file__).resolve().parents[2]
     for destination, source in PAPER_APPLICATION_SOURCE_MAPPING:
         path = tmp_path/destination
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(root/source, path)
-    result = subprocess.run([sys.executable, '-I', '-B', '-c',
-        'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
-        'import apps.job_api.app; '
-        'assert "services.job_store.p3_catalog" not in sys.modules; '
-        'assert all(Path(m.__file__).is_relative_to(sys.argv[1]) for n,m in sys.modules.items() '
-        'if n.split(".")[0] in ("apps","services","packages") and getattr(m,"__file__",None))', str(tmp_path)],
+    program = """
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime
+sys.path.insert(0, sys.argv[1])
+if sys.argv[2] == "entrypoint":
+    import apps.job_api.main as main
+    # Stop at authority admission: no listener, database, or runtime access.
+    with patch.object(main.JobApiSettings, 'load_authority', side_effect=RuntimeError('authority reached')):
+        try:
+            main.run(env={})
+        except RuntimeError as error:
+            assert str(error) == 'authority reached'
+        else:
+            raise AssertionError('entrypoint did not reach authority admission')
+    assert 'services.sentry' not in sys.modules
+else:
+    from fastapi.testclient import TestClient
+    from apps.job_api.app import create_app
+    from apps.job_api.config import JobApiSettings, EXPECTED_REVISION
+    from packages.job_contracts import ActorIdentity
+    from packages.runtime_release import ValidatedJobPlaneAuthority
+    # Source-only adapter test; no protected authority or SQL is exercised.
+    capability = MagicMock(spec=ValidatedJobPlaneAuthority)
+    actor = ActorIdentity(actor_type='OPERATOR', actor_id='projection-test')
+    repository = MagicMock()
+    repository._pool.connection.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = {'version_num': EXPECTED_REVISION}
+    record = SimpleNamespace(job_id='job_123', job_type='SNAPSHOT', state='QUEUED',
+        payload={'scope': 'default', 'requested_as_of': None}, payload_fingerprint='a'*64,
+        actor=actor, priority=0, requested_at=datetime.now(UTC), updated_at=datetime.now(UTC),
+        attempt_count=0, reason_code='ENQUEUED', result_hash=None)
+    repository.enqueue.return_value = SimpleNamespace(outcome=SimpleNamespace(value='ENQUEUED'), job=record)
+    client = TestClient(create_app(JobApiSettings(bearer_token='projection-test-token', principal=actor), repository, capability))
+    response = client.post('/v1/jobs', headers={'Authorization': 'Bearer projection-test-token'},
+        json={'job_type': 'SNAPSHOT', 'payload': record.payload, 'idempotency_key': 'projection:snapshot'})
+    assert response.status_code == 201, response.text
+    repository.enqueue.assert_called_once()
+    repository.enqueue.reset_mock()
+    capability.recheck_mutation.side_effect = RuntimeError('authority revoked')
+    response = client.post('/v1/jobs', headers={'Authorization': 'Bearer projection-test-token'},
+        json={'job_type': 'SNAPSHOT', 'payload': record.payload, 'idempotency_key': 'projection:revoked'})
+    assert response.status_code == 503, response.text
+    repository.enqueue.assert_not_called()
+assert "services.job_store.p3_catalog" not in sys.modules
+assert all(Path(m.__file__).is_relative_to(sys.argv[1]) for n,m in sys.modules.items()
+    if n.split(".")[0] in ("apps","services","packages") and getattr(m,"__file__",None))
+"""
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', program, str(tmp_path), scenario],
         cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
 

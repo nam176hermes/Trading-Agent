@@ -580,7 +580,7 @@ def _create_app(
         },
     )
     def create_job(request: Request, command: EnqueueJobBody) -> JSONResponse:
-        if (command.job_type is JobType.ALPHA_CAMPAIGN) != (
+        if (command.job_type.value == "ALPHA_CAMPAIGN") != (
             expected_revision == P3_DISPOSABLE_DATABASE_REVISION or session
         ):
             raise JobApiError(422, "JOB_TYPE_NOT_AUTHORIZED", "Job type is not authorized by this profile.")

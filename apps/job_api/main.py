@@ -7,7 +7,6 @@ import uvicorn
 
 from packages.runtime_release import validate_job_plane_authority
 from services.job_store import JobRepository, JobStoreSettings
-from services.sentry import configure_sentry
 
 from .app import create_app, create_p3_app, create_p3_session_app
 from .config import JobApiSettings
@@ -18,7 +17,10 @@ def run(*, env: Mapping[str, str] | None = None) -> None:
     profile = environment.get("TRADING_JOB_API_PROFILE", "paper")
     if profile not in {"paper", "p3-v1", "p3-session-v1"}:
         raise ValueError("unknown Job API profile")
-    configure_sentry(environment)
+    if environment.get("SENTRY_DSN", "").strip():
+        from services.sentry import configure_sentry
+
+        configure_sentry(environment)
     authority = JobApiSettings(
         authority_factory=validate_job_plane_authority
     ).load_authority()

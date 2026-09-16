@@ -21,6 +21,14 @@ new session imports ran before profile selection. Session dependencies now load
 only in the explicit session branch. A subprocess imports the exact paper mapping
 and rejects fallback to full-checkout modules; the paper inventory is unchanged.
 
+The next exact-commit source review found two inherited paper projection defects:
+the executable imported excluded telemetry without a configured DSN, and enqueue
+referenced an ALPHA_CAMPAIGN enum member absent from paper-only contracts.
+Telemetry now loads only for an explicit nonempty DSN; the profile guard compares
+the validated enum value. Exact-projection subprocess regressions exercise the
+entrypoint up to authority admission, successful SNAPSHOT enqueue and rejection
+after synthetic authority revocation. These use mocks, no runtime or SQL authority.
+
 Repair review also reproduced an access-time false rejection in the new reader.
 The comparison now covers file identity, permissions, size, nanosecond modification
 and change times, excluding access time. A named snapshot with old access time
