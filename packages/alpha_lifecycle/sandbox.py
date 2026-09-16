@@ -88,7 +88,16 @@ class BubblewrapExecutor:
         return self._store.read_bytes(ref)
 
     def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
+        if self._holdout_view is not None:
+            self._check_fence()
         return self._store.put_bytes(value, media_type=media_type)
+
+    def _check_fence(self) -> None:
+        if self._before_spawn is not None:
+            try:
+                self._before_spawn()
+            except Exception as error:
+                raise SandboxHeld('HELD E_SANDBOX: current execution fence rejected') from error
 
     def _argv(self, manifest_path: Path, result_path: Path, output_dir: Path, seccomp_fd: int,
         view_fd: int | None = None) -> tuple[str, ...]:
@@ -182,11 +191,7 @@ class BubblewrapExecutor:
                 view_fd=_sealed_memfd('p3-holdout-view',self._holdout_view.raw,mode=0o600)
             argv=(self._argv(manifest_path,result_path,output_dir,seccomp_fd,view_fd)
                 if view_fd>=0 else self._argv(manifest_path,result_path,output_dir,seccomp_fd))
-            if self._before_spawn is not None:
-                try:
-                    self._before_spawn()
-                except Exception as error:
-                    raise SandboxHeld("HELD E_SANDBOX: current pre-spawn fence rejected") from error
+            self._check_fence()
             completed = subprocess.run(
                 argv, env={}, cwd="/",
                 pass_fds=(seccomp_fd,view_fd) if view_fd>=0 else (seccomp_fd,),
@@ -202,6 +207,8 @@ class BubblewrapExecutor:
                 os.close(view_fd)
         if completed.returncode != 0:
             raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result")
+        if self._holdout_view is not None:
+            self._check_fence()
         descriptor = -1
         try:
             descriptor = os.open(result_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
@@ -251,8 +258,8 @@ class BubblewrapExecutor:
             path.name for path in (output_dir / "artifacts").iterdir()
         } != verified_outputs:
             raise SandboxHeld("HELD E_SANDBOX: holdout output inventory differs from recomputation")
-        result_ref = self._store.put_bytes(raw, media_type="application/json")
-        inventory_digest = retain_replica_outputs(output_dir / "artifacts", self._store, result_ref)
+        result_ref = self.put_bytes(raw, media_type="application/json")
+        inventory_digest = retain_replica_outputs(output_dir / "artifacts", self, result_ref)
         payload = {
             "schema_version": "p3-replay-receipt-v1", "logical_trial_id": logical_trial_id,
             "replicate": replicate, "manifest_digest": manifest_ref.content_sha256,

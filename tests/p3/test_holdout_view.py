@@ -164,7 +164,7 @@ def test_holdout_requires_fresh_fence_before_each_child(reference_seed, tmp_path
             os.fstat(descriptor)
 
 
-@pytest.mark.parametrize('extra', [None, 'holdout', 'unrelated'])
+@pytest.mark.parametrize('extra', [None, 'holdout', 'unrelated', 'after_child', 'before_retention', 'between_outputs'])
 def test_parent_recomputes_holdout_without_plaintext_in_research_cas(reference_seed, tmp_path, monkeypatch, extra):
     """Exercise calculation/readback; the process launcher is synthetic."""
     from packages.alpha_lifecycle.holdout_view import build_holdout_calculation_view, HoldoutCalculationView
@@ -181,17 +181,48 @@ def test_parent_recomputes_holdout_without_plaintext_in_research_cas(reference_s
     output = tmp_path / 'replica'; output.mkdir(mode=0o700)
     artifacts = output / 'artifacts'; artifacts.mkdir(mode=0o700)
     expected = evaluate_holdout(manifest, spec, ReplicaArtifactStore(view, artifacts))
-    if extra is not None:
+    if extra in {'holdout', 'unrelated'}:
         LocalArtifactStore(artifacts).put_bytes(view.read_bytes(holdout[0]) if extra == 'holdout'
             else b'{"unrequested":"output"}', media_type='application/json')
     (output / 'result.json').write_bytes(canonical_json_bytes(expected))
     monkeypatch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox', lambda path: path)
-    monkeypatch.setattr('packages.alpha_lifecycle.sandbox.subprocess.run', lambda *args, **kwargs: SimpleNamespace(returncode=0))
+    from packages.alpha_lifecycle import sandbox
+    current = True
+    writes = []
+    def fence():
+        if not current:
+            raise ValueError('synthetic claim revoked')
+    def child(*args, **kwargs):
+        nonlocal current
+        if extra == 'after_child': current = False
+        return SimpleNamespace(returncode=0)
+    validate = sandbox.validate_replica_result
+    def readback(*args, **kwargs):
+        nonlocal current
+        result = validate(*args, **kwargs)
+        if extra == 'before_retention': current = False
+        return result
+    put = store.put_bytes
+    def retain(raw, *, media_type):
+        nonlocal current
+        ref = put(raw, media_type=media_type)
+        writes.append(ref)
+        if extra == 'between_outputs': current = False
+        return ref
+    monkeypatch.setattr(sandbox.subprocess, 'run', child)
+    monkeypatch.setattr(sandbox, 'validate_replica_result', readback)
+    monkeypatch.setattr(store, 'put_bytes', retain)
     executor = BubblewrapExecutor(store=store, store_root=root, release_root=Path('/p3/release'),
         python=Path('/p3/python/bin/python3.11'), source=manifest.source,
         environment_ref=manifest.environment_ref, sandbox_policy_digest='c' * 64,
-        instrument_spec_ref=spec_ref, holdout_view=view, before_spawn=lambda: None)
-    if extra is not None:
+        instrument_spec_ref=spec_ref, holdout_view=view, before_spawn=fence)
+    if extra in {'after_child', 'before_retention', 'between_outputs'}:
+        with pytest.raises(sandbox.SandboxHeld, match='fence'):
+            executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)
+        assert len(writes) == (1 if extra == 'between_outputs' else 0)
+        assert set(root.iterdir()) - before == {root/ref.locator for ref in writes}
+        return
+    if extra in {'holdout', 'unrelated'}:
         from packages.alpha_lifecycle.sandbox import SandboxHeld
         with pytest.raises(SandboxHeld, match='output inventory'):
             executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)

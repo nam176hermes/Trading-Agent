@@ -455,7 +455,7 @@ ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1272|Exception|PRODUCTION_CRITICAL|RETURN
 packages/alpha_lifecycle/authority.py|112|Exception|PRODUCTION_CRITICAL|RAISE
 packages/alpha_lifecycle/holdout_view.py|76|BaseException|PRODUCTION_CRITICAL|RAISE
-packages/alpha_lifecycle/sandbox.py|188|Exception|PRODUCTION_CRITICAL|RAISE
+packages/alpha_lifecycle/sandbox.py|99|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/artifact_store.py|102|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|244|Exception|PRODUCTION_CRITICAL|RAISE

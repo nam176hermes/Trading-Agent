@@ -178,6 +178,13 @@ Requests are reconstructed from the same view in PARITY. Phase-exit proposal
 preparation uses that view and fences each retained write. SQL publication and
 acknowledgement recovery remain with their existing concrete owner.
 
+Holdout calculator retention also rechecks its existing authority callback after
+the child exits and before each result, artifact, inventory or replay-receipt
+write. Retention goes through the executor's fenced store interface. This
+prevents a successful calculation from retaining further outputs after claim
+revocation; it does not replace the worker's active-child cancellation or SQL
+transaction fences.
+
 This source slice does **not** open the official late lane. Remaining source
 work is the consumed bounded workflow/worker coordinator, protected private P3
 native launcher with six observed processes, and complete SQL terminal readback
