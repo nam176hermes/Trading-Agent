@@ -61,7 +61,7 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
                     _ = other.execute(CLAIM, parameters)
         with psycopg.connect(host=str(sock), dbname=name, user='trading_job_worker', autocommit=True) as worker:
             for index in range(9):
-                malformed = list(parameters)
+                malformed: list[object] = list(parameters)
                 malformed[index] = None
                 with _rejected(psycopg.errors.InvalidParameterValue):
                     _ = worker.execute(CLAIM, malformed)
@@ -87,9 +87,15 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
         # state update or attempt insert is used; no plaintext is loaded.
         args = (claimed.job_id, claimed.attempt_id, claimed.worker_id, claimed.lease_token, *graph, 'test:session-consume')
         with psycopg.connect(host=str(sock), dbname=name, user='trading_job_worker', autocommit=True) as worker:
-            assert worker.execute(CONSUME, args).fetchone() is not None
+            accepted = worker.execute(CONSUME, args).fetchone()
+            assert accepted is not None
+            # Same-claim metadata reconciliation is idempotent; a changed trace
+            # cannot obtain another disclosure binding. This never releases bytes.
+            assert worker.execute(CONSUME, args).fetchone() == accepted
             with _rejected(psycopg.errors.UniqueViolation):
-                _ = worker.execute(CONSUME, args)
+                _ = worker.execute(CONSUME, (*args[:-1], 'test:another-disclosure'))
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as observer:
+            assert observer.execute('SELECT count(*) FROM public.p3_holdout_disclosures WHERE job_id=%s', (job,)).fetchone() == (1,)
 
         cancelled, _ = seed()
         with psycopg.connect(host=str(sock), dbname=name, user='trading_job_api') as api:
