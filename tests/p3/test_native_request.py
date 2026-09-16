@@ -57,7 +57,7 @@ def test_full_native_request_runs_both_roles_three_times(native_inputs,role,tmp_
     reference=(run_executable_reference if role=='PRIMARY' else run_selected_baseline_reference)(manifest,spec,store)
     expected=json.loads(store.read_bytes(reference.fill_trace_ref))
     request=prepare_native_request(manifest_ref,spec_ref,view,role=role)
-    script=Path(__file__).resolve().parents[2]/'engines/nautilus/runtime_v1/p3_next_open.py'
+    script=Path(__file__).resolve().parents[2]/'engines/nautilus/p3_next_open.py'
     observed=[]
     for _ in range(3):
         process=subprocess.run([os.environ['P3_NATIVE_TEST_PYTHON'],'-I','-B',str(script)],

@@ -10,12 +10,14 @@ ROOT = Path(__file__).resolve().parents[2]
 FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
 REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
-P3_REVIEWED_MAKEFILE_BLOB = "1b59ddf8efb2c60df8d68bac9806439fc3130adb"
+# Approved optimization: static gate and one governance-owned execution per suite.
+P3_REVIEWED_MAKEFILE_BLOB = "b2cf2dcea80400b9c8ca3dcd4ed4d1f5dd91ceaf"
 # PR 56 reviewed dev security refresh; all runtime/input authority pins remain.
 P3_ROOT_MANIFEST_BLOB = "2c1ff193803bcb0d94e1b06cfa71de19ab7ce579"
 P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
-CURRENT_EXTRACTOR_BLOB = "83d750d475af788b664e3ca4c2e266f75df58eeb"
+# Approved one-entry offset cache; extraction bytes remain regression-tested.
+CURRENT_EXTRACTOR_BLOB = "2924016c660796c110ddcec76effee69df812039"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
 )

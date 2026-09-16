@@ -12,7 +12,7 @@ from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.pre_p3_provenance import canonical_source_identity
 from packages.project_status import derive_project_status
-from packages.runtime_release.config import _absolute,read_protected_canonical_json_current
+from packages.runtime_release.config import ProtectedAuthorityError,_absolute,read_protected_canonical_json_current
 from services.job_store.p3_catalog import CUSTODIAN_CATALOG_SHA256
 from services.job_store.p3_custodian_release import CustodianReleaseRepository
 from .p3_holdout_release import CustodianEndpoint,_request_identity,serve_release
@@ -32,7 +32,7 @@ class CustodianHostProfile(StrictModel):
 def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProfile:
     try:
         document,digest=read_protected_canonical_json_current(path)
-    except Exception as error:
+    except ProtectedAuthorityError as error:
         raise ValueError('custodian profile requires protected root custody') from error
     if digest!=expected_digest:raise ValueError('custodian profile digest changed')
     profile=CustodianHostProfile.model_validate_json(canonical_json_bytes(document))

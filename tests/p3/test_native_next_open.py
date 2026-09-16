@@ -25,7 +25,7 @@ def test_real_native_next_open_matches_reference_and_has_no_early_fill(targets,o
     days=tuple((date(2025,8,31)+timedelta(days=i)).isoformat() for i in range(len(targets)))
     inputs=[dict(target=target,open=opening,boundary_ns=boundary,source_day=day)
         for target,opening,boundary,day in zip(targets,opens,boundaries,days,strict=True)]
-    script=Path(__file__).resolve().parents[2]/'engines/nautilus/runtime_v1/p3_next_open.py'
+    script=Path(__file__).resolve().parents[2]/'engines/nautilus/p3_next_open.py'
     expected=synthetic_next_open_accounting(targets=targets,opens=tuple(map(Decimal,opens)),
         boundary_times_ns=boundaries,source_days=days,price_increment=Decimal('.01'),
         size_increment=Decimal('.00001'),quote_quantum=Decimal('.01'),minimum_notional=Decimal('10'))
@@ -50,7 +50,7 @@ def test_real_native_next_open_matches_reference_and_has_no_early_fill(targets,o
 @pytest.mark.host_coupled
 @pytest.mark.skipif(not os.environ.get('P3_NATIVE_TEST_PYTHON'),reason='pinned offline native test Python required')
 def test_native_request_rejects_invalid_boundaries_and_policy():
-    script=Path(__file__).resolve().parents[2]/'engines/nautilus/runtime_v1/p3_next_open.py'
+    script=Path(__file__).resolve().parents[2]/'engines/nautilus/p3_next_open.py'
     probe='''
 import importlib.util
 import sys

@@ -67,6 +67,11 @@ cross-UID and disposable SQL qualification require their separate runtime scope.
 2. Implement the frozen quote/order recipe in that pinned runtime. Demonstrate
    with actual two-bar native execution that no previous-quote/close fill occurs.
    Failure is E_NATIVE_RECIPE; the synthetic calculator is never an engine substitute.
+   The P3 adapter lives at `engines/nautilus/p3_next_open.py`, outside the frozen
+   P1 `runtime_v1` inventory. Its additional direct API is exactly
+   `nautilus_trader.backtest.models.LatencyModel(base_latency_nanos=1)`; pinned
+   engine timing tests exercise that setting. Source import coverage checks
+   bind this extra API to that one P3 file. This grants no P1 launch authority.
 3. Retain three parent-observed native runs for each role. Use an internal pair
    envelope containing the two existing ParityResult references and their
    exact role bindings. Keep accepted public ParityResult bytes unchanged.

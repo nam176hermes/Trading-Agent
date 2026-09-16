@@ -1236,9 +1236,15 @@ def test_direct_api_contract_covers_existing_source_imports() -> None:
     }
     product_imports = _nautilus_imports()
     assert {item["kind"] for item in product_imports} == {"ImportFrom"}
+    # The separate P3 next-open recipe adds exactly one API. It is exercised by
+    # the pinned-engine timing tests and does not expand the P1 runtime closure.
     assert {
-        (item["module"], item["symbol"]) for item in product_imports
-    } <= qualified_imports
+        (item["path"], item["module"], item["symbol"])
+        for item in product_imports
+        if (item["module"], item["symbol"]) not in qualified_imports
+    } == {
+        ("engines/nautilus/p3_next_open.py", "nautilus_trader.backtest.models", "LatencyModel"),
+    }
 
     local_invocations = contract["local_invocations"]
     discovered_invocations = _assert_invocation_contract(contract)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 import hashlib
 from typing import Literal
 from pydantic import TypeAdapter
@@ -37,6 +37,19 @@ def _trace(store: ArtifactStore, result: ExecutableResult) -> tuple[NativeTraceR
 
 
 def compare_executable_results(
+    reference_ref: ArtifactRefV1,
+    native_result_refs: tuple[ArtifactRefV1, ArtifactRefV1, ArtifactRefV1],
+    native_receipt_refs: tuple[ArtifactRefV1, ArtifactRefV1, ArtifactRefV1],
+    store: ArtifactStore,
+    *,
+    quote_quantum: Decimal,
+) -> ParityResult:
+    with localcontext(prec=50, rounding=ROUND_HALF_EVEN):
+        return _compare_executable_results(reference_ref, native_result_refs,
+            native_receipt_refs, store, quote_quantum=quote_quantum)
+
+
+def _compare_executable_results(
     reference_ref: ArtifactRefV1,
     native_result_refs: tuple[ArtifactRefV1, ArtifactRefV1, ArtifactRefV1],
     native_receipt_refs: tuple[ArtifactRefV1, ArtifactRefV1, ArtifactRefV1],

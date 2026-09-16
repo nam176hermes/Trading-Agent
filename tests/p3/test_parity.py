@@ -1,6 +1,6 @@
 import hashlib
 import json
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, getcontext, localcontext
 import pytest
 
 from packages.alpha_lifecycle.contracts.results import ExecutableResult, NativeTraceRow, ReplayReceipt
@@ -109,6 +109,20 @@ def test_parity_comparator_checks_fields_tolerances_and_replica_bytes(tmp_path) 
     assert failed.verdict == "FAIL"
     assert "native-replicas-differ" in comparison["exact_failures"]
     assert "R3:fee-0" in comparison["numeric_failures"]
+
+
+def test_parity_precision_cannot_turn_failure_into_pass(tmp_path):
+    store = LocalArtifactStore(tmp_path)
+    reference = _result(store, trace_ref=_trace(store))
+    native = _result(store, trace_ref=_trace(store, cash="99899.9200001"))
+    receipts = tuple(_receipt(store, native, r) for r in ("R1", "R2", "R3"))
+    expected = compare_executable_results(reference, (native,) * 3, receipts, store, quote_quantum=Decimal(".01"))
+    assert expected.verdict == "FAIL"
+    with localcontext(prec=2, rounding=ROUND_DOWN):
+        observed = compare_executable_results(reference, (native,) * 3, receipts, store, quote_quantum=Decimal(".01"))
+        assert getcontext().prec == 2
+        assert getcontext().rounding == ROUND_DOWN
+        assert observed == expected
 
 
 def test_parity_rejects_intermediate_equity_drift_even_when_ending_cash_matches(tmp_path):
