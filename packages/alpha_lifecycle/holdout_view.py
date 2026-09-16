@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
+import stat
 from collections.abc import Callable
 from pydantic import TypeAdapter
 from types import MappingProxyType
@@ -16,6 +18,41 @@ from packages.alpha_lifecycle.sandbox_policy import MAX_VIEW_BYTES
 from packages.data_contracts import ArtifactRefV1
 from packages.data_catalog.artifact_store import ArtifactIntegrityError
 from packages.engine_contracts.serialization import canonical_json_bytes
+
+
+def read_calculation_view(path: Path) -> bytes:
+    """Read a private snapshot, including Bubblewrap's anonymous read-only mount.
+
+    The sandbox owns this path. This is not a reader for operator state files.
+    Named source-test snapshots retain the single-link/private-file requirement.
+    """
+    def identity(info: os.stat_result) -> tuple[int, ...]:
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        parent = os.fstat(directory)
+        if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+            raise ValueError('calculation view directory is not private')
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+                or before.st_nlink not in (0, 1) or stat.S_IMODE(before.st_mode) != 0o600
+                or not 0 < before.st_size <= MAX_VIEW_BYTES
+                or (before.st_nlink == 0 and not os.fstatvfs(fd).f_flag & os.ST_RDONLY)):
+                raise ValueError('calculation view metadata is unsafe')
+            raw = os.pread(fd, before.st_size + 1, 0)
+            if (len(raw) != before.st_size or identity(os.fstat(fd)) != identity(before)
+                or identity(os.stat(path.name, dir_fd=directory, follow_symlinks=False)) != identity(before)
+                or identity(os.stat(path.parent, follow_symlinks=False)) != identity(parent)):
+                raise ValueError('calculation view changed during read')
+            return raw
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
 
 
 def build_holdout_calculation_view(

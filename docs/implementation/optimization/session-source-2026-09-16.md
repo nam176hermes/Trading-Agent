@@ -4,6 +4,7 @@ Continuation parent: `c86eae84346c4f0cea18ab6bb09f6a5c5e590d89`.
 This document supersedes the **source wiring** gaps in the earlier continuation
 notes. Protected-host qualification, real holdout execution and production
 activation remain separate; local synthetic evidence grants none of them.
+See the [independent review and repair dossier](m8-m9-independent-review-2026-09-16.md).
 
 ## Entrypoint and ownership
 
@@ -41,11 +42,24 @@ requires committed disclosure. Start/control/successful finalize recheck expiry
 after writes and roll back a transition that crosses the deadline. Recovery
 never schedules another HOLDOUT attempt, even if max_attempts is corrupted.
 
-Session worker and custodian admission require the measured **0029** catalog:
-`bb704c68e3d2e60c01142ace4346f26ca4fc9b3b8b42cddb323f6aa45563225f`.
+Migration **0030** preserves both the original and expanded parent fingerprints
+and adds final transactional lease/authority checks to ordinary PARITY finalize
+and PHASE_EXIT publication. Expiry during terminal writes rolls back the complete
+transition. Immutable publication replay remains available after a lost response.
+
+Session Job API, worker and custodian admission require the measured **0030** catalog:
+`506071c06cdd91fe7e9506a03c15df10949e41f97f80dbbdd27c305aef3a82d4`.
+The session snapshot additionally covers publication heads/projection, append
+idempotency, publication retention, job artifacts and worker heartbeats.
 The existing custodian profile still requires 0027; the explicit
-`p3-custodian-session-profile-v1` selects 0029. Neither runtime learns its own
+`p3-custodian-session-profile-v1` selects 0030. Neither runtime learns its own
 acceptable catalog nor upgrades/migrates a protected database.
+
+The explicit `TRADING_JOB_API_PROFILE=p3-session-v1` selects the same revision and
+rechecks the restricted API role and full catalog on readiness and every mutation.
+The original `p3-v1` and paper profiles retain their old pins. This supplies the
+source enqueue/cancel route for later session stages; activating the profile and
+migration on a protected host remains separately qualified operator work.
 
 On lost commit response, worker results reconcile only the exact terminal
 attempt/hash. Publication reuses the existing atomic SQL capability and
@@ -82,3 +96,10 @@ aggregate tests and dashboard build against the resulting candidate. Detailed
 commands/results are retained in the local optimization evidence directory.
 Security review and hosted qualification must be reported separately from
 these local checks; an unavailable review is not a PASS.
+
+The worker package has an executable `__main__` forwarding entry. The HOLDOUT
+module is in the exact driver inventory, and both driver and evaluation child
+use a bounded calculation-view reader that accepts the anonymous read-only
+Bubblewrap mount. Operator-state file validation remains unchanged. Projected
+source tests cover real calculations; `P3_SEALED_VIEW_SOURCE_TEST=1` explicitly
+selects the transient Bubblewrap transport checks outside portable CI.

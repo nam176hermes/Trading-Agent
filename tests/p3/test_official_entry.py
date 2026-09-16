@@ -7,6 +7,15 @@ import pytest
 from tests.p3.test_spawn_capability import synthetic_provider
 
 
+def test_workflow_module_executes_main(monkeypatch):
+    import runpy
+    from services.job_worker import main
+    monkeypatch.setattr(main, 'main', lambda: 7)
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_module('services.job_worker', run_name='__main__')
+    assert exit_info.value.code == 7
+
+
 def test_main_routes_official_once_before_generic_database_setup(monkeypatch):
     from services.job_worker import main,p3_official
     monkeypatch.setenv('TRADING_WORKER_PROFILE','p3-official-v1')

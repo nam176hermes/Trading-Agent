@@ -2,13 +2,13 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 from alembic import command
 from alembic.config import Config
 import psycopg
 from psycopg.conninfo import make_conninfo
-from sqlalchemy import URL, create_engine
+from sqlalchemy import URL, create_engine, text
 from typing_extensions import override
 
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
@@ -19,7 +19,7 @@ from services.job_store.worker_repository import WorkerRepository
 from .p3_holdout_fixture import _inputs, _seed, CONSUME
 from .p3_operation_fixture import _rejected
 
-REVISION = '0029_p3_session_holdout_claim'
+REVISION = '0030_p3_session_terminal_fences'
 CLAIM = 'SELECT * FROM job_plane.worker_claim_session_holdout(%s,%s,%s,%s,%s,%s,%s,%s,%s)'
 
 
@@ -30,7 +30,17 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
         with engine.begin() as connection:
             config = Config(str(Path(__file__).resolve().parents[2]/'alembic.ini'))
             config.attributes['connection'] = connection
+            command.upgrade(config, '0029_p3_session_holdout_claim')
+            with _rejected(RuntimeError, match='parent authority catalog differs'):
+                with connection.begin_nested():
+                    connection.execute(text('SET LOCAL ROLE trading_p3_owner'))
+                    connection.execute(text('GRANT UPDATE ON public.p3_alpha_heads TO trading_job_worker'))
+                    connection.execute(text('RESET ROLE'))
+                    command.upgrade(config, REVISION)
             command.upgrade(config, REVISION)
+            from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256
+            connection.execute(text("SET LOCAL search_path=pg_catalog"))
+            assert connection.execute(text(SESSION_CATALOG_SQL)).scalar() == SESSION_CATALOG_SHA256
     finally:
         engine.dispose()
 
@@ -46,7 +56,22 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
         return job, graph
 
     settings = SocketSettings('localhost', 5432, name, 'trading_job_worker', 'synthetic')
+    from apps.job_api.app import _probe_repository
+    from services.job_store.repository import JobRepository
+    api_settings = SocketSettings('localhost', 5432, name, 'trading_job_api', 'synthetic')
+    with JobRepository(api_settings) as api_repository:
+        assert _probe_repository(api_repository, REVISION) == (True, True)
+        # A real catalog mutation must invalidate the already-created API profile.
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+            _ = owner.execute('GRANT UPDATE ON public.p3_alpha_heads TO trading_job_worker')
+        try:
+            assert _probe_repository(api_repository, REVISION) == (True, False)
+        finally:
+            with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+                _ = owner.execute('REVOKE UPDATE ON public.p3_alpha_heads FROM trading_job_worker')
+        assert _probe_repository(api_repository, REVISION) == (True, True)
     with WorkerRepository(settings) as repository:
+        _check_terminal_boundaries(sock, name, source, repository)
         repository.assert_session_runtime_identity()
         with _rejected(RuntimeError):
             repository.assert_p3_runtime_identity()
@@ -253,4 +278,135 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
     return {'verdict': 'PASS', 'ordinary_holdout_claim': 'CLOSED', 'concurrent_winners': 1,
         'workflow_denials': 2, 'role_denials': 5, 'null_denials': 9,
         'cancelled_and_expired': 'REJECTED', 'expired_during_claim': 'ROLLED_BACK',
-        'one_use_disclosure': 'ACTUAL_PRIVATE_CLAIM'}
+        'one_use_disclosure': 'ACTUAL_PRIVATE_CLAIM',
+        'late_stage_lease_and_authority_expiry': 'ROLLED_BACK',
+        'late_stage_success_and_publication_readback': 'PASS',
+        'expanded_catalog_acl_drift': 6, 'migration_parent_drift': 'REJECTED'}
+
+
+def _check_terminal_boundaries(sock, name, source, repository):
+    """Real SQL, synthetic operation evidence: no official data or authorization."""
+    import hashlib
+    import json
+    from psycopg.sql import SQL, Identifier
+    from packages.alpha_lifecycle.operation_input import FAMILY_IDS
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from services.job_store.p3_publication_repository import P3PublicationRepository
+    from .p3_operation_fixture import _authorization, _reference, _sealed, _entry
+
+    # Capture each late-stage operation with the same actual claim/start owner.
+    alpha = FAMILY_IDS[1]
+    failures = []
+    for operation, fault in ((operation, fault) for operation in ('PARITY', 'PHASE_EXIT')
+                             for fault in ('lease', 'authority', None)):
+        workflow = 'p3-native-parity-v1' if operation == 'PARITY' else 'p3-phase-exit-v1'
+        keys = ('holdout_manifest_ref', 'primary_reference_ref', 'baseline_reference_ref',
+            'instrument_spec_ref', 'native_request_ref') if operation == 'PARITY' else (
+            'primary_selection_ref', 'primary_qualification_ref', 'baseline_selection_ref',
+            'holdout_request_ref', 'holdout_evaluation_ref', 'holdout_replay_ref',
+            'executable_ref', 'baseline_executable_ref', 'parity_ref', 'current_primary_head_ref')
+        auth, intent, review = _authorization(source, workflow, operation, (alpha,),
+            {key: _reference('{}') for key in keys})
+        if fault == 'authority':
+            expiry = datetime.now(UTC)+timedelta(seconds=1.5)
+            auth = _sealed({**json.loads(auth), 'expires_at': expiry.isoformat().replace('+00:00', 'Z')})
+        with psycopg.connect(host=str(sock), dbname=name, user='trading_p3_authority') as authority:
+            authority.execute('SELECT job_plane.accept_p3_operation_authorization(%s,%s,%s)', (auth, intent, review))
+        job = 'job_terminal_'+uuid4().hex
+        raw = canonical_json_bytes(dict(schema_version='p3-alpha-campaign-payload-v1',
+            operation=operation, manifest_ref=_reference(intent), authorization_ref=_reference(auth),
+            expected_source=source, logical_trial_id=workflow)).decode()
+        with psycopg.connect(host=str(sock), dbname=name, user='trading_job_api') as api:
+            api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+                (job, raw, hashlib.sha256(raw.encode()).hexdigest(),
+                 'p3:'+workflow+':'+json.loads(auth)['nonce'], 'synthetic-operator', 100,
+                 'test:terminal', 'event_'+uuid4().hex))
+        claim = repository.claim_next_alpha_campaign('terminal-worker', 30, 'test:terminal', fixture_only=False, job_id=job)
+        assert claim is not None
+        ids = (job, claim.attempt_id, claim.worker_id, claim.lease_token)
+        assert repository.start_attempt(*ids, ProcessIdentity(74001,74001,100,'a'*64),
+            'test:terminal-start', alpha_campaign=True)
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+            head = owner.execute('SELECT stream_id,registry_event_text,registry_event_sha256,registry_sequence FROM public.p3_alpha_heads WHERE alpha_id=%s', (alpha,)).fetchone()
+            assert head is not None
+        registry = json.loads(head[1])
+        registry.update(sequence=head[3]+1, predecessor_sha256=head[2])
+        registry['record'].update(lifecycle_status='QUALIFIED', qualification_decision='PASS',
+            qualification_reason='synthetic-exit', metrics_sha256='a'*64, robustness_sha256='b'*64)
+        registry_text = canonical_json_bytes(registry).decode()
+        ref = _reference(registry_text)
+        evidence = _reference('{"purpose":"synthetic-terminal-test"}')
+        event = json.loads(_entry().canonical_event_text)
+        event_id = str(uuid5(head[0], canonical_json_bytes([head[3]+1, ref['content_sha256']]).decode()))
+        event.update(event_id=event_id, stream_id=str(head[0]), sequence=head[3]+1)
+        event['payload'].update(alpha_id=alpha, alpha_version='1.0.0', registry_sequence=head[3]+1,
+            predecessor_sha256=head[2], registry_event_sha256=ref['content_sha256'],
+            registry_event_text=registry_text, evidence_sha256=evidence['content_sha256'])
+        entry = dict(event_id=event_id, stream_id=str(head[0]), sequence=head[3]+1,
+            event_type='AlphaRegistryTransitionRecordedV1', canonical_event_text=canonical_json_bytes(event).decode(),
+            topic='p3.alpha-registry', outbox_payload_text=canonical_json_bytes({'event_id':event_id}).decode())
+        request = json.loads(_sealed(dict(schema_version='p3-publication-request-v1', job_id=job,
+            idempotency_key='synthetic-terminal', semantic_request_digest=hashlib.sha256(canonical_json_bytes([ref])).hexdigest(),
+            stage='EXIT_DECISION', evidence_ref=evidence, expected_heads=[dict(alpha_id=alpha,version='1.0.0',
+                sequence=head[3],event_digest=head[2])], proposed_event_refs=[ref])))
+        transport = canonical_json_bytes(dict(job_id=job, attempt_id=claim.attempt_id,
+            worker_id=claim.worker_id, lease_token=claim.lease_token, request=request,
+            entries=[entry], output_inventory_ref=_reference('[]'))).decode()
+        if fault is not None:
+            with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+                if fault == 'lease':
+                    owner.execute("UPDATE public.jobs SET lease_expires_at=clock_timestamp()+interval '0.4 seconds' WHERE job_id=%s", (job,))
+                    owner.execute("UPDATE public.job_attempts SET lease_expires_at=clock_timestamp()+interval '0.4 seconds' WHERE attempt_id=%s", (claim.attempt_id,))
+                owner.execute("""CREATE FUNCTION public.terminal_delay_test() RETURNS trigger
+                    LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(3.2); RETURN NEW; END $$;
+                    CREATE TRIGGER terminal_delay_test BEFORE INSERT ON public.job_events
+                    FOR EACH ROW EXECUTE FUNCTION public.terminal_delay_test()""")
+        try:
+            try:
+                if operation == 'PARITY':
+                    accepted = repository.finalize(*ids, expected_state=JobState.RUNNING,
+                        expected_attempt_outcome='RUNNING', final_state=JobState.SUCCEEDED,
+                        reason_code='RESULT_VALIDATED', trace_id='test:terminal-expiry',
+                        result_hash='f'*64, alpha_campaign=True)
+                    assert accepted, 'did not exercise the post-write expiry boundary'
+                else:
+                    with psycopg.connect(host=str(sock), dbname=name, user='trading_job_worker') as worker:
+                        committed = worker.execute(P3PublicationRepository.COMMIT_SQL, (*ids, transport, 'test:terminal-expiry')).fetchone()
+                    if fault is None:
+                        with psycopg.connect(host=str(sock), dbname=name, user='trading_job_worker') as worker:
+                            assert worker.execute(P3PublicationRepository.READ_SQL, (job, request['idempotency_key'], request['semantic_request_digest'])).fetchone() == committed
+                            assert worker.execute(P3PublicationRepository.COMMIT_SQL, (*ids, transport, 'test:lost-ack')).fetchone() == committed
+            except psycopg.Error as error:
+                assert fault is not None
+                assert error.sqlstate in ('22023', 'P3D03') and 'expired during' in str(error), str(error)
+            else:
+                if fault is not None:
+                    failures.append(operation+' committed past its '+fault)
+        finally:
+            if fault is not None:
+                with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+                    owner.execute('DROP TRIGGER terminal_delay_test ON public.job_events; DROP FUNCTION public.terminal_delay_test()')
+        if fault is None:
+            assert repository.session_attempt_state(claim) == (JobState.SUCCEEDED, 'SUCCEEDED')
+            if operation == 'PARITY':
+                assert repository.session_result_matches(claim, 'f'*64)
+        elif not failures:
+            assert repository.session_attempt_state(claim) == (JobState.RUNNING, 'RUNNING')
+            with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+                assert owner.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s', (job,)).fetchone() == (0,)
+                assert owner.execute('SELECT count(*) FROM public.domain_events WHERE event_id=%s', (event_id,)).fetchone() == (0,)
+                assert owner.execute('SELECT registry_sequence FROM public.p3_alpha_heads WHERE alpha_id=%s', (alpha,)).fetchone() == (head[3],)
+    # The new session snapshot must include publication and its append dependencies.
+    from services.job_store import p3_catalog
+    catalog_sql = p3_catalog.SESSION_CATALOG_SQL
+    for table in ('p3_alpha_heads', 'p3_alpha_projection', 'event_append_idempotency',
+                  'event_publications', 'job_artifacts', 'worker_heartbeats'):
+        with psycopg.connect(host=str(sock), dbname=name, user='postgres') as owner:
+            owner.execute('SET LOCAL search_path=pg_catalog')
+            before = owner.execute(catalog_sql).fetchone()
+            owner.execute(SQL('GRANT UPDATE ON public.{} TO trading_job_worker WITH GRANT OPTION').format(Identifier(table)))
+            after = owner.execute(catalog_sql).fetchone()
+            owner.rollback()
+        if before == after:
+            failures.append(table+' ACL drift is invisible')
+    assert not failures, failures

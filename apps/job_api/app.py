@@ -46,6 +46,8 @@ from services.job_store.config import (
     P1_DISPOSABLE_DATABASE_REVISION,
     P3_DISPOSABLE_DATABASE_REVISION,
 )
+from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+from services.job_store.p3_custodian_release import IDENTITY as SESSION_IDENTITY_SQL
 
 from .auth import BearerAuthenticator
 from .config import JobApiSettings
@@ -265,6 +267,16 @@ def _probe_repository(repository: Any, expected_revision: str) -> tuple[bool, bo
     pool = getattr(repository, "_pool", None)
     if pool is None:
         return False, False
+    if expected_revision == SESSION_REVISION:
+        try:
+            with pool.connection() as connection, connection.transaction():
+                connection.execute("SET LOCAL search_path=pg_catalog")
+                identity = connection.execute(SESSION_IDENTITY_SQL).fetchone()
+                catalog = connection.execute(SESSION_CATALOG_SQL).fetchone()
+                return True, identity == {'current_user': 'trading_job_api', 'session_user': 'trading_job_api',
+                    'version_num': SESSION_REVISION, 'restricted': True} and catalog == {'catalog_sha256': SESSION_CATALOG_SHA256}
+        except Exception:
+            return False, False
     try:
         with pool.connection() as connection:
             connection.execute("SELECT 1").fetchone()
@@ -565,7 +577,7 @@ def _create_app(
     )
     def create_job(request: Request, command: EnqueueJobBody) -> JSONResponse:
         if (command.job_type is JobType.ALPHA_CAMPAIGN) != (
-            expected_revision == P3_DISPOSABLE_DATABASE_REVISION
+            expected_revision in {P3_DISPOSABLE_DATABASE_REVISION, SESSION_REVISION}
         ):
             raise JobApiError(422, "JOB_TYPE_NOT_AUTHORIZED", "Job type is not authorized by this profile.")
         authenticated_command = EnqueueJobRequest.model_validate(
@@ -721,3 +733,12 @@ def create_p3_app(
         authority,
         expected_revision=P3_DISPOSABLE_DATABASE_REVISION,
     )
+
+
+def create_p3_session_app(
+    settings: JobApiSettings,
+    repository: Any,
+    authority: ValidatedJobPlaneAuthority,
+) -> FastAPI:
+    """Explicit session API; every mutation rechecks its role and full catalog."""
+    return _create_app(settings, repository, authority, expected_revision=SESSION_REVISION)

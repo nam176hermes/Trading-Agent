@@ -1,7 +1,10 @@
 """Real holdout driver/calculation children with synthetic sandbox and authority."""
 import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -17,8 +20,83 @@ from tests.p3.test_holdout_session import session_inputs  # noqa: F401
 from tests.p3.test_reference_input import reference_seed  # noqa: F401
 
 
+@pytest.fixture
+def projected_release(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    release = tmp_path/'release'
+    for name in json.loads((root/'docs/implementation/p3/p3-driver-files-v1.json').read_bytes())['paths']:
+        destination = release/name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root/name, destination)
+    return release
+
+
+def test_projected_driver_imports(projected_release):
+    result = subprocess.run([sys.executable, '-I', '-B', '-c',
+        'import sys,runpy; sys.path.insert(0,sys.argv[1]); '
+        'import packages.alpha_lifecycle.holdout; '
+        'runpy.run_path(sys.argv[1]+"/scripts/run_p3_evaluation_child.py"); '
+        'runpy.run_path(sys.argv[1]+"/scripts/run_p3_alpha_campaign.py")', str(projected_release)],
+        cwd=projected_release, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.host_coupled
+@pytest.mark.parametrize('mode', ['600', '644'])
+@pytest.mark.skipif(os.environ.get('P3_SEALED_VIEW_SOURCE_TEST') != '1',
+    reason='explicit transient Bubblewrap source check required')
+def test_anonymous_view_transport(projected_release, mode):
+    from services.job_worker.engine_spawn import _sealed_memfd
+    fd = _sealed_memfd('view-reader-test', b'{}', mode=0o600)
+    try:
+        result = subprocess.run(['/usr/bin/bwrap', '--unshare-all', '--die-with-parent',
+            '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
+            '--perms', '700', '--dir', '/tmp/inputs', '--perms', mode,
+            '--ro-bind-data', str(fd), '/tmp/inputs/view.json', sys.executable, '-I', '-B', '-c',
+            'import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); '
+            'from packages.alpha_lifecycle.holdout_view import read_calculation_view; '
+            'assert read_calculation_view(Path("/tmp/inputs/view.json")) == b"{}"', str(projected_release)],
+            pass_fds=(fd,), capture_output=True, text=True, timeout=10)
+    finally:
+        os.close(fd)
+    if mode == '600':
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0 and 'calculation view metadata' in result.stderr
+
+
+@pytest.mark.parametrize('fault', ['mode', 'hardlink', 'symlink', 'fifo', 'directory', 'empty'])
+def test_view_reader_rejects_unsafe_named_inputs(tmp_path, fault):
+    from packages.alpha_lifecycle.holdout_view import read_calculation_view
+    directory = tmp_path/'inputs'; directory.mkdir(mode=0o700)
+    path = directory/'view'; path.write_bytes(b'{}'); path.chmod(0o600)
+    if fault == 'mode':
+        path.chmod(0o644)
+    elif fault == 'hardlink':
+        os.link(path, directory/'alias')
+    elif fault in ('symlink', 'fifo'):
+        path.unlink()
+        if fault == 'symlink':
+            path.symlink_to(directory/'missing')
+        else:
+            os.mkfifo(path, mode=0o600)
+    elif fault == 'directory':
+        directory.chmod(0o755)
+    else:
+        path.write_bytes(b'')
+    with pytest.raises((ValueError, OSError)):
+        read_calculation_view(path)
+
+
+def test_view_read_allows_access_time_update(tmp_path):
+    from packages.alpha_lifecycle.holdout_view import read_calculation_view
+    path = tmp_path/'view'; path.write_bytes(b'{}'); path.chmod(0o600)
+    os.utime(path, (1, 1))
+    assert read_calculation_view(path) == b'{}'
+
+
 @pytest.mark.parametrize('extra', [None, 'raw', 'unrelated'])
-def test_driver_holdout_validates_before_retention(session_inputs, reference_seed, tmp_path, monkeypatch, capsys, extra):
+def test_driver_holdout_validates_before_retention(session_inputs, reference_seed, projected_release, tmp_path, monkeypatch, capsys, extra):
     from scripts import run_p3_alpha_campaign as command
     from packages.alpha_lifecycle import sandbox
     from services.job_worker.p3_output import P3OutputCustody
@@ -41,7 +119,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
     runs = tmp_path/'runs'; runs.mkdir(mode=0o700)
     name = hashlib.sha256(f'{job.job_id}/{job.attempt_id}'.encode()).hexdigest()
     output = runs/name
-    root = Path(command.__file__).resolve().parents[1]
+    root = projected_release
     argv += ['--store', str(x.store._root), '--release', str(root), '--python', sys.executable,
         '--sandbox-policy-digest', 'c'*64, '--logical-trial-id', job.payload.logical_trial_id,
         '--job-id', job.job_id, '--output', str(output), '--holdout-view', str(view_path)]

@@ -165,7 +165,7 @@ class WorkerRepository:
 
     def assert_session_runtime_identity(self) -> None:
         """Admit only the reviewed private lifecycle catalog; ordinary startup stays pinned."""
-        from .p3_catalog import CUSTODIAN_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
         from .p3_custodian_release import IDENTITY
         with self._pool.connection() as connection:
             with connection.transaction():
@@ -174,7 +174,7 @@ class WorkerRepository:
                 if identity != {'current_user': 'trading_job_worker', 'session_user': 'trading_job_worker',
                     'version_num': SESSION_REVISION, 'restricted': True}:
                     raise ValueError('session database identity or revision differs')
-                if connection.execute(CUSTODIAN_CATALOG_SQL).fetchone() != {'catalog_sha256': SESSION_CATALOG_SHA256}:
+                if connection.execute(SESSION_CATALOG_SQL).fetchone() != {'catalog_sha256': SESSION_CATALOG_SHA256}:
                     raise ValueError('session database catalog differs')
 
     def _assert_database_identity(

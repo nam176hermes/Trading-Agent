@@ -160,6 +160,6 @@ def test_private_holdout_claim_in_disposable_postgres():
     from services.job_worker import p3_fixture_sql
     source = SourceIdentity.model_validate(canonical_source_identity(p3_fixture_sql.ROOT))
     result = p3_fixture_sql.run_sql_fixture(source, session_holdout_source_checks=True)
-    assert result['sql_revision'] == '0029_p3_session_holdout_claim'
+    assert result['sql_revision'] == '0030_p3_session_terminal_fences'
     assert result['session_holdout_checks']['verdict'] == 'PASS'
     assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']

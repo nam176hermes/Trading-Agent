@@ -105,5 +105,10 @@ CUSTODIAN_CATALOG_SQL = """WITH authority AS ("""+AUTHORITY_CATALOG_SQL.replace(
 # Populated only from the reviewed disposable migration result, never at runtime.
 CUSTODIAN_CATALOG_SHA256 = '9572607639ee26d2b294ce8468880fabe0fc9f6397eb739c1f6365b219b57c04'
 
-SESSION_REVISION = '0029_p3_session_holdout_claim'
-SESSION_CATALOG_SHA256 = 'bb704c68e3d2e60c01142ace4346f26ca4fc9b3b8b42cddb323f6aa45563225f'
+# Preserve historical custody qualification; sessions also own terminal publication.
+SESSION_CATALOG_SQL = CUSTODIAN_CATALOG_SQL.replace("'event_outbox']",
+    "'event_outbox','p3_alpha_heads','p3_alpha_projection','event_append_idempotency',"
+    "'event_publications','job_artifacts','worker_heartbeats']")
+
+SESSION_REVISION = '0030_p3_session_terminal_fences'
+SESSION_CATALOG_SHA256 = '506071c06cdd91fe7e9506a03c15df10949e41f97f80dbbdd27c305aef3a82d4'

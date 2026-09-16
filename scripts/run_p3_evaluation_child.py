@@ -19,8 +19,7 @@ from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, _read
 from packages.alpha_lifecycle.pit_evidence import _reference
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, MAX_VIEW_BYTES
-from services.operator_control.protected_fs import open_private_directory, read_private_file
+from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, read_calculation_view
 
 
 def main(manifest_ref_path: Path, store_root: Path, output: Path, *,
@@ -35,10 +34,7 @@ def main(manifest_ref_path: Path, store_root: Path, output: Path, *,
         if canonical_json_bytes(spec_ref)!=instrument_spec_ref_json.encode():
             raise ValueError('instrument reference must be canonical')
         _reference(spec_ref,65536)
-        with open_private_directory(store_root.parent) as directory:
-            view_raw=read_private_file(directory,store_root.name,max_bytes=MAX_VIEW_BYTES)
-        if view_raw is None:
-            raise ValueError('holdout calculation view is missing')
+        view_raw=read_calculation_view(store_root)
         input_store=HoldoutCalculationView(view_raw,ref,spec_ref)
     artifact_root = output.parent / "artifacts"
     artifact_root.mkdir(mode=0o700, exist_ok=False)

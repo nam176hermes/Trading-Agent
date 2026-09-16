@@ -69,8 +69,7 @@ def main() -> None:
     from packages.alpha_lifecycle.operation_input import HoldoutInput
     if isinstance(intent.body, HoldoutInput):
         from packages.alpha_lifecycle.holdout import execute_holdout_manifest, derive_holdout_request
-        from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, MAX_VIEW_BYTES
-        from services.operator_control.protected_fs import open_private_directory, read_private_file
+        from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, read_calculation_view
         if any(getattr(args, name) is None for name in
             ('holdout_view', 'holdout_manifest_ref', 'holdout_request_ref', 'instrument_spec_ref')):
             raise ValueError('holdout driver requires the current sealed view and references')
@@ -80,10 +79,7 @@ def main() -> None:
         if spec_ref != intent.body.instrument_spec_ref or store.read_bytes(request_ref) != canonical_json_bytes(
             derive_holdout_request(intent, authorization, expected_source=source)):
             raise ValueError('holdout driver request differs from approved intent')
-        with open_private_directory(args.holdout_view.parent) as directory:
-            raw_view = read_private_file(directory, args.holdout_view.name, max_bytes=MAX_VIEW_BYTES)
-        if raw_view is None:
-            raise ValueError('holdout view is absent')
+        raw_view = read_calculation_view(args.holdout_view)
         view = HoldoutCalculationView(raw_view, manifest_ref, spec_ref)
         try:
             runtime_mounts = _runtime_mounts(args.runtime_mounts_ref)

@@ -30,6 +30,7 @@
     "packages/alpha_lifecycle/executable_reference.py",
     "packages/alpha_lifecycle/execution_trace.py",
     "packages/alpha_lifecycle/folds.py",
+    "packages/alpha_lifecycle/holdout.py",
     "packages/alpha_lifecycle/holdout_view.py",
     "packages/alpha_lifecycle/lifecycle.py",
     "packages/alpha_lifecycle/metrics.py",

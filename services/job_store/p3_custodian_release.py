@@ -44,7 +44,7 @@ class CustodianReleaseRepository:
         self._settings: JobStoreSettings=settings
 
     def _execute(self,query: LiteralString,request: ReleaseRequest) -> datetime:
-        from .p3_catalog import SESSION_CATALOG_SHA256, SESSION_REVISION
+        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
         revision = SESSION_REVISION if self._session else REVISION
         catalog = SESSION_CATALOG_SHA256 if self._session else CATALOG_SHA256
         request=ReleaseRequest.model_validate(request)
@@ -60,7 +60,7 @@ class CustodianReleaseRepository:
             if identity!={'current_user':'trading_p3_custodian','session_user':'trading_p3_custodian',
                 'version_num':revision,'restricted':True}:
                 raise ValueError('custodian database identity or revision differs')
-            if connection.execute(CATALOG_SQL).fetchone()!={'catalog_sha256':catalog}:
+            if connection.execute(SESSION_CATALOG_SQL if self._session else CATALOG_SQL).fetchone()!={'catalog_sha256':catalog}:
                 raise ValueError('custodian database catalog differs')
             row=connection.execute(query,(raw.decode(),)).fetchone()
             if (type(row) is not dict or set(row)!={'request_sha256','released_at'}
