@@ -768,9 +768,9 @@ services/job_worker/p3_host_profile.py|86|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|219|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|43|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|189|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|148|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|217|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|256|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|151|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|220|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|259|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|242|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|374|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|94|BaseException|PRODUCTION_CRITICAL|RAISE

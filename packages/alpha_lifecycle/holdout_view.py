@@ -48,8 +48,8 @@ class HoldoutCalculationView:
     """Exact immutable input bytes with the existing ArtifactStore read interface."""
 
     def __init__(self, raw: bytes, manifest_ref: ArtifactRefV1, spec_ref: ArtifactRefV1) -> None:
-        self._owner_pid = os.getpid()
-        self._closed = False
+        self._owner_pid: int = os.getpid()
+        self._closed: bool = False
         self._lifetime: Callable[[], None] | None = None
         if not isinstance(raw,bytes) or not 0<len(raw)<=MAX_VIEW_BYTES:
             raise ValueError('holdout calculation view exceeds its transport bound')
@@ -57,10 +57,10 @@ class HoldoutCalculationView:
         if (not isinstance(records,dict) or canonical_json_bytes(records)!=raw
             or any(not isinstance(value,str) for value in records.values())):
             raise ValueError('holdout calculation view is not canonical')
-        self._records=MappingProxyType({name:value.encode('utf-8') for name,value in records.items()})
+        self._records: MappingProxyType[str, bytes] = MappingProxyType({name:value.encode('utf-8') for name,value in records.items()})
         if build_holdout_calculation_view(manifest_ref,spec_ref,self)!=raw:
             raise ValueError('holdout calculation view contains unexpected artifacts')
-        self._raw=raw
+        self._raw: bytes = raw
 
     @property
     def raw(self) -> bytes:

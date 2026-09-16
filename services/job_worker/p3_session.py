@@ -3,7 +3,7 @@
 This private owner does not enqueue, approve, finalize jobs or enable the official
 late lane. The worker owns fresh lease/safety fences and SQL result recovery.
 """
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 import os
@@ -86,23 +86,26 @@ class P3HoldoutSession:
     def __init__(self, profile_path: Path, *, store: LocalArtifactStore) -> None:
         if type(store) is not LocalArtifactStore:
             raise ValueError('session requires the concrete retained store')
+        self._digest: str
         document, self._digest = read_protected_canonical_json_current(profile_path)
-        self.profile = SessionProfile.model_validate_json(canonical_json_bytes(document))
+        self.profile: SessionProfile = SessionProfile.model_validate_json(canonical_json_bytes(document))
         expected = Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json')
         if profile_path != expected:
             raise ValueError('session profile must use its workflow-owned path')
-        self._path, self._store = profile_path, store
+        self._path: Path = profile_path
+        self._store: LocalArtifactStore = store
         self._view: HoldoutCalculationView | None = None
         self._manifest: ArtifactRefV1 | None = None
         self._spec: ArtifactRefV1 | None = None
         self.native_commitment_ref: ArtifactRefV1 | None = None
         self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorization] | None = None
-        self._closed = self._release_attempted = False
-        self._stage = 0
+        self._closed: bool = False
+        self._release_attempted: bool = False
+        self._stage: int = 0
         self._attempts: list[SessionAttempt] = []
         self._stage_digest: str | None = None
         self._host_identity: bytes | None = None
-        self._deadline = time.monotonic() + max(0, (self.profile.expires_at-datetime.now(UTC)).total_seconds())
+        self._deadline: float = time.monotonic() + max(0, (self.profile.expires_at-datetime.now(UTC)).total_seconds())
         self._check_owner()
 
     def __enter__(self) -> 'P3HoldoutSession':
@@ -140,7 +143,7 @@ class P3HoldoutSession:
                 raise ValueError('session profile changed')
             if read_protected_canonical_json_current(self._path.with_name('stage.json'))[1] != self._stage_digest:
                 raise ValueError('session protected attempt chain changed')
-            self._host(claim, digest)
+            _ = self._host(claim, digest)
             if (authorization.issuer_run_id != self.profile.workflow_run_id
                 or authorization.issuer_attempt != self.profile.workflow_attempt):
                 raise ValueError('stage belongs to another workflow attempt')
@@ -164,7 +167,7 @@ class P3HoldoutSession:
         return profile
 
     @contextmanager
-    def stage(self, claim: ClaimedJob, *, fence: Callable[[], None]) -> Iterator['P3HoldoutSession']:
+    def stage(self, claim: ClaimedJob, *, fence: Callable[[], None]) -> Generator['P3HoldoutSession', None, None]:
         """Worker-scoped stage; leaving it revokes access until the next admission.
 
         A successful context is not a durable job result. The owning worker must
@@ -191,7 +194,7 @@ class P3HoldoutSession:
                 or stage.attempts != (*self._attempts, current)):
                 raise ValueError('session protected attempt chain differs from current claim')
             self._stage_digest = stage_digest
-            self._host(claim, digest)
+            _ = self._host(claim, digest)
             authorization = _read(self._store, claim.payload.authorization_ref, RunAuthorization)
             intent = _read(self._store, claim.payload.manifest_ref, P3OperationInput)
             body = intent.body
@@ -270,7 +273,7 @@ class P3HoldoutSession:
         if (self._active is None or self._active[3].operation != 'PARITY'
             or self._manifest is None or self._spec is None or self.native_commitment_ref is None):
             raise ValueError('native requests require the current parity stage')
-        validate_native_commitment(self.native_commitment_ref, self._manifest, self._spec, view, self)
+        _ = validate_native_commitment(self.native_commitment_ref, self._manifest, self._spec, view, self)
         return (prepare_native_request(self._manifest, self._spec, view, role='PRIMARY'),
             prepare_native_request(self._manifest, self._spec, view, role='SELECTED_BASELINE'))
 
