@@ -167,9 +167,7 @@ passed. Root and legacy error-level typing, production Ruff and scoped Bandit
 passed. Independent security review and full candidate qualification remain
 separate. Evidence is in the external SESSION.json ledger.
 
-## Closure conditions
-
-### Native SQL source checkpoint
+## Native SQL source checkpoint
 
 Migration `0028_p3_native_process` adds a separate worker-only compare-and-replace
 capability for native PARITY process identity. It preserves the fixture function
@@ -192,6 +190,8 @@ Existing worker admission stays at 0026 and custodian admission at 0027. This
 source capability still requires a separately pinned session catalog/admission
 and consumption by the actual coordinator. No production migration, protected
 launch, official receipt or new milestone completion is implied.
+
+## Closure conditions
 
 - M8: reviewed session ownership plus actual protected cross-UID release,
   cancellation/death/expiry tests and official worker integration.
