@@ -14,7 +14,7 @@ def synthetic_provider(tmp_path, monkeypatch):
     from packages.alpha_lifecycle.contracts.authority import RunAuthorization
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest, InputSet
     from packages.alpha_lifecycle.operation_input import P3OperationInput
-    from packages.job_contracts import JobType
+    from packages.job_contracts import JobType,payload_fingerprint
     from services.job_store.worker_repository import ClaimedJob
     from tests.p3.test_baseline_operation import _cli_authorization
     from tests.p3.test_replica_execution import _seal
@@ -77,7 +77,8 @@ def synthetic_provider(tmp_path, monkeypatch):
     digest = module._digest(dict(source=inputs.source,environment_ref=environment_ref,
         files=[dict(target=str(m.target),sha256=m.sha256,size=m.size,mode=m.mode) for m in mounts],
         sandbox_sha256=proof.executable_sha256,sandbox_policy_sha256=proof.profile_sha256))
-    closure = module.CompleteP3Closure(inputs.source,environment_ref,runtime,mounts,proof,digest)
+    closure = module.CompleteP3Closure(inputs.source,environment_ref,runtime,mounts,proof,digest,
+        job.job_id,payload_fingerprint(job.payload))
     provider = module.P3SpawnProvider(attest_closure=lambda:closure,store=store,
         store_root=tmp_path/'store',output_root=output)
     return provider,job,closure
@@ -90,6 +91,41 @@ def test_forged_p3_capability_cannot_be_consumed():
         consume_prepared_p3_spawn(PreparedP3Spawn())
 
 
+def test_fixed_oos_workflows_consume_the_same_reviewed_driver_capability(synthetic_provider):
+    from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.operation_input import FAMILY_IDS,P3OperationInput
+    from services.job_worker.p3_spawn import consume_prepared_p3_spawn
+    from packages.job_contracts import payload_fingerprint
+    from tests.p3.test_baseline_operation import _cli_authorization
+    from tests.p3.test_replica_execution import _seal
+    provider,job,closure=synthetic_provider
+    store=provider._store
+    original=P3OperationInput.model_validate_json(store.read_bytes(job.payload.manifest_ref))
+    # Synthetic command transport only; the separate CLI tests execute real replicas.
+    for index,alpha_id in enumerate(FAMILY_IDS):
+        workflow=f'p3-oos-a{index}-v1'
+        reference=_seal(store,schema_version='p3-operation-input-v1',workflow_operation=workflow,
+            operation='OOS',input_set_ref=original.input_set_ref,allowed_alpha_ids=[alpha_id],
+            body={'evaluation_manifest_ref':original.body.baseline_manifest_ref})
+        intent=P3OperationInput.model_validate_json(store.read_bytes(reference))
+        authorization_ref=_cli_authorization(store,reference,closure.source)
+        authorization=RunAuthorization.model_validate_json(store.read_bytes(authorization_ref))
+        payload=build_alpha_campaign_payload(authorization,closure.source,workflow,operation_input=intent)
+        assigned=replace(job,payload=payload)
+        provider._attest_closure=lambda:replace(closure,bound_payload_fingerprint=payload_fingerprint(payload))
+        built=consume_prepared_p3_spawn(provider.prepare(assigned))
+        try:
+            assert built.argv[built.argv.index('--logical-trial-id')+1]==workflow
+            assert built.lineage.operation_input_sha256==reference.content_sha256
+            assert built.timeout_seconds==1200
+            assert built.environment=={}
+        finally:
+            for fd in built.close_after_spawn_fds:
+                os.close(fd)
+            built.output_custody.abandon()
+
+
 def test_paper_and_engine_capabilities_cannot_be_consumed_as_p3():
     from services.job_worker.command_registry import PreparedSpawn
     from services.job_worker.engine_spawn import PreparedEngineSpawn
@@ -98,6 +134,26 @@ def test_paper_and_engine_capabilities_cannot_be_consumed_as_p3():
     for token in (PreparedSpawn(), PreparedEngineSpawn(), object()):
         with pytest.raises(P3SpawnError, match='capability'):
             consume_prepared_p3_spawn(token)
+
+
+@pytest.mark.parametrize('fault',['job','payload'])
+def test_claim_must_match_the_attested_workflow_job_binding(synthetic_provider,fault):
+    from services.job_worker.p3_spawn_interface import P3SpawnError
+    provider,job,closure=synthetic_provider
+    if fault=='job':
+        job=replace(job,job_id='job_'+'9'*32)
+    else:
+        from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
+        from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+        from packages.alpha_lifecycle.operation_input import P3OperationInput
+        from tests.p3.test_baseline_operation import _cli_authorization
+        reference=_cli_authorization(provider._store,job.payload.manifest_ref,closure.source)
+        intent=P3OperationInput.model_validate_json(provider._store.read_bytes(job.payload.manifest_ref))
+        authorization=RunAuthorization.model_validate_json(provider._store.read_bytes(reference))
+        job=replace(job,payload=build_alpha_campaign_payload(authorization,closure.source,
+            intent.workflow_operation,operation_input=intent))
+    with pytest.raises(P3SpawnError):
+        provider.prepare(job)
 
 
 def test_consumption_pins_empty_environment_exact_inputs_and_one_use(synthetic_provider):
@@ -310,13 +366,26 @@ def test_sealed_mounts_preserve_their_attested_file_modes(synthetic_provider):
         built.output_custody.abandon()
 
 
-@pytest.mark.parametrize('fault',['popen','shape','identity','cancel','timeout','invalid_output',None])
+@pytest.mark.parametrize('fault',['popen','shape','identity','cancel','timeout','invalid_output','retention_cancel','retention_timeout','stream_timeout',None])
 def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path,monkeypatch,fault):
     from services.job_worker import process_runner as module
     from services.job_worker.p3_spawn import consume_prepared_p3_spawn
     from tests.jobs.test_process_runner import runner,FakeProcess,Inspector,identity
     provider,job,_=synthetic_provider
     consumed=[]
+    retention_started=[False]
+    retention_clock=[0.0]
+    if fault in {'retention_cancel','retention_timeout','stream_timeout'}:
+        from services.job_worker import p3_output
+        from types import SimpleNamespace
+        monkeypatch.setattr(p3_output,'time',SimpleNamespace(monotonic=lambda:retention_clock[0]))
+        original_put=provider._store.put_bytes
+        def retain_bytes(raw,*,media_type):
+            ref=original_put(raw,media_type=media_type)
+            retention_started[0]=True
+            if fault=='retention_timeout': retention_clock[0]+=300.0
+            return ref
+        monkeypatch.setattr(provider._store,'put_bytes',retain_bytes)
     def consume(token):
         built=consume_prepared_p3_spawn(token)
         consumed.append(built)
@@ -326,6 +395,13 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
     calls=[]
     execution=runner(tmp_path,process,Inspector([None if fault == 'identity' else identity()]),calls,
         clock_values=[0,1201,1202,1203] if fault == 'timeout' else None)
+    if fault=='stream_timeout':
+        capture=execution._artifacts.capture_stream
+        def slow_stream(*args,**kwargs):
+            result=capture(*args,**kwargs)
+            retention_clock[0]+=300.0
+            return result
+        monkeypatch.setattr(execution._artifacts,'capture_stream',slow_stream)
     popen=execution._popen
     raw=b'{"synthetic_output":true}'
     artifact_name=hashlib.sha256(raw).hexdigest()+'.blob'
@@ -341,7 +417,7 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
     execution._popen=child
     def run():
         return execution.run(lambda:provider.prepare(job),object(),1200,
-            lambda _:module.HeartbeatDecision.CANCEL if fault == 'cancel' else module.HeartbeatDecision.CONTINUE,
+            lambda _:module.HeartbeatDecision.CANCEL if fault == 'cancel' or (fault=='retention_cancel' and retention_started[0]) else module.HeartbeatDecision.CONTINUE,
             job_id=job.job_id,attempt_id=job.attempt_id)
     try:
         if fault in {'popen','shape','identity'}:
@@ -350,7 +426,8 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
         else:
             outcome=run()
             assert outcome.termination_reason == {'cancel':'CANCELLED','timeout':'TIMEOUT',
-                'invalid_output':'P3_OUTPUT_INVALID',None:None}[fault]
+                'invalid_output':'P3_OUTPUT_INVALID','retention_cancel':'CANCELLED',
+                'retention_timeout':'P3_POSTRUN_TIMEOUT','stream_timeout':'P3_POSTRUN_TIMEOUT',None:None}[fault]
             if fault is None:
                 assert outcome.p3_output_inventory_ref is not None
                 assert 'p3_output_inventory_ref' in outcome.lineage.command
@@ -359,7 +436,7 @@ def test_runner_output_custody_covers_terminal_paths(synthetic_provider,tmp_path
                 outcome.p3_output_custody.cleanup()
             else:
                 assert outcome.p3_output_inventory_ref is None
-        assert bool(list(provider._output_root.iterdir())) is (fault in {'identity','invalid_output','cancel','timeout'})
+        assert bool(list(provider._output_root.iterdir())) is (fault in {'identity','invalid_output','cancel','timeout','retention_cancel','retention_timeout','stream_timeout'})
         for fd in consumed[0].pass_fds:
             with pytest.raises(OSError):
                 os.fstat(fd)

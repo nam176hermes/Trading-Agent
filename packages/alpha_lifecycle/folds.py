@@ -29,14 +29,17 @@ class FoldSpec:
 
 
 def fold_specs(policy: dict[str, object], *, mode: Literal["OOS", "HOLDOUT"]) -> tuple[FoldSpec, ...]:
-    ranges = (
-        policy["folds"]["oos_return_end_ranges"]
-        if mode == "OOS"
-        else ((policy["holdout"]["start"], policy["holdout"]["end"]),)
-    )
+    section = policy["folds" if mode == "OOS" else "holdout"]
+    if not isinstance(section, dict):
+        raise FoldError("fold policy section must be an object")
+    ranges = section["oos_return_end_ranges"] if mode == "OOS" else ((section["start"], section["end"]),)
+    if not isinstance(ranges, (list, tuple)):
+        raise FoldError("fold ranges must be an array")
     ids = ("F1", "F2", "F3") if mode == "OOS" else ("H1",)
     result = []
     for fold_id, raw in zip(ids, ranges, strict=True):
+        if not isinstance(raw, (list, tuple)) or len(raw) != 2 or not all(isinstance(day, str) for day in raw):
+            raise FoldError("each fold range must contain two date strings")
         start, end = map(date.fromisoformat, raw)
         decision_start, decision_end = start - timedelta(days=1), end - timedelta(days=1)
         result.append(FoldSpec(
@@ -92,4 +95,26 @@ def build_fold_manifest(
     return FoldManifest.model_validate(payload)
 
 
-__all__ = ["FoldError", "FoldSpec", "build_fold_manifest", "fold_specs"]
+def build_holdout_fold_manifest(context: DatasetEvidence, holdout: DatasetEvidence, *, policy_digest: str) -> FoldManifest:
+    """Project H1 metadata without opening daily rows or the execution buffer."""
+    context=DatasetEvidence.model_validate(context)
+    holdout=DatasetEvidence.model_validate(holdout)
+    if (context.segment!='RESEARCH' or context.date_range.start!=date(2018,1,1)
+        or context.date_range.end!=date(2025,8,31) or context.usable_rows!=2800
+        or holdout.segment!='HOLDOUT' or holdout.date_range.start!=date(2025,9,1)
+        or holdout.date_range.end!=date(2026,8,31) or holdout.usable_rows!=365):
+        raise FoldError('holdout fold requires the exact research and H1 ranges')
+    payload=dict(schema_version='p3-fold-v1',fold_id='H1',context_start='2024-11-04',
+        decision_start='2025-08-31',decision_end='2026-08-30',return_end_range=holdout.date_range,
+        return_count=365,decision_row_refs=(context.row_refs[-1],*holdout.row_refs[:-1]),
+        return_row_refs=holdout.row_refs,snapshot_ref=holdout.snapshot_ref)
+    fold=Fold.model_validate({**payload,'digest':hashlib.sha256(canonical_json_bytes(payload)).hexdigest()})
+    raw=canonical_json_bytes(holdout)
+    digest=hashlib.sha256(raw).hexdigest()
+    ref=ArtifactRefV1(content_sha256=digest,size_bytes=len(raw),media_type='application/json',locator=digest+'.blob')
+    value=dict(schema_version='p3-fold-manifest-v1',mode='HOLDOUT',folds=(fold,),
+        static_policy_digest=policy_digest,dataset_evidence_ref=ref)
+    return FoldManifest.model_validate({**value,'digest':hashlib.sha256(canonical_json_bytes(value)).hexdigest()})
+
+
+__all__ = ["FoldError", "FoldSpec", "build_fold_manifest", "build_holdout_fold_manifest", "fold_specs"]

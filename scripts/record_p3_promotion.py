@@ -19,6 +19,10 @@ from packages.p3_provenance import PhaseExitReceipt, PromotionReceipt
 from packages.pre_p3_provenance import canonical_source_identity
 
 
+class StalePhaseExitError(RuntimeError):
+    """A valid historical phase receipt no longer qualifies the current source."""
+
+
 def build_promotion(environment: dict[str, str]) -> PromotionReceipt:
     promoted = SourceIdentity.model_validate(canonical_source_identity(ROOT))
     if (
@@ -39,8 +43,10 @@ def build_promotion(environment: dict[str, str]) -> PromotionReceipt:
     phase = PhaseExitReceipt.model_validate_json(
         (ROOT / "docs/implementation/p3/receipts/p3-phase-exit-v1.json").read_bytes()
     )
-    if phase.source.closure_sha256 != promoted.closure_sha256:
-        raise RuntimeError("phase-exit semantic closure is stale")
+    if any(getattr(phase.source, field) != getattr(promoted, field) for field in (
+        "closure_schema_version", "closure_policy_sha256", "closure_sha256",
+    )):
+        raise StalePhaseExitError("phase-exit semantic closure is stale")
     payload = {
         "schema_version": "p3-promotion-v1", "qualified_source": phase.source,
         "promoted_source": promoted, "phase_exit_receipt_digest": phase.digest,
@@ -55,11 +61,32 @@ def build_promotion(environment: dict[str, str]) -> PromotionReceipt:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--skip-stale", action="store_true")
     args = parser.parse_args()
-    descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
     try:
-        os.write(descriptor, canonical_json_bytes(build_promotion(dict(os.environ))) + b"\n")
+        raw = canonical_json_bytes(build_promotion(dict(os.environ))) + b"\n"
+    except StalePhaseExitError:
+        if not args.skip_stale:
+            raise
+        if args.output.exists() or args.output.is_symlink():
+            raise FileExistsError("stale promotion output must not be reused")
+        print("SKIPPED: historical phase-exit receipt does not qualify current source")
+        return
+    descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    created = os.fstat(descriptor)
+    try:
+        remaining = memoryview(raw)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("promotion write made no progress")
+            remaining = remaining[written:]
         os.fsync(descriptor)
+    except BaseException:
+        current = args.output.lstat()
+        if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+            args.output.unlink()
+        raise
     finally:
         os.close(descriptor)
 

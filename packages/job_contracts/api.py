@@ -373,7 +373,7 @@ class ArtifactMetadata(StrictApiModel):
     artifact_type: str = Field(
         min_length=1,
         max_length=64,
-        pattern=r"^[A-Z][A-Z0-9_]{0,63}$",
+        pattern=r"^(?:[A-Z][A-Z0-9_]{0,63}|stdout|stderr|result|engine_event_batch)$",
     )
     validator_id: str = Field(
         min_length=1,

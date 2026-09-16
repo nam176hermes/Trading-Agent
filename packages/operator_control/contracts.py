@@ -124,19 +124,22 @@ class CommandIntentV1(OperatorModel):
     intent_sha256: Sha256Hex
 
 
+ApplicationKind: TypeAlias = Literal[
+    "NO_CHANGE",
+    "MODE_REPLACED",
+    "KILL_SWITCH_CREATED",
+    "KILL_SWITCH_CLEARED_TO_TOMBSTONE",
+    "RECOVERED_MODE_REPLACEMENT",
+    "RECOVERED_KILL_SWITCH_CREATE",
+    "RECOVERED_KILL_SWITCH_CLEAR",
+]
+
+
 class CommandAppliedV1(OperatorModel):
     schema_version: Literal["operator-command-applied-v1"]
     intent_sha256: Sha256Hex
     applied_at: CanonicalUtcDateTime
-    application_kind: Literal[
-        "NO_CHANGE",
-        "MODE_REPLACED",
-        "KILL_SWITCH_CREATED",
-        "KILL_SWITCH_CLEARED_TO_TOMBSTONE",
-        "RECOVERED_MODE_REPLACEMENT",
-        "RECOVERED_KILL_SWITCH_CREATE",
-        "RECOVERED_KILL_SWITCH_CLEAR",
-    ]
+    application_kind: ApplicationKind
     resulting_state_sha256: Sha256Hex
     tombstone_sha256: Sha256Hex | None
     applied_sha256: Sha256Hex

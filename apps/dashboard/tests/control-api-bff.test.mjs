@@ -282,7 +282,7 @@ test('read-only dashboard routes and server data modules have no legacy filesyst
       assert.doesNotMatch(source, /from ['"](?:fs|fs\/promises|path|os)['"]/, route);
     }
   }
-  for (const relative of ['src/lib/trading/data.ts', 'src/lib/trading/runtime-status.ts']) {
+  for (const relative of ['src/lib/trading/data.ts']) {
     const source = fs.readFileSync(path.join(root, relative), 'utf8');
     assert.doesNotMatch(source, /from ['"](?:fs|fs\/promises|path|os)['"]/, relative);
     assert.doesNotMatch(source, /@\/lib\/trading\/collectors|\.\/collectors/, relative);

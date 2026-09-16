@@ -847,3 +847,19 @@ def test_job_detail_contains_only_sanitized_metadata_models():
     assert detail.attempts == (attempt,)
     assert detail.events == (event,)
     assert detail.artifacts == (artifact,)
+
+
+@pytest.mark.parametrize('kind',['stdout','stderr','result','engine_event_batch','MARKET_REPORT'])
+def test_artifact_metadata_preserves_existing_producer_kinds(kind):
+    from packages.job_contracts import ArtifactMetadata
+    *_,artifact=_api_metadata_models()
+    value=artifact.model_dump(mode='json');value['artifact_type']=kind
+    assert ArtifactMetadata.model_validate_json(json.dumps(value)).artifact_type==kind
+
+
+@pytest.mark.parametrize('kind',['other_lowercase','result/../../secret','result\n',' result','a'*65])
+def test_artifact_metadata_does_not_admit_new_or_unsafe_lowercase_kinds(kind):
+    from packages.job_contracts import ArtifactMetadata
+    *_,artifact=_api_metadata_models()
+    value=artifact.model_dump(mode='json');value['artifact_type']=kind
+    with pytest.raises(ValueError): ArtifactMetadata.model_validate_json(json.dumps(value))

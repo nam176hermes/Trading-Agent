@@ -8,17 +8,11 @@ from typing import Annotated, Literal
 from pydantic import BeforeValidator, Field, model_validator
 
 from packages.data_contracts import ArtifactRefV1
-from .base import AlphaId, DecimalText, DigestModel, SemVer, Sha256, StrictModel, Token
+from .models import json_array, AlphaId, DecimalText, DigestModel, SemVer, Sha256, StrictModel, Token
 from .data import DateRange
 
 
 Family = Literal["DONCHIAN", "DUAL_SMA", "ZSCORE", "TSMOM"]
-
-
-def _json_array(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
 
 
 class CandidateParameters(StrictModel):
@@ -31,7 +25,7 @@ class CandidateParameters(StrictModel):
     entry_z: DecimalText | None
     exit_z: DecimalText | None
     horizons: Annotated[
-        tuple[int, int, int], BeforeValidator(_json_array), Field(min_length=3, max_length=3)
+        tuple[int, int, int], BeforeValidator(json_array), Field(min_length=3, max_length=3)
     ] | None
     positive_votes: int | None
 
@@ -53,16 +47,22 @@ class CandidateParameters(StrictModel):
         }
         if supplied != permitted:
             raise ValueError("candidate family parameter mask is invalid")
-        if self.family == "DONCHIAN" and not self.entry > self.exit > 0:
+        if self.family == "DONCHIAN" and not (
+            self.entry is not None and self.exit is not None and self.entry > self.exit > 0
+        ):
             raise ValueError("DONCHIAN requires entry > exit > 0")
-        if self.family == "DUAL_SMA" and not self.slow > self.fast > 0:
+        if self.family == "DUAL_SMA" and not (
+            self.slow is not None and self.fast is not None and self.slow > self.fast > 0
+        ):
             raise ValueError("DUAL_SMA requires slow > fast > 0")
         if self.family == "ZSCORE" and not (
-            self.window > 1 and Decimal(self.entry_z) < Decimal(self.exit_z)
+            self.window is not None and self.entry_z is not None and self.exit_z is not None
+            and self.window > 1 and Decimal(self.entry_z) < Decimal(self.exit_z)
         ):
             raise ValueError("ZSCORE parameters are invalid")
         if self.family == "TSMOM" and not (
-            tuple(sorted(set(self.horizons))) == self.horizons
+            self.horizons is not None and self.positive_votes is not None
+            and tuple(sorted(set(self.horizons))) == self.horizons
             and self.horizons[0] > 0
             and 1 <= self.positive_votes <= 3
         ):
@@ -91,7 +91,7 @@ class CandidateSpec(DigestModel):
     parameters: CandidateParameters
     perturbations: Annotated[
         tuple[Perturbation, ...],
-        BeforeValidator(_json_array),
+        BeforeValidator(json_array),
         Field(min_length=4, max_length=4),
     ]
     digest: Sha256
@@ -118,7 +118,7 @@ class ResearchEpoch(DigestModel):
     development_range: DateRange
     validation_range: DateRange
     oos_ranges: Annotated[
-        tuple[DateRange, ...], BeforeValidator(_json_array), Field(min_length=3, max_length=3)
+        tuple[DateRange, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)
     ]
     holdout_range: DateRange
     holdout_class: Literal[
@@ -126,7 +126,7 @@ class ResearchEpoch(DigestModel):
         "PROSPECTIVE_UNOBSERVED",
     ]
     previous_exposure_refs: Annotated[
-        tuple[ArtifactRefV1, ...], BeforeValidator(_json_array), Field(max_length=128)
+        tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(max_length=128)
     ]
     source_policy_digest: Sha256
     digest: Sha256

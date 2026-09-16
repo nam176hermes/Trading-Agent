@@ -11,14 +11,15 @@ import subprocess
 import tempfile
 from typing import Literal
 
-from packages.alpha_lifecycle.authority import _FixtureAuthorization, AuthorityHeld
+from packages.alpha_lifecycle.authority import _FixtureAuthorization, AuthorityHeld, _validate_workflow_context
 from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt, ReviewApproval
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, SourceIdentity
+from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts import canonical_json_bytes, payload_digest
-from packages.job_contracts import JobType
+from packages.job_contracts import AlphaCampaignPayload, JobType
 from packages.pre_p3_provenance import canonical_source_identity
 from .p1_engine_spawn import build_p1_engine_spawn_provider
-from .p3_fixture_native import build_native_fixture_inputs, run_native_fixture, NativeFixtureError
+from .p3_fixture_native import build_native_fixture_inputs, run_native_fixture, NativeFixtureError, NativeFixtureRun
 from .p3_fixture_sql import run_sql_fixture, REQUIRED_SQL_CHECKS
 from .results import ResultValidator, _open_directory_chain
 
@@ -31,14 +32,14 @@ class FixturePlan(DigestModel):
     purpose: Literal['SYNTHETIC_ONLY']
     native_request_digest: Sha256
     policy_set_sha256: Sha256
-    sql_revision: Literal['0023_p3_output_custody']
+    sql_revision: Literal['0026_p3_holdout_disclosure']
     cleanup_policy: Literal['OWNED_ROOTS_ONLY']
 
 
 @dataclass(frozen=True, slots=True)
 class IntegrationExecution:
     receipt: IntegrationReceipt
-    native_runs: tuple
+    native_runs: tuple[NativeFixtureRun, ...]
 
 
 class IntegrationExecutionError(RuntimeError):
@@ -74,7 +75,7 @@ def _read_authority_bytes(path: Path) -> bytes:
         os.close(parent)
 
 
-def _read_review(path: Path, reference) -> ReviewApproval:
+def _read_review(path: Path, reference: ArtifactRefV1) -> ReviewApproval:
     raw = _read_authority_bytes(path)
     if len(raw) != reference.size_bytes or hashlib.sha256(raw).hexdigest() != reference.content_sha256:
         raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: protected approval bytes differ')
@@ -82,6 +83,36 @@ def _read_review(path: Path, reference) -> ReviewApproval:
     if canonical_json_bytes(review) != raw:
         raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: approval is not canonical')
     return review
+
+
+def validate_fixture_authority(
+    payload: object, authorization: object, plan: FixturePlan, review: ReviewApproval,
+) -> None:
+    """Shared admission and execution checks; performs no writes or SQL access."""
+    if (not isinstance(payload,AlphaCampaignPayload) or payload.operation!='PARITY'
+        or payload.logical_trial_id!='p3-integration-fixture-v1'
+        or not isinstance(authorization,_FixtureAuthorization)):
+        raise AuthorityHeld('HELD E_OPERATION: exact fixture authority required')
+    source=payload.expected_source
+    now=datetime.now(UTC)
+    if (authorization.fixture_plan_ref!=payload.manifest_ref or plan.source!=source
+        or authorization.issuer_workflow!='p3-authority.yml'
+        or not authorization.issued_at<=now<authorization.expires_at):
+        raise AuthorityHeld('HELD E_AUTHORITY: fixture scope/source/expiry differs')
+    _validate_workflow_context(authorization,source)
+    for reference,value in ((payload.authorization_ref,authorization),(payload.manifest_ref,plan),(authorization.review_ref,review)):
+        raw=canonical_json_bytes(value)
+        if (reference.media_type!='application/json' or reference.size_bytes!=len(raw)
+            or reference.content_sha256!=hashlib.sha256(raw).hexdigest()):
+            raise AuthorityHeld('HELD E_AUTHORITY: fixture artifact binding differs')
+    if (review.source!=source or review.verdict!='APPROVED'
+        or review.operator_identity==review.reviewer_identity
+        or plan.digest not in review.subject_digests
+        or not review.issued_at<=authorization.issued_at<=now<authorization.expires_at<=review.expires_at):
+        raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: approval does not cover this fixture')
+    policy=(ROOT/'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes()
+    if hashlib.sha256(policy).hexdigest()!=plan.policy_set_sha256:
+        raise AuthorityHeld('HELD E_POLICY: exact accepted policy required')
 
 
 class P3IntegrationFixtureExecutor:
@@ -102,28 +133,9 @@ class P3IntegrationFixtureExecutor:
                 raise AuthorityHeld('HELD E_SOURCE: executor source differs from job')
             authorization = _FixtureAuthorization.model_validate_json(self.store.read_bytes(job.payload.authorization_ref))
             plan = FixturePlan.model_validate_json(self.store.read_bytes(job.payload.manifest_ref))
-            now = datetime.now(UTC)
-            if (authorization.fixture_plan_ref != job.payload.manifest_ref or plan.source != source
-                or authorization.issuer_workflow != 'p3-authority.yml'
-                or not authorization.issued_at <= now < authorization.expires_at):
-                raise AuthorityHeld('HELD E_AUTHORITY: fixture scope/source/expiry differs')
-            expected_environment = {
-                'GITHUB_REPOSITORY':'nam176hermes/Trading-Agent','GITHUB_REF':'refs/heads/main',
-                'GITHUB_SHA':source.commit_sha,'GITHUB_RUN_ID':str(authorization.issuer_run_id),
-                'GITHUB_RUN_ATTEMPT':str(authorization.issuer_attempt),
-            }
-            if any(os.environ.get(key) != value for key,value in expected_environment.items()):
-                raise AuthorityHeld('HELD E_WORKFLOW: fixture issuer differs from protected workflow')
             review = _read_review(self.review_file, authorization.review_ref)
-            if (review.source != source or review.verdict != 'APPROVED'
-                or review.operator_identity == review.reviewer_identity
-                or plan.digest not in review.subject_digests
-                or not review.issued_at <= now < review.expires_at):
-                raise AuthorityHeld('HELD E_REVIEW_AUTHORITY: approval does not cover this fixture')
+            validate_fixture_authority(job.payload,authorization,plan,review)
             self.store.read_bytes(review.evidence_ref)
-            policy = (ROOT/'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes()
-            if hashlib.sha256(policy).hexdigest() != plan.policy_set_sha256:
-                raise AuthorityHeld('HELD E_POLICY: exact accepted policy required')
             return source, authorization, plan
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             raise AuthorityHeld("HELD E_AUTHORITY: protected fixture inputs cannot be re-attested") from error
@@ -173,12 +185,16 @@ class P3IntegrationFixtureExecutor:
             sql = run_sql_fixture(source,progress=progress,heartbeat=heartbeat,
                                   owned_root=self.private_root/("sql-"+hashlib.sha256(
                                       f"{job.job_id}/{job.attempt_id}".encode()).hexdigest()[:32]))
+            cleanup = sql.get('cleanup')
+            checks = sql.get('checks')
+            if not isinstance(cleanup, dict) or not isinstance(checks, list) or not all(isinstance(check, str) for check in checks):
+                raise AuthorityHeld('HELD E_SQL_PROOF: malformed cleanup or coverage')
             if (sql.get('sql_revision') != plan.sql_revision
                 or sql.get('source') != source.model_dump(mode='json')
-                or sql.get('cleanup',{}).get('root_absent') is not True
-                or sql.get('cleanup',{}).get('server_stopped') is not True):
+                or cleanup.get('root_absent') is not True
+                or cleanup.get('server_stopped') is not True):
                 raise AuthorityHeld('HELD E_SQL_PROOF: source, revision or cleanup differs')
-            if not REQUIRED_SQL_CHECKS <= set(sql['checks']):
+            if not REQUIRED_SQL_CHECKS <= set(checks):
                 raise AuthorityHeld('HELD E_SQL_COVERAGE: required SQL qualification vectors are missing')
             sql_ref = self.store.put_bytes(canonical_json_bytes(sql),media_type='application/json')
             progress()

@@ -13,9 +13,17 @@ from tests.jobs.test_worker_lifecycle import claim
 
 
 def test_old_baseline_cas_cannot_succeed_without_private_attempt_evidence(retained_baseline,tmp_path):
+    from packages.job_contracts import AlphaCampaignPayload, AlphaCampaignOperation
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
     _,_,selection=retained_baseline
-    job=replace(claim(),job_type=JobType.ALPHA_CAMPAIGN,
-        payload=SimpleNamespace(operation='BASELINES',logical_trial_id='p3-baselines-v1'))
+    payload=AlphaCampaignPayload(
+        schema_version='p3-alpha-campaign-payload-v1', operation=AlphaCampaignOperation.BASELINES,
+        logical_trial_id='p3-baselines-v1', manifest_ref=selection.pack_ref,
+        authorization_ref=selection.pack_ref,
+        expected_source=SourceIdentity(commit_sha='a'*40,tree_sha='b'*40,
+            closure_schema_version='synthetic',closure_policy_sha256='c'*64,closure_sha256='d'*64),
+    )
+    job=replace(claim(),job_type=JobType.ALPHA_CAMPAIGN,payload=payload)
     root=tmp_path/'artifacts'
     stream=ArtifactWriter(root).capture_stream(job.job_id,job.attempt_id,'stdout',
         io.BytesIO(canonical_json_bytes(selection)))
@@ -268,3 +276,27 @@ def test_registration_proposal_is_reconstructed_before_publication(portable_atte
             assert not output.exists()
     finally:
         handle.abandon()
+
+
+@pytest.mark.parametrize('route',['closure','readback'])
+def test_parent_artifact_reads_observe_progress_before_next_object(tmp_path,route):
+    from services.job_worker.p3_output_validation import _closure,_ClosedReader
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    root=tmp_path/'store'; root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    leaf=store.put_bytes(b'{}',media_type='application/json')
+    parent=store.put_bytes(canonical_json_bytes({'child':leaf}),media_type='application/json')
+    class Cancelled(RuntimeError):
+        pass
+    calls=[]
+    def progress():
+        calls.append(None)
+        if len(calls)==2:
+            raise Cancelled('stop during parent readback')
+    with pytest.raises(Cancelled,match='parent readback'):
+        if route=='closure':
+            _closure((parent,),store,progress=progress)
+        else:
+            _ClosedReader(store,(parent,leaf),progress=progress).read_bytes(parent)
+    assert len(calls)==2

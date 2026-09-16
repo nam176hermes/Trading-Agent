@@ -109,7 +109,7 @@ def _request_json(method: str, path: str, token: str, body: object | None = None
     return value
 
 
-def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
+def _validated_request(request_file: Path, workflow_operation: str):
     operation = validate_workflow_operation(workflow_operation)
     source = SourceIdentity.model_validate(canonical_source_identity(ROOT))
     request = validate_request(request_file, source, operation)
@@ -122,6 +122,13 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
         and status["p3_alpha_development_allowed"] is True
     ):
         raise RuntimeError("HELD E_SOURCE_READY: protected source gates are not current")
+    return request, payload
+
+
+def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
+    request, payload = _validated_request(request_file, workflow_operation)
+    source, authorization = payload.expected_source, request.authorization
+    operation = validate_workflow_operation(workflow_operation)
     output_dir.mkdir(mode=0o700,parents=False,exist_ok=False)
     _write(output_dir,"source-identity.json",source)
     _write(output_dir,"input-inventory.json",{
@@ -138,22 +145,40 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
     return request, payload
 
 
-def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
-    request, payload = preflight(request_file, output_dir, workflow_operation)
+def _stage_request(request, payload, workflow_operation, store, manifest_file, review_file):
     authorization = request.authorization
-    from packages.data_catalog.artifact_store import LocalArtifactStore
-    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan
-    store = LocalArtifactStore(artifact_root)
+    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan, validate_fixture_authority
     review = _read_review(review_file,authorization.review_ref)
-    store.read_bytes(review.evidence_ref)
-    if store.put_bytes(canonical_json_bytes(review),media_type="application/json") != authorization.review_ref:
-        raise RuntimeError("HELD E_REVIEW_AUTHORITY: review CAS binding differs")
     manifest = _read_authority_bytes(manifest_file)
     if workflow_operation == "p3-integration-fixture-v1":
         plan = FixturePlan.model_validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:
             raise RuntimeError("HELD E_MANIFEST: fixture plan differs from source")
+        validate_fixture_authority(payload,authorization,plan,review)
+        store.read_bytes(review.evidence_ref)
+    if store.put_bytes(canonical_json_bytes(review),media_type="application/json") != authorization.review_ref:
+        raise RuntimeError("HELD E_REVIEW_AUTHORITY: review CAS binding differs")
+    values=()
+    if workflow_operation=='p3-holdout-primary-v1':
+        from datetime import UTC,datetime
+        from packages.alpha_lifecycle.holdout import validate_holdout_operation_input
+        from packages.alpha_lifecycle.replica_store import ReadbackStore
+        values=validate_holdout_operation_input(request.operation_input,authorization,
+            expected_source=payload.expected_source,store=ReadbackStore(store,store),now=datetime.now(UTC))
     payload = stage_alpha_campaign_payload(store,authorization,payload.expected_source,workflow_operation,manifest, operation_input=request.operation_input)
+    for value in values:
+        ref=store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+        if store.read_bytes(ref)!=canonical_json_bytes(value):
+            raise RuntimeError('HELD E_CAS: holdout projection readback differs')
+    return payload, review
+
+
+def enqueue(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path):
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    request, payload = preflight(request_file, output_dir, workflow_operation)
+    authorization = request.authorization
+    payload, review = _stage_request(request, payload, workflow_operation,
+        LocalArtifactStore(artifact_root), manifest_file, review_file)
     if request.operation_input is not None:
         from packages.alpha_lifecycle.authority import AuthorityHeld
         from services.job_store.p3_operation_authority import accept_operation_authorization
@@ -170,22 +195,66 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
         "POST", "/v1/jobs", token,
         body.model_dump(mode="json"),
     )
+    job_id = _enqueue_job_id(enqueue_raw, body, review.operator_identity)
+    _write(output_dir, "enqueue-response.json", enqueue_raw)
+    return job_id, body, review.operator_identity
+
+
+def _enqueue_job_id(enqueue_raw, body, operator):
     try:
         outcome = enqueue_raw["data"]["outcome"]  # type: ignore[index]
         envelope = (
             JobEnqueuedEnvelope if outcome == "ENQUEUED" else JobDeduplicatedEnvelope
         ).model_validate(enqueue_raw)
-        _bind_job_response(envelope.data.job, body, review.operator_identity)
+        _bind_job_response(envelope.data.job, body, operator)
         job_id = envelope.data.job.job_id
     except Exception as error:
         raise RuntimeError("HELD E_JOB_API: enqueue response contract is invalid") from error
-    _write(output_dir, "enqueue-response.json", enqueue_raw)
+    return job_id
+
+
+def wait_for_result(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
+    job_id,body,operator=read_enqueued_job(request_file,output_dir,workflow_operation,
+        artifact_root=artifact_root,manifest_file=manifest_file,review_file=review_file)
+    _wait(job_id,body,operator,token_file,output_dir)
+
+
+def read_enqueued_job(request_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path):
+    """Revalidate request/review and saved canonical enqueue without SQL or HTTP writes."""
+    from packages.alpha_lifecycle.replica_store import ReadbackStore
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.operator_control.protected_fs import open_private_directory, read_private_file
+    request, payload = _validated_request(request_file, workflow_operation)
+    store = LocalArtifactStore(artifact_root)
+    payload, review = _stage_request(request, payload, workflow_operation,
+        ReadbackStore(store, store), manifest_file, review_file)
+    body = build_enqueue_body(payload, request.authorization.nonce)
+    try:
+        with open_private_directory(output_dir) as directory:
+            raw = read_private_file(directory, "enqueue-response.json", max_bytes=MAX_RESPONSE_BYTES)
+        enqueue_raw = json.loads(raw)
+        if raw != canonical_json_bytes(enqueue_raw) + b"\n":
+            raise ValueError("noncanonical enqueue transport")
+        job_id = _enqueue_job_id(enqueue_raw, body, review.operator_identity)
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError("HELD E_JOB_API: saved enqueue response is unsafe") from error
+    return job_id,body,review.operator_identity
+
+
+def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
+    job_id, body, operator = enqueue(request_file, token_file, output_dir, workflow_operation,
+        artifact_root=artifact_root, manifest_file=manifest_file, review_file=review_file)
+    _wait(job_id, body, operator, token_file, output_dir)
+
+
+def _wait(job_id, body, operator, token_file, output_dir):
+    token = _read_token(token_file)
     deadline = time.monotonic() + 900
     while True:
         detail_raw = _request_json("GET", f"/v1/jobs/{job_id}", token)
         try:
             detail = JobDetailEnvelope.model_validate(detail_raw)
-            _bind_job_response(detail.data.job, body, review.operator_identity, job_id=job_id)
+            _bind_job_response(detail.data.job, body, operator, job_id=job_id)
             state = detail.data.job.state.value
         except Exception as error:
             raise RuntimeError("HELD E_JOB_API: detail response contract is invalid") from error
@@ -201,7 +270,7 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
 
 if __name__ == "__main__":
     parser=argparse.ArgumentParser()
-    parser.add_argument("command",choices=("preflight","prepare-inputs","dispatch"))
+    parser.add_argument("command",choices=("preflight","prepare-inputs","dispatch","enqueue","wait"))
     parser.add_argument("--request-file",type=Path,required=True)
     parser.add_argument("--output-dir",type=Path,required=True)
     parser.add_argument("--operation",required=True)
@@ -210,10 +279,10 @@ if __name__ == "__main__":
     parser.add_argument("--manifest-file",type=Path)
     parser.add_argument("--review-file",type=Path)
     args=parser.parse_args()
-    if args.command == "dispatch":
+    if args.command in {"dispatch", "enqueue", "wait"}:
         if any(value is None for value in (args.token_file,args.artifact_root,args.manifest_file,args.review_file)):
-            parser.error("dispatch requires token, artifact-root, manifest-file and review-file")
-        dispatch(args.request_file,args.token_file,args.output_dir,args.operation,
+            parser.error("execution commands require token, artifact-root, manifest-file and review-file")
+        {"dispatch": dispatch, "enqueue": enqueue, "wait": wait_for_result}[args.command](args.request_file,args.token_file,args.output_dir,args.operation,
                  artifact_root=args.artifact_root,manifest_file=args.manifest_file,review_file=args.review_file)
     else:
         preflight(args.request_file,args.output_dir,args.operation)

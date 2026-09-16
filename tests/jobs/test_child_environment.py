@@ -129,10 +129,16 @@ def test_paper_child_strips_trading_and_privileged_credentials(
     assert child["LIVE_TRADING_ENABLED"] == "false"
 
 
+@pytest.mark.parametrize("deployment", ["operator-a", "operator-b"])
 def test_v2_child_roots_come_only_from_protected_runtime_authority(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, deployment,
 ) -> None:
-    _, roots = _settings(tmp_path, monkeypatch)
+    deployment_root = tmp_path / deployment
+    deployment_root.mkdir(mode=0o700)
+    _, roots = _settings(deployment_root, monkeypatch)
+    # V2 must use its attested paths even when compatibility pins point elsewhere.
+    for name in roots:
+        monkeypatch.setattr(environment_module, f"APPROVED_{name.upper()}", Path("/unapproved/compatibility"))
     authority = object.__new__(RuntimeAuthorityV2)
     object.__setattr__(
         authority,

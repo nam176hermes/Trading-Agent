@@ -7,7 +7,8 @@ from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 from statistics import median
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, ReadbackStore, _read
-from packages.alpha_lifecycle.contracts.authority import FamilyReview, PrimarySelection
+from packages.alpha_lifecycle.contracts.authority import FamilyReview, PrimarySelection, ReviewApproval
+from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.contracts.execution import InputSet
 from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport, PublicationReceipt
 from packages.alpha_lifecycle.contracts.results import QualificationBundle
@@ -28,7 +29,8 @@ def ranking_key(
 
 
 def validate_candidate_closure(closure_ref: ArtifactRefV1, *, input_set_ref: ArtifactRefV1,
-    alpha_id: str, store: ArtifactStore):
+    alpha_id: str, store: ArtifactStore,
+) -> tuple[QualificationBundle, AlphaQualificationEvidenceV1, ArtifactRefV1]:
     """Recompute retained arithmetic and publication bindings; SQL authority is separate."""
     from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
     from packages.alpha_lifecycle.contracts.results import EvaluationResult,ReplayProof
@@ -100,7 +102,10 @@ def family_disclosure_digest(review: FamilyReview) -> str:
         mode='json',exclude={'digest','review_ref'}))).hexdigest()
 
 
-def _validate_disclosure(review, qualifications, inputs, reader):
+def _validate_disclosure(
+    review: FamilyReview, qualifications: list[QualificationBundle],
+    inputs: InputSet, reader: ArtifactStore,
+) -> None:
     from packages.alpha_lifecycle.contracts.results import ReplayProof,ReplayReceipt,TrialOutcome,EvaluationResult
     from packages.alpha_lifecycle.pit_evidence import _reference, _ReadBudget
     from packages.alpha_lifecycle.trials import deterministic_trial_keys
@@ -158,7 +163,9 @@ def _validate_disclosure(review, qualifications, inputs, reader):
     validate_family_review_approval(review,inputs.source,reader)
 
 
-def validate_family_review_approval(review,source,reader):
+def validate_family_review_approval(
+    review: FamilyReview, source: SourceIdentity, reader: ArtifactStore,
+) -> ReviewApproval:
     """Structural approval only; currentness and reviewer trust belong to admission."""
     from packages.alpha_lifecycle.contracts.authority import ReviewApproval
     from packages.alpha_lifecycle.pit_evidence import _reference,_ReadBudget

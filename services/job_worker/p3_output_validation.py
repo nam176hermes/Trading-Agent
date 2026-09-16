@@ -34,14 +34,18 @@ def _reference(raw):
 
 
 class _ClosedReader:
-    def __init__(self, store, references):
+    def __init__(self, store, references, *, progress=None):
         self._store=store
+        self._progress=progress or (lambda: None)
         self._references={_key(ref) for ref in references}
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
+        self._progress()
         if _key(ref) not in self._references:
             raise ValueError('P3 result references an artifact outside its input/output closure')
-        return self._store.read_bytes(ref)
+        raw=self._store.read_bytes(ref)
+        self._progress()
+        return raw
 
     def put_bytes(self, value: bytes, *, media_type: str) -> ArtifactRefV1:
         ref=_reference(value)
@@ -50,13 +54,15 @@ class _ClosedReader:
         return ref
 
 
-def _closure(initial, store, *, output_refs=()):
+def _closure(initial, store, *, output_refs=(), progress=None):
+    progress=progress or (lambda: None)
     pending={_key(ref):ref for ref in initial}
     found={}
     output_inventory_refs={ref.content_sha256:ref for ref in output_refs}
     output_keys={_key(ref) for ref in output_refs}
     total=0
     while pending:
+        progress()
         _,next_ref=pending.popitem()
         ref=ArtifactRefV1.model_validate(next_ref)
         key=_key(ref)
@@ -66,6 +72,7 @@ def _closure(initial, store, *, output_refs=()):
         if len(found) >= _MAX_REFS or total > _MAX_BYTES:
             raise ValueError('P3 result closure exceeds its bound')
         raw=store.read_bytes(ref)
+        progress()
         if len(raw)!=ref.size_bytes or hashlib.sha256(raw).hexdigest()!=ref.content_sha256:
             raise ValueError('P3 closure artifact bytes differ from their reference')
         found[key]=ref
@@ -87,6 +94,7 @@ def _closure(initial, store, *, output_refs=()):
             values.extend((_reference(canonical_json_bytes(item)).model_dump(mode='json'),0)
                 for item in (*evaluation.perturbations,evaluation.double_cost,evaluation.delayed))
         while values:
+            progress()
             item,depth=values.pop()
             if depth > 64:
                 raise ValueError('P3 reference nesting exceeds its bound')
@@ -128,7 +136,9 @@ def _validate_replicas(proof,manifest_ref,result_ref,job,inventory,output_refs,o
         raise ValueError('P3 operation output contains unexpected replica files')
 
 
-def validate_official_output(job, result, custody: P3OutputCustody, inventory_ref: ArtifactRefV1):
+def validate_official_output(job, result, custody: P3OutputCustody, inventory_ref: ArtifactRefV1, *, progress=None):
+    progress=progress or (lambda: None)
+    progress()
     if (type(job) is not ClaimedJob or job.job_type is not JobType.ALPHA_CAMPAIGN
         or type(job.payload) is not AlphaCampaignPayload or type(custody) is not P3OutputCustody
         or not custody.matches(job.job_id,job.attempt_id) or inventory_ref != custody.inventory_ref):
@@ -139,12 +149,12 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
     result_ref=_reference(canonical_json_bytes(result))
     if result_ref not in output_refs:
         raise ValueError('P3 terminal result is absent from this attempt output')
-    intent=_read(store,job.payload.manifest_ref,P3OperationInput)
+    intent=_read(_ClosedReader(store,(job.payload.manifest_ref,),progress=progress),job.payload.manifest_ref,P3OperationInput)
     if not isinstance(intent.body,(BaselinesInput,RegisterFamilyInput,CandidateOOSInput,SelectPrimaryInput)):
         raise ValueError('HELD E_OPERATION: complete output validation is unavailable')
-    inputs=_closure((job.payload.manifest_ref,job.payload.authorization_ref,baseline_manifest_ref(intent.input_set_ref)),store)
-    reader=_ClosedReader(store,(*inputs.values(),*output_refs))
-    outputs=_ClosedReader(store,output_refs)
+    inputs=_closure((job.payload.manifest_ref,job.payload.authorization_ref,baseline_manifest_ref(intent.input_set_ref)),store,progress=progress)
+    reader=_ClosedReader(store,(*inputs.values(),*output_refs),progress=progress)
+    outputs=_ClosedReader(store,output_refs,progress=progress)
     intent=_read(reader,job.payload.manifest_ref,P3OperationInput)
     authorization=_read(reader,job.payload.authorization_ref,RunAuthorization)
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
@@ -197,6 +207,7 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
                 raise ValueError('P3 registration differs from the complete frozen family')
         else:
             raise ValueError('HELD E_OPERATION: complete output validation is unavailable')
-    reachable=_closure((result_ref,),reader,output_refs=output_refs)
+    reachable=_closure((result_ref,),reader,output_refs=output_refs,progress=progress)
     if any(_key(ref) not in reachable for ref in output_refs):
         raise ValueError('P3 attempt contains artifacts outside the operation result closure')
+    progress()

@@ -177,7 +177,11 @@ def test_dashboard_snapshot_preserves_introduction_and_tracks_current_regular_fi
         stdout=subprocess.PIPE,
     )
     tracked_paths = {raw.decode("utf-8") for raw in tracked.stdout.split(b"\0") if raw}
-    assert expected_introduction <= actual
+    introduced = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-tree", "-r", "--name-only", _introduction(), "--", DESTINATION_PREFIX],
+        check=True, stdout=subprocess.PIPE, text=True,
+    ).stdout.splitlines()
+    assert expected_introduction == set(introduced)
     assert actual == tracked_paths
 
 

@@ -10,7 +10,7 @@ from decimal import Decimal
 import pyarrow.parquet as pq
 
 from packages.alpha_lifecycle.baselines import DailyCloseV1
-from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence
+from packages.alpha_lifecycle.contracts.data import BufferOpen, DailyBar, DatasetEvidence
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_catalog.v3 import build_snapshot_v3
 from packages.data_contracts import (
@@ -122,7 +122,7 @@ def seal_research_dataset(
     bars = tuple(_daily_bar(item, store) for item in snapshot.partitions)
     validate_dates(segment, tuple(item.date for item in bars))
     row_refs = tuple(
-        store.put_bytes(canonical_json_bytes(item), media_type="application/json")
+        store.put_bytes(canonical_json_bytes(_buffer_open(item) if segment=='BUFFER' else item), media_type="application/json")
         for item in bars
     )
     snapshot_ref = store.put_bytes(
@@ -149,6 +149,18 @@ def seal_research_dataset(
     for ref in row_refs:
         store.read_bytes(ref)
     return evidence
+
+
+def _buffer_open(bar: DailyBar) -> BufferOpen:
+    """Parent-only derivative; its provenance must not be mounted in a calculation child."""
+    payload={
+        "schema_version":"p3-buffer-open-v1","date":bar.date.isoformat(),
+        "instrument":bar.instrument,"opened_at":bar.opened_at.isoformat().replace('+00:00','Z'),
+        "open":bar.open,"source_evidence_ref":bar.partition_ref,
+        "observed_at":bar.system_observed_at.isoformat().replace('+00:00','Z'),
+    }
+    payload['digest']=hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+    return BufferOpen.model_validate(payload)
 
 
 __all__ = ["DatasetSealError", "seal_research_dataset", "to_daily_close", "validate_dates"]

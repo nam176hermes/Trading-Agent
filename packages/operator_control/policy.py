@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Literal, NoReturn
 
 from .contracts import (
     OperatorActorV1,
@@ -45,7 +45,7 @@ class OperatorMutationPlan:
     desired_file_sha256: str | None
 
 
-def _reject(code: str, status: int) -> None:
+def _reject(code: str, status: int) -> NoReturn:
     raise OperatorCommandRejected(code, status)
 
 

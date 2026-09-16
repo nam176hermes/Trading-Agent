@@ -14,6 +14,7 @@ Interface matches what main.py expects:
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Iterator, Optional
 from uuid import uuid4
@@ -138,20 +139,22 @@ class MacroRegimeResult:
         yield self.confidence
 
 
+def _read_latest_report_text(reports_dir: Path, prefix: str) -> str | None:
+    files = sorted(
+        (path for path in reports_dir.iterdir()
+         if path.name.startswith(prefix) and path.suffix == ".json"),
+        reverse=True,
+    )
+    return files[0].read_text() if files else None
+
+
 def _load_macro_regime() -> MacroRegimeResult:
     """Load optional macro context without manufacturing a neutral regime."""
     trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
-        files = sorted(
-            [
-                path
-                for path in reports_dir.iterdir()
-                if path.name.startswith("macro_report_") and path.suffix == ".json"
-            ],
-            reverse=True,
-        )
-        if not files:
+        report_text = _read_latest_report_text(reports_dir, "macro_report_")
+        if report_text is None:
             reason_code = "MACRO_REPORT_MISSING"
             log.info(
                 "event=macro_regime_unavailable trace_id=%s reason_code=%s",
@@ -165,7 +168,7 @@ def _load_macro_regime() -> MacroRegimeResult:
                 reason_code=reason_code,
                 trace_id=trace_id,
             )
-        data = json.loads(files[0].read_text())
+        data = json.loads(report_text)
         regime = data["regime"]
         confidence = float(data["regime_confidence"])
         if not isinstance(regime, str) or not regime.strip():
@@ -201,23 +204,15 @@ def _load_prediction_data() -> EnrichmentResult:
     trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
-        files = sorted(
-            [
-                path
-                for path in reports_dir.iterdir()
-                if path.name.startswith("prediction_market_")
-                and path.suffix == ".json"
-            ],
-            reverse=True,
-        )
-        if not files:
+        report_text = _read_latest_report_text(reports_dir, "prediction_market_")
+        if report_text is None:
             return EnrichmentResult(
                 {},
                 status="UNAVAILABLE",
                 reason_code="PREDICTION_REPORT_MISSING",
                 trace_id=trace_id,
             )
-        raw = json.loads(files[0].read_text())
+        raw = json.loads(report_text)
         if not isinstance(raw, dict):
             raise TypeError("prediction report must be an object")
         markets = raw.get("markets", [])
@@ -261,23 +256,15 @@ def _load_social_sentiment() -> EnrichmentResult:
     trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
-        files = sorted(
-            [
-                path
-                for path in reports_dir.iterdir()
-                if path.name.startswith("social_sentiment_")
-                and path.suffix == ".json"
-            ],
-            reverse=True,
-        )
-        if not files:
+        report_text = _read_latest_report_text(reports_dir, "social_sentiment_")
+        if report_text is None:
             return EnrichmentResult(
                 {},
                 status="UNAVAILABLE",
                 reason_code="SOCIAL_REPORT_MISSING",
                 trace_id=trace_id,
             )
-        raw = json.loads(files[0].read_text())
+        raw = json.loads(report_text)
         if not isinstance(raw, dict):
             raise TypeError("social report must be an object")
         data = raw.get("data", {})

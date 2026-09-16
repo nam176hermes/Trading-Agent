@@ -14,12 +14,15 @@ from packages.alpha_lifecycle.contracts.data import (
 from packages.alpha_lifecycle.contracts.execution import (
     BaselineManifest,
     EvaluationManifest,
+    HoldoutManifest,
+    InstrumentSpec,
 )
 from packages.alpha_lifecycle.contracts.policy import CandidateSpec
 from packages.alpha_lifecycle.contracts.results import (
     BaselinePack,
     BaselineSelection,
     EvaluationResult,
+    HoldoutEvaluationResult,
     PerformanceTrace,
     ScenarioResult,
 )
@@ -46,12 +49,23 @@ def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model
 
 
 def validate_replica_result(
-    result: BaselinePack | EvaluationResult,
-    manifest: BaselineManifest | EvaluationManifest,
+    result: BaselinePack | EvaluationResult | HoldoutEvaluationResult,
+    manifest: BaselineManifest | EvaluationManifest | HoldoutManifest,
     inputs: ArtifactStore,
     outputs: ArtifactStore,
     combined: ArtifactStore,
+    *, instrument_spec: InstrumentSpec | None = None,
 ) -> None:
+    if isinstance(manifest,HoldoutManifest):
+        if not isinstance(result,HoldoutEvaluationResult) or instrument_spec is None:
+            raise ValueError('holdout replica requires its result and instrument')
+        from packages.alpha_lifecycle.evaluation import evaluate_holdout
+        expected=evaluate_holdout(manifest,instrument_spec,ReadbackStore(combined,outputs))
+        if canonical_json_bytes(result)!=canonical_json_bytes(expected):
+            raise ValueError('holdout replica differs from recomputed H1 artifacts')
+        return
+    if instrument_spec is not None or isinstance(result,HoldoutEvaluationResult):
+        raise ValueError('replica instrument or result differs from its manifest type')
     input_set, folds, dataset, regime = validate_research_inputs(manifest.input_set_ref,inputs)
     bars = tuple(_read(inputs, ref, DailyBar) for ref in dataset.row_refs)
     threshold = Decimal(regime.threshold)

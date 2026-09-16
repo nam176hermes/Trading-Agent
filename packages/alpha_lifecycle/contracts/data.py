@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -11,20 +11,14 @@ from pydantic import BeforeValidator, Field, model_validator
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime
 
-from .base import DecimalText, DigestModel, Sha256, StrictModel, Token
-
-
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
+from .models import json_array, DecimalText, DigestModel, Sha256, StrictModel, Token
 
 
 Refs = Annotated[
-    tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=5000)
+    tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=1, max_length=5000)
 ]
 Limitations = Annotated[
-    tuple[Token, ...], BeforeValidator(_tuple), Field(max_length=16)
+    tuple[Token, ...], BeforeValidator(json_array), Field(max_length=16)
 ]
 Vintage = Literal[
     "RETROSPECTIVE_CURRENT_ARCHIVE",
@@ -154,7 +148,7 @@ class FoldManifest(DigestModel):
     schema_version: Literal["p3-fold-manifest-v1"]
     mode: Literal["OOS", "HOLDOUT"]
     folds: Annotated[
-        tuple[Fold, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=3)
+        tuple[Fold, ...], BeforeValidator(json_array), Field(min_length=1, max_length=3)
     ]
     static_policy_digest: Sha256
     dataset_evidence_ref: ArtifactRefV1
@@ -195,6 +189,13 @@ class BufferOpen(DigestModel):
     open: DecimalText
     source_evidence_ref: ArtifactRefV1
     observed_at: CanonicalUtcDateTime
+
+    @model_validator(mode="after")
+    def _open_only(self) -> "BufferOpen":
+        boundary=datetime(self.date.year,self.date.month,self.date.day,tzinfo=UTC)
+        if Decimal(self.open)<=0 or self.opened_at!=boundary or self.observed_at<self.opened_at:
+            raise ValueError("buffer requires a positive open and causal UTC day boundary")
+        return self
 
 
 __all__ = [

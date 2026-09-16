@@ -94,7 +94,7 @@ def test_protected_request_builds_one_closed_worker_payload() -> None:
     )
 
 
-def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path) -> None:
+def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path,monkeypatch) -> None:
     from datetime import UTC, datetime, timedelta
 
     request, source = _request("2026-01-01T01:00:00Z")
@@ -110,6 +110,12 @@ def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path) ->
     authorization["digest"] = hashlib.sha256(canonical_json_bytes(authorization)).hexdigest()
     path = tmp_path / "fixture-request.json"
     path.write_text(json.dumps(request)); path.chmod(0o600)
+    for key,value in dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',
+        GITHUB_REF='refs/heads/main',GITHUB_SHA=source.commit_sha,GITHUB_REF_PROTECTED='true',
+        GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ID=str(authorization['issuer_run_id']),
+        GITHUB_RUN_ATTEMPT=str(authorization['issuer_attempt']),
+        GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main').items():
+        monkeypatch.setenv(key,value)
     validated = validate_request(path.resolve(), source, "PARITY")
     payload = build_alpha_campaign_payload(validated.authorization, source, "p3-integration-fixture-v1")
     assert payload.manifest_ref.model_dump(mode="json") == authorization["fixture_plan_ref"]

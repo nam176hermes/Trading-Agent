@@ -1,6 +1,7 @@
 import hashlib
 import json
 from decimal import Decimal
+import pytest
 
 from packages.alpha_lifecycle.contracts.results import ExecutableResult, NativeTraceRow, ReplayReceipt
 from packages.alpha_lifecycle.parity import compare_executable_results
@@ -12,7 +13,7 @@ def _sealed(store: LocalArtifactStore, value: object):
     return store.put_bytes(canonical_json_bytes(value), media_type="application/json")
 
 
-def _trace(store: LocalArtifactStore, *, fee: str = "0.1"):
+def _trace(store: LocalArtifactStore, *, fee: str = "0.1", cash: str = "99899.9"):
     source = store.put_bytes(b"source", media_type="application/octet-stream")
     payload = {
         "schema_version": "p3-native-trace-row-v1",
@@ -24,7 +25,7 @@ def _trace(store: LocalArtifactStore, *, fee: str = "0.1"):
         "price": "100",
         "quantity": "1",
         "fee_quote": fee,
-        "cash_after": "99899.9",
+        "cash_after": cash,
         "position_after": "1",
         "source_day": "2026-01-02",
         "source_artifact_ref": source,
@@ -57,7 +58,7 @@ def _receipt(store: LocalArtifactStore, result_ref, replicate: str):
         "schema_version": "p3-replay-receipt-v1",
         "logical_trial_id": "p3-native-parity",
         "replicate": replicate,
-        "manifest_digest": "b" * 64,
+        "manifest_digest": ExecutableResult.model_validate_json(store.read_bytes(result_ref)).manifest_ref.content_sha256,
         "result_ref": result_ref,
         "source": {
             "commit_sha": "c" * 40,
@@ -108,3 +109,64 @@ def test_parity_comparator_checks_fields_tolerances_and_replica_bytes(tmp_path) 
     assert failed.verdict == "FAIL"
     assert "native-replicas-differ" in comparison["exact_failures"]
     assert "R3:fee-0" in comparison["numeric_failures"]
+
+
+def test_parity_rejects_intermediate_equity_drift_even_when_ending_cash_matches(tmp_path):
+    store = LocalArtifactStore(tmp_path)
+    reference = _result(store, trace_ref=_trace(store))
+    for cash, verdict in [('99899.92', 'PASS'), ('99899.93', 'FAIL')]:
+        native = _result(store, trace_ref=_trace(store, cash=cash))
+        receipts = tuple(_receipt(store, native, replica) for replica in ('R1', 'R2', 'R3'))
+        comparison = compare_executable_results(reference, (native,)*3, receipts, store, quote_quantum=Decimal('.01'))
+        assert comparison.verdict == verdict
+
+
+@pytest.mark.parametrize("role", ["reference", "native", "receipt"])
+def test_parity_rejects_noncanonical_retained_contracts(tmp_path, role) -> None:
+    store = LocalArtifactStore(tmp_path)
+    result = _result(store, trace_ref=_trace(store))
+    receipts = tuple(_receipt(store, result, replicate) for replicate in ("R1", "R2", "R3"))
+    ref = receipts[0] if role == "receipt" else result
+    altered = store.put_bytes(b" " + store.read_bytes(ref), media_type="application/json")
+    with pytest.raises(ValueError, match="canonical"):
+        compare_executable_results(
+            altered if role == "reference" else result,
+            (altered, result, result) if role == "native" else (result, result, result),
+            (altered, *receipts[1:]) if role == "receipt" else receipts,
+            store, quote_quantum=Decimal("0.01"),
+        )
+
+
+@pytest.mark.parametrize('quantum', ['0', '-0.01', 'NaN', 'Infinity'])
+def test_parity_rejects_invalid_tolerance_before_reading_artifacts(tmp_path, quantum):
+    store = LocalArtifactStore(tmp_path)
+    absent = _sealed(store, {})
+    with pytest.raises(ValueError, match='quantum'):
+        compare_executable_results(absent, (absent,) * 3, (absent,) * 3, store,
+            quote_quantum=Decimal(quantum))
+
+
+@pytest.mark.parametrize('fault', ['noncanonical_trace', 'manifest', 'source', 'environment', 'trial', 'time'])
+def test_parity_rejects_unbound_native_evidence(tmp_path, fault):
+    store = LocalArtifactStore(tmp_path)
+    trace = _trace(store)
+    result = _result(store, trace_ref=trace)
+    receipts = [_receipt(store, result, r) for r in ('R1', 'R2', 'R3')]
+    if fault == 'noncanonical_trace':
+        altered = store.put_bytes(b' ' + store.read_bytes(trace), media_type='application/json')
+        native = _result(store, trace_ref=altered)
+        receipts = [_receipt(store, native, r) for r in ('R1', 'R2', 'R3')]
+        with pytest.raises(ValueError, match='canonical'):
+            compare_executable_results(result, (native,) * 3, tuple(receipts), store, quote_quantum=Decimal('.01'))
+        return
+    body = json.loads(store.read_bytes(receipts[1]))
+    if fault == 'manifest': body['manifest_digest'] = '9' * 64
+    elif fault == 'source': body['source']['commit_sha'] = '9' * 40
+    elif fault == 'environment': body['environment_ref'] = trace.model_dump(mode='json')
+    elif fault == 'trial': body['logical_trial_id'] = 'another-experiment'
+    else: body['completed_at'] = '2026-01-01T00:00:00Z'
+    body.pop('digest')
+    body['digest'] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+    receipts[1] = _sealed(store, body)
+    assert compare_executable_results(result, (result,) * 3, tuple(receipts), store,
+        quote_quantum=Decimal('.01')).verdict == 'FAIL'

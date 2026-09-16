@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Protocol
 
 from packages.alpha_lifecycle.contracts.results import ReplayProof, ReplayReceipt
+from packages.alpha_lifecycle.contracts.base import SourceIdentity
+from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -25,8 +27,8 @@ class ReplayError(ValueError):
 
 
 def validate_replay_proof(proof: ReplayProof, *, manifest_ref: ArtifactRefV1,
-    result_ref: ArtifactRefV1, source, environment_ref: ArtifactRefV1,
-    sandbox_policy_digest: str, reader) -> None:
+    result_ref: ArtifactRefV1, source: SourceIdentity, environment_ref: ArtifactRefV1,
+    sandbox_policy_digest: str, reader: ArtifactStore) -> None:
     """Bind retained parent receipts to the exact computation being consumed."""
     proof = ReplayProof.model_validate(proof)
     raw = reader.read_bytes(result_ref)

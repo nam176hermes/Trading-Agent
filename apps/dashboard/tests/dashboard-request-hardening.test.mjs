@@ -347,12 +347,15 @@ test('local state accepts a sticky mapped-owner system ancestor', async () => {
   }
 });
 
-test('halt banner requires CLI for kill-switch clear', () => {
-  const source = fs.readFileSync(path.join(
-    ROOT, 'src/components/trading/halt-banner.tsx',
-  ), 'utf8');
-  assert.match(source, /Clear via CLI/);
-  assert.doesNotMatch(source, /fetch\('\/api\/trading\/kill-switch'|action: 'off'|Override/);
+test('mounted quick actions cannot construct a kill-switch clear request', async () => {
+  const { createKillSwitchIntent, killSwitchRequest } = await import('../src/lib/trading/quick-actions-state.ts');
+  assert.equal(createKillSwitchIntent('ACTIVE', 1), null);
+  const intent = createKillSwitchIntent('INACTIVE', 1);
+  assert.ok(intent);
+  assert.equal(killSwitchRequest(intent, 'ACTIVE', 2, 'test'), null);
+  assert.deepEqual(killSwitchRequest(intent, 'INACTIVE', 1, ' test '), {
+    action: 'on', reason: 'test', operation_id: intent.operationId,
+  });
 });
 
 test('retired compatibility UI names canonical unavailability and has no mutation caller', () => {

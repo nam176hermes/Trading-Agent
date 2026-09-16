@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Mapping, NoReturn
 
 from services.job_store.config import CANONICAL_DATABASE_REVISION, JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
+from services.job_store.records import validate_p3_job_id
 from .artifacts import ArtifactWriter
 from .command_registry import attest_worker_runtime_authority
 from .environment import ResearchEnvironmentSettings
@@ -55,8 +56,26 @@ def build_worker(
     p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
     _p1_safety_authority_refresher: P1StagingSafetyAuthorityRefresher | None = None,
     p3_fixture_executor: object | None = None,
+    p3_spawn_provider: object | None = None,
+    p3_job_id: str | None = None,
 ) -> JobWorker:
+    if p3_job_id is not None and p3_fixture_executor is None and p3_spawn_provider is None:
+        raise ValueError("P3 job binding requires an explicit P3 profile")
+    if p3_job_id is not None:
+        validate_p3_job_id(p3_job_id)
     values = os.environ if source is None else source
+    if p3_spawn_provider is not None:
+        from .p3_spawn import P3SpawnProvider
+        if type(p3_spawn_provider) is not P3SpawnProvider:
+            raise TypeError("exact P3 spawn provider required")
+        if p3_job_id is None:
+            raise ValueError("official P3 composition requires a bound job id")
+    if (p3_fixture_executor is not None or p3_spawn_provider is not None) and (
+        engine_spawn_provider is not None or engine_result_validator is not None
+        or engine_event_ingestor is not None
+        or (p3_fixture_executor is not None and p3_spawn_provider is not None)
+    ):
+        raise ValueError("P3 fixture, official and engine authorities cannot be mixed")
     if p3_fixture_executor is not None:
         from .p3_integration import P3IntegrationFixtureExecutor
         if type(p3_fixture_executor) is not P3IntegrationFixtureExecutor:
@@ -170,9 +189,14 @@ def build_worker(
     def reject_nonfixture(_job):
         raise EngineSpawnError("P3_FIXTURE_ONLY", "fixture composition cannot execute research operations")
 
-    if p3_fixture_executor is not None:
+    p3_profile = p3_fixture_executor is not None or p3_spawn_provider is not None
+    p3_store = (p3_fixture_executor.store if p3_fixture_executor is not None
+                else p3_spawn_provider._store if p3_spawn_provider is not None else None)
+    if p3_profile:
         repository.recover_expired_leases(ProcProcessInspector(),
-            recovery_id="worker-startup-recovery",alpha_campaign=True,fixture_only=True)
+            recovery_id="worker-startup-recovery",alpha_campaign=True,
+            fixture_only=p3_fixture_executor is not None,
+            **({"job_id":p3_job_id} if p3_job_id is not None else {}))
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -184,11 +208,12 @@ def build_worker(
         worker_id=worker_id,
         code_commit=code_commit,
         environment=environment,
-        p3_profile=p3_fixture_executor is not None,
+        p3_profile=p3_profile,
+        p3_job_id=p3_job_id,
         p3_fixture_executor=p3_fixture_executor,
-        p3_publisher=(repository.alpha_publication_repository(p3_fixture_executor.store)
-                      if p3_fixture_executor is not None else None),
-        prepare_spawn=reject_nonfixture if p3_fixture_executor is not None else prepare_immediate_spawn,
+        p3_publisher=repository.alpha_publication_repository(p3_store) if p3_profile else None,
+        prepare_spawn=(p3_spawn_provider.prepare if p3_spawn_provider is not None
+                       else reject_nonfixture if p3_fixture_executor is not None else prepare_immediate_spawn),
         safety_preflight=safety_preflight,
         engine_authority_factory=engine_authority_factory,
         engine_spawn_provider=engine_spawn_provider,
@@ -241,13 +266,14 @@ def build_p1_worker(
 
 
 
-def build_p3_fixture_worker(repository, source, *, authority):
+def build_p3_fixture_worker(repository, source, *, authority, job_id):
     """Compose the explicit fixture lane using existing protected host authority."""
     from pathlib import Path
     from packages.data_catalog.artifact_store import LocalArtifactStore
     from .nautilus_closure import NautilusClosureConfig
     from .p3_integration import P3IntegrationFixtureExecutor
 
+    validate_p3_job_id(job_id)
     names = ('P3_ARTIFACT_ROOT','P3_PRIVATE_ROOT','P3_REVIEW_FILE',
              'P3_NATIVE_RUNTIME_ROOT','P3_NATIVE_ARTIFACT_DIRECTORY','P3_SANDBOX_EXECUTABLE')
     if any(not source.get(name) or not Path(source[name]).is_absolute() for name in names):
@@ -259,14 +285,39 @@ def build_p3_fixture_worker(repository, source, *, authority):
             runtime_root=Path(source['P3_NATIVE_RUNTIME_ROOT']),
             artifact_directory=Path(source['P3_NATIVE_ARTIFACT_DIRECTORY']),
             sandbox_executable=Path(source['P3_SANDBOX_EXECUTABLE'])))
-    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor)
+    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor,p3_job_id=job_id)
+
+
+def _fixture_job(values):
+    from packages.job_contracts import AlphaCampaignPayload
+    from packages.runtime_release.config import _absolute
+    from scripts.p3_authority import read_enqueued_job
+    if values.get('P3_OPERATION')!='p3-integration-fixture-v1':
+        raise ValueError('fixture worker requires the exact fixture workflow operation')
+    if not values.get('CREDENTIALS_DIRECTORY'):
+        raise ValueError('fixture worker requires protected launcher credentials')
+    paths={name:_absolute(values.get(name)) for name in (
+        'P3_AUTHORITY_REQUEST_FILE','P3_PREFLIGHT_DIRECTORY','P3_ARTIFACT_ROOT','P3_MANIFEST_FILE','P3_REVIEW_FILE')}
+    binding=read_enqueued_job(paths['P3_AUTHORITY_REQUEST_FILE'],paths['P3_PREFLIGHT_DIRECTORY'],
+        'p3-integration-fixture-v1',artifact_root=paths['P3_ARTIFACT_ROOT'],
+        manifest_file=paths['P3_MANIFEST_FILE'],review_file=paths['P3_REVIEW_FILE'])
+    payload=binding[1].payload
+    if not isinstance(payload,AlphaCampaignPayload) or payload.operation!='PARITY' or payload.logical_trial_id!='p3-integration-fixture-v1':
+        raise ValueError('fixture worker enqueue operation differs')
+    return binding[0],payload,binding[2]
 
 def main() -> int:
     values = os.environ
     profile = values.get("TRADING_WORKER_PROFILE", "paper")
+    if profile == "p3-official-v1":
+        from .p3_official import run_official_once
+        return run_official_once(values,build_worker=build_worker)
     if profile not in {"paper", "p3-fixture-v1"}:
         raise ValueError("unknown worker profile")
+    fixture_binding=_fixture_job(values) if profile=='p3-fixture-v1' else None
     authority = attest_worker_runtime_authority()
+    if fixture_binding is not None and authority.application_revision!=fixture_binding[1].expected_source.commit_sha:
+        raise ValueError('fixture worker revision differs from workflow source')
     idle_seconds = float(values.get("TRADING_WORKER_IDLE_SECONDS", "1"))
     settings = (
         JobStoreSettings.from_systemd_credentials(
@@ -277,10 +328,12 @@ def main() -> int:
             expected_user="trading_job_worker"
         )
     )
+    if fixture_binding is not None and _fixture_job(values)!=fixture_binding:
+        raise ValueError('fixture worker enqueue changed before database admission')
     with WorkerRepository(settings) as repository:
-        if profile == "p3-fixture-v1":
+        if fixture_binding is not None:
             repository.assert_p3_runtime_identity()
-            worker = build_p3_fixture_worker(repository,values,authority=authority)
+            worker = build_p3_fixture_worker(repository,values,authority=authority,job_id=fixture_binding[0])
             return 0 if worker.run_once() else 2
         repository.assert_runtime_identity(
             expected_user="trading_job_worker",

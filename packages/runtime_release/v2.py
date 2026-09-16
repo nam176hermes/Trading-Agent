@@ -1728,33 +1728,6 @@ def capture_source_proof_v2(repository: Path, commit: str) -> dict[str, object]:
         raise ReleaseAuthorityV2Error() from None
 
 
-def _migration_identity(path: Path) -> tuple[str, str | None]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        values: dict[str, object] = {}
-        for statement in tree.body:
-            name: str | None = None
-            value: ast.expr | None = None
-            if (
-                isinstance(statement, ast.Assign)
-                and len(statement.targets) == 1
-                and isinstance(statement.targets[0], ast.Name)
-            ):
-                name, value = statement.targets[0].id, statement.value
-            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-                name, value = statement.target.id, statement.value
-            if name in {"revision", "down_revision"} and value is not None:
-                values[name] = ast.literal_eval(value)
-        revision, down_revision = values.get("revision"), values.get("down_revision")
-        if (
-            not isinstance(revision, str)
-            or re.fullmatch(r"[0-9A-Za-z_]+", revision) is None
-            or (down_revision is not None and not isinstance(down_revision, str))
-        ):
-            raise ValueError
-        return revision, down_revision
-    except Exception:
-        raise ReleaseAuthorityV2Error() from None
 
 
 def _artifact_digest(entries: Sequence[dict[str, object]], root: str) -> str:

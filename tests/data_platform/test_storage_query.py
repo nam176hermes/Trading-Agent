@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import hashlib
+import os
 from pathlib import Path
+import subprocess
+import sys
 from uuid import UUID
 
 import pyarrow as pa
@@ -89,6 +93,39 @@ def test_local_artifact_store_rejects_shared_or_symlinked_roots(tmp_path: Path) 
     link.symlink_to(private, target_is_directory=True)
     with pytest.raises(ArtifactIntegrityError, match="artifact root"):
         LocalArtifactStore(link)
+
+
+@pytest.mark.parametrize("operation", ["read", "put"])
+def test_local_artifact_store_rejects_fifo_without_waiting_for_a_writer(
+    tmp_path: Path, operation: str,
+) -> None:
+    digest = hashlib.sha256(b"fifo.fixture").hexdigest()
+    os.mkfifo(tmp_path / (digest + ".blob"), 0o600)
+    script = '''
+from pathlib import Path
+import hashlib,sys
+from packages.data_catalog.artifact_store import LocalArtifactStore,ArtifactIntegrityError
+from packages.data_contracts import ArtifactRefV1
+data=b'fifo.fixture'
+digest=hashlib.sha256(data).hexdigest()
+store=LocalArtifactStore(Path(sys.argv[1]))
+ref=ArtifactRefV1(content_sha256=digest,size_bytes=len(data),media_type='application/octet-stream',locator=digest+'.blob')
+try:
+    store.read_bytes(ref) if sys.argv[2]=='read' else store.put_bytes(data,media_type=ref.media_type)
+except ArtifactIntegrityError:
+    sys.exit(0)
+sys.exit(1)
+'''
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path), operation],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True, timeout=5, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("CAS blocks on a FIFO before validating its file type")
+    assert result.returncode == 0, result.stderr.decode()
+    assert {path.name for path in tmp_path.iterdir()} == {digest + ".blob"}
 
 
 def test_arrow_partition_and_snapshot_are_deterministic(tmp_path: Path) -> None:

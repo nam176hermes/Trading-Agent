@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, SourceIdentity, StrictModel
 from packages.alpha_lifecycle.contracts.data import DatasetEvidence, Day, FoldManifest, PITProof
+from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1, DatasetPartitionManifestV3, PITQueryMode, PITQueryV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -40,6 +41,60 @@ class P3RevisionEntry(StrictModel):
         return self
 
 
+def materialize_daily_revision(
+    acquisition_ref: ArtifactRefV1,
+    store: LocalArtifactStore,
+    *,
+    ingested_at: datetime,
+    previous: P3RevisionEntry | None = None,
+) -> P3RevisionEntry:
+    """Prepare one retained archive through P2; observation time is never backdated."""
+    from packages.alpha_lifecycle.acquisition import (
+        daily_arrow_table, normalize_daily_acquisition, retain_daily_quality_receipt,
+        retain_normalization_receipt, validate_acquisition_receipt,
+    )
+    from packages.data_catalog.v3 import materialize_arrow_partition_v3
+
+    acquired = validate_acquisition_receipt(acquisition_ref, store)
+    if ingested_at.tzinfo is not UTC or ingested_at < acquired.fetched_at:
+        raise ValueError("ingestion must be UTC and no earlier than acquisition")
+    pair = (acquired.archive_ref.content_sha256, acquired.checksum_ref.content_sha256)
+    series = uuid5(NAMESPACE_URL, f'p3.research.daily/BTCUSDT.BINANCE/{acquired.day.isoformat()}')
+    if previous is not None:
+        previous = P3RevisionEntry.model_validate(previous)
+        prior = validate_acquisition_receipt(previous.acquisition_ref, store)
+        if (previous.day != acquired.day or prior.day != acquired.day
+            or previous.partition.revision_series_id != series
+            or (prior.archive_ref.content_sha256, prior.checksum_ref.content_sha256) == pair
+            or ingested_at < previous.partition.ingested_at):
+            raise ValueError("revision predecessor must bind this day and different raw evidence")
+    ordinal = 1 if previous is None else previous.partition.revision_ordinal + 1
+    identity = canonical_json_bytes(dict(
+        archive_sha256=pair[0], checksum_sha256=pair[1], revision_ordinal=ordinal,
+    )).decode()
+    normalized_ref = store.put_bytes(
+        canonical_json_bytes(normalize_daily_acquisition(acquisition_ref, store)),
+        media_type='application/json',
+    )
+    provider_ref = retain_normalization_receipt(acquisition_ref, store)
+    quality_ref = retain_daily_quality_receipt(acquisition_ref, store)
+    schema, table = daily_arrow_table(acquisition_ref, store)
+    partition = materialize_arrow_partition_v3(
+        table, schema=schema, store=store, partition_id=uuid5(series, identity),
+        dataset='p3.research.daily', partition_key=('BTCUSDT.BINANCE', acquired.day.isoformat()),
+        partition_spec_version='p3.utc-day.v1', source_available_at=acquired.system_observed_at,
+        system_observed_at=acquired.system_observed_at, ingested_at=ingested_at,
+        raw_evidence_sha256s=pair, transform_receipt_sha256=provider_ref.content_sha256,
+        quality_receipt_sha256=quality_ref.content_sha256, revision_series_id=series,
+        revision_ordinal=ordinal,
+        supersedes_partition_id=None if previous is None else previous.partition.partition_id,
+        supersedes_manifest_sha256=None if previous is None else previous.partition.digest,
+    ).manifest
+    return P3RevisionEntry(day=acquired.day, acquisition_ref=acquisition_ref,
+        normalized_ref=normalized_ref, provider_ref=provider_ref, quality_ref=quality_ref,
+        partition=partition)
+
+
 class P3ResearchRevisionInventory(DigestModel):
     """Declared standalone universe; this model confers no protected custody."""
     schema_version: Literal['p3-research-revision-inventory-v1']
@@ -57,7 +112,7 @@ class P3ResearchRevisionInventory(DigestModel):
 
 
 class _ReadBudget:
-    def __init__(self, store):
+    def __init__(self, store: ArtifactStore) -> None:
         self.store=store
         self.remaining=1073741824
 

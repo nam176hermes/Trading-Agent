@@ -162,6 +162,16 @@ def test_noncanonical_matrix_bytes_fail_closed(context: closure._ValidationConte
     _error(context, "P0_CLOSURE_JSON_NONCANONICAL")
 
 
+def test_foundation_requires_retained_output_before_p3_promotion_attestation() -> None:
+    raw = (ROOT / ".github/workflows/foundation.yml").read_bytes()
+    guarded = b'if test -f "$output"; then echo \'generated=true\' >> "$GITHUB_OUTPUT"; fi'
+    assert raw.count(guarded) == 1
+    assert closure._foundation_workflow_valid(raw)
+    assert not closure._foundation_workflow_valid(raw.replace(
+        guarded, b'echo \'generated=true\' >> "$GITHUB_OUTPUT"', 1,
+    ))
+
+
 def test_portable_ci_cannot_bypass_hwc_status(context: closure._ValidationContext) -> None:
     """Break caught: portable qualification omits the canonical HWC projection."""
     makefile = context.root / "Makefile"

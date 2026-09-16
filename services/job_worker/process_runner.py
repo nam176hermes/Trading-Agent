@@ -386,7 +386,7 @@ class ProcessRunner:
     def run(
         self,
         prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn],
-        environment: ResearchEnvironmentSettings,
+        environment: ResearchEnvironmentSettings | None,
         timeout_seconds: int | None,
         heartbeat: Callable[
             [ProcessIdentity], HeartbeatDecision | HeartbeatInstruction
@@ -435,8 +435,10 @@ class ProcessRunner:
                 raise ValueError("attested spawn authority type is invalid")
         # Legacy root and credential policy validation remains in its original
         # position. Engine authority has no ambient/legacy environment path.
+        if not engine_authority and not p3_authority and environment is None:
+            raise ValueError("legacy child requires a research environment")
         child_environment = (
-            None if engine_authority or p3_authority else build_child_environment(environment)
+            None if engine_authority or p3_authority or environment is None else build_child_environment(environment)
         )
         reserve_fd = os.open(
             "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
@@ -780,6 +782,9 @@ class ProcessRunner:
             reaped = exit_code is not None
             if cleanup_errors or not reaped:
                 reason = "PROCESS_GROUP_CLEANUP_UNPROVEN"
+            if (p3_output is not None and reason is None and exit_code == 0
+                and cleanup_proven and reaped and not cleanup_errors):
+                p3_output.begin_postrun()
             captured = {
                 kind: self._persist_state(job_id, attempt_id, kind, state)
                 for kind, state in states.items()
@@ -787,12 +792,32 @@ class ProcessRunner:
             inventory_ref = None
             if (p3_output is not None and reason is None and exit_code == 0
                 and cleanup_proven and reaped and not cleanup_errors):
+                next_retention_heartbeat = 0.0
+                def retention_progress(*, force=False):
+                    nonlocal next_retention_heartbeat, reason, safety_reason_code
+                    if not force and self._monotonic() < next_retention_heartbeat:
+                        return
+                    instruction = heartbeat(identity)
+                    decision = (instruction.decision if isinstance(instruction, HeartbeatInstruction)
+                                else HeartbeatDecision(instruction))
+                    if decision is not HeartbeatDecision.CONTINUE:
+                        reason = self._decision_reason(decision)
+                        if decision is HeartbeatDecision.SAFETY_DRIFT and isinstance(instruction, HeartbeatInstruction):
+                            safety_reason_code = instruction.reason_code
+                        raise ValueError('P3 output retention authority changed')
+                    next_retention_heartbeat = self._monotonic() + 1
                 try:
                     from packages.engine_contracts.serialization import canonical_json_bytes
-                    inventory_ref = p3_output.retain()
+                    inventory_ref = p3_output.retain(progress=retention_progress)
+                    retention_progress(force=True)
+                    p3_output.check_deadline()
                     command_lineage = {**command_lineage,
                         'p3_output_inventory_ref':canonical_json_bytes(inventory_ref).decode()}
+                except TimeoutError:
+                    inventory_ref = None
+                    reason = reason or 'P3_POSTRUN_TIMEOUT'
                 except (OSError,ValueError):
+                    inventory_ref = None
                     reason = reason or 'P3_OUTPUT_INVALID'
             result = ProcessOutcome(
                 exit_code, reason, identity, captured["stdout"], captured["stderr"],

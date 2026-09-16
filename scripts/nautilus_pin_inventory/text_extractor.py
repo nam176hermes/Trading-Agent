@@ -158,11 +158,6 @@ def _span_for(path: str, carrier: Carrier, text: str, start: int, end: int) -> S
     return SourceSpan.content(path, start_line, start - start_line_offset + 1, end_line, end - end_line_offset + 1)
 
 
-def _content_offset(text: str, line: int, column: int) -> int:
-    offset = 0
-    for _ in range(line - 1):
-        offset = text.index("\n", offset) + 1
-    return offset + column - 1
 
 
 def _is_nautilus_governed(path: str) -> bool:

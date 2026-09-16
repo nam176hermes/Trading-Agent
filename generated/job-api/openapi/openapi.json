@@ -93,7 +93,7 @@
           "artifact_type": {
             "maxLength": 64,
             "minLength": 1,
-            "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+            "pattern": "^(?:[A-Z][A-Z0-9_]{0,63}|stdout|stderr|result|engine_event_batch)$",
             "title": "Artifact Type",
             "type": "string"
           },

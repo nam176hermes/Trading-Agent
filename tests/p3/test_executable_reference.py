@@ -27,3 +27,19 @@ def test_synthetic_reference_rejects_below_minimum_instead_of_skipping() -> None
             quote_quantum=Decimal("0.01"),minimum_notional=Decimal("10"),initial_cash=Decimal("1"),
         )
 
+
+
+def test_synthetic_accounting_pins_rounding_at_a_tick_boundary():
+    from decimal import localcontext,ROUND_CEILING,ROUND_HALF_EVEN
+    with localcontext(prec=65,rounding=ROUND_CEILING):
+        opening=Decimal(100)/Decimal('1.001')
+    values=dict(targets=(1,0),opens=(opening,Decimal(100)),boundary_times_ns=(1,2),
+        source_days=('2026-01-01','2026-01-02'),price_increment=Decimal('0.01'),
+        size_increment=Decimal('0.00001'),quote_quantum=Decimal('0.01'),minimum_notional=Decimal(10))
+    with localcontext(prec=50,rounding=ROUND_HALF_EVEN):
+        expected=synthetic_next_open_accounting(**values)
+    assert next(row['price'] for row in expected if row['kind']=='QUOTE')=='100'
+    assert next(row['price'] for row in expected if row['kind']=='FILL')=='100'
+    with localcontext(prec=12,rounding=ROUND_CEILING) as context:
+        assert synthetic_next_open_accounting(**values)==expected
+        assert (context.prec,context.rounding)==(12,ROUND_CEILING)

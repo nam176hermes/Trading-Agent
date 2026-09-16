@@ -132,18 +132,21 @@ def validate_request(
             raise AuthorityHeld("HELD E_AUTHORITY: fixture cannot carry an official operation input")
     elif request.operation_input is None:
         raise AuthorityHeld("HELD E_OPERATION: official operation input is required")
-    if isinstance(request.authorization, RunAuthorization):
-        expected_context = {
-            "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
-            "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": expected_source.commit_sha,
-            "GITHUB_REF_PROTECTED": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
-            "GITHUB_RUN_ID": str(request.authorization.issuer_run_id),
-            "GITHUB_RUN_ATTEMPT": str(request.authorization.issuer_attempt),
-            "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
-        }
-        if any(os.environ.get(key) != value for key, value in expected_context.items()):
-            raise AuthorityHeld("HELD E_ISSUER: request differs from the protected-main workflow context")
+    _validate_workflow_context(request.authorization,expected_source)
     return request
+
+
+def _validate_workflow_context(authorization,source: SourceIdentity) -> None:
+    expected_context = {
+        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
+        "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": source.commit_sha,
+        "GITHUB_REF_PROTECTED": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_RUN_ID": str(authorization.issuer_run_id),
+        "GITHUB_RUN_ATTEMPT": str(authorization.issuer_attempt),
+        "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
+    }
+    if any(os.environ.get(key) != value for key, value in expected_context.items()):
+        raise AuthorityHeld("HELD E_ISSUER: request differs from the protected-main workflow context")
 
 
 def build_alpha_campaign_payload(
@@ -195,6 +198,22 @@ def build_alpha_campaign_payload(
     )
 
 
+def validate_operation_review(authorization, source, operation_input, store, *, now):
+    """Authenticate review metadata before a caller opens its referenced evidence."""
+    from packages.alpha_lifecycle.pit_evidence import _reference
+    _reference(authorization.review_ref,65536)
+    raw=store.read_bytes(authorization.review_ref)
+    review=ReviewApproval.model_validate_json(raw)
+    if (canonical_json_bytes(review)!=raw
+        or review.source!=source or review.verdict!='APPROVED'
+        or review.operator_identity==review.reviewer_identity
+        or not isinstance(now,datetime) or now.tzinfo is None
+        or not review.issued_at<=authorization.issued_at<=now<authorization.expires_at<=review.expires_at
+        or operation_input.digest not in review.subject_digests):
+        raise ValueError('operation input is not covered by a current independent review')
+    return review
+
+
 def stage_alpha_campaign_payload(store, authorization, source, workflow_operation, manifest_bytes, *, operation_input=None):
     """Publish exact approved input bytes to CAS and read them back before enqueue."""
     payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=operation_input)
@@ -202,17 +221,12 @@ def stage_alpha_campaign_payload(store, authorization, source, workflow_operatio
     if (len(manifest_bytes) != reference.size_bytes
         or hashlib.sha256(manifest_bytes).hexdigest() != reference.content_sha256):
         raise AuthorityHeld("HELD E_MANIFEST: staged manifest differs from approval")
-    review_raw = store.read_bytes(authorization.review_ref)
-    if operation_input is not None:
+    if operation_input is None:
+        store.read_bytes(authorization.review_ref)
+    else:
         try:
-            review = ReviewApproval.model_validate_json(review_raw)
             now = datetime.now(UTC)
-            if (canonical_json_bytes(review) != review_raw
-                or review.source != source or review.verdict != "APPROVED"
-                or review.operator_identity == review.reviewer_identity
-                or not review.issued_at <= authorization.issued_at <= now < authorization.expires_at <= review.expires_at
-                or operation_input.digest not in review.subject_digests):
-                raise ValueError("operation input is not covered by a current independent review")
+            review=validate_operation_review(authorization,source,operation_input,store,now=now)
             store.read_bytes(review.evidence_ref)
             from packages.alpha_lifecycle.operation_input import SelectPrimaryInput
             if isinstance(operation_input.body,SelectPrimaryInput):

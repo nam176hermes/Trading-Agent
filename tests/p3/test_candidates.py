@@ -93,3 +93,35 @@ def test_all_frozen_perturbations_are_runnable_and_future_invariant(candidate_in
         assert run_candidate(spec, bars, fold, perturbation_id=perturbation.perturbation_id) == expected
     with pytest.raises(ValueError, match="outside"):
         run_candidate(spec, bars, fold, perturbation_id="p05")
+
+
+@pytest.mark.parametrize('variant',[None,'p01','p02','p03','p04'])
+def test_tsmom_starts_at_first_complete_horizon(variant):
+    spec=_candidate(3)
+    parameters=spec.parameters if variant is None else next(item.parameters for item in spec.perturbations if item.perturbation_id==variant)
+    horizon=parameters.horizons[-1]
+    start=date(2024,1,1)
+    bars=tuple(_bar(start+timedelta(days=index),Decimal(100+index)) for index in range(horizon+2))
+    fold=Fold.model_construct(decision_start=start+timedelta(days=horizon),
+        return_end_range=DateRange(start=start+timedelta(days=horizon+1),end=start+timedelta(days=horizon+1)),return_count=1)
+    assert run_candidate(spec,bars,fold,perturbation_id=variant)==(1,1)
+
+
+@pytest.mark.parametrize('caller',['direct','campaign'])
+def test_candidate_rounding_is_fixed_and_restores_caller(caller):
+    from decimal import localcontext,ROUND_CEILING,ROUND_HALF_EVEN
+    from packages.alpha_lifecycle.candidates import _next_weight
+    spec=_candidate(3)
+    start=date(2024,1,1)
+    tiny=Decimal('1.'+'0'*49+'5')
+    bars=tuple(_bar(start+timedelta(days=index),tiny if index>=127 else Decimal(1)) for index in range(129))
+    fold=Fold.model_construct(decision_start=start+timedelta(days=127),
+        return_end_range=DateRange(start=start+timedelta(days=128),end=start+timedelta(days=128)),return_count=1)
+    def run():
+        return _next_weight(spec.parameters,bars,127,0) if caller=='direct' else run_candidate(spec,bars,fold)
+    with localcontext(prec=50,rounding=ROUND_HALF_EVEN):
+        expected=run()
+    assert expected==(0 if caller=='direct' else (0,0))
+    with localcontext(prec=12,rounding=ROUND_CEILING) as context:
+        assert run()==expected
+        assert (context.prec,context.rounding)==(12,ROUND_CEILING)

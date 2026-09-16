@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import errno
 import hashlib
 import hmac
@@ -86,7 +88,7 @@ def validate_current_safety_evidence(
     return evidence
 
 
-def _blocked(reason: str, message: str, cause: BaseException | None = None) -> None:
+def _blocked(reason: str, message: str, cause: BaseException | None = None) -> NoReturn:
     error = SafetyBlockedError(reason, message)
     if cause is None:
         raise error

@@ -240,9 +240,13 @@ def test_portable_ci_uses_common_test_target_after_one_source_reinstall() -> Non
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
     assert "$(MAKE) prepare-root-test-install" in makefile
-    assert "$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend" in makefile
+    assert "$(MAKE) check-python-static audit-portable check-d0-closure check-contracts check-secrets" in makefile
     common_private = makefile.split("ci-common-private:\n", 1)[1].split("\n\nartifact-firewall-check:", 1)[0]
     assert common_private.count("prepare-root-test-install") == 1
+    assert "test-backend" not in common_private
+    assert "test-dashboard" not in common_private
+    portable = makefile.split("ci-portable-private:\n", 1)[1].split("\n\n", 1)[0]
+    assert portable.count("check-test-governance-topology") == 1
 
 
 def test_test_all_rebuilds_the_current_root_package_and_uses_private_tmp() -> None:

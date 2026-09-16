@@ -1,11 +1,13 @@
 """Pinned private output transport; canonical SQL remains the only job authority."""
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import os
 import re
 import stat
+import time
 
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
@@ -16,16 +18,17 @@ _MAX_FILES = 8192
 _FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
-def _identity(info):
+def _identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
     return info.st_dev,info.st_ino,info.st_mode,info.st_size,info.st_mtime_ns,info.st_ctime_ns
 
 
 class P3OutputCustody:
-    def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore):
+    def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore) -> None:
         if type(store) is not LocalArtifactStore or re.fullmatch('[0-9a-f]{64}',name) is None:
             raise ValueError('P3 output custody requires the retained store and exact attempt directory')
         self._parent = self._output = -1
         self._retained = None
+        self._postrun_deadline = None
         self._name,self._store = name,store
         self._identity = (os.fstat(output_fd).st_dev,os.fstat(output_fd).st_ino)
         try:
@@ -44,7 +47,7 @@ class P3OutputCustody:
     def matches(self, job_id: str, attempt_id: str) -> bool:
         return self._name == hashlib.sha256(f'{job_id}/{attempt_id}'.encode()).hexdigest()
 
-    def _check(self):
+    def _check(self) -> None:
         if self._parent < 0 or self._output < 0:
             raise ValueError('P3 output custody is closed')
         current=os.stat(self._name,dir_fd=self._parent,follow_symlinks=False)
@@ -53,7 +56,7 @@ class P3OutputCustody:
             or any(info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700 for info in (current,opened))):
             raise ValueError('P3 output directory identity changed')
 
-    def _close(self):
+    def _close(self) -> None:
         if self._retained is not None:
             directories=self._retained[0]
             self._retained=None
@@ -66,7 +69,7 @@ class P3OutputCustody:
             if fd >= 0:
                 os.close(fd)
 
-    def abandon(self):
+    def abandon(self) -> None:
         try:
             if self._parent >= 0:
                 self._check()
@@ -79,7 +82,7 @@ class P3OutputCustody:
             self._close()
 
     @staticmethod
-    def _read(directory, name, expected):
+    def _read(directory: int, name: str, expected: tuple[int, int, int, int, int, int]) -> bytes:
         fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC|os.O_NONBLOCK,dir_fd=directory)
         try:
             before=os.fstat(fd)
@@ -101,16 +104,34 @@ class P3OutputCustody:
         finally:
             os.close(fd)
 
-    def retain(self) -> ArtifactRefV1:
+    def begin_postrun(self) -> None:
+        if self._postrun_deadline is not None:
+            raise ValueError('P3 post-run budget cannot be restarted')
+        self._postrun_deadline=time.monotonic()+CHILD_POLICY['child_wall_seconds']
+
+    def check_deadline(self) -> None:
+        if self._postrun_deadline is None or time.monotonic() >= self._postrun_deadline:
+            raise TimeoutError('P3 post-run deadline is absent or expired')
+
+    def retain(self, *, progress: Callable[[], None] | None = None) -> ArtifactRefV1:
         if self._retained is not None:
             raise ValueError('P3 output was already retained')
         self._check()
+        if self._postrun_deadline is None:
+            self.begin_postrun()
+        def check() -> None:
+            self.check_deadline()
+            if progress is not None:
+                progress()
+            self.check_deadline()
+        check()
         directories={'':self._output}
         listing={}
         files=[]
         total=0
         try:
             for relative in ('','artifacts','r1','r2','r3','r1/artifacts','r2/artifacts','r3/artifacts'):
+                check()
                 if relative:
                     parent,_,name=relative.rpartition('/')
                     if parent not in directories or name not in listing[parent]:
@@ -127,6 +148,7 @@ class P3OutputCustody:
                     raise ValueError('P3 output inventory exceeds its bound')
                 allowed_dirs={'artifacts','r1','r2','r3'} if not relative else ({'artifacts'} if relative in {'r1','r2','r3'} else set())
                 for name in names:
+                    check()
                     if name in allowed_dirs:
                         continue
                     if (relative.endswith('artifacts') and re.fullmatch('[0-9a-f]{64}\\.blob',name)
@@ -137,6 +159,7 @@ class P3OutputCustody:
                             raise ValueError('P3 attempt output exceeds its total bound')
                         expected=_identity(info)
                         raw=self._read(fd,name,expected)
+                        check()
                         ref=ArtifactRefV1(content_sha256=hashlib.sha256(raw).hexdigest(),size_bytes=len(raw),
                             media_type='application/json',locator=hashlib.sha256(raw).hexdigest()+'.blob')
                         files.append((relative,name,expected,ref))
@@ -144,16 +167,23 @@ class P3OutputCustody:
                         raise ValueError('P3 output contains an unexpected path')
             inventory=[]
             for relative,name,expected,ref in files:
+                check()
                 raw=self._read(directories[relative],name,expected)
-                if self._store.put_bytes(raw,media_type=ref.media_type) != ref or self._store.read_bytes(ref) != raw:
+                retained=self._store.put_bytes(raw,media_type=ref.media_type)
+                check()
+                if retained != ref or self._store.read_bytes(ref) != raw:
                     raise ValueError('P3 retained output readback differs')
+                check()
                 inventory.append(dict(path=relative+'/'+name,artifact_ref=ref))
             inventory_raw=canonical_json_bytes(inventory)
             if len(inventory_raw) > MAX_OUTPUT_INVENTORY_BYTES:
                 raise ValueError('P3 output inventory exceeds its serialized bound')
+            check()
             inventory_ref=self._store.put_bytes(inventory_raw,media_type='application/json')
+            check()
             if self._store.read_bytes(inventory_ref) != inventory_raw:
                 raise ValueError('P3 retained output inventory differs')
+            check()
             self._retained=(directories,listing,files,inventory_ref)
             return inventory_ref
         except BaseException:
@@ -170,38 +200,45 @@ class P3OutputCustody:
         return self._retained[3]
 
     @property
-    def inventory(self):
+    def inventory(self) -> dict[str, ArtifactRefV1]:
         if self._retained is None:
             raise ValueError('P3 output inventory is unavailable')
         return {relative+'/'+name:ref for relative,name,_,ref in self._retained[2]}
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         if self._retained is None:
             raise ValueError('P3 outputs must be retained before cleanup')
         directories,listing,files,_=self._retained
         try:
+            self.check_deadline()
             self._check()
             expected_inventory=canonical_json_bytes([dict(path=relative+'/'+name,artifact_ref=ref)
                 for relative,name,_,ref in files])
             if self._store.read_bytes(self.inventory_ref) != expected_inventory:
                 raise ValueError('P3 retained inventory changed before cleanup')
             for _,_,_,ref in files:
+                self.check_deadline()
                 self._store.read_bytes(ref)
+                self.check_deadline()
             if any(sorted(os.listdir(fd)) != listing[relative] for relative,fd in directories.items()):
                 raise ValueError('P3 output inventory changed before cleanup')
             for relative,name,expected,_ in files:
+                self.check_deadline()
                 if _identity(os.stat(name,dir_fd=directories[relative],follow_symlinks=False)) != expected:
                     raise ValueError('P3 output file changed before cleanup')
                 os.unlink(name,dir_fd=directories[relative])
             for relative in sorted((r for r in directories if r),key=lambda r:(r.count('/'),r),reverse=True):
+                self.check_deadline()
                 parent,_,name=relative.rpartition('/')
                 current=os.stat(name,dir_fd=directories[parent],follow_symlinks=False)
                 opened=os.fstat(directories[relative])
                 if (current.st_dev,current.st_ino) != (opened.st_dev,opened.st_ino):
                     raise ValueError('P3 output subdirectory changed before cleanup')
                 os.rmdir(name,dir_fd=directories[parent])
+            self.check_deadline()
             self._check()
             os.rmdir(self._name,dir_fd=self._parent)
+            self.check_deadline()
         finally:
             self._close()
 

@@ -10,16 +10,10 @@ from pydantic import BeforeValidator, Field, model_validator
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime
 
-from .base import AlphaId, DigestModel, SemVer, Sha256, StrictModel, Text, Token
+from .models import json_array, AlphaId, DigestModel, SemVer, Sha256, StrictModel, Text, Token
 
 
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
-
-
-Refs = Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=8)]
+Refs = Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=1, max_length=8)]
 Stage = Literal["REGISTER", "RESEARCH_DECISION", "EXIT_DECISION"]
 
 
@@ -64,7 +58,7 @@ class PublicationRequest(DigestModel):
     semantic_request_digest: Sha256
     stage: Stage
     evidence_ref: ArtifactRefV1
-    expected_heads: Annotated[tuple[ExpectedHead, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=4)]
+    expected_heads: Annotated[tuple[ExpectedHead, ...], BeforeValidator(json_array), Field(min_length=1, max_length=4)]
     proposed_event_refs: Refs
     job_id: Text
 
@@ -72,7 +66,7 @@ class PublicationRequest(DigestModel):
 class PublicationReceipt(DigestModel):
     schema_version: Literal["p3-publication-receipt-v1"]
     request_ref: ArtifactRefV1
-    ledger_event_ids: Annotated[tuple[UUID, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=8)]
+    ledger_event_ids: Annotated[tuple[UUID, ...], BeforeValidator(json_array), Field(min_length=1, max_length=8)]
     registry_event_refs: Refs
     commit_result_ref: ArtifactRefV1
     committed_at: CanonicalUtcDateTime
@@ -94,8 +88,41 @@ class RegistrationProof(DigestModel):
     schema_version: Literal["p3-registration-proof-v1"]
     input_set_ref: ArtifactRefV1
     baseline_selection_ref: ArtifactRefV1
-    candidate_head_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=4, max_length=4)]
+    candidate_head_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=4, max_length=4)]
     publication_ref: ArtifactRefV1
+
+
+class JobCommitResult(DigestModel):
+    schema_version: Literal["p3-job-commit-result-v1"]
+    job_id: Text
+    idempotency_key: Token
+    semantic_request_digest: Sha256
+    prepublication_ref: ArtifactRefV1
+    ledger_event_ids: Annotated[
+        tuple[UUID, ...], BeforeValidator(json_array), Field(min_length=1, max_length=8)
+    ]
+    registry_event_refs: Annotated[
+        tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=1, max_length=8)
+    ]
+    alpha_outcome: Literal["NOT_EVALUATED", "PASS", "FAIL"]
+
+    def bound_to(
+        self, request: PublicationRequest, *, ledger_event_ids: tuple[UUID, ...] | None = None
+    ) -> "JobCommitResult":
+        """Validate response identity; a valid digest alone does not bind a commit."""
+        if (
+            self.job_id != request.job_id
+            or self.idempotency_key != request.idempotency_key
+            or self.semantic_request_digest != request.semantic_request_digest
+            or self.prepublication_ref != request.evidence_ref
+            or self.registry_event_refs != request.proposed_event_refs
+            or len(self.ledger_event_ids) != len(self.registry_event_refs)
+            or len(set(self.ledger_event_ids)) != len(self.ledger_event_ids)
+            or (self.alpha_outcome == "NOT_EVALUATED") != (request.stage == "REGISTER")
+            or (ledger_event_ids is not None and self.ledger_event_ids != ledger_event_ids)
+        ):
+            raise ValueError("P3 commit result does not match publication request")
+        return self
 
 
 __all__ = ["CampaignClosureReport", "ExpectedHead", "PrePublicationEvidence", "PublicationReceipt", "PublicationRequest", "RegistrationProof"]

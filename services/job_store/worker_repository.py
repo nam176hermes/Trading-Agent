@@ -15,6 +15,7 @@ from uuid import uuid4
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
+from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.job_contracts import JobPayload, JobState, JobType, parse_payload, validate_transition
 from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 
@@ -25,7 +26,7 @@ from .config import (
     JobStoreSettings,
 )
 from .errors import InvalidTraceId
-from .records import ClaimedJob as ClaimedJob
+from .records import ClaimedJob as ClaimedJob, validate_p3_job_id
 
 
 _TRACE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
@@ -105,6 +106,12 @@ class WorkerRepository:
         from .p3_publication_repository import P3PublicationRepository
 
         return P3PublicationRepository(self._pool, store)
+
+    def consume_p3_holdout(self, claim: ClaimedJob, store: ArtifactStore, *, trace_id: str) -> datetime:
+        """Confirm one-use SQL metadata; the caller separately owns release authority."""
+        from .p3_holdout_disclosure import consume
+        self._validate_trace(trace_id)
+        return consume(self._pool,claim,store,trace_id=trace_id)
 
     def assert_runtime_identity(
         self, *, expected_user: str, expected_revision: str,
@@ -231,7 +238,7 @@ class WorkerRepository:
                 )
 
     def claim_next_alpha_campaign(
-        self, worker_id: str, lease_seconds: int, trace_id: str, *, fixture_only: bool
+        self, worker_id: str, lease_seconds: int, trace_id: str, *, fixture_only: bool, job_id: str | None = None
     ) -> ClaimedJob | None:
         """Claim the explicit fixture or official P3 lane."""
 
@@ -240,6 +247,8 @@ class WorkerRepository:
         self._validate_worker(worker_id)
         self._validate_lease_seconds(lease_seconds)
         self._validate_trace(trace_id)
+        if job_id is not None:
+            validate_p3_job_id(job_id)
         attempt_id = self._new_id("attempt")
         lease_token = secrets.token_urlsafe(48)
         with self._pool.connection() as connection:
@@ -251,12 +260,17 @@ class WorkerRepository:
                     FROM job_plane.worker_claim_alpha_campaign(
                         %s,%s,%s,%s,%s,%s,%s
                     )
+                    """ if job_id is None else """
+                    SELECT job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at
+                    FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         attempt_id, worker_id, lease_token, lease_seconds,
                         trace_id, self._new_id("event"), fixture_only,
-                    ),
+                    ) + (() if job_id is None else (job_id,)),
                 ).fetchone()
+                if row is not None and job_id is not None and row['job_id'] != job_id:
+                    raise ValueError("P3 claim returned another job")
         if row is None:
             return None
         return ClaimedJob(
@@ -695,11 +709,15 @@ class WorkerRepository:
             )
         return outcome
 
-    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None) -> tuple[tuple[str, str], ...]:
+    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None, job_id: str | None = None) -> tuple[tuple[str, str], ...]:
         """Recover expired attempts only after process identity is resolved."""
 
         if type(alpha_campaign) is not bool or (alpha_campaign and type(fixture_only) is not bool) or (not alpha_campaign and fixture_only is not None and (type(fixture_only) is not bool or fixture_only)):
             raise ValueError("fixture recovery requires the explicit alpha lane")
+        if job_id is not None:
+            if not alpha_campaign:
+                raise ValueError("P3 bound recovery job requires the alpha lane")
+            validate_p3_job_id(job_id)
         run_trace = trace_id or f"recovery:{uuid4().hex}"
         self._validate_trace(run_trace)
         self._validate_worker(recovery_id)
@@ -724,7 +742,8 @@ class WorkerRepository:
                   )
                 ORDER BY j.lease_expires_at, j.job_id
                 """.replace("j.job_type IN ('SNAPSHOT','BACKTEST')",
-                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else " AND job_plane.p3_worker_lane_matches(j.payload,false)")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')")
+                    ("j.job_type='ALPHA_CAMPAIGN'" + (" AND j.payload->>'logical_trial_id'='p3-integration-fixture-v1' AND j.payload->>'operation'='PARITY'" if fixture_only else " AND job_plane.p3_worker_lane_matches(j.payload,false)")) if alpha_campaign else "j.job_type IN ('SNAPSHOT','BACKTEST')").replace("ORDER BY j.lease_expires_at",("AND j.job_id = %s " if job_id is not None else "")+"ORDER BY j.lease_expires_at"),
+                (job_id,) if job_id is not None else None,
             ).fetchall()
         outcomes: list[tuple[str, str]] = []
         for candidate in candidates:

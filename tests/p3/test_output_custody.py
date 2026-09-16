@@ -165,3 +165,34 @@ def test_cleanup_requires_retained_readback_after_commit(tmp_path,lost):
         assert private.read_bytes() == raw
     finally:
         handle.abandon()
+
+
+@pytest.mark.parametrize('phase',['retain','cleanup'])
+def test_postrun_deadline_preserves_private_evidence(tmp_path,monkeypatch,phase):
+    from services.job_worker import p3_output
+    clock=[100.0]
+    monkeypatch.setattr(p3_output,'time',__import__('types').SimpleNamespace(monotonic=lambda:clock[0]),raising=False)
+    handle,output,store=custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw=b'{"synthetic":true}'
+    artifact=output/'artifacts'/(hashlib.sha256(raw).hexdigest()+'.blob')
+    artifact.write_bytes(raw); artifact.chmod(0o600)
+    try:
+        if phase=='retain':
+            original=store.put_bytes
+            def slow(value,*,media_type):
+                result=original(value,media_type=media_type)
+                clock[0]+=p3_output.CHILD_POLICY['child_wall_seconds']
+                return result
+            monkeypatch.setattr(store,'put_bytes',slow)
+            with pytest.raises(TimeoutError,match='post-run'):
+                handle.retain()
+        else:
+            handle.retain()
+            clock[0]+=p3_output.CHILD_POLICY['child_wall_seconds']
+            with pytest.raises(TimeoutError,match='post-run'):
+                handle.cleanup()
+        assert artifact.read_bytes()==raw
+    finally:
+        handle.abandon()
+    assert output.exists()

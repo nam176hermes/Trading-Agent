@@ -65,7 +65,8 @@ def _capacity(base_samples, policy_digest: str, store: ArtifactStore) -> Capacit
     for fold_id, sample in base_samples:
         events = []
         if Decimal(sample.turnover) != 0:
-            events.append((Decimal(sample.turnover), sample.decision_row_ref or sample.return_row_ref, "transition"))
+            ref = sample.decision_row_ref if sample.kind == 'ENTRY' else sample.return_row_ref
+            events.append((Decimal(sample.turnover), ref, "transition"))
         if Decimal(sample.exit_cost) != 0:
             events.append((Decimal(sample.applied_weight), sample.return_row_ref, "exit"))
         for transition, ref, kind in events:

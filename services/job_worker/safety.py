@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import os
 import stat
 import weakref
@@ -43,7 +45,7 @@ class ValidatedDataRoot:
 _VALIDATED_ROOTS: weakref.WeakSet[ValidatedDataRoot] = weakref.WeakSet()
 
 
-def _blocked(reason: str, message: str) -> None:
+def _blocked(reason: str, message: str) -> NoReturn:
     raise SafetyBlockedError(reason, message)
 
 

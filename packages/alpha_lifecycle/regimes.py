@@ -9,7 +9,7 @@ from packages.alpha_lifecycle.baselines import DailyCloseV1
 
 
 Regime = Literal["BULL_LOW_VOL", "BEAR_LOW_VOL", "HIGH_VOL"]
-_REQUIRED = frozenset(("BULL_LOW_VOL", "BEAR_LOW_VOL", "HIGH_VOL"))
+_REQUIRED: frozenset[Regime] = frozenset(("BULL_LOW_VOL", "BEAR_LOW_VOL", "HIGH_VOL"))
 
 
 class RegimeError(ValueError):
@@ -48,7 +48,7 @@ def assign_regime(volatility: Decimal, trend: Decimal, threshold: Decimal) -> Re
     return "BULL_LOW_VOL" if trend > 0 else "BEAR_LOW_VOL"
 
 
-def assign_regimes(
+def regime_labels(
     rows: tuple[DailyCloseV1, ...], threshold: Decimal
 ) -> tuple[Regime, ...]:
     closes = tuple(row.close for row in rows)
@@ -56,12 +56,17 @@ def assign_regimes(
         raise RegimeError("regime assignment requires 63 prior closes")
     with localcontext() as context:
         context.prec = 50
-        labels = tuple(
+        labels: tuple[Regime, ...] = tuple(
             assign_regime(
                 _volatility(closes, index), closes[index] / closes[index - 63] - 1, threshold
             )
             for index in range(63, len(closes))
         )
+    return labels
+
+
+def assign_regimes(rows: tuple[DailyCloseV1, ...], threshold: Decimal) -> tuple[Regime, ...]:
+    labels = regime_labels(rows, threshold)
     require_regime_coverage(labels)
     return labels
 
@@ -77,7 +82,7 @@ def compound_by_regime(
     if len(returns) != len(labels):
         raise RegimeError("return and regime samples must align")
     require_regime_coverage(labels)
-    result = {label: Decimal(1) for label in _REQUIRED}
+    result: dict[Regime, Decimal] = {label: Decimal(1) for label in _REQUIRED}
     for value, label in zip(returns, labels, strict=True):
         result[label] *= 1 + value
     return {label: value - 1 for label, value in result.items()}
@@ -85,6 +90,6 @@ def compound_by_regime(
 
 __all__ = [
     "Regime", "RegimeError", "assign_regime", "assign_regimes",
-    "compound_by_regime", "nearest_rank_threshold", "require_regime_coverage",
+    "compound_by_regime", "nearest_rank_threshold", "regime_labels", "require_regime_coverage",
     "training_threshold",
 ]

@@ -634,14 +634,14 @@ test('pipeline status is canonical job data and returns typed unavailable withou
 });
 
 test('the server token name and value are absent from client component sources', () => {
-  for (const name of ['run-pipeline-button.tsx', 'pipeline-status.tsx']) {
+  for (const name of ['quick-actions.tsx', 'pipeline-status.tsx']) {
     const source = fs.readFileSync(path.join(ROOT, 'src/components/trading', name), 'utf8');
     assert.doesNotMatch(source, /TRADING_JOB_API_TOKEN|job-api-token-that-must-never-leak/);
   }
 });
 
 test('job UI renders canonical identity, state, timing, attempts, event, result and reason with bounded polling', () => {
-  const run = fs.readFileSync(path.join(ROOT, 'src/components/trading/run-pipeline-button.tsx'), 'utf8');
+  const run = fs.readFileSync(path.join(ROOT, 'src/components/trading/quick-actions.tsx'), 'utf8');
   const status = fs.readFileSync(path.join(ROOT, 'src/components/trading/pipeline-status.tsx'), 'utf8');
   const combined = `${run}\n${status}`;
   for (const field of ['job_id', 'state', 'requested_at', 'attempt_count', 'reason_code', 'result_hash', 'events', 'attempts']) {

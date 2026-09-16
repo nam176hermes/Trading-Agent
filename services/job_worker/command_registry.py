@@ -769,7 +769,7 @@ _P3_COMMANDS: Mapping[str, tuple[AlphaCampaignOperation, CommandSpec]] = Mapping
     "p3-oos-a2-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
     "p3-oos-a3-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-publication-research-v1")),
     "p3-select-primary-v1": (AlphaCampaignOperation.OOS, _p3_spec(_P3_CAMPAIGN, 300, "p3-primary-selection-v1")),
-    "p3-holdout-primary-v1": (AlphaCampaignOperation.HOLDOUT, _p3_spec(_P3_CAMPAIGN, 900, "p3-holdout-evaluation-result-v1")),
+    "p3-holdout-primary-v1": (AlphaCampaignOperation.HOLDOUT, _p3_spec(_P3_CAMPAIGN, _P3_RESEARCH_WALL_SECONDS, "p3-holdout-operation-result-v1")),
     "p3-native-parity-v1": (AlphaCampaignOperation.PARITY, _p3_spec(_P3_NATIVE, 900, "p3-parity-result-v1")),
     "p3-phase-exit-v1": (AlphaCampaignOperation.PHASE_EXIT, _p3_spec(_P3_CAMPAIGN, 300, "p3-publication-exit-v1")),
 })

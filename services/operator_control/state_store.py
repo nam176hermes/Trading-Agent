@@ -253,7 +253,7 @@ class OperatorStateStore:
                 tombstones,
                 f"{intent.idempotency_key_sha256}.kill-switch",
                 max_bytes=_MAX_KILL_SWITCH_BYTES,
-                expected_sha256=intent.desired_file_sha256,
+                expected_sha256=current.kill_switch_file_sha256,
             )
         result = ClearResult(self.read_state(), _digest(raw))
         self._failpoint("AFTER_STATE_APPLY")

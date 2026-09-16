@@ -1,3 +1,4 @@
+from typing import Literal
 """Parent-owned execution of three pinned P3 native fixture replicas."""
 
 from pathlib import Path
@@ -111,14 +112,13 @@ def run_native_fixture(
 __all__ = ["NativeFixtureError", "NativeFixtureRun", "run_native_fixture"]
 
 
-def build_native_fixture_inputs(inputs_root: Path):
-    """Materialize the exact four-input synthetic P1 native qualification fixture."""
+def native_fixture_definition():
+    """Return the exact synthetic command and bytes, without filesystem writes."""
     import hashlib
     from uuid import UUID
-    from .engine_artifacts import EngineArtifactBinding
     from packages.engine_contracts import ArtifactReference
 
-    values = (
+    values: tuple[tuple[str, bytes, Literal["application/json", "application/jsonl"]], ...] = (
         (
             "engine_configuration",
             b'{"account_type":"CASH","allow_leverage":false,"allow_short":false,"bar_execution":false,"fee_model":"fixed-rate","fee_rate":"0.001","fill_model":"deterministic","load_state":false,"logging_bypass":true,"network_access":false,"oms_type":"NETTING","run_analysis":false,"save_state":false,"schema_version":"nautilus-p1-engine-configuration-v1","starting_balance":"1000000","starting_currency":"USDT","venue":"BINANCE"}\n',
@@ -142,11 +142,7 @@ def build_native_fixture_inputs(inputs_root: Path):
         ),
     )
     references: list[ArtifactReference] = []
-    bindings: list[EngineArtifactBinding] = []
     for index, (name, raw, media_type) in enumerate(values, start=1):
-        source = inputs_root / name
-        source.write_bytes(raw)
-        source.chmod(0o400)
         reference = ArtifactReference(
             artifact_id=UUID(
                 f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
@@ -155,7 +151,6 @@ def build_native_fixture_inputs(inputs_root: Path):
             media_type=media_type,
         )
         references.append(reference)
-        bindings.append(EngineArtifactBinding(reference, source))
     command = RunBacktest(
         command_type="RunBacktest",
         engine_configuration=references[0],
@@ -165,4 +160,17 @@ def build_native_fixture_inputs(inputs_root: Path):
         start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
         end_time=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
     )
-    return command, tuple(bindings)
+    return command, values
+
+
+def build_native_fixture_inputs(inputs_root: Path):
+    """Materialize the exact four-input synthetic P1 native qualification fixture."""
+    from .engine_artifacts import EngineArtifactBinding
+    command,values=native_fixture_definition()
+    bindings=[]
+    for name,raw,_ in values:
+        source=inputs_root/name
+        source.write_bytes(raw)
+        source.chmod(0o400)
+        bindings.append(EngineArtifactBinding(getattr(command,name),source))
+    return command,tuple(bindings)

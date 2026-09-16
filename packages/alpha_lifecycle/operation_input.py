@@ -49,6 +49,7 @@ class HoldoutInput(StrictModel):
     context_dataset_ref: ArtifactRefV1
     buffer_ref: ArtifactRefV1
     environment_ref: ArtifactRefV1
+    instrument_spec_ref: ArtifactRefV1
     policy_digest: Sha256
 
 

@@ -23,6 +23,19 @@ def _extract(source: str):
     return PythonExtractor(DEFAULT_REGISTRY).extract("nautilus_consumer.py", source).observations
 
 
+def test_python_reused_extractor_keeps_spans_bound_to_current_unicode_source() -> None:
+    extractor = PythonExtractor(DEFAULT_REGISTRY)
+    sources = ('label = "é"; pin = "1.231.0"\n', '\n\npin = "1.231.0"\n')
+    for source in (*sources, sources[0]):
+        observations = extractor.extract("consumer.py", source).observations
+        assert observations
+        for observation in observations:
+            span = observation.span
+            line = source.splitlines()[span.start_line - 1]
+            assert span.end_line == span.start_line
+            assert line[span.start_column - 1:span.end_column - 1] == "1.231.0"
+
+
 def test_python_real_runtime_policy_captures_proven_dynamic_guards_and_relation() -> None:
     """Break caught: exact runtime policy comparisons cannot be audited as evidence."""
     root = Path(__file__).resolve().parents[3]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 
 from packages.alpha_lifecycle.contracts.data import DailyBar, Fold
 from packages.alpha_lifecycle.contracts.policy import CandidateParameters, CandidateSpec
@@ -18,9 +18,16 @@ def _next_weight(
     index: int,
     weight: int,
 ) -> int:
+    with localcontext(prec=50, rounding=ROUND_HALF_EVEN):
+        return _calculate_weight(parameters, bars, index, weight)
+
+
+def _calculate_weight(parameters: CandidateParameters, bars: tuple[DailyBar, ...], index: int, weight: int) -> int:
     close = Decimal(bars[index].close)
     family = parameters.family
     if family == "DONCHIAN":
+        if parameters.entry is None or parameters.exit is None:
+            raise CandidateError("DONCHIAN parameters are incomplete")
         if index < parameters.entry:
             return weight
         upper = max(Decimal(item.high) for item in bars[index - parameters.entry:index])
@@ -31,12 +38,16 @@ def _next_weight(
             return 0
         return weight
     if family == "DUAL_SMA":
+        if parameters.fast is None or parameters.slow is None:
+            raise CandidateError("DUAL_SMA parameters are incomplete")
         if index + 1 < parameters.slow:
             return weight
         fast = sum((Decimal(item.close) for item in bars[index - parameters.fast + 1:index + 1]), Decimal(0)) / Decimal(parameters.fast)
         slow = sum((Decimal(item.close) for item in bars[index - parameters.slow + 1:index + 1]), Decimal(0)) / Decimal(parameters.slow)
         return int(fast > slow)
     if family == "ZSCORE":
+        if parameters.window is None or parameters.entry_z is None or parameters.exit_z is None:
+            raise CandidateError("ZSCORE parameters are incomplete")
         if index + 1 < parameters.window:
             return weight
         values = tuple(Decimal(item.close) for item in bars[index - parameters.window + 1:index + 1])
@@ -50,7 +61,9 @@ def _next_weight(
         if weight == 1 and z_score >= Decimal(parameters.exit_z):
             return 0
         return weight
-    if index <= parameters.horizons[-1]:
+    if family != "TSMOM" or parameters.horizons is None or parameters.positive_votes is None:
+        raise CandidateError("TSMOM parameters are incomplete")
+    if index < parameters.horizons[-1]:
         return weight
     positive = sum(
         close / Decimal(bars[index - horizon].close) - 1 > 0

@@ -6,6 +6,7 @@ import hashlib
 import json
 from uuid import UUID, uuid5
 
+from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
 from packages.alpha_lifecycle.registry import (
     AlphaLifecycleStatus, AlphaRecordV1, AlphaRegistryError, AlphaRegistryEventV1,
@@ -36,7 +37,7 @@ _STAGE_TARGETS = {
 }
 
 
-def read_registry_event(store, ref: ArtifactRefV1) -> AlphaRegistryEventV1:
+def read_registry_event(store: ArtifactStore, ref: ArtifactRefV1) -> AlphaRegistryEventV1:
     raw = store.read_bytes(ref)
     payload = json.loads(raw)
     event = AlphaRegistryEventV1.model_validate_json(canonical_json_bytes({

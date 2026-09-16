@@ -87,6 +87,31 @@ def test_complete_revision_reconstruction_is_read_only(complete_revision_inputs,
         query=query,dataset_ref=dataset_ref,store=store)==dataset
 
 
+def test_acquisition_cli_bridge_seals_all_research_days(complete_revision_inputs, tmp_path, capsys, monkeypatch):
+    from scripts import seal_p3_dataset as producer
+    from packages.alpha_lifecycle.contracts.data import DatasetEvidence
+
+    store, inventory_ref, query, _, _ = complete_revision_inputs
+    old = json.loads(store.read_bytes(inventory_ref))
+    query = query.model_copy(update={"cutoff": datetime.now(UTC) + timedelta(minutes=5)})
+    input_path = tmp_path / "acquisitions.json"
+    input_path.write_bytes(canonical_json_bytes(dict(
+        acquisition_refs=[entry["acquisition_ref"] for entry in old["entries"]], query=query,
+    )))
+    monkeypatch.setattr(producer, "canonical_source_identity", lambda _: SOURCE.model_dump())
+    producer.main(input_path, store._root, acquisition_refs=True)
+    output = json.loads(capsys.readouterr().out)
+    dataset = DatasetEvidence.model_validate_json(canonical_json_bytes(output["dataset"]))
+    assert dataset.usable_rows == 2800
+    assert dataset.vintage_class == "RETROSPECTIVE_CURRENT_ARCHIVE"
+    ref = ArtifactRefV1.model_validate(output["revision_inventory_ref"])
+    inventory = pit_evidence.P3ResearchRevisionInventory.model_validate_json(store.read_bytes(ref))
+    assert len(inventory.entries) == 2800
+    dataset_ref = store.put_bytes(canonical_json_bytes(dataset), media_type="application/json")
+    assert pit_evidence.validate_revision_inventory(ref, source=SOURCE,
+        policy_digest=inventory.policy_digest, query=query, dataset_ref=dataset_ref, store=store) == dataset
+
+
 @pytest.mark.parametrize('fault',[
     'source','policy','missing_day','duplicate','namespace','partition_key',
     'ordinal','normalized','provider','quality','nested_locator','parquet_size',

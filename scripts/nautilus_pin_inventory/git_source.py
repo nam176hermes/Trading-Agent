@@ -366,15 +366,6 @@ class _PrivateDirectoryIdentity:
     mode: int
 
 
-def _private_descriptor_identity(identity: _PrivateDirectoryIdentity) -> tuple[int, ...]:
-    return (
-        identity.device,
-        identity.inode,
-        identity.file_type,
-        identity.uid,
-        identity.gid,
-        identity.mode,
-    )
 
 
 @dataclass

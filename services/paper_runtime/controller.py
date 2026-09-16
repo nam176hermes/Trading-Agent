@@ -549,14 +549,6 @@ class EvidenceBundle:
     publication: NativeBundleReceipt
 
 
-def _empty_transcript() -> TranscriptMetadata:
-    return TranscriptMetadata(
-        sha256=hashlib.sha256(b"").hexdigest(),
-        size=0,
-        observed_size=0,
-        truncated=False,
-        eof=True,
-    )
 
 
 def _operation_key(capability: object, component: str) -> str:

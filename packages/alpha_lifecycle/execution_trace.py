@@ -98,6 +98,8 @@ def build_research_trace(
     regimes: tuple[str, ...],
 ) -> PerformanceTrace:
     values = _validated(rows, weights)
+    if weights[-1] != weights[-2]:
+        raise ValueError('P3 research trace requires a suppressed terminal target')
     if not (
         len(decision_row_refs) == len(values) - 1
         and len(return_row_refs) == len(values) - 1

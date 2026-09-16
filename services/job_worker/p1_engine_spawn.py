@@ -22,9 +22,10 @@ from packages.engine_contracts import (
     canonical_json_bytes,
 )
 
-from . import engine_spawn as _legacy
+import services.job_worker.engine_spawn as _legacy
 from .engine_profiles import EngineProfilePolicy, P1_REAL_BACKTEST_POLICY
 from .engine_spawn_interface import EngineSpawnError
+from .p1_closure_attestation import P1EngineClosureAttestation as P1EngineClosureAttestation
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
@@ -64,32 +65,6 @@ P1_PAPER_SOURCE_SHA256 = hashlib.sha256(
 
 def _blocked(message: str) -> NoReturn:
     raise EngineSpawnError("ENGINE_CLOSURE_INVALID", message)
-
-
-@dataclass(frozen=True, slots=True)
-class P1EngineClosureAttestation:
-    """Exact schema-8 P1 closure authority before legacy spawn adaptation."""
-
-    manifest_schema_version: int
-    profile: str
-    source_commit: str
-    closure_sha256: str
-    mounts: tuple[_legacy.ReadOnlyClosureMount, ...]
-    entrypoint: PurePosixPath
-    argv_prefix: tuple[str, ...]
-    timeout_seconds: int
-    result_validator_id: str
-    sandbox: _legacy.OsSandboxProof
-    semantic_profile: str
-    closure_manifest: _legacy.ReadOnlyClosureMount
-    native_entry_guard: _legacy.NativeEntryGuardAttestation
-    dependency_import_policy: str
-    runtime_family: str
-    engine_version: str
-    engine_upstream_commit: str
-    event_schema: str
-    runtime_inventory_sha256: str
-    product_lineage: _legacy.ReadOnlyClosureMount
 
 
 @dataclass(

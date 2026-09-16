@@ -6,7 +6,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 
 from packages.operator_control.contracts import (
+    ApplicationKind,
     CommandAppliedV1,
+    JournalDesiredState,
     CommandExecutionResultV1,
     CommandIntentV1,
     CommandReceiptV1,
@@ -146,6 +148,7 @@ class OperatorControlService:
             raise RecoveryError("COMMAND_OUTCOME_UNKNOWN")
 
         tombstone = None
+        application_kind: ApplicationKind
         if plan.operation == "NO_CHANGE":
             resulting = current
             application_kind = "NO_CHANGE"
@@ -179,10 +182,11 @@ class OperatorControlService:
         accepted_at: datetime,
         plan: OperatorMutationPlan,
     ) -> CommandIntentV1:
-        desired_state = (
+        desired_state: JournalDesiredState = (
             "PAPER"
             if request.command.command_type == "SET_REQUESTED_MODE"
-            else f"KILL_SWITCH_{request.command.desired_state}"
+            else "KILL_SWITCH_ACTIVE" if request.command.desired_state == "ACTIVE"
+            else "KILL_SWITCH_INACTIVE"
         )
         base = CommandIntentV1(
             schema_version="operator-command-intent-v1",
@@ -209,7 +213,7 @@ class OperatorControlService:
         self,
         intent: CommandIntentV1,
         resulting_state_sha256: str,
-        application_kind: str,
+        application_kind: ApplicationKind,
         tombstone_sha256: str | None,
     ) -> CommandAppliedV1:
         applied_at = self._now()

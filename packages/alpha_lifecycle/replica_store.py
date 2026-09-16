@@ -52,10 +52,10 @@ def _read(store: ArtifactStore, ref: ArtifactRefV1, model: type[Model]) -> Model
 
 
 class ReplicaArtifactStore:
-    def __init__(self, input_root: Path, output_root: Path) -> None:
+    def __init__(self, input_root: Path | ArtifactStore, output_root: Path) -> None:
         if input_root == output_root:
             raise ValueError("replica input and output stores must differ")
-        self._inputs = LocalArtifactStore(input_root)
+        self._inputs = LocalArtifactStore(input_root) if isinstance(input_root,Path) else input_root
         self._outputs = LocalArtifactStore(output_root)
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:
