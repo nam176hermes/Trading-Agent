@@ -198,12 +198,29 @@ its own capability. Two regressions reproduced renewal under the old identity;
 167 focused worker/native checks pass after the repair. This connects process
 attribution, not the official native executor or coordinator.
 
-Before pinning the final session catalog, finish private HOLDOUT claim admission:
-the ordinary bound claim and `p3_payload_authorized(payload, bound_job)` still
-reject HOLDOUT. Current SQL disclosure fixtures explicitly simulate that claim
-as the disposable database owner. They cannot establish a functioning official
-claim path. Reuse the existing accepted operation/job bindings and one-attempt
-policy; preserve ordinary-lane rejection and require fresh stage/session fences.
+Migration `0029_p3_session_holdout_claim` now adds a private workflow-bound claim
+using the existing accepted operation/job bindings and one-attempt policy. It
+derives the reviewed claim body only after checking the exact 0028 catalog;
+ordinary bound claims and `p3_payload_authorized(payload, bound_job)` still reject
+HOLDOUT. The repository shares claim parsing and transaction handling with its
+existing P3 entry. This does not connect the coordinator or change runtime
+admission profiles.
+
+The opt-in disposable harness now obtains a real private claim, then consumes
+disclosure metadata using that claim. It does not insert a simulated CLAIMED row
+as owner. Same-request metadata reconciliation returns the same record; another
+trace rejects and the disclosure count stays one. No plaintext is loaded.
+Wrong roles, null parameters, workflow substitution, locked jobs, concurrent
+claims, cancellation and expired approvals reject. Injected delay after claim
+writes proves that expiry rolls back job, attempt and event together. Final SQL
+test passes in 90.55s (four existing pool warnings); 163 related source checks
+pass. The injected trigger and owned cluster are removed.
+
+Private HOLDOUT lifecycle controls and terminal recovery/publication still need
+integration before the final session catalog is pinned. Ordinary PRE_SPAWN
+authority remains closed for HOLDOUT; a successful private claim cannot be
+treated as a complete runnable session. Fresh protected stage/session checks
+remain mandatory, independently of caller-provided workflow identifiers.
 
 ## Closure conditions
 
