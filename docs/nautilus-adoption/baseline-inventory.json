@@ -25,7 +25,7 @@
       "manifest": "legacy/research-backend/pyproject.toml",
       "manifest_sha256": "c48580d90a1ca82d019a79e8315f5400b0da8ef8c40ba71f32061cc1e2e49474",
       "lockfile": "legacy/research-backend/uv.lock",
-      "lockfile_sha256": "27790f75a54120b48a8b27da915c4f55a1cb6621e02586b11139f28784e61c5d"
+      "lockfile_sha256": "f50e7eb3330edd02166e002aafb0b7b96ca1c51aa3df7ef6cb1e5d0a87510b14"
     },
     {
       "component": "dashboard",
