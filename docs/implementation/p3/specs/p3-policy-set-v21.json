@@ -17,6 +17,22 @@
       2,
       4
     ],
+    "source_exceptions": [
+      {
+        "archive_url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip",
+        "checksum_url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip.CHECKSUM",
+        "day": "2018-02-08",
+        "exception_id": "m7-2018-02-08-monthly-v1",
+        "instrument": "BTCUSDT.BINANCE",
+        "interval": "1d",
+        "member_name": "BTCUSDT-1d-2018-02.csv",
+        "parser_version": "p3.binance.12-column.monthly-row.v1",
+        "receipt_schema_version": "p3-monthly-row-acquisition-v1",
+        "row_ordinal": 7,
+        "scope": "OPERATOR_APPROVED_RESEARCH_ONLY_NO_AUTOMATIC_FALLBACK",
+        "validation": "FULL_MONTH_ORDER_SCHEMA_NUMERIC_AND_UTC_BOUNDARIES_UNCHANGED_DAILY_QUALITY"
+      }
+    ],
     "timestamp_boundary": "NORMALIZE_END_EXCLUSIVE_AND_PRESERVE_RAW_CLOSE_TIME",
     "zip_max_bytes": 1048576
   },

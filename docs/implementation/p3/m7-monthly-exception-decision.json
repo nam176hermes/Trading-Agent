@@ -1,0 +1,33 @@
+{
+  "schema_version": "p3-source-exception-decision-v1",
+  "decision_id": "m7-2018-02-08-monthly-v1",
+  "recorded_on": "2026-09-17",
+  "operator_decision": "APPROVED_SOURCE_EXCEPTION_AND_ADAPTER",
+  "authority_basis": "duyệt ngoại lệ nguồn cho riêng ngày này và triển khai adapter giữ đầy đủ provenance; không cần nới validation.",
+  "supersedes_only": "acquisition source for 2018-02-08; preserves all other accepted policy values",
+  "prior_policy_file_sha256": "75a9030d017df1de47c5c42aeb95b612f50fd34630c99f82ffd8d200da506336",
+  "amended_policy_file_sha256": "6866cf48b3f1cd92578d81a1073d3a6d1bbf3b3f10500616c692688e639fb2a8",
+  "exception": {
+    "archive_url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip",
+    "checksum_url": "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip.CHECKSUM",
+    "day": "2018-02-08",
+    "exception_id": "m7-2018-02-08-monthly-v1",
+    "instrument": "BTCUSDT.BINANCE",
+    "interval": "1d",
+    "member_name": "BTCUSDT-1d-2018-02.csv",
+    "parser_version": "p3.binance.12-column.monthly-row.v1",
+    "receipt_schema_version": "p3-monthly-row-acquisition-v1",
+    "row_ordinal": 7,
+    "scope": "OPERATOR_APPROVED_RESEARCH_ONLY_NO_AUTOMATIC_FALLBACK",
+    "validation": "FULL_MONTH_ORDER_SCHEMA_NUMERIC_AND_UTC_BOUNDARIES_UNCHANGED_DAILY_QUALITY"
+  },
+  "scope": "RESEARCH_STAGING_SOURCE_TESTS_ONLY",
+  "authority": {
+    "broker": false,
+    "live": false,
+    "production": false,
+    "official_research": false,
+    "holdout": false
+  },
+  "qualification": "Existing source/policy-bound receipts are not renewed by this exception; requalification remains separately gated."
+}

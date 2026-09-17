@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import subprocess
 from datetime import UTC, datetime
 import sys
 from pathlib import Path
@@ -21,7 +22,15 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.pre_p3_provenance import canonical_source_identity
 
 
+def _committed_source():
+    if subprocess.run(['git', 'status', '--porcelain'], cwd=ROOT,
+        capture_output=True, check=True).stdout:
+        raise ValueError('revision inventory requires a clean committed source')
+    return canonical_source_identity(ROOT)
+
+
 def main(input_path: Path, store_root: Path, *, acquisition_refs: bool = False) -> None:
+    source = _committed_source() if acquisition_refs else None
     payload = json.loads(input_path.read_bytes())
     store = LocalArtifactStore(store_root)
     query = PITQueryV1.model_validate_json(canonical_json_bytes(payload["query"]))
@@ -46,8 +55,10 @@ def main(input_path: Path, store_root: Path, *, acquisition_refs: bool = False) 
             previous[receipt.day] = entry
         schema, _ = daily_arrow_table(acquired[0].artifact_ref, store)
         evidence = seal_research_dataset(tuple(entry.partition for entry in entries), query, schema, store)
+        if _committed_source() != source:
+            raise ValueError('revision inventory source changed during materialization')
         body = dict(schema_version="p3-research-revision-inventory-v1",
-            source=canonical_source_identity(ROOT), entries=tuple(entries),
+            source=source, entries=tuple(entries),
             policy_digest=hashlib.sha256(canonical_json_bytes(json.loads(
                 (ROOT / "docs/implementation/p3/specs/p3-policy-set-v21.json").read_bytes()
             ))).hexdigest())
