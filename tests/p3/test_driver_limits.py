@@ -18,7 +18,7 @@ def test_real_bwrap_transport_probe_is_in_native_capability_lane():
 def test_campaign_timeout_includes_parent_budget_after_three_replicas():
     from types import SimpleNamespace
     from services.job_worker.command_registry import p3_command_spec
-    for operation,workflow in [('BASELINES','p3-baselines-v1'),*(('OOS',f'p3-oos-a{i}-v1') for i in range(4))]:
+    for operation,workflow in [('BASELINES','p3-baselines-v1'),*(('OOS',f'p3-oos-a{i}-v1') for i in range(4)),('HOLDOUT','p3-holdout-primary-v1')]:
         spec = p3_command_spec(SimpleNamespace(operation=operation,logical_trial_id=workflow))
         assert spec.timeout_seconds == 4*300
 

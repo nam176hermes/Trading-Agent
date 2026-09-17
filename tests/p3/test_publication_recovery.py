@@ -247,3 +247,28 @@ def test_current_commit_read_requires_both_expected_custody_fields(tmp_path,miss
         repository._commit_result(wrapper,request,
             output_inventory_ref=None if missing in {'inventory','both'} else ref,
             attempt_id=None if missing in {'attempt','both'} else claim.attempt_id)
+
+
+@pytest.mark.parametrize('fault', [None, 'request', 'commit'])
+def test_receipt_readback_matches_this_publication_before_retention(tmp_path, monkeypatch, fault):
+    from datetime import UTC, datetime
+    from tests.p3.test_publication import _chain, _changed
+    store, request, commit, receipt, _ = _chain(tmp_path)
+    repository = P3PublicationRepository(object(), store)
+    observed_request = _changed(request, idempotency_key='other-request') if fault == 'request' else request
+    observed_commit = _changed(commit, ledger_event_ids=['99999999-9999-5999-8999-999999999999']) if fault == 'commit' else commit
+    monkeypatch.setattr(repository, 'read_publication', lambda job_id:
+        (observed_request, observed_commit, datetime(2026, 9, 5, tzinfo=UTC)))
+    writes = []
+    put = store.put_bytes
+    def retain(value, *, media_type):
+        writes.append(value)
+        return put(value, media_type=media_type)
+    monkeypatch.setattr(store, 'put_bytes', retain)
+    if fault:
+        with pytest.raises(ValueError, match='readback'):
+            repository.recover_receipt(request.job_id, expected_request=request, expected_commit=commit)
+        assert writes == []
+    else:
+        assert repository.recover_receipt(request.job_id, expected_request=request, expected_commit=commit) == receipt
+        assert writes

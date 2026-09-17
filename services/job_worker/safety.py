@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import os
 import stat
 import weakref
@@ -10,11 +12,15 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Mapping
 
-from packages.safety_evidence import CanonicalKillSwitchState as KillSwitchState, resolve_kill_switch
+from packages.safety_evidence import (
+    CANONICAL_SAFETY_SOURCE_ROOT,
+    CanonicalKillSwitchState as KillSwitchState,
+    resolve_kill_switch,
+)
 
 from .errors import SafetyBlockedError
 
-APPROVED_DATA_ROOT = Path("/home/thenam176/.hermes/crypto-research")
+APPROVED_DATA_ROOT = CANONICAL_SAFETY_SOURCE_ROOT
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 
@@ -43,7 +49,7 @@ class ValidatedDataRoot:
 _VALIDATED_ROOTS: weakref.WeakSet[ValidatedDataRoot] = weakref.WeakSet()
 
 
-def _blocked(reason: str, message: str) -> None:
+def _blocked(reason: str, message: str) -> NoReturn:
     raise SafetyBlockedError(reason, message)
 
 

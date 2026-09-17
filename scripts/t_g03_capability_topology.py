@@ -5571,23 +5571,6 @@ def _authority_path_state(path: Path, *, directory: bool) -> str | None:
     return None
 
 
-def _validate_direct_entries(root: Path, entries: tuple[tuple[str, bool], ...]) -> str | None:
-    root_state = _safe_authority_entry(root, directory=True)
-    if root_state is not None:
-        return "PARTIAL" if root_state == "ABSENT" else "INVALID"
-    root_info = root.lstat()
-    for relative, directory in entries:
-        parts = Path(relative).parts
-        current = root
-        for index, part in enumerate(parts):
-            current = current / part
-            state = _safe_authority_entry(current, directory=index < len(parts) - 1 or directory)
-            if state is not None:
-                return "PARTIAL" if state == "ABSENT" else "INVALID"
-            info = current.lstat()
-            if info.st_uid != root_info.st_uid or info.st_gid != root_info.st_gid:
-                return "INVALID"
-    return None
 
 
 def _identity(info: os.stat_result) -> tuple[int, ...]:

@@ -525,3 +525,29 @@ def test_openapi_models_exact_success_and_custom_error_envelopes() -> None:
     assert "stdout_ref" not in serialized
     assert "stderr_ref" not in serialized
     assert "lease_token" not in serialized
+
+
+def test_detail_accepts_exact_worker_artifact_kinds_without_rewriting_them(tmp_path) -> None:
+    import io
+    from dataclasses import replace
+    from services.job_worker.artifacts import ArtifactWriter
+    from services.job_worker.results import ResultValidator
+    from tests.jobs.test_worker_lifecycle import claim
+    repository=Repository()
+    detail=repository.get_job('job_123')
+    job=claim()
+    writer=ArtifactWriter(tmp_path/'streams')
+    streams=tuple(writer.capture_stream(job.job_id,job.attempt_id,kind,io.BytesIO(b'fixture'))
+        for kind in ('stdout','stderr'))
+    result=ResultValidator(tmp_path,tmp_path,tmp_path/'sealed')._seal(job,b'{}','p3-integration-qualified-v1',{})
+    artifacts=tuple(replace(detail.artifacts[0],artifact_id=f'artifact_{index}',
+        artifact_type=artifact.artifact_type,sha256=artifact.sha256,size_bytes=artifact.size_bytes,
+        validator_id=artifact.validator_id) for index,artifact in enumerate((*streams,result),1))
+    repository.get_job=lambda _: replace(detail,artifacts=artifacts)
+    api,_=client(repository)
+    response=api.get('/v1/jobs/job_123',headers=AUTH)
+    assert response.status_code==200
+    published=response.json()['data']['artifacts']
+    assert [item['artifact_type'] for item in published]==['stdout','stderr','result']
+    assert [item['sha256'] for item in published]==[artifact.sha256 for artifact in artifacts]
+    assert all('relative_ref' not in item and 'validation_metadata' not in item for item in published)

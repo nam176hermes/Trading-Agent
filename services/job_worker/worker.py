@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -14,6 +15,7 @@ from packages.job_contracts import (
     JobType,
     SnapshotPayload,
 )
+from services.job_store.records import validate_p3_job_id
 from .command_registry import (
     FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS,
     PRESPAWN_FULL_REATTESTATION_COUNT,
@@ -28,10 +30,12 @@ from .process_runner import (
     ProcessOutcome,
     ProcessRunner,
 )
-from .results import ResultValidationError, ResultValidator
+from .results import ResultValidationError, ResultValidator, ValidatedResult
 from .safety_state import SafetyEvidence
 
 if TYPE_CHECKING:
+    from services.job_store.p3_publication_repository import P3PublicationRepository
+    from .p3_integration import P3IntegrationFixtureExecutor
     from packages.engine_contracts import EngineCommandEnvelope
     from packages.engine_event_ledger import EngineRunProjection, StoredEngineEvent
     from packages.engine_portfolio_projection.models import ProjectionAuthority
@@ -123,8 +127,10 @@ class JobWorker:
         p1_projection_authority_factory: P1ProjectionAuthorityFactory | None = None,
         p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
         p3_profile: bool = False,
-        p3_publisher: object | None = None,
-        p3_fixture_executor: object | None = None,
+        p3_job_id: str | None = None,
+        p3_publisher: P3PublicationRepository | None = None,
+        p3_fixture_executor: P3IntegrationFixtureExecutor | None = None,
+        p3_session: object | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -145,9 +151,20 @@ class JobWorker:
         self._engine_event_ingestor = engine_event_ingestor
         self._p1_projection_authority_factory = p1_projection_authority_factory
         self._p1_portfolio_parity_verifier = p1_portfolio_parity_verifier
+        if p3_job_id is not None and not p3_profile:
+            raise ValueError("P3 job binding requires the P3 profile")
+        if p3_job_id is not None:
+            validate_p3_job_id(p3_job_id)
+        self._p3_job_id = p3_job_id
         self._p3_profile = p3_profile
         self._p3_publisher = p3_publisher
         self._p3_fixture_executor = p3_fixture_executor
+        if p3_session is not None:
+            from .p3_session import P3HoldoutSession
+            if type(p3_session) is not P3HoldoutSession or not p3_profile or p3_fixture_executor is not None:
+                raise ValueError('bounded official session cannot use another worker lane')
+        self._p3_session = p3_session
+        self._session_holdout = False
         if p3_fixture_executor is not None:
             from .p3_integration import P3IntegrationFixtureExecutor
             if not p3_profile or type(p3_fixture_executor) is not P3IntegrationFixtureExecutor:
@@ -188,6 +205,10 @@ class JobWorker:
             "pre_spawn_control", "start_attempt",
         }:
             kwargs["alpha_campaign"] = True
+            if self._p3_session is not None:
+                if self._session_holdout:
+                    kwargs['session_workflow'] = (self._p3_session.profile.workflow_run_id,
+                        self._p3_session.profile.workflow_attempt)
         return getattr(self._repository, method)(*args, **kwargs)
 
     def _worker_heartbeat(self, status: str, claim=None) -> None:
@@ -200,7 +221,24 @@ class JobWorker:
             metadata={},
         )
 
-    def run_once(self) -> bool:
+    def _block_claimed(self, claimed, reason_code: str, trace_id: str) -> bool:
+        finalized = self._repository_call(
+            "finalize_execution", claimed, expected_state=JobState.CLAIMED,
+            expected_attempt_outcome="CLAIMED", final_state=JobState.BLOCKED,
+            reason_code=reason_code, trace_id=trace_id,
+            outcome=None, result=None, stream_artifacts=(),
+        )
+        self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
+        return True
+
+    def run_once(self, *, session_claim=None) -> bool:
+        if self._p3_session is not None:
+            if (session_claim is None or self._p3_session._active is None or session_claim != self._p3_session._active[0]
+                or session_claim.job_id != self._p3_job_id or session_claim.worker_id != self._worker_id):
+                raise ValueError('session worker requires its currently admitted exact claim')
+            self._session_holdout = session_claim.payload.operation == 'HOLDOUT'
+        elif session_claim is not None:
+            raise ValueError('preclaimed work requires the bounded session owner')
         trace_id = f"worker:{uuid4().hex}"
         latest_safety: SafetyEvidence | None = None
 
@@ -226,10 +264,11 @@ class JobWorker:
         # state under stale authority.
         safety_preflight()
         self._worker_heartbeat("IDLE")
-        claimed = (
+        claimed = session_claim if self._p3_session is not None else (
             self._repository.claim_next_alpha_campaign(
                 self._worker_id, self._lease_seconds, trace_id,
                 fixture_only=self._p3_fixture_executor is not None,
+                **({"job_id":self._p3_job_id} if self._p3_job_id is not None else {}),
             )
             if self._p3_profile
             else self._repository.claim_next(
@@ -254,14 +293,7 @@ class JobWorker:
         try:
             safety_preflight()
         except WorkerBlockedError as exc:
-            finalized = self._repository_call("finalize_execution",
-                claimed, expected_state=JobState.CLAIMED,
-                expected_attempt_outcome="CLAIMED", final_state=JobState.BLOCKED,
-                reason_code=exc.reason_code, trace_id=trace_id,
-                outcome=None, result=None, stream_artifacts=(),
-            )
-            self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
-            return True
+            return self._block_claimed(claimed, exc.reason_code, trace_id)
 
         pre_spawn = WorkerControl(self._repository_call("pre_spawn_control",
             claimed.job_id, claimed.attempt_id, self._worker_id,
@@ -296,41 +328,11 @@ class JobWorker:
                 not in {EngineBacktestPayload, EngineBacktestSimulationPayload}
                 or not self._engine_backtest_enabled
             ):
-                finalized = self._repository_call("finalize_execution",
-                    claimed,
-                    expected_state=JobState.CLAIMED,
-                    expected_attempt_outcome="CLAIMED",
-                    final_state=JobState.BLOCKED,
-                    reason_code="ENGINE_BACKTEST_AUTHORITY_REQUIRED",
-                    trace_id=trace_id,
-                    outcome=None,
-                    result=None,
-                    stream_artifacts=(),
-                )
-                self._worker_heartbeat(
-                    "IDLE" if finalized else "UNHEALTHY",
-                    None if finalized else claimed,
-                )
-                return True
+                return self._block_claimed(claimed, 'ENGINE_BACKTEST_AUTHORITY_REQUIRED', trace_id)
             try:
                 engine_request = self._engine_authority_factory.from_claim(claimed)
             except (TypeError, ValueError):
-                finalized = self._repository_call("finalize_execution",
-                    claimed,
-                    expected_state=JobState.CLAIMED,
-                    expected_attempt_outcome="CLAIMED",
-                    final_state=JobState.BLOCKED,
-                    reason_code="ENGINE_BACKTEST_AUTHORITY_INVALID",
-                    trace_id=trace_id,
-                    outcome=None,
-                    result=None,
-                    stream_artifacts=(),
-                )
-                self._worker_heartbeat(
-                    "IDLE" if finalized else "UNHEALTHY",
-                    None if finalized else claimed,
-                )
-                return True
+                return self._block_claimed(claimed, 'ENGINE_BACKTEST_AUTHORITY_INVALID', trace_id)
             try:
                 prior_receipt = self._engine_event_ingestor.load_job_receipt(
                     claimed.job_id
@@ -346,35 +348,11 @@ class JobWorker:
                     else None
                 )
             if reason_code is not None:
-                finalized = self._repository_call("finalize_execution",
-                    claimed,
-                    expected_state=JobState.CLAIMED,
-                    expected_attempt_outcome="CLAIMED",
-                    final_state=JobState.BLOCKED,
-                    reason_code=reason_code,
-                    trace_id=trace_id,
-                    outcome=None,
-                    result=None,
-                    stream_artifacts=(),
-                )
-                self._worker_heartbeat(
-                    "IDLE" if finalized else "UNHEALTHY",
-                    None if finalized else claimed,
-                )
-                return True
+                return self._block_claimed(claimed, reason_code, trace_id)
 
         market_data_payload = self._market_data_payload(claimed)
         if market_data_payload is not None and self._market_data_ingestor is None:
-            finalized = self._repository_call("finalize_execution",
-                claimed, expected_state=JobState.CLAIMED,
-                expected_attempt_outcome="CLAIMED", final_state=JobState.BLOCKED,
-                reason_code="MARKET_DATA_INGESTOR_UNAVAILABLE", trace_id=trace_id,
-                outcome=None, result=None, stream_artifacts=(),
-            )
-            self._worker_heartbeat(
-                "IDLE" if finalized else "UNHEALTHY", None if finalized else claimed
-            )
-            return True
+            return self._block_claimed(claimed, 'MARKET_DATA_INGESTOR_UNAVAILABLE', trace_id)
 
         def heartbeat(identity) -> HeartbeatDecision | HeartbeatInstruction:
             nonlocal started, active_identity
@@ -399,12 +377,16 @@ class JobWorker:
                     return HeartbeatDecision.STALE_LEASE
                 started = True
                 active_identity = identity
-            elif (
-                self._p3_profile
-                and claimed.payload.logical_trial_id == "p3-integration-fixture-v1"
-                and identity != active_identity
-            ):
-                if not self._repository.replace_alpha_fixture_process(
+            elif self._p3_profile and identity != active_identity:
+                if claimed.payload.operation != 'PARITY' or active_identity is None:
+                    return HeartbeatDecision.STALE_LEASE
+                if claimed.payload.logical_trial_id == 'p3-integration-fixture-v1':
+                    replace_process = self._repository.replace_alpha_fixture_process
+                elif claimed.payload.logical_trial_id == 'p3-native-parity-v1':
+                    replace_process = self._repository.replace_alpha_native_process
+                else:
+                    return HeartbeatDecision.STALE_LEASE
+                if not replace_process(
                     claimed, active_identity, identity, trace_id,
                 ):
                     return HeartbeatDecision.STALE_LEASE
@@ -471,6 +453,14 @@ class JobWorker:
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
 
+        if self._p3_session is not None:
+            if claimed.payload.operation == 'HOLDOUT':
+                self._p3_session.release(self._repository, trace_id=trace_id)
+            else:
+                self._execute_session_late_stage(claimed, heartbeat=heartbeat, preflight=safety_preflight,
+                    trace_id=trace_id)
+                return True
+
         try:
             prepare_spawn = (
                 (lambda: self._engine_spawn_provider.prepare(engine_request))
@@ -512,34 +502,12 @@ class JobWorker:
         except WorkerBlockedError as exc:
             # The runner's last-moment preflight and environment revalidation
             # occur before Popen, so the attempt is still CLAIMED here.
-            finalized = self._repository_call("finalize_execution",
-                claimed, expected_state=JobState.CLAIMED,
-                expected_attempt_outcome="CLAIMED", final_state=JobState.BLOCKED,
-                reason_code=exc.reason_code, trace_id=trace_id,
-                outcome=None, result=None, stream_artifacts=(),
-            )
-            self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
-            return True
+            return self._block_claimed(claimed, exc.reason_code, trace_id)
         except (EngineSpawnError, P3SpawnError) as exc:
             # Engine/P3 authority is consumed before Popen. A closure, sandbox,
             # or protected transport refusal therefore leaves the attempt in
             # CLAIMED and is safe to finalize without process artifacts.
-            finalized = self._repository_call("finalize_execution",
-                claimed,
-                expected_state=JobState.CLAIMED,
-                expected_attempt_outcome="CLAIMED",
-                final_state=JobState.BLOCKED,
-                reason_code=exc.reason,
-                trace_id=trace_id,
-                outcome=None,
-                result=None,
-                stream_artifacts=(),
-            )
-            self._worker_heartbeat(
-                "IDLE" if finalized else "UNHEALTHY",
-                None if finalized else claimed,
-            )
-            return True
+            return self._block_claimed(claimed, exc.reason, trace_id)
         outcome = bind_latest_safety(outcome)
         if outcome.termination_reason == "STALE_LEASE":
             self._worker_heartbeat("UNHEALTHY", claimed)
@@ -548,6 +516,22 @@ class JobWorker:
             finalized = self._finalize_termination(claimed, outcome, trace_id, started=started)
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
+        p3_custody = outcome.p3_output_custody
+        next_progress = 0.0
+        def p3_progress():
+            nonlocal next_progress
+            try:
+                if p3_custody is not None:
+                    p3_custody.check_deadline()
+                now = time.monotonic()
+                if now >= next_progress:
+                    self._validation_progress(claimed, safety_preflight)
+                    next_progress = time.monotonic() + 1
+                if p3_custody is not None:
+                    p3_custody.check_deadline()
+            except TimeoutError as exc:
+                raise ResultValidationError('P3 post-run deadline expired',
+                    reconciliation_required=True) from exc
         try:
             self._validation_progress(claimed, safety_preflight)
             if engine_request is not None:
@@ -650,6 +634,8 @@ class JobWorker:
                     exit_code=outcome.exit_code if outcome.exit_code is not None else -1,
                     output_custody=outcome.p3_output_custody,
                     output_inventory_ref=outcome.p3_output_inventory_ref,
+                    progress=p3_progress,
+                    **({'holdout_view': self._p3_session.view} if self._p3_session is not None else {}),
                 )
             else:
                 result = self._validator.validate(
@@ -663,6 +649,8 @@ class JobWorker:
                     progress=lambda: self._validation_progress(claimed, safety_preflight),
                 )
             if market_data_payload is not None:
+                if not isinstance(result, ValidatedResult):
+                    raise ResultValidationError("market-data result must be a validated result")
                 self._validation_progress(claimed, safety_preflight)
                 try:
                     outcome_metadata = self._market_data_ingestor.ingest(market_data_payload)
@@ -687,6 +675,8 @@ class JobWorker:
             # Validation can be long enough for a previously fresh snapshot to
             # expire. Recheck once more before any SUCCEEDED transition.
             self._validation_progress(claimed, safety_preflight)
+            if self._p3_profile:
+                p3_progress()
             outcome = bind_latest_safety(outcome)
         except ResultValidationError as exc:
             outcome = bind_latest_safety(outcome)
@@ -742,22 +732,44 @@ class JobWorker:
             outcome = bind_latest_safety(outcome)
             from .results import ValidatedP3Publication
             if isinstance(result, ValidatedP3Publication):
-                self._p3_publisher.publish(
+                if self._p3_publisher is None:
+                    raise ResultValidationError("P3 publication repository is required")
+                committed = self._p3_publisher.publish(
                     result.request, claimed, result.entries, trace_id=trace_id,
                     output_inventory_ref=outcome.p3_output_inventory_ref,
                 )
                 # SQL is already terminal. A retention failure must not finalize
                 # again or rerun research; recover from immutable SQL custody.
-                self._p3_publisher.recover_receipt(claimed.job_id)
+                if outcome.p3_output_custody is not None:
+                    outcome.p3_output_custody.check_deadline()
+                self._p3_publisher.recover_receipt(claimed.job_id,
+                    expected_request=result.request, expected_commit=committed)
                 finalized = True
             else:
-                finalized = self._repository_call("finalize_execution",
-                    claimed, expected_state=JobState.RUNNING,
-                    expected_attempt_outcome="RUNNING", final_state=JobState.SUCCEEDED,
-                    reason_code="RESULT_VALIDATED", trace_id=trace_id,
-                    outcome=outcome, result=result,
-                    stream_artifacts=(outcome.stdout, outcome.stderr),
-                )
+                from psycopg import OperationalError
+                try:
+                    finalized = self._repository_call("finalize_execution",
+                        claimed, expected_state=JobState.RUNNING,
+                        expected_attempt_outcome="RUNNING", final_state=JobState.SUCCEEDED,
+                        reason_code="RESULT_VALIDATED", trace_id=trace_id,
+                        outcome=outcome, result=result,
+                        stream_artifacts=(outcome.stdout, outcome.stderr),
+                    )
+                except OperationalError:
+                    if self._p3_session is None or not self._repository.session_result_matches(claimed, result.sha256):
+                        raise
+                    finalized = True
+                if self._p3_session is not None:
+                    if not finalized or not self._repository.session_result_matches(claimed, result.sha256):
+                        raise ValueError('session holdout result lacks exact durable readback')
+                    from .results import validate_p3_result_bytes
+                    raw = self._validator._read_p3_stream(claimed, outcome.stdout)
+                    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+                    held = validate_p3_result_bytes(result.validator_id, raw)
+                    if not isinstance(held, HoldoutOperationResult):
+                        raise ValueError('session result type differs from HOLDOUT')
+                    self._p3_session.holdout_result = held
+                    self._p3_session.completed_jobs.append(claimed.job_id)
             if finalized and outcome.p3_output_custody is not None:
                 # The terminal SQL result or publication commit binds the retained
                 # inventory. Cleanup failure cannot undo that commit.
@@ -767,6 +779,75 @@ class JobWorker:
                 outcome.p3_output_custody.abandon()
         self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
         return True
+
+    def _execute_session_late_stage(self, claim, *,
+        heartbeat,
+        preflight, trace_id: str,
+    ) -> None:
+        """Parent-owned late stages share the worker's real lease and publication owners."""
+        import os
+        from packages.engine_contracts.serialization import canonical_json_bytes
+        from packages.job_contracts import AlphaCampaignPayload
+        from .recovery import ProcProcessInspector
+        from psycopg import OperationalError
+        from packages.job_contracts import JobState
+        from .process_runner import HeartbeatDecision
+        from .command_registry import p3_command_spec
+        from .results import validate_p3_result_bytes
+        session = self._p3_session
+        if session is None or not isinstance(claim.payload, AlphaCampaignPayload):
+            raise ValueError('late stage requires the current session')
+        session.fence()
+        if claim.payload.operation == 'PARITY':
+            parity = session.calculate_parity(heartbeat=heartbeat, preflight=preflight)
+            raw = canonical_json_bytes(parity)
+            validator_id = p3_command_spec(claim.payload).result_validator_id
+            validate_p3_result_bytes(validator_id, raw)
+            session.fence()
+            result = self._validator._seal(claim, raw, validator_id, {
+                'operation': claim.payload.logical_trial_id, 'result_digest': parity.digest,
+                'producer': 'p3-session-parent',
+                'native_parent_proof_ref': session.native_parent_proof_ref.model_dump(mode='json')
+                    if session.native_parent_proof_ref is not None else None,
+                'parity_pair_ref': session.parity_pair_ref.model_dump(mode='json')
+                    if session.parity_pair_ref is not None else None,
+            })
+            try:
+                finalized = self._repository_call('finalize_execution', claim,
+                    expected_state=JobState.RUNNING, expected_attempt_outcome='RUNNING',
+                    final_state=JobState.SUCCEEDED, reason_code='RESULT_VALIDATED', trace_id=trace_id,
+                    outcome=None, result=result, stream_artifacts=())
+            except OperationalError:
+                # The calculation is never retried. Reconcile only the exact SQL result.
+                finalized = self._repository.session_result_matches(claim, result.sha256)
+                if not finalized:
+                    raise
+            if not finalized or not self._repository.session_result_matches(claim, result.sha256):
+                raise ValueError('session parity lacks exact durable result')
+        elif claim.payload.operation == 'PHASE_EXIT':
+            identity = ProcProcessInspector().inspect(os.getpid())
+            if identity is None or heartbeat(identity) is not HeartbeatDecision.CONTINUE:
+                raise ValueError('phase-exit parent lost its lease or safety authority')
+            proposal = session.prepare_exit()
+            session.fence()
+            inventory = session.put_bytes(canonical_json_bytes([
+                {'path': 'artifacts/'+ref.locator, 'artifact_ref': ref}
+                for _, ref in sorted(session._outputs.items())
+            ]), media_type='application/json')
+            publisher = self._p3_publisher
+            if publisher is None:
+                raise ValueError('session publication capability is unavailable')
+            session.fence()
+            committed = publisher.publish(proposal.request, claim, proposal.entries,
+                trace_id=trace_id, output_inventory_ref=inventory)
+            # After the terminal commit, lease authority is gone. Immutable SQL
+            # readback/receipt recovery uses the existing retained metadata store.
+            publisher.recover_receipt(claim.job_id, expected_request=proposal.request, expected_commit=committed)
+        else:
+            raise ValueError('unexpected session late operation')
+        session.completed_jobs.append(claim.job_id)
+        self._worker_heartbeat('IDLE')
+
 
     @staticmethod
     def _with_engine_event_receipt(

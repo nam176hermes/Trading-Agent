@@ -11,9 +11,13 @@ import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING, Callable, Iterator, Mapping
 
-from packages.job_contracts import ReplayPayload
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
+    from services.job_store.p3_sql import DomainAppendEntry
+
+from packages.job_contracts import AlphaCampaignPayload, ReplayPayload
 from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata
 
 MAX_RESULT_CANDIDATES = 64
@@ -74,8 +78,8 @@ class ValidatedResult:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedP3Publication:
-    request: object
-    entries: tuple[object, ...]
+    request: PublicationRequest
+    entries: tuple[DomainAppendEntry, ...]
 
 
 def _directory_flags() -> int:
@@ -195,14 +199,21 @@ class ResultValidator:
         exit_code: int,
         output_custody=None,
         output_inventory_ref=None,
+        progress: Callable[[], None] | None = None,
+        holdout_view=None,
     ) -> ValidatedResult | ValidatedP3Publication:
         """Validate the bounded stdout of an explicitly composed P3 worker."""
 
+        progress = progress or (lambda: None)
+        progress()
         if exit_code != 0:
             raise ResultValidationError("child exit code was not zero")
         from .command_registry import p3_command_spec
 
-        spec = p3_command_spec(getattr(job, "payload", None))
+        payload = getattr(job, "payload", None)
+        if not isinstance(payload, AlphaCampaignPayload):
+            raise ResultValidationError("P3 result requires an alpha campaign payload")
+        spec = p3_command_spec(payload)
         if validator_id != spec.result_validator_id:
             raise ResultValidationError("P3 result validator differs from fixed operation")
         raw = self._read_p3_stream(job, stream)
@@ -213,13 +224,15 @@ class ResultValidator:
             if type(output_custody) is not P3OutputCustody or output_inventory_ref is None:
                 raise ResultValidationError('P3 official result requires its exact output custody')
             try:
-                validate_official_output(job,result,output_custody,output_inventory_ref)
+                validate_official_output(job,result,output_custody,output_inventory_ref,progress=progress,
+                    holdout_view=holdout_view)
             except (OSError,ValueError) as exc:
                 raise ResultValidationError('P3 output custody or operation closure is invalid') from exc
         from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
 
-        if isinstance(result, IntegrationReceipt) and result.source != job.payload.expected_source:
+        if isinstance(result, IntegrationReceipt) and result.source != payload.expected_source:
             raise ResultValidationError("P3 integration receipt source differs from job")
+        progress()
         from services.job_store.p3_sql import PublicationProposal
         if isinstance(result, PublicationProposal):
             if result.request.job_id != getattr(job, "job_id", None):
@@ -242,18 +255,21 @@ class ResultValidator:
         from packages.job_contracts import JobType
         from .command_registry import p3_command_spec
 
+        payload = getattr(job, "payload", None)
         if (
+            not isinstance(payload, AlphaCampaignPayload)
+            or
             getattr(job, "job_type", None) is not JobType.ALPHA_CAMPAIGN
-            or job.payload.logical_trial_id != "p3-integration-fixture-v1"
+            or payload.logical_trial_id != "p3-integration-fixture-v1"
             or type(receipt) is not IntegrationReceipt
-            or receipt.source != job.payload.expected_source
+            or receipt.source != payload.expected_source
             or receipt.workflow_run_id < 1 or receipt.workflow_attempt < 1
         ):
             raise ResultValidationError("parent integration receipt authority differs from job")
         receipt = IntegrationReceipt.model_validate(receipt)
-        validator_id = p3_command_spec(job.payload).result_validator_id
+        validator_id = p3_command_spec(payload).result_validator_id
         return self._seal(job, canonical_json_bytes(receipt), validator_id, {
-            "operation": job.payload.logical_trial_id, "result_digest": receipt.digest,
+            "operation": payload.logical_trial_id, "result_digest": receipt.digest,
             "producer": "p3-integration-parent",
         })
 
@@ -637,12 +653,12 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
     from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
     from packages.alpha_lifecycle.contracts.results import (
         BaselineSelection,
-        HoldoutEvaluationResult,
         ParityResult,
         QualificationBundle,
     )
     from packages.p3_provenance import PhaseExitReceipt
     from services.job_store.p3_sql import PublicationProposal
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
 
     models = {
         "p3-integration-qualified-v1": IntegrationReceipt,
@@ -650,7 +666,7 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
         "p3-registration-proof-v1": RegistrationProof,
         "p3-qualification-bundle-v1": QualificationBundle,
         "p3-primary-selection-v1": PrimarySelection,
-        "p3-holdout-evaluation-result-v1": HoldoutEvaluationResult,
+        "p3-holdout-operation-result-v1": HoldoutOperationResult,
         "p3-parity-result-v1": ParityResult,
         "p3-phase-exit-v1": PhaseExitReceipt,
     }

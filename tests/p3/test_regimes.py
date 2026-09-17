@@ -26,3 +26,13 @@ def test_regime_boundary_equalities_are_frozen() -> None:
 def test_missing_required_regime_blocks_evidence() -> None:
     with pytest.raises(RegimeError, match="E_REGIME_COVERAGE"):
         require_regime_coverage(("BULL_LOW_VOL", "HIGH_VOL"))
+
+
+def test_holdout_labels_do_not_impose_oos_regime_coverage() -> None:
+    from datetime import UTC,datetime,timedelta
+    from packages.alpha_lifecycle import regimes
+    from packages.alpha_lifecycle.baselines import DailyCloseV1
+    rows=tuple(DailyCloseV1(instrument='BTCUSDT.BINANCE',closed_at=datetime(2025,1,1,tzinfo=UTC)+timedelta(days=i),close=Decimal(100)) for i in range(70))
+    assert regimes.regime_labels(rows,Decimal(0))==('BEAR_LOW_VOL',)*7
+    with pytest.raises(RegimeError,match='E_REGIME_COVERAGE'):
+        regimes.assign_regimes(rows,Decimal(0))

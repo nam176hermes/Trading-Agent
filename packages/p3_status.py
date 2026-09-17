@@ -6,13 +6,12 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-from typing import Annotated, Literal
-
-from pydantic import BeforeValidator, Field
-
-from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity, StrictModel
+from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.p3_provenance import PhaseExitReceipt, PromotionReceipt
+from packages.p3_provenance import (
+    PhaseExitReceipt, PromotionReceipt, P3SourceStatus as P3SourceStatus,
+    P3StatusGates as P3StatusGates, valid_status_output as valid_status_output,
+)
 from packages.pre_p3_provenance import canonical_source_identity
 
 
@@ -20,48 +19,6 @@ P3_ROOT = Path("docs/implementation/p3")
 PHASE_EXIT_PATH = P3_ROOT / "receipts/p3-phase-exit-v1.json"
 STATUS_PATH = P3_ROOT / "p3-source-status.json"
 PROMOTION_ROOT = P3_ROOT / "promotions"
-
-
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("blocker codes must be an array")
-    return tuple(value)
-
-
-Gate = Literal["PASS", "HELD"]
-
-
-class P3StatusGates(StrictModel):
-    pipeline_complete: Gate
-    family_disclosed: Gate
-    primary_selected: Gate
-    holdout_pass: Gate
-    native_parity_pass: Gate
-    registry_lineage: Gate
-    protected_promotion: Gate
-    phase_complete: Gate
-
-
-class P3SourceStatus(DigestModel):
-    schema_version: Literal["p3-source-status-v1"]
-    qualified_source: SourceIdentity | None
-    phase_exit_receipt_digest: Sha256 | None
-    promotion_receipt_digest: Sha256 | None
-    current_semantic_closure_digest: Sha256
-    gates: P3StatusGates
-    blocker_codes: Annotated[
-        tuple[Annotated[str, Field(pattern=r"^E_[A-Z0-9_]+$", max_length=96)], ...],
-        BeforeValidator(_tuple), Field(max_length=64),
-    ]
-    authority: SafeAuthority
-
-
-def valid_status_output(raw: bytes) -> bool:
-    try:
-        P3SourceStatus.model_validate_json(raw)
-        return True
-    except Exception:
-        return False
 
 
 def _attested(
@@ -88,6 +45,33 @@ def _attested(
     return isinstance(verified, list) and bool(verified)
 
 
+def _semantic_identity(source: SourceIdentity) -> tuple[str, str, str]:
+    return source.closure_schema_version, source.closure_policy_sha256, source.closure_sha256
+
+
+def _current_promotion(root: Path, source: SourceIdentity) -> PromotionReceipt | None:
+    """Select the nearest first-parent promotion across output-only commits."""
+    current = source
+    while _semantic_identity(current) == _semantic_identity(source):
+        path = root / PROMOTION_ROOT / f"{current.commit_sha}-v1.json"
+        if path.exists():
+            # A malformed or mismatched nearest receipt must never fall back.
+            value = PromotionReceipt.model_validate_json(path.read_bytes())
+            if value.promoted_source != current:
+                raise ValueError("promotion does not bind its committed source")
+            return value
+        parent = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{current.commit_sha}^1"],
+            cwd=root, capture_output=True, check=False,
+        )
+        if parent.returncode:
+            return None
+        current = SourceIdentity.model_validate(
+            canonical_source_identity(root, parent.stdout.decode("ascii").strip())
+        )
+    return None
+
+
 def derive_p3_status(root: Path) -> P3SourceStatus:
     source = SourceIdentity.model_validate(canonical_source_identity(root))
     blockers = []
@@ -98,21 +82,15 @@ def derive_p3_status(root: Path) -> P3SourceStatus:
     except Exception:
         blockers.append("E_P3_PHASE_EXIT_RECEIPT")
     if phase is not None:
-        matches = []
-        for path in (root / PROMOTION_ROOT).glob("*-v1.json"):
-            try:
-                value = PromotionReceipt.model_validate_json(path.read_bytes())
-            except Exception:
-                continue
-            if path.name == f"{value.promoted_source.commit_sha}-v1.json":
-                matches.append(value)
-        if len(matches) == 1:
-            promotion = matches[0]
-        else:
+        try:
+            promotion = _current_promotion(root, source)
+        except (OSError, ValueError):
+            promotion = None
+        if promotion is None:
             blockers.append("E_P3_PROTECTED_PROMOTION")
     phase_valid = (
         phase is not None
-        and phase.source.closure_sha256 == source.closure_sha256
+        and _semantic_identity(phase.source) == _semantic_identity(source)
         and phase.qualification_workflow == "p3-authority.yml"
         and _attested(
             root, root / PHASE_EXIT_PATH,
@@ -120,10 +98,10 @@ def derive_p3_status(root: Path) -> P3SourceStatus:
         )
     )
     promotion_valid = (
-        phase_valid and promotion is not None
+        phase_valid and phase is not None and promotion is not None
         and promotion.qualified_source == phase.source
         and promotion.phase_exit_receipt_digest == phase.digest
-        and promotion.promoted_source == source
+        and _semantic_identity(promotion.promoted_source) == _semantic_identity(source)
         and promotion.workflow_ref == "foundation.yml"
         and _attested(
             root,

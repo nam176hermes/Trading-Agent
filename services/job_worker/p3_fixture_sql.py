@@ -1,5 +1,6 @@
 """Real disposable PostgreSQL fixture execution and evidence, owned by the worker."""
 import os
+from collections import Counter
 import signal
 import time
 import hashlib
@@ -14,7 +15,7 @@ from datetime import UTC, datetime
 
 import psycopg
 from psycopg.conninfo import make_conninfo
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 from psycopg_pool import ConnectionPool
 from alembic import command
 from alembic.config import Config
@@ -22,7 +23,7 @@ from sqlalchemy import create_engine, URL
 from packages.alpha_lifecycle.contracts.lifecycle import PublicationRequest
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.engine_contracts import canonical_json_bytes
-from packages.job_contracts import AlphaCampaignOperation, EnqueueJobRequest
+from packages.job_contracts import AlphaCampaignOperation, AlphaCampaignPayload, EnqueueJobRequest
 from services.job_store.p3_publication_repository import P3PublicationRepository
 from services.job_store.worker_repository import WorkerRepository
 from services.job_worker.recovery import ProcessIdentity, ProcProcessInspector
@@ -45,6 +46,24 @@ REQUIRED_SQL_CHECKS = frozenset({
     'PUBLICATION_CANCEL_AFTER_PASS','PUBLICATION_LOST_COMMIT_RESPONSE_PASS',
     'PUBLICATION_ATOMIC_REPLAY_PASS',
 }) | REQUIRED_OPERATION_CHECKS
+
+
+_SQL_ADDITIONAL_CHECKS=frozenset({
+    'UPGRADE_0004_durable_research_jobs_PASS','UPGRADE_0019_p2_security_master_PASS',
+    'UPGRADE_0020_p3_alpha_campaign_authority_PASS','API_ENQUEUE_PASS','WORKER_CLAIM_PASS',
+    'WORKER_START_PASS','WORKER_BUSY_HEARTBEAT_PASS','WORKER_DURABLE_RESULT_PASS',
+})
+
+
+def validate_sql_fixture_checks(checks,*,process_identity_bound=True):
+    """Match every source-pinned vector, including both FAIL/PASS publication cases."""
+    expected=dict.fromkeys(REQUIRED_SQL_CHECKS|_SQL_ADDITIONAL_CHECKS,1)
+    expected['RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS']=2
+    if not process_identity_bound:
+        expected['SQL_PROCESS_IDENTITY_OBSERVED_PASS']=expected.pop('SQL_PROCESS_IDENTITY_BOUND_PASS')
+    if (not isinstance(checks,list) or len(checks)!=sum(expected.values())
+        or any(not isinstance(check,str) for check in checks) or Counter(checks)!=expected):
+        raise ValueError('qualification SQL check inventory differs from the exact source fixture')
 
 
 def _alpha_request() -> EnqueueJobRequest:
@@ -207,8 +226,9 @@ def check_publication(sock, name, root, payload, mark):
         cancel_request = PublicationRequest.model_validate_json(canonical_json_bytes(cancel_body))
         from concurrent.futures import ThreadPoolExecutor
         with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api, psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
-            assert api.execute('SELECT * FROM job_plane.api_cancel_alpha_campaign(%s,%s,%s,%s)',
-                (cancel_claim.job_id,'source-test','cancel:before','event_cancel_before')).fetchone()[1:] == ('CANCEL_REQUESTED',True)
+            cancelled_row = api.execute('SELECT * FROM job_plane.api_cancel_alpha_campaign(%s,%s,%s,%s)',
+                (cancel_claim.job_id,'source-test','cancel:before','event_cancel_before')).fetchone()
+            assert cancelled_row is not None and cancelled_row[1:] == ('CANCEL_REQUESTED',True)
             with ThreadPoolExecutor(max_workers=1) as executor:
                 blocked = executor.submit(publisher.publish,cancel_request,cancel_claim,tuple(entries),trace_id='publication:cancel-before')
                 try:
@@ -251,7 +271,7 @@ def check_publication(sock, name, root, payload, mark):
                 with self.lock:
                     disconnect = self.pending
                     self.pending = False
-                with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
+                with psycopg.Connection[DictRow].connect(host=str(sock),dbname=name,user='trading_job_worker',row_factory=dict_row) as connection:
                     yield connection
                     if disconnect:
                         # Real SQL COMMIT has completed. Discard the client result and
@@ -292,7 +312,8 @@ def check_publication(sock, name, root, payload, mark):
                             gate.execute('SELECT pg_advisory_unlock(706003)')
                         result = first.result(timeout=10)
                         assert second.result(timeout=10) == result
-                        assert cancelled.result(timeout=10)[1:] == ('SUCCEEDED',False)
+                        cancelled_row = cancelled.result(timeout=10)
+                        assert cancelled_row is not None and cancelled_row[1:] == ('SUCCEEDED',False)
             finally:
                 gate.execute('SELECT pg_advisory_unlock(706003)')
                 gate.execute('DROP TRIGGER p3_source_commit_barrier ON public.job_events')
@@ -365,7 +386,11 @@ def _cleanup_cluster(root: Path, data: Path, sock: Path, started: bool, run, *, 
         raise stop_error
     print('OWNED_CLUSTER_CLEANUP_PASS', flush=True)
 
-def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root=None) -> dict:
+def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root=None,
+    custodian_release_source_checks: bool = False,
+    native_process_source_checks: bool = False,
+    session_holdout_source_checks: bool = False,
+) -> dict[str, object]:
     if not __debug__:
         raise RuntimeError("source checks require assertions enabled")
     root = Path(tempfile.mkdtemp(prefix='p3-source-pg-', dir='/tmp')) if owned_root is None else owned_root
@@ -384,7 +409,8 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
     started_at = datetime.now(UTC).isoformat()
 
     def mark(name, *, flush=True):
-        checks.append(name)
+        if name!='OPERATION_AUTHORIZATION_EXPIRY_WAIT':
+            checks.append(name)
         print(name, flush=flush)
         if heartbeat is not None and identity is not None:
             instruction = heartbeat(identity)
@@ -478,7 +504,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             assert owner.execute('SELECT version_num FROM alembic_version').fetchone() == ('0020_p3_alpha_campaign_authority',)
         mark('EMPTY_DOWNGRADE_POLICY_PASS')
 
-        payload = _alpha_request().payload.model_copy(update={"expected_source": source, "operation": AlphaCampaignOperation.PARITY, "logical_trial_id": "p3-integration-fixture-v1"})
+        payload = _alpha_request().payload
+        assert isinstance(payload, AlphaCampaignPayload)
+        payload = payload.model_copy(update={"expected_source": source, "operation": AlphaCampaignOperation.PARITY, "logical_trial_id": "p3-integration-fixture-v1"})
         authorization = canonical_json_bytes({"purpose": "disposable-source-test"})
         authorization_digest = hashlib.sha256(authorization).hexdigest()
         payload = payload.model_copy(update={"authorization_ref": payload.authorization_ref.model_copy(update={
@@ -625,6 +653,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
                                   stderr=subprocess.DEVNULL,start_new_session=True) as child:
                 absent_identity = ProcProcessInspector().inspect(child.pid)
                 assert absent_identity is not None
+                assert child.stdin is not None
                 child.stdin.close()
                 child.wait(timeout=5)
             assert ProcProcessInspector().inspect(absent_identity.pid) is None
@@ -659,6 +688,20 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         mark('WORKER_DURABLE_RESULT_PASS', flush=True)
         check_publication(sock, name, root, payload, mark)
         check_operations(sock, name, root, payload, mark)
+        from .p3_holdout_fixture import check_holdout_disclosure,check_disclosure_catalog
+        check_disclosure_catalog(sock,name,mark)
+        check_holdout_disclosure(sock,name,source,mark)
+        native_checks: dict[str, object] = {}
+        session_checks: dict[str, object] = {}
+        if custodian_release_source_checks or native_process_source_checks or session_holdout_source_checks:
+            from .p3_custodian_fixture import check_custodian_release
+            check_custodian_release(sock,name,source)
+        if native_process_source_checks or session_holdout_source_checks:
+            from .p3_native_sql_fixture import check_native_process
+            native_checks = check_native_process(sock,name,source)
+        if session_holdout_source_checks:
+            from .p3_session_sql_fixture import check_session_holdout
+            session_checks = check_session_holdout(sock,name,source)
         with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
             revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
             if revision_row is None:
@@ -675,7 +718,10 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             cause = (BaseExceptionGroup("source check and cleanup failed", [primary_error, cleanup_error])
                      if primary_error is not None else cleanup_error)
             raise SQLFixtureCleanupError(f"SQL cleanup unverified; retained {root}") from cause
+    validate_sql_fixture_checks(checks,process_identity_bound=heartbeat is not None)
     return {"source": source.model_dump(mode="json"), "checks": checks, "sql_revision":sql_revision,
+            **({"native_process_checks": native_checks} if native_process_source_checks else {}),
+            **({"session_holdout_checks": session_checks} if session_holdout_source_checks else {}),
             "postgres_binary_sha256": hashlib.sha256((BIN/'postgres').read_bytes()).hexdigest(),
             "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
             "cleanup": {"cluster_id": root.name, "root_absent": not root.exists(),

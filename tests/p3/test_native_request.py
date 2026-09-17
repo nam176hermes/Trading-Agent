@@ -1,0 +1,152 @@
+"""Private native request/result seam over synthetic released views."""
+import hashlib
+
+import pytest
+
+from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView,build_holdout_calculation_view
+from packages.data_catalog.artifact_store import LocalArtifactStore
+from packages.engine_contracts.serialization import canonical_json_bytes
+from tests.p3.test_reference_input import reference_seed  # noqa: F401
+
+
+@pytest.fixture
+def native_inputs(reference_seed):
+    root,manifest,spec,*_=reference_seed
+    store=LocalArtifactStore(root)
+    view=HoldoutCalculationView(build_holdout_calculation_view(manifest,spec,store),manifest,spec)
+    return store,view,manifest,spec
+
+
+@pytest.mark.parametrize('role',['PRIMARY','SELECTED_BASELINE'])
+def test_native_request_is_derived_from_exact_view_and_role(native_inputs,role):
+    from packages.alpha_lifecycle.native_request import prepare_native_request,validate_native_request
+    store,view,manifest,spec=native_inputs
+    before=set(store._root.iterdir())
+    request=prepare_native_request(manifest,spec,view,role=role)
+    assert request.role==role and len(request.steps)==366
+    assert request.steps[0].source_day.isoformat()=='2025-08-31'
+    assert request.steps[-1].source_day.isoformat()=='2026-08-31'
+    assert request.steps[-1].target==0
+    assert validate_native_request(canonical_json_bytes(request),manifest,spec,view,role=role)==request
+    assert set(store._root.iterdir())==before  # No plaintext-derived request persisted to CAS.
+    for field,value in [('role','SELECTED_BASELINE' if role=='PRIMARY' else 'PRIMARY'),
+        ('source',{**request.source.model_dump(mode='json'),'commit_sha':'9'*40}),
+        ('environment_ref',spec)]:
+        changed=request.model_dump(mode='json',exclude={'digest'});changed[field]=value
+        changed['digest']=hashlib.sha256(canonical_json_bytes(changed)).hexdigest()
+        with pytest.raises(ValueError):validate_native_request(canonical_json_bytes(changed),manifest,spec,view,role=role)
+    with pytest.raises(ValueError):validate_native_request(canonical_json_bytes(request)+b'\n',manifest,spec,view,role=role)
+    with pytest.raises(ValueError):prepare_native_request(manifest,spec,store,role=role)
+
+
+@pytest.mark.parametrize('fault', [None, 'missing_day', 'extra_row', 'sequence', 'event_time',
+    'init_time', 'event_order', 'source_day', 'side', 'early_liquidation', 'missing_fill',
+    'terminal_position', 'missing_mark_price', 'missing_quote_price', 'missing_fill_quantity',
+    'missing_fill_fee', 'unexpected_signal_price', 'unexpected_mark_quantity'])
+def test_native_output_requires_complete_ordered_request_before_retention(native_inputs, fault):
+    import json
+    from packages.alpha_lifecycle.native_request import prepare_native_request, native_result_from_output
+    from packages.alpha_lifecycle.executable_reference import run_selected_baseline_reference
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec
+    from packages.alpha_lifecycle.replica_store import _read
+
+    store, view, manifest_ref, spec_ref = native_inputs
+    request = prepare_native_request(manifest_ref, spec_ref, view, role='SELECTED_BASELINE')
+    reference = run_selected_baseline_reference(_read(view, manifest_ref, HoldoutManifest),
+        _read(view, spec_ref, InstrumentSpec), store)
+    rows = [{k: v for k, v in row.items() if k not in {'schema_version', 'digest', 'source_artifact_ref'}}
+        for row in json.loads(store.read_bytes(reference.fill_trace_ref))]
+    if fault == 'missing_day':
+        rows = [row for row in rows if row['source_day'] != str(request.steps[30].source_day)]
+    elif fault == 'extra_row': rows.append(dict(rows[-1]))
+    elif fault == 'sequence': rows[0]['sequence'] = 7
+    elif fault == 'event_time': rows[0]['event_time_ns'] += 1
+    elif fault == 'init_time': rows[0]['init_time_ns'] += 1
+    elif fault == 'event_order': rows[0]['kind'] = 'MARK'
+    elif fault == 'source_day': rows[0]['source_day'] = str(request.steps[1].source_day)
+    elif fault == 'side': rows[0]['side'] = 'BUY'
+    elif fault == 'early_liquidation':
+        next(row for row in rows if row['kind'] == 'MARK')['kind'] = 'LIQUIDATION'
+    elif fault == 'missing_fill':
+        rows.remove(next(row for row in rows if row['kind'] == 'FILL'))
+    elif fault == 'terminal_position': rows[-1]['position_after'] = '1'
+    elif fault == 'missing_mark_price': rows[-1]['price'] = None
+    elif fault == 'missing_quote_price': next(row for row in rows if row['kind'] == 'QUOTE')['price'] = None
+    elif fault == 'missing_fill_quantity': next(row for row in rows if row['kind'] == 'FILL')['quantity'] = None
+    elif fault == 'missing_fill_fee': next(row for row in rows if row['kind'] == 'FILL')['fee_quote'] = None
+    elif fault == 'unexpected_signal_price': rows[0]['price'] = '100'
+    elif fault == 'unexpected_mark_quantity': rows[-1]['quantity'] = '1'
+    before = set(store._root.iterdir())
+    raw = canonical_json_bytes(rows) + b'\n'
+    if fault is None:
+        assert native_result_from_output(request, raw, view, store) == reference
+    else:
+        with pytest.raises(ValueError, match='trace'):
+            native_result_from_output(request, raw, view, store)
+    assert set(store._root.iterdir()) == before
+
+
+@pytest.mark.host_coupled
+@pytest.mark.skipif(not __import__('os').environ.get('P3_NATIVE_TEST_PYTHON'),reason='pinned offline native Python required')
+@pytest.mark.parametrize('role',['PRIMARY','SELECTED_BASELINE'])
+def test_full_native_request_runs_both_roles_three_times(native_inputs,role,tmp_path):
+    import json,os,subprocess
+    from pathlib import Path
+    from decimal import Decimal
+    from packages.alpha_lifecycle.native_request import prepare_native_request,native_step_bytes,native_result_from_output
+    from packages.alpha_lifecycle.executable_reference import run_executable_reference,run_selected_baseline_reference
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest,InstrumentSpec
+    from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore,_read
+    source,view,manifest_ref,spec_ref=native_inputs
+    output=tmp_path/'results';output.mkdir(mode=0o700)
+    store=ReplicaArtifactStore(view,output)
+    manifest=_read(view,manifest_ref,HoldoutManifest);spec=_read(view,spec_ref,InstrumentSpec)
+    reference=(run_executable_reference if role=='PRIMARY' else run_selected_baseline_reference)(manifest,spec,store)
+    expected=json.loads(store.read_bytes(reference.fill_trace_ref))
+    request=prepare_native_request(manifest_ref,spec_ref,view,role=role)
+    script=Path(__file__).resolve().parents[2]/'engines/nautilus/p3_next_open.py'
+    observed=[]
+    for _ in range(3):
+        process=subprocess.run([os.environ['P3_NATIVE_TEST_PYTHON'],'-I','-B',str(script)],
+            input=native_step_bytes(request),capture_output=True,timeout=30,check=True,env={})
+        native=native_result_from_output(request,process.stdout,view,store)
+        observed.append(native)
+        assert native.transition_trace_ref==reference.transition_trace_ref
+        assert native.manifest_ref==reference.manifest_ref
+        actual=json.loads(store.read_bytes(native.fill_trace_ref))
+        assert len(actual)==len(expected)
+        for left,right in zip(actual,expected,strict=True):
+            for key in ('sequence','event_time_ns','init_time_ns','kind','side','price','quantity',
+                'position_after','source_day','source_artifact_ref'):
+                assert left[key]==right[key],(key,left,right)
+            assert abs(Decimal(left['fee_quote'] or '0')-Decimal(right['fee_quote'] or '0'))<=Decimal('.01')
+            assert abs(Decimal(left['cash_after'])-Decimal(right['cash_after']))<=Decimal('.02')
+        assert abs(Decimal(native.ending_cash)-Decimal(reference.ending_cash))<=Decimal('.02')
+        assert native.ending_position=='0'
+    assert observed[0]==observed[1]==observed[2]
+    with pytest.raises(ValueError):native_result_from_output(request,process.stdout+b'\n',view,store)
+    with pytest.raises(ValueError):native_result_from_output(request,b'[]\n',view,store)
+
+
+def test_retained_native_commitment_contains_no_steps_and_binds_both_roles(native_inputs):
+    from packages.alpha_lifecycle.native_request import (
+        prepare_native_commitment, prepare_native_request, validate_native_commitment,
+    )
+    store, view, manifest, spec = native_inputs
+    before = set(store._root.iterdir())
+    commitment = prepare_native_commitment(manifest, spec, view)
+    raw = canonical_json_bytes(commitment)
+    assert b'"steps"' not in raw and len(raw) < 4096
+    for role, field in [('PRIMARY', 'primary_request_sha256'), ('SELECTED_BASELINE', 'baseline_request_sha256')]:
+        request = prepare_native_request(manifest, spec, view, role=role)
+        assert getattr(commitment, field) == hashlib.sha256(canonical_json_bytes(request)).hexdigest()
+    ref = store.put_bytes(raw, media_type='application/json')
+    assert validate_native_commitment(ref, manifest, spec, view, store) == commitment
+    assert set(store._root.iterdir()) - before == {store._root/ref.locator}
+    changed = commitment.model_dump(mode='json', exclude={'digest'})
+    changed['primary_request_sha256'], changed['baseline_request_sha256'] = (
+        changed['baseline_request_sha256'], changed['primary_request_sha256'])
+    changed['digest'] = hashlib.sha256(canonical_json_bytes(changed)).hexdigest()
+    other = store.put_bytes(canonical_json_bytes(changed), media_type='application/json')
+    with pytest.raises(ValueError, match='commitment'):
+        validate_native_commitment(other, manifest, spec, view, store)

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from packages.alpha_lifecycle.acquisition import RetryableTransportError, acquire_day
+from packages.alpha_lifecycle.acquisition import RetryableTransportError, acquire_day_receipt
 from packages.data_catalog.artifact_store import LocalArtifactStore
 
 
@@ -47,14 +47,18 @@ class PublicArchiveTransport:
         return value
 
 
-def main(start: date, end: date, root: Path) -> None:
+def main(start: date, end: date, root: Path, *, receipt_jsonl: bool = False) -> None:
     if start > end:
         raise ValueError("inclusive date range must be ordered")
     store = LocalArtifactStore(root)
     transport = PublicArchiveTransport()
     current = start
     while current <= end:
-        print(current.isoformat(), acquire_day(current, transport, store).content_sha256)
+        receipt = acquire_day_receipt(current, transport, store)
+        if receipt_jsonl:
+            print(receipt.artifact_ref.model_dump_json())
+        else:
+            print(current.isoformat(), receipt.archive_ref.content_sha256)
         current += timedelta(days=1)
 
 
@@ -65,5 +69,6 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--store", type=Path, required=True)
+    parser.add_argument("--receipt-jsonl", action="store_true", help="emit acquisition references for research dataset preparation")
     args = parser.parse_args()
-    main(args.start, args.end, args.store)
+    main(args.start, args.end, args.store, receipt_jsonl=args.receipt_jsonl)

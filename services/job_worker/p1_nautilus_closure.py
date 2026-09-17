@@ -15,7 +15,7 @@ from packages.nautilus_upgrade_authority import (
     load_candidate_generation,
 )
 
-from . import nautilus_closure as _legacy
+import services.job_worker.nautilus_closure as _legacy
 from .engine_profiles import P1_REAL_BACKTEST_POLICY
 from .engine_spawn import (
     NativeEntryGuardAttestation,
@@ -23,7 +23,7 @@ from .engine_spawn import (
 )
 from .engine_spawn_interface import EngineSpawnError
 from .nautilus_closure import NautilusClosureConfig
-from .p1_engine_spawn import P1EngineClosureAttestation
+from .p1_closure_attestation import P1EngineClosureAttestation
 
 
 _ROOT = Path(__file__).resolve().parents[2]

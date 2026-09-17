@@ -39,7 +39,19 @@ def test_revision_inventory_rejects_invalid_top_reference_before_read(fault):
 
 
 @pytest.fixture(scope='module')
-def complete_revision_inputs(tmp_path_factory):
+def acquisition_clock():
+    from packages.alpha_lifecycle import acquisition
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 10, tzinfo=UTC)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(acquisition, 'datetime', Clock)
+        yield
+
+
+@pytest.fixture(scope='module')
+def complete_revision_inputs(tmp_path_factory, acquisition_clock):
     from packages.alpha_lifecycle import acquisition
     from packages.alpha_lifecycle.data_view import seal_research_dataset
     from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -66,12 +78,15 @@ def complete_revision_inputs(tmp_path_factory):
             partition_id=uuid5(series,identity),dataset='p3.research.daily',
             partition_key=('BTCUSDT.BINANCE',day.isoformat()),partition_spec_version='p3.utc-day.v1',
             source_available_at=acquired.system_observed_at,system_observed_at=acquired.system_observed_at,
-            ingested_at=datetime.now(UTC),raw_evidence_sha256s=(acquired.archive_ref.content_sha256,acquired.checksum_ref.content_sha256),
+            ingested_at=acquired.system_observed_at,raw_evidence_sha256s=(acquired.archive_ref.content_sha256,acquired.checksum_ref.content_sha256),
             transform_receipt_sha256=provider.content_sha256,quality_receipt_sha256=quality.content_sha256,
             revision_series_id=series,revision_ordinal=1)
         entries.append(dict(day=day.isoformat(),acquisition_ref=acquired.artifact_ref,
             normalized_ref=normalized,provider_ref=provider,quality_ref=quality,partition=partition.manifest))
-    query=PITQueryV1(mode=PITQueryMode.SYSTEM_OBSERVED,valid_at=datetime(2025,9,1,tzinfo=UTC),cutoff=datetime.now(UTC))
+    # The synthetic batch is already ingested; do not sample a host clock that
+    # can move backwards between observation, ingestion and query construction.
+    query=PITQueryV1(mode=PITQueryMode.SYSTEM_OBSERVED,valid_at=datetime(2025,9,1,tzinfo=UTC),
+        cutoff=max(entry['partition'].ingested_at for entry in entries))
     dataset=seal_research_dataset(tuple(entry['partition'] for entry in entries),query,schema,store)
     dataset_ref=store.put_bytes(canonical_json_bytes(dataset),media_type='application/json')
     value=dict(schema_version='p3-research-revision-inventory-v1',source=SOURCE,policy_digest=POLICY,entries=entries)
@@ -85,6 +100,31 @@ def test_complete_revision_reconstruction_is_read_only(complete_revision_inputs,
     monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('reconstruction wrote an artifact')))
     assert pit_evidence.validate_revision_inventory(ref,source=SOURCE,policy_digest=POLICY,
         query=query,dataset_ref=dataset_ref,store=store)==dataset
+
+
+def test_acquisition_cli_bridge_seals_all_research_days(complete_revision_inputs, tmp_path, capsys, monkeypatch):
+    from scripts import seal_p3_dataset as producer
+    from packages.alpha_lifecycle.contracts.data import DatasetEvidence
+
+    store, inventory_ref, query, _, _ = complete_revision_inputs
+    old = json.loads(store.read_bytes(inventory_ref))
+    query = query.model_copy(update={"cutoff": datetime.now(UTC) + timedelta(minutes=5)})
+    input_path = tmp_path / "acquisitions.json"
+    input_path.write_bytes(canonical_json_bytes(dict(
+        acquisition_refs=[entry["acquisition_ref"] for entry in old["entries"]], query=query,
+    )))
+    monkeypatch.setattr(producer, "canonical_source_identity", lambda _: SOURCE.model_dump())
+    producer.main(input_path, store._root, acquisition_refs=True)
+    output = json.loads(capsys.readouterr().out)
+    dataset = DatasetEvidence.model_validate_json(canonical_json_bytes(output["dataset"]))
+    assert dataset.usable_rows == 2800
+    assert dataset.vintage_class == "RETROSPECTIVE_CURRENT_ARCHIVE"
+    ref = ArtifactRefV1.model_validate(output["revision_inventory_ref"])
+    inventory = pit_evidence.P3ResearchRevisionInventory.model_validate_json(store.read_bytes(ref))
+    assert len(inventory.entries) == 2800
+    dataset_ref = store.put_bytes(canonical_json_bytes(dataset), media_type="application/json")
+    assert pit_evidence.validate_revision_inventory(ref, source=SOURCE,
+        policy_digest=inventory.policy_digest, query=query, dataset_ref=dataset_ref, store=store) == dataset
 
 
 @pytest.mark.parametrize('fault',[

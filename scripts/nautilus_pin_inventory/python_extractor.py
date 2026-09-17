@@ -10,6 +10,7 @@ import re
 import tokenize
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from io import StringIO
 from typing import Iterable
 
@@ -239,6 +240,7 @@ def _invalid() -> PythonExtractionError:
     return PythonExtractionError("invalid governed Python expression")
 
 
+@lru_cache(maxsize=1)
 def _offsets(text: str) -> tuple[int, ...]:
     starts = [0]
     for index, character in enumerate(text):

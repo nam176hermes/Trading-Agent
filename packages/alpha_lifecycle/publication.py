@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Protocol
 from collections.abc import Mapping
 from datetime import datetime
 from uuid import UUID
@@ -19,7 +20,10 @@ from packages.alpha_lifecycle.contracts.lifecycle import (
 )
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from services.job_store.p3_publication_repository import JobCommitResult, P3PublicationRepository
+from packages.alpha_lifecycle.contracts.lifecycle import JobCommitResult
+
+class PublicationReader(Protocol):
+    def read_publication(self, job_id: str) -> tuple[PublicationRequest, JobCommitResult, datetime]: ...
 
 
 def _seal(store: ArtifactStore, value: object) -> ArtifactRefV1:
@@ -66,10 +70,15 @@ def build_publication_receipt(
 
 
 def recover_publication_receipt(
-    job_id: str, *, repository: P3PublicationRepository, store: ArtifactStore
+    job_id: str, *, repository: PublicationReader, store: ArtifactStore,
+    expected_request: PublicationRequest | None = None,
+    expected_commit: JobCommitResult | None = None,
 ) -> PublicationReceipt:
     """Reproduce a receipt from committed SQL custody, never from caller time."""
     request, commit, committed_at = repository.read_publication(job_id)
+    if (expected_request is not None and request != expected_request
+        or expected_commit is not None and commit != expected_commit):
+        raise ValueError('publication readback differs from the committed operation')
     request_ref = _seal(store, request)
     receipt = build_publication_receipt(request_ref, commit, committed_at=committed_at, store=store)
     if _read(store, receipt.commit_result_ref, JobCommitResult) != commit:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 import re
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -19,6 +20,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import URL, create_engine
 from sqlalchemy.exc import DBAPIError
+from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.registry import AlphaLifecycleStatus, AlphaRecordV1, QualificationDecision
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignOperation
@@ -27,6 +29,8 @@ from services.job_store.p3_sql import DomainAppendEntry
 ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_OPERATION_CHECKS = frozenset({
     'OPERATION_MIGRATION_CHAIN_PASS',
+    'HOLDOUT_INTENT_MIGRATION_DRIFT_REJECTED_PASS',
+    'WORKFLOW_BOUND_CLAIM_ISOLATION_PASS',
     'OFFICIAL_CLAIM_AND_RECOVERY_LANE_ISOLATION_PASS',
     'OFFICIAL_PRE_SPAWN_RECHECKS_CURRENT_AUTHORITY_PASS',
     'OFFICIAL_CLAIM_LOCK_SKIP_AND_EXPIRY_PASS',
@@ -38,6 +42,11 @@ REQUIRED_OPERATION_CHECKS = frozenset({
     'OFFICIAL_OUTPUT_LOST_COMMIT_RESPONSE_PASS',
     'RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS',
     'HOLDOUT_CANNOT_START_WITHOUT_DURABLE_CONSUMPTION_PASS',
+    'HOLDOUT_DISCLOSURE_EXACT_BINDING_AND_RECONCILIATION_PASS',
+    'HOLDOUT_DISCLOSURE_NO_FALLBACK_OR_MATERIAL_REUSE_PASS',
+    'HOLDOUT_DISCLOSURE_TWO_CONNECTION_FENCE_PASS',
+    'HOLDOUT_DISCLOSURE_PRIVILEGES_AND_APPEND_ONLY_PASS',
+    'HOLDOUT_DISCLOSURE_CATALOG_DRIFT_REJECTED_PASS',
 })
 
 
@@ -53,7 +62,7 @@ def _wait_for_lock(connection, role, query_pattern, count=1, *, wait_event=None)
 
 
 @contextmanager
-def _rejected(error_type, *, match=None):
+def _rejected(error_type: type[Exception], *, match: str | None = None) -> Iterator[None]:
     try:
         yield
     except error_type as error:
@@ -252,13 +261,44 @@ def check_operations(sock, name, root, payload, mark):
         with engine.begin() as connection:
             config = Config(str(ROOT / 'alembic.ini'))
             config.attributes['connection'] = connection
-            command.upgrade(config, 'head')
+            command.upgrade(config, '0023_p3_output_custody')
+        # The old cancellation race intentionally retained an expired attempt.
+        # Reconcile it through the canonical recovery capability before offline DDL.
+        from psycopg.conninfo import make_conninfo
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+        from services.job_store.worker_repository import WorkerRepository
+        from services.job_worker.recovery import ProcProcessInspector
+        with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),
+            min_size=1,max_size=1,kwargs={'row_factory':dict_row},open=True) as pool:
+            worker=object.__new__(WorkerRepository);worker._pool=pool
+            recovered=worker.recover_expired_leases(ProcProcessInspector(),alpha_campaign=True,
+                fixture_only=False,job_id='job_cancel_before')
+            assert tuple(job for job,_ in recovered)==('job_cancel_before',)
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            assert owner.execute("SELECT state FROM jobs WHERE job_id='job_cancel_before'").fetchone() in {('CANCELLED',),('BLOCKED',)}
+        _check_bound_migration_quiescence(sock,name,engine)
+        _check_bound_migration_drift(sock,name,engine)
+        with engine.begin() as connection:
+            config = Config(str(ROOT / 'alembic.ini'))
+            config.attributes['connection'] = connection
+            command.upgrade(config, '0024_p3_workflow_claim')
+        _check_holdout_intent_migration_drift(sock,name,engine)
+        mark('HOLDOUT_INTENT_MIGRATION_DRIFT_REJECTED_PASS')
+        with engine.begin() as connection:
+            config = Config(str(ROOT / 'alembic.ini'))
+            config.attributes['connection'] = connection
+            command.upgrade(config, '0025_p3_holdout_intent')
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             for signature in ('worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean)',
                 'worker_recover_expired_alpha_campaign(text,text,text,text,text,text,bigint,bigint,bigint,text,text,text,text,text,text,boolean)',
                 'p3_worker_lane_matches(jsonb,boolean)'):
                 assert owner.execute("SELECT has_function_privilege('trading_reader',%s,'EXECUTE')",('job_plane.'+signature,)).fetchone() == (False,)
             owner.execute('ALTER DEFAULT PRIVILEGES FOR ROLE trading_p3_owner REVOKE EXECUTE ON FUNCTIONS FROM trading_reader')
+        with engine.begin() as connection:
+            config=Config(str(ROOT/'alembic.ini'))
+            config.attributes['connection']=connection
+            command.upgrade(config,'0026_p3_holdout_disclosure')
     finally:
         engine.dispose()
     mark('OPERATION_MIGRATION_CHAIN_PASS',flush=True)
@@ -292,8 +332,38 @@ def check_operations(sock, name, root, payload, mark):
     _check_claim_lock_expiry(sock, name, payload.expected_source, mark)
     _check_expired_pre_spawn(sock, name, payload.expected_source, mark)
     _check_claim_lane_isolation(sock, name, payload, mark)
+    _check_bound_claim(sock, name, payload, mark)
     _check_holdout_denial(sock, name, payload.expected_source, mark)
 
+
+
+def _check_holdout_intent_migration_drift(sock,name,engine):
+    signature='job_plane.accept_p3_operation_authorization(text,text,text)'
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+        definition=_first(owner.execute('SELECT pg_get_functiondef(%s::regprocedure)',(signature,)).fetchone())
+    faults=(
+        (definition.replace('\nAS $function$','\nAS $function$\n-- fixture drift\n',1),definition),
+        ('GRANT EXECUTE ON FUNCTION '+signature+' TO trading_job_worker',
+         'REVOKE EXECUTE ON FUNCTION '+signature+' FROM trading_job_worker'),
+        ('ALTER FUNCTION '+signature+' SET search_path=public','ALTER FUNCTION '+signature+' SET search_path=pg_catalog'),
+        ('ALTER FUNCTION '+signature+' STRICT','ALTER FUNCTION '+signature+' CALLED ON NULL INPUT'),
+        ('GRANT trading_reader TO trading_p3_authority','REVOKE trading_reader FROM trading_p3_authority'),
+        ('ALTER FUNCTION job_plane.p3_checked_object(text,text,text[]) STRICT',
+         'ALTER FUNCTION job_plane.p3_checked_object(text,text,text[]) CALLED ON NULL INPUT'),
+    )
+    for damage,restore in faults:
+        assert damage!=restore
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            owner.execute(SQL(cast(LiteralString,damage)))
+        try:
+            with _rejected(RuntimeError,match='drift'):
+                with engine.begin() as connection:
+                    config=Config(str(ROOT/'alembic.ini'));config.attributes['connection']=connection
+                    command.upgrade(config,'0025_p3_holdout_intent')
+        finally:
+            with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+                owner.execute(SQL(cast(LiteralString,restore)))
+                assert owner.execute('SELECT version_num FROM alembic_version').fetchone()==('0024_p3_workflow_claim',)
 
 
 def _check_output_migration_drift(sock,name,engine):
@@ -326,7 +396,7 @@ def _check_output_migration_drift(sock,name,engine):
                     config=Config(str(ROOT/'alembic.ini'))
                     config.attributes['connection']=connection
                     try:
-                        command.upgrade(config,'head')
+                        command.upgrade(config,'0023_p3_output_custody')
                     except RuntimeError as error:
                         assert 'drift' in str(error)
                     else:
@@ -343,7 +413,7 @@ def _check_output_migration_drift(sock,name,engine):
         try:
             config=Config(str(ROOT/'alembic.ini'))
             config.attributes['connection']=connection
-            command.upgrade(config,'head')
+            command.upgrade(config,'0023_p3_output_custody')
             connection.execute(text('SET LOCAL ROLE trading_p3_owner'))
             try:
                 with connection.begin_nested():
@@ -360,21 +430,25 @@ def _check_output_migration_drift(sock,name,engine):
             transaction.rollback()
     assert not accepted, '0023 accepted catalog drift: '+','.join(accepted)
 
-def _sealed(value):
+def _sealed(value: Mapping[str, object]) -> str:
     value = {key: item for key, item in value.items() if key != 'digest'}
     value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
     return canonical_json_bytes(value).decode()
 
 
-def _reference(raw):
-    raw = raw.encode()
-    digest = hashlib.sha256(raw).hexdigest()
-    return dict(content_sha256=digest, size_bytes=len(raw), media_type='application/json', locator=digest+'.blob')
+def _reference(raw: str) -> dict[str, str | int]:
+    encoded = raw.encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    return dict(content_sha256=digest, size_bytes=len(encoded), media_type='application/json', locator=digest+'.blob')
 
 
-def _authorization(source, workflow='p3-baselines-v1', operation='BASELINES', ids=(), body=None):
+def _authorization(
+    source: SourceIdentity, workflow: str = 'p3-baselines-v1', operation: str = 'BASELINES',
+    ids: tuple[str, ...] = (), body: Mapping[str, object] | None = None,
+) -> tuple[str, str, str]:
     now = datetime.now(UTC)
-    utc = lambda value: value.isoformat().replace('+00:00', 'Z')
+    def utc(value: datetime) -> str:
+        return value.isoformat().replace('+00:00', 'Z')
     ref = _reference('{"purpose":"synthetic-input-not-an-official-inputset"}')
     intent = _sealed(dict(schema_version='p3-operation-input-v1', workflow_operation=workflow,
         operation=operation, input_set_ref=ref, allowed_alpha_ids=list(ids), body=body or {'baseline_manifest_ref': ref}))
@@ -470,8 +544,8 @@ def _check_accepted(sock, name, source, mark):
         assert json.loads(auth)['input_set_ref']['content_sha256'] != payload['manifest_ref']['content_sha256']
         assert owner.execute('SELECT job_id FROM public.p3_operation_job_bindings WHERE authorization_digest=%s',(digest,)).fetchone() == ('job_scoped',)
     with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
-        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
-            ('attempt_scoped','worker_scoped','s'*32,30,'test:claim','event_claim_scoped',False)).fetchone()
+        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+            ('attempt_scoped','worker_scoped','s'*32,30,'test:claim','event_claim_scoped',False,'job_scoped')).fetchone()
         assert claimed is not None and claimed[0] == 'job_scoped'
         assert worker.execute('SELECT job_plane.worker_start_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
             ('job_scoped','attempt_scoped','worker_scoped','s'*32,401,401,401,'d'*64,'test:start','event_start_scoped')).fetchone() == (True,)
@@ -560,7 +634,7 @@ def _check_publication(sock, name, root, source, mark):
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
         worker.assert_p3_runtime_identity()
-        claim = worker.claim_next_alpha_campaign('worker_official_pub',30,'test:claim-publication', fixture_only=False)
+        claim = worker.claim_next_alpha_campaign('worker_official_pub',30,'test:claim-publication', fixture_only=False,job_id='job_official_pub')
         assert claim is not None and claim.job_id == 'job_official_pub'
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,ProcessIdentity(501,501,501,'d'*64),'test:start-publication',alpha_campaign=True)
         request = PublicationRequest.model_validate_json(_sealed(dict(schema_version='p3-publication-request-v1',
@@ -708,7 +782,10 @@ def _check_publication(sock, name, root, source, mark):
                 observer.execute('SELECT pg_sleep(%s)',(min(5,remaining)+.1,))
                 mark('OPERATION_AUTHORIZATION_EXPIRY_WAIT',flush=True)
         assert publisher.publish(request,claim,entries,output_inventory_ref=output_inventory,trace_id='test:expired-commit-readback') == result
-        assert publisher.recover_receipt(claim.job_id) == receipt
+        assert publisher.recover_receipt(claim.job_id, expected_request=request, expected_commit=result) == receipt
+        with _rejected(ValueError, match='readback'):
+            publisher.recover_receipt(claim.job_id,
+                expected_request=PublicationRequest.model_validate_json(_sealed(altered)), expected_commit=result)
         for role in ('trading_job_api','trading_p3_authority'):
             with psycopg.connect(host=str(sock),dbname=name,user=role) as denied:
                 with _rejected(psycopg.errors.InsufficientPrivilege):
@@ -770,7 +847,7 @@ def _check_research_batch(sock, name, root, source, mark, index, outcome):
     with ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),min_size=1,max_size=1,kwargs={'row_factory':dict_row}) as pool:
         worker = object.__new__(WorkerRepository)
         worker._pool = pool
-        claim = worker.claim_next_alpha_campaign('worker_research_batch',30,'test:research-batch-claim', fixture_only=False)
+        claim = worker.claim_next_alpha_campaign('worker_research_batch',30,'test:research-batch-claim', fixture_only=False,job_id=job_id)
         assert claim is not None and claim.job_id == job_id
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             ProcessIdentity(701,701,701,'d'*64),'test:research-start',alpha_campaign=True)
@@ -824,8 +901,8 @@ def _check_holdout_denial(sock, name, source, mark):
         api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
             ('job_holdout_held',raw,hashlib.sha256(raw.encode()).hexdigest(),'p3:p3-holdout-primary-v1:'+json.loads(auth)['nonce'],'synthetic-operator',100,'test:holdout-held','event_holdout_enqueue'))
     with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
-        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
-            ('attempt_holdout','worker_holdout','h'*32,30,'test:holdout-claim','event_holdout_claim',False)).fetchone()
+        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+            ('attempt_holdout','worker_holdout','h'*32,30,'test:holdout-claim','event_holdout_claim',False,'job_holdout_held')).fetchone()
         assert claimed is None, 'unconsumed holdout must remain unclaimed'
     # Model a previously claimed job from the prior source. The start guard must
     # still deny it with an otherwise valid fence, independently of new routing.
@@ -900,11 +977,11 @@ def _check_claim_lane_isolation(sock, name, payload, mark):
                         assert row is not None and row['matched'] is expected
             row = connection.execute("SELECT to_regprocedure('job_plane.worker_recover_expired_alpha_campaign(text,text,text,text,text,text,bigint,bigint,bigint,text,text,text,text,text,text)') IS NULL AS absent").fetchone()
             assert row is not None and row['absent']
-        official = worker.claim_next_alpha_campaign('worker_lane',30,'test:official-lane', fixture_only=False)
+        official = worker.claim_next_alpha_campaign('worker_lane',30,'test:official-lane', fixture_only=False,job_id='job_lane_official')
         assert official is not None and official.job_id == 'job_lane_official', official
         fixture = worker.claim_next_alpha_campaign('worker_lane',30,'test:fixture-lane',fixture_only=True)
         assert fixture is not None and fixture.job_id == 'job_lane_fixture', fixture
-        assert worker.claim_next_alpha_campaign('worker_lane',30,'test:no-official-lane', fixture_only=False) is None
+        assert worker.claim_next_alpha_campaign('worker_lane',30,'test:no-official-lane', fixture_only=False,job_id='job_lane_official') is None
         assert worker.claim_next_alpha_campaign('worker_lane',30,'test:no-fixture-lane',fixture_only=True) is None
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             owner.execute("""UPDATE public.jobs SET lease_expires_at=clock_timestamp()-interval '1 second'
@@ -967,8 +1044,8 @@ def _check_expired_pre_spawn(sock, name, source, mark):
             ('job_pre_spawn_expiry',raw,hashlib.sha256(raw.encode()).hexdigest(),'p3:p3-baselines-v1:'+json.loads(auth)['nonce'],
              'synthetic-operator',100,'test:pre-spawn-enqueue','event_pre_spawn_enqueue'))
     with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
-        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
-            ('attempt_pre_spawn','worker_pre_spawn','s'*32,30,'test:pre-spawn-claim','event_pre_spawn_claim',False)).fetchone()
+        claimed = worker.execute('SELECT * FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+            ('attempt_pre_spawn','worker_pre_spawn','s'*32,30,'test:pre-spawn-claim','event_pre_spawn_claim',False,'job_pre_spawn_expiry')).fetchone()
         assert claimed is not None and claimed[0] == 'job_pre_spawn_expiry'
     with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
         before = owner.execute("SELECT to_jsonb(j),to_jsonb(a) FROM jobs j JOIN job_attempts a USING(job_id) WHERE j.job_id='job_pre_spawn_expiry'").fetchone()
@@ -998,8 +1075,8 @@ def _check_claim_lock_expiry(sock, name, source, mark):
              'synthetic-operator',100,'test:claim-lock-enqueue','event_claim_lock_enqueue'))
     def claim():
         with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
-            return worker.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
-                ('attempt_claim_lock','worker_claim_lock','l'*32,30,'test:claim-lock','event_claim_lock',False)).fetchone()
+            return worker.execute('SELECT * FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+                ('attempt_claim_lock','worker_claim_lock','l'*32,30,'test:claim-lock','event_claim_lock',False,'job_claim_lock_expiry')).fetchone()
     snapshot = """SELECT to_jsonb(j),(SELECT count(*) FROM job_attempts WHERE job_id=j.job_id),
         (SELECT count(*) FROM job_events WHERE job_id=j.job_id) FROM jobs j WHERE job_id='job_claim_lock_expiry'"""
     with ThreadPoolExecutor(max_workers=1) as threads, psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
@@ -1017,3 +1094,159 @@ def _check_claim_lock_expiry(sock, name, source, mark):
         assert claim() is None
         assert owner.execute(snapshot).fetchone() == before
     mark('OFFICIAL_CLAIM_LOCK_SKIP_AND_EXPIRY_PASS')
+
+
+def _check_bound_claim(sock,name,payload,mark):
+    """A locked or missing assigned job never consumes a different queued job."""
+    from psycopg.conninfo import make_conninfo
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+    from services.job_store.worker_repository import WorkerRepository
+    raw=canonical_json_bytes(payload).decode()
+    with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
+        for suffix,priority in (('other',90),('target',0)):
+            api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+                ('job_bound_'+suffix,raw,hashlib.sha256(raw.encode()).hexdigest(),'bound-'+suffix,
+                 'source-test',priority,'test:bound-enqueue','event_bound_'+suffix))
+    for suffix,priority in (('other',90),('target',0)):
+        auth,intent,review=_authorization(payload.expected_source)
+        with psycopg.connect(host=str(sock),dbname=name,user='trading_p3_authority') as authority:
+            authority.execute('SELECT job_plane.accept_p3_operation_authorization(%s,%s,%s)',(auth,intent,review))
+        official={**payload.model_dump(mode='json'),'operation':'BASELINES','logical_trial_id':'p3-baselines-v1',
+            'manifest_ref':_reference(intent),'authorization_ref':_reference(auth)}
+        official_raw=canonical_json_bytes(official).decode()
+        with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
+            api.execute('SELECT * FROM job_plane.api_enqueue_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)',
+                ('job_bound_official_'+suffix,official_raw,hashlib.sha256(official_raw.encode()).hexdigest(),
+                 'p3:p3-baselines-v1:'+json.loads(auth)['nonce'],'synthetic-operator',priority,
+                 'test:bound-official-enqueue','event_bound_official_'+suffix))
+    with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as connection:
+        with _rejected(psycopg.errors.InvalidParameterValue),connection.transaction():
+            connection.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
+                ('attempt_unbound','worker_bound','b'*32,30,'test:unbound','event_unbound',False))
+    worker=object.__new__(WorkerRepository)
+    worker._pool=ConnectionPool(make_conninfo(host=str(sock),dbname=name,user='trading_job_worker'),
+        min_size=1,max_size=2,kwargs={'row_factory':dict_row})
+    try:
+        for job_id,lane in (('job_bound_missing',True),('job_bound_target',False)):
+            assert worker.claim_next_alpha_campaign('worker_bound',30,'test:bound-missing',
+                fixture_only=lane,job_id=job_id) is None
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as locker:
+            locker.execute("SELECT job_id FROM jobs WHERE job_id='job_bound_target' FOR UPDATE")
+            with worker._pool.connection() as connection:
+                assert locker.info.backend_pid!=connection.info.backend_pid
+            assert worker.claim_next_alpha_campaign('worker_bound',30,'test:bound-locked',
+                fixture_only=True,job_id='job_bound_target') is None
+        claimed=worker.claim_next_alpha_campaign('worker_bound',30,'test:bound-target',
+            fixture_only=True,job_id='job_bound_target')
+        assert claimed is not None and claimed.job_id=='job_bound_target'
+        assert worker.claim_next_alpha_campaign('worker_bound',30,'test:bound-repeat',
+            fixture_only=True,job_id='job_bound_target') is None
+        official=worker.claim_next_alpha_campaign('worker_bound',30,'test:bound-official',
+            fixture_only=False,job_id='job_bound_official_target')
+        assert official is not None and official.job_id=='job_bound_official_target'
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            for other in ('job_bound_other','job_bound_official_other'):
+                assert owner.execute('SELECT state,attempt_count FROM jobs WHERE job_id=%s',(other,)).fetchone()==('QUEUED',0)
+                assert owner.execute('SELECT count(*) FROM job_attempts WHERE job_id=%s',(other,)).fetchone()==(0,)
+                assert owner.execute('SELECT count(*) FROM job_events WHERE job_id=%s',(other,)).fetchone()==(1,)
+    finally:
+        worker.close()
+    mark('WORKFLOW_BOUND_CLAIM_ISOLATION_PASS')
+
+
+def _check_bound_migration_drift(sock,name,engine):
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+        lane=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_worker_lane_matches(jsonb,boolean)'::regprocedure)").fetchone())
+        allowed=_first(owner.execute("SELECT pg_get_functiondef('job_plane.p3_payload_authorized(jsonb,text)'::regprocedure)").fetchone())
+    faults=(
+        ('worker_membership','GRANT trading_reader TO trading_job_worker','REVOKE trading_reader FROM trading_job_worker'),
+        ('table_dml','GRANT UPDATE ON public.p3_alpha_job_commits TO trading_job_worker','REVOKE UPDATE ON public.p3_alpha_job_commits FROM trading_job_worker'),
+        ('lane_body',lane.replace("('BASELINES','p3-baselines-v1')","('BASELINES','p3-unreviewed-v1')"),lane),
+        ('authority_body',allowed.replace('a.expires_at>clock_timestamp()','true'),allowed),
+        ('lane_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_worker_lane_matches(jsonb,boolean) TO trading_reader','REVOKE EXECUTE ON FUNCTION job_plane.p3_worker_lane_matches(jsonb,boolean) FROM trading_reader'),
+        ('authority_acl','GRANT EXECUTE ON FUNCTION job_plane.p3_payload_authorized(jsonb,text) TO trading_job_worker','REVOKE EXECUTE ON FUNCTION job_plane.p3_payload_authorized(jsonb,text) FROM trading_job_worker'),
+        ('lane_volatility','ALTER FUNCTION job_plane.p3_worker_lane_matches(jsonb,boolean) VOLATILE',lane),
+        ('authority_security','ALTER FUNCTION job_plane.p3_payload_authorized(jsonb,text) SECURITY INVOKER',allowed),
+        ('claim_strict','ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean) STRICT','ALTER FUNCTION job_plane.worker_claim_alpha_campaign(text,text,text,integer,text,text,boolean) CALLED ON NULL INPUT'),
+        ('new_function_acl','ALTER DEFAULT PRIVILEGES FOR ROLE trading_p3_owner GRANT EXECUTE ON FUNCTIONS TO trading_owner','ALTER DEFAULT PRIVILEGES FOR ROLE trading_p3_owner REVOKE EXECUTE ON FUNCTIONS FROM trading_owner'),
+    )
+    accepted=[]
+    for label,damage,restore in faults:
+        assert damage!=restore
+        with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+            owner.execute(SQL(cast(LiteralString,damage)))
+        try:
+            with engine.connect() as connection:
+                transaction=connection.begin()
+                try:
+                    config=Config(str(ROOT/'alembic.ini'));config.attributes['connection']=connection
+                    try:
+                        command.upgrade(config,'head')
+                    except RuntimeError as error:
+                        assert 'drift' in str(error)
+                    else:
+                        accepted.append(label)
+                finally:
+                    transaction.rollback()
+        finally:
+            with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
+                owner.execute(SQL(cast(LiteralString,restore)))
+                assert owner.execute("SELECT version_num FROM alembic_version").fetchone()==('0023_p3_output_custody',)
+                assert owner.execute("SELECT to_regprocedure('job_plane.worker_claim_bound_alpha_campaign(text,text,text,integer,text,text,boolean,text)') IS NULL").fetchone()==(True,)
+    assert not accepted,accepted
+
+
+def _check_bound_migration_quiescence(sock,name,engine):
+    """The private fixture owns admission; migration must reject existing clients/custody."""
+    accepted=[]
+    def migrate(connection,label):
+        config=Config(str(ROOT/'alembic.ini'));config.attributes['connection']=connection
+        try:
+            command.upgrade(config,'head')
+        except RuntimeError as error:
+            assert 'quiescent' in str(error)
+        else:
+            accepted.append(label)
+    with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker'):
+        with engine.connect() as connection:
+            transaction=connection.begin()
+            try:
+                migrate(connection,'idle_worker')
+            finally:
+                transaction.rollback()
+    from sqlalchemy import text
+    with engine.connect() as connection:
+        transaction=connection.begin()
+        try:
+            connection.execute(text("""INSERT INTO public.jobs(job_id,job_type,state,payload,payload_fingerprint,
+                idempotency_key,actor_type,actor_id,max_attempts)
+                VALUES ('job_migration_active','ALPHA_CAMPAIGN','CLAIMED','{"operation":"BASELINES"}',
+                    repeat('a',64),'migration-active','OPERATOR','synthetic-migration',1)"""))
+            migrate(connection,'active_custody')
+        finally:
+            transaction.rollback()
+    def old_claim():
+        with psycopg.connect(host=str(sock),dbname=name,user='trading_job_worker') as worker:
+            with worker.transaction(force_rollback=True):
+                return worker.execute('SELECT * FROM job_plane.worker_claim_alpha_campaign(%s,%s,%s,%s,%s,%s,%s)',
+                    ('attempt_migration_old','worker_migration_old','m'*32,30,'test:migration-old','event_migration_old',False)).fetchone()
+    with psycopg.connect(host=str(sock),dbname=name,user='postgres') as observer:
+        snapshot="SELECT (SELECT count(*) FROM jobs),(SELECT count(*) FROM job_attempts),(SELECT count(*) FROM job_events)"
+        before=observer.execute(snapshot).fetchone()
+        observer.commit()
+        with ThreadPoolExecutor(max_workers=1) as threads,engine.connect() as connection:
+            transaction=connection.begin()
+            connection.execute(text("SET LOCAL lock_timeout='5s'"))
+            connection.execute(text('LOCK TABLE public.jobs IN ACCESS EXCLUSIVE MODE'))
+            future=threads.submit(old_claim)
+            try:
+                _wait_for_lock(observer,'trading_job_worker','%worker_claim_alpha_campaign%',wait_event='relation')
+                migrate(connection,'inflight_old_claim')
+            finally:
+                transaction.rollback()
+            future.result(timeout=5)
+        assert observer.execute(snapshot).fetchone()==before
+        assert observer.execute('SELECT version_num FROM alembic_version').fetchone()==('0023_p3_output_custody',)
+        assert observer.execute("SELECT to_regprocedure('job_plane.worker_claim_bound_alpha_campaign(text,text,text,integer,text,text,boolean,text)') IS NULL").fetchone()==(True,)
+    assert not accepted,accepted

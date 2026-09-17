@@ -119,6 +119,20 @@ def test_acquisition_refuses_uncompleted_day_before_retaining_bytes(tmp_path):
     assert list(store._root.iterdir())==[]
 
 
+def test_checksum_valid_partial_daily_candle_reports_exact_gap_without_retention(tmp_path):
+    # The retained 2018-02-08 provider rejection ended at 00:28:14.788 UTC.
+    day = date(2018, 2, 8)
+    filename, zipped = _archive(day, column=(6, '1518049694788'))
+    base = 'https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    transport = FixtureTransport({base + filename: zipped, base + filename + '.CHECKSUM':
+        f'{hashlib.sha256(zipped).hexdigest()}  {filename}\n'.encode()})
+    store = _store(tmp_path / 'artifacts')
+    with pytest.raises(AcquisitionError, match=r'2018-02-08.*1518049694788.*1518134399999.*MILLISECONDS'):
+        acquire_day(day, transport, store)
+    assert not tuple(store._root.iterdir())
+    assert len(transport.urls) == 2  # Invalid source data is not a transport retry.
+
+
 @pytest.mark.parametrize('fault',['day','archive_media','checksum_media','archive_size','checksum_size','observation','checksum_bytes','archive_bytes','noncanonical'])
 def test_acquisition_consumer_rejects_substitution_without_writing(tmp_path,monkeypatch,fault):
     from packages.alpha_lifecycle import acquisition

@@ -103,7 +103,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
     root.mkdir(mode=0o700)
     source = job.payload.expected_source
     authorization = SimpleNamespace(issuer_run_id=1,issuer_attempt=1)
-    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0023_p3_output_custody')
+    plan = SimpleNamespace(native_request_digest='a'*64,sql_revision='0026_p3_holdout_disclosure')
     stages = []
     def attest(self, actual_job):
         assert actual_job is job
@@ -133,7 +133,7 @@ def test_executor_reattests_authority_after_cleanup(changed, sql_mutation, tmp_p
         run.request = Request(run.request)
     monkeypatch.setattr(module,'run_native_fixture',lambda *args,**kwargs:native)
     sql = {'checks':sorted(module.REQUIRED_SQL_CHECKS),'cleanup':{'root_absent':True,'server_stopped':True},
-           'source':source.model_dump(mode='json'),'sql_revision':'0023_p3_output_custody'}
+           'source':source.model_dump(mode='json'),'sql_revision':'0026_p3_holdout_disclosure'}
     if sql_mutation == 'old_revision':
         sql['sql_revision'] = '0020_p3_alpha_campaign_authority'
     elif sql_mutation == 'wrong_source':
@@ -223,7 +223,8 @@ def test_fixture_worker_entrypoint_composes_the_exact_executor(tmp_path, monkeyp
         captured.update(kwargs)
         return 'worker'
     monkeypatch.setattr(module,'build_worker',build)
-    assert module.build_p3_fixture_worker(object(),values,authority=object()) == 'worker'
+    assert module.build_p3_fixture_worker(object(),values,authority=object(),job_id='job_fixture') == 'worker'
+    assert captured['p3_job_id']=='job_fixture'
     assert type(captured['p3_fixture_executor']) is P3IntegrationFixtureExecutor
     assert captured['p3_fixture_executor'].private_root == tmp_path
 

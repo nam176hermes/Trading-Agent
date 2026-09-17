@@ -1,16 +1,23 @@
 """Stage unprivileged P3 proposals; only the existing SQL capability commits."""
 from datetime import datetime
 import hashlib
+from typing import TYPE_CHECKING
 from uuid import uuid5
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.lifecycle import ExpectedHead, PrePublicationEvidence, PublicationRequest
 from packages.alpha_lifecycle.lifecycle import to_domain_payload, publication_event_ids, P3_NAMESPACE
 from packages.alpha_lifecycle.registry import AlphaRegistryEventV1
+from packages.alpha_lifecycle.contracts.models import SourceIdentity
+from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.domain.alpha_events import AlphaRegistryTransitionRecordedV1
 from packages.domain.events import EventEnvelope
 from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_store.p3_sql import DomainAppendEntry, PublicationProposal
+from packages.data_contracts import ArtifactRefV1
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 
 
 def prepare_family_registration(intent, *, job_id: str, observed_at: datetime,
@@ -50,6 +57,45 @@ def prepare_candidate_oos(intent, evaluation, proof, *, job_id: str, observed_at
     events,heads,evidence,epoch_id=prepare_oos_evidence(intent,evaluation,proof,store=store)
     return build_publication_proposal(events=events,expected_heads=heads,evidence=evidence,
         epoch_id=epoch_id,job_id=job_id,observed_at=observed_at,expires_at=expires_at,store=store)
+
+
+def prepare_phase_exit(intent: P3OperationInput, *, expected_source: SourceIdentity, job_id: str, observed_at: datetime,
+    expires_at: datetime, store: ArtifactStore, holdout_view: 'HoldoutCalculationView',
+    native_parent_proof_ref: ArtifactRefV1 | None = None) -> PublicationProposal:
+    from packages.alpha_lifecycle.phase_exit import evaluate_phase_exit
+    from packages.alpha_lifecycle.operation_input import P3OperationInput, PhaseExitInput
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.lifecycle import plan_transition, read_registry_event
+    from packages.alpha_lifecycle.registry import AlphaLifecycleStatus, QualificationDecision
+    from packages.alpha_lifecycle.replica_store import _read
+    intent = P3OperationInput.model_validate(intent)
+    if not isinstance(intent.body, PhaseExitInput):
+        raise ValueError('phase-exit publication requires its exact intent')
+    result = evaluate_phase_exit(intent, expected_source=expected_source, store=store, holdout_view=holdout_view,
+        native_parent_proof_ref=native_parent_proof_ref)
+    if result.verdict == 'HELD':
+        raise ValueError('HELD phase exit cannot publish a registry decision')
+    body = intent.body
+    head = read_registry_event(store, body.current_primary_head_ref)
+    result_ref = store.put_bytes(canonical_json_bytes(result), media_type='application/json')
+    record_ref = store.put_bytes(canonical_json_bytes(head.record), media_type='application/json')
+    value = dict(schema_version='p3-pre-publication-evidence-v1', stage='EXIT_DECISION',
+        input_set_ref=intent.input_set_ref, baseline_selection_ref=body.baseline_selection_ref,
+        qualification_bundle_ref=body.primary_qualification_ref, exit_result_ref=result_ref, candidate_record_refs=(record_ref,))
+    evidence = PrePublicationEvidence.model_validate({**value, 'digest':hashlib.sha256(canonical_json_bytes(value)).hexdigest()})
+    passed = result.verdict == 'PASS'
+    record = head.record.model_copy(update=dict(
+        lifecycle_status=AlphaLifecycleStatus.QUALIFIED if passed else AlphaLifecycleStatus.REJECTED,
+        qualification_decision=QualificationDecision.PASS if passed else QualificationDecision.FAIL,
+        qualification_reason='P3 exit checks passed' if passed else ','.join(check.code for check in result.checks if not check.passed),
+        robustness_sha256=result_ref.content_sha256,
+        artifact_digests=tuple(sorted(set((*head.record.artifact_digests, result_ref.content_sha256)))),
+    ))
+    event = plan_transition(record, head, evidence)
+    expected = ExpectedHead(alpha_id=record.alpha_id, version=record.version, sequence=head.sequence, event_digest=head.event_sha256)
+    inputs = _read(store, intent.input_set_ref, InputSet)
+    return build_publication_proposal(events=(event,), expected_heads=(expected,), evidence=evidence,
+        epoch_id=inputs.epoch_id, job_id=job_id, observed_at=observed_at, expires_at=expires_at, store=store)
 
 
 def build_publication_proposal(

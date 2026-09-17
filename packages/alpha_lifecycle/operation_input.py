@@ -49,6 +49,7 @@ class HoldoutInput(StrictModel):
     context_dataset_ref: ArtifactRefV1
     buffer_ref: ArtifactRefV1
     environment_ref: ArtifactRefV1
+    instrument_spec_ref: ArtifactRefV1
     policy_digest: Sha256
 
 
@@ -57,6 +58,7 @@ class NativeParityInput(StrictModel):
     primary_reference_ref: ArtifactRefV1
     baseline_reference_ref: ArtifactRefV1
     instrument_spec_ref: ArtifactRefV1
+    # Private NativeCommitment (both role digests), never plaintext NativeRequest.
     native_request_ref: ArtifactRefV1
 
 

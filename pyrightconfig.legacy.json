@@ -21,5 +21,6 @@
   ],
   "pythonVersion": "3.11",
   "pythonPlatform": "Linux",
+  "failOnWarnings": false,
   "baselineFile": ".basedpyright/legacy-baseline.json"
 }

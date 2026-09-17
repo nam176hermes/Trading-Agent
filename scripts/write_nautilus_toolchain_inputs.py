@@ -400,66 +400,8 @@ def _tree_inventory(root: Path, label: str) -> tuple[list[dict[str, Any]], os.st
     return records, root_st
 
 
-def _verify_tree_inventory(inventory: dict[str, Any], label: str) -> None:
-    _require_keys(
-        inventory,
-        {
-            "directory_count",
-            "file_count",
-            "inventory_algorithm",
-            "path",
-            "record_count",
-            "root_gid",
-            "root_mode",
-            "root_uid",
-            "symlink_count",
-            "tree_sha256",
-        },
-        f"{label} inventory",
-    )
-    if inventory["inventory_algorithm"] != "canonical-relative-lstat-sha256-v1":
-        raise VerificationError(f"unknown {label} inventory algorithm")
-    records, root_st = _tree_inventory(Path(inventory["path"]), label)
-    observed = {
-        "directory_count": sum(item["type"] == "directory" for item in records),
-        "file_count": sum(item["type"] == "file" for item in records),
-        "record_count": len(records),
-        "root_gid": root_st.st_gid,
-        "root_mode": _mode(root_st),
-        "root_uid": root_st.st_uid,
-        "symlink_count": sum(item["type"] == "symlink" for item in records),
-        "tree_sha256": _sha256_bytes(_canonical_bytes(records)[:-1]),
-    }
-    if observed != {key: inventory[key] for key in observed}:
-        raise VerificationError(f"{label} inventory drifted")
 
 
-def _verify_path_record(record: dict[str, Any], label: str) -> None:
-    common = {"gid", "mode", "path", "size", "type", "uid"}
-    kind = record.get("type")
-    expected = common | ({"sha256"} if kind == "file" else {"target"})
-    _require_keys(record, expected, label)
-    path = Path(record["path"])
-    try:
-        st = path.lstat()
-    except OSError as exc:
-        raise VerificationError(f"{label} unavailable: {exc}") from exc
-    observed: dict[str, Any] = {
-        "gid": st.st_gid,
-        "mode": _mode(st),
-        "path": str(path),
-        "size": st.st_size,
-        "type": "symlink" if stat.S_ISLNK(st.st_mode) else "file",
-        "uid": st.st_uid,
-    }
-    if stat.S_ISREG(st.st_mode):
-        observed["sha256"] = _sha256_file(path)
-    elif stat.S_ISLNK(st.st_mode):
-        observed["target"] = os.readlink(path)
-    else:
-        raise VerificationError(f"{label} is not a regular file or symlink")
-    if observed != record:
-        raise VerificationError(f"{label} identity drifted")
 
 
 def _rust_router_target(

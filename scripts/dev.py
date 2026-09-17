@@ -67,14 +67,11 @@ def _types() -> int:
             "pyrightconfig.legacy.json",
         ),
     )
-    for command in commands:
-        status = _run(command)
-        if status:
-            return status
-    return 0
+    statuses = [_run(command) for command in commands]
+    return next((status for status in statuses if status), 0)
 
 
-def _pytest(arguments: Sequence[str], *, debug: bool) -> int:
+def _pytest(arguments: Sequence[str], *, debug: bool, native_custody: bool = False) -> int:
     if not arguments:
         print(
             "a focused pytest path or expression is required; use `make test-all` for the canonical suite",
@@ -88,6 +85,7 @@ def _pytest(arguments: Sequence[str], *, debug: bool) -> int:
             "scripts/run_with_trusted_test_tmp.py",
             "--component",
             "root-pytest",
+            *(("--native-custody",) if native_custody else ()),
             "--",
             "uv",
             "run",
@@ -112,6 +110,7 @@ def _parser() -> argparse.ArgumentParser:
         ("test-debug", "run a focused verbose pytest selection"),
     ):
         command = subparsers.add_parser(name, help=help_text)
+        command.add_argument("--native-custody", action="store_true", help="build and validate private native test custody")
         command.add_argument("pytest_args", nargs=argparse.REMAINDER)
     return parser
 
@@ -126,11 +125,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _types()
     if arguments.command == "static":
         lint_status = _lint()
-        return lint_status if lint_status else _types()
+        type_status = _types()
+        return lint_status or type_status
     pytest_arguments = arguments.pytest_args
     if pytest_arguments[:1] == ["--"]:
         pytest_arguments = pytest_arguments[1:]
-    return _pytest(pytest_arguments, debug=arguments.command == "test-debug")
+    return _pytest(pytest_arguments, debug=arguments.command == "test-debug", native_custody=arguments.native_custody)
 
 
 if __name__ == "__main__":

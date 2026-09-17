@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from packages.safety_evidence import CANONICAL_SAFETY_SOURCE_ROOT
 
 from .writer import ApplyRejected
 
-APPROVED_SOURCE_ROOT = "/home/thenam176/.hermes/crypto-research"
+APPROVED_SOURCE_ROOT = str(CANONICAL_SAFETY_SOURCE_ROOT)
 APPROVED_INVENTORY_HASH = (
     "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
 )

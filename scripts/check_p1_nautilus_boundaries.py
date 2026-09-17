@@ -59,6 +59,7 @@ _LEGACY_NAUTILUS_IMPORTS = {
     "engines/nautilus/launcher/nautilus_paper_compat.py",
     "engines/nautilus/launcher/target_portfolio_strategy.py",
 }
+_P3_NATIVE_ENTRY = "engines/nautilus/p3_next_open.py"
 _FROZEN_FILES = {
     "engines/nautilus/launcher/nautilus_backtest.py",
     "engines/nautilus/launcher/target_portfolio_strategy.py",
@@ -497,20 +498,28 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         imports = _imports(tree)
         is_test = relative.startswith("tests/") or "/tests/" in relative
         is_runtime_v1 = relative.startswith("engines/nautilus/runtime_v1/")
+        is_native_runtime = is_runtime_v1 or relative == _P3_NATIVE_ENTRY
         is_legacy_reference = relative in _LEGACY_NAUTILUS_IMPORTS
         imports_nautilus = any(
             module == "nautilus_trader" or module.startswith("nautilus_trader.")
             for module in imports
         )
-        if imports_nautilus and not (is_test or is_runtime_v1 or is_legacy_reference):
+        if imports_nautilus and not (is_test or is_native_runtime or is_legacy_reference):
             raise BoundaryError(f"root Nautilus import is forbidden: {relative}")
-        if is_runtime_v1 and (
+        if is_native_runtime and (
             any(not _runtime_import_is_allowed(module) for module in imports)
             or _uses_dynamic_import(tree)
             or _uses_parent_relative_import(tree)
             or _uses_forbidden_metadata_import(tree)
         ):
             raise BoundaryError(f"runtime network/client import is forbidden: {relative}")
+        if not is_test and (
+            "engines.nautilus.p3_next_open" in imports
+            or any(isinstance(node, ast.ImportFrom) and node.module == "engines.nautilus"
+                and any(alias.name in {"p3_next_open", "*"} for alias in node.names)
+                for node in ast.walk(tree))
+        ):
+            raise BoundaryError(f"P3 native entry cannot run in the core process: {relative}")
         is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
         if (
             "runtime_v1" in source

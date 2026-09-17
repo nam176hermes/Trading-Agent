@@ -33,7 +33,9 @@ from .environment import (
     build_child_environment,
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker
-from .p3_spawn_interface import P3PreparedSpawnMarker
+from .p3_spawn_interface import (
+    P3PreparedSpawnMarker, P3NativePreparedSpawnMarker, P3SpawnError, ReplicaFenceRequests, replica_fence_ack,
+)
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
 
@@ -41,6 +43,7 @@ if TYPE_CHECKING:
     from packages.data_contracts import ArtifactRefV1
     from .engine_spawn import PreparedEngineSpawn
     from .p3_spawn import PreparedP3Spawn
+    from .p3_native_spawn import PreparedP3NativeSpawn
     from .p3_output import P3OutputCustody
 
 
@@ -261,6 +264,7 @@ class _Digest(Protocol):
 
 class _Process(Protocol):
     pid: int
+    stdin: BinaryIO | None
     stdout: BinaryIO | None
     stderr: BinaryIO | None
 
@@ -385,8 +389,8 @@ class ProcessRunner:
 
     def run(
         self,
-        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn],
-        environment: ResearchEnvironmentSettings,
+        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn | PreparedP3Spawn | PreparedP3NativeSpawn],
+        environment: ResearchEnvironmentSettings | None,
         timeout_seconds: int | None,
         heartbeat: Callable[
             [ProcessIdentity], HeartbeatDecision | HeartbeatInstruction
@@ -416,7 +420,8 @@ class ProcessRunner:
         prepared = prepare_spawn()
         # This marker only selects the lazy engine branch. It carries no
         # authority: that branch still requires the exact provider token type.
-        engine_authority = isinstance(prepared, EnginePreparedSpawnMarker)
+        native_authority = isinstance(prepared, P3NativePreparedSpawnMarker)
+        engine_authority = isinstance(prepared, EnginePreparedSpawnMarker) or native_authority
         p3_authority = isinstance(prepared, P3PreparedSpawnMarker)
         if p3_authority:
             from .p3_spawn import PreparedP3Spawn
@@ -431,18 +436,26 @@ class ProcessRunner:
                 PreparedEngineSpawn,
             )
 
-            if type(prepared) is not PreparedEngineSpawn:
+            if native_authority:
+                from .p3_native_spawn import PreparedP3NativeSpawn
+                if type(prepared) is not PreparedP3NativeSpawn:
+                    raise ValueError('exact P3 native authority type is required')
+            elif type(prepared) is not PreparedEngineSpawn:
                 raise ValueError("attested spawn authority type is invalid")
         # Legacy root and credential policy validation remains in its original
         # position. Engine authority has no ambient/legacy environment path.
+        if not engine_authority and not p3_authority and environment is None:
+            raise ValueError("legacy child requires a research environment")
         child_environment = (
-            None if engine_authority or p3_authority else build_child_environment(environment)
+            None if engine_authority or p3_authority or environment is None else build_child_environment(environment)
         )
         reserve_fd = os.open(
             "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
         )
         close_after_spawn_fds: tuple[int, ...] = ()
         p3_output = None
+        replica_fence = None
+        fence_requests = ReplicaFenceRequests() if p3_authority else None
         try:
             if p3_authority:
                 from .p3_spawn import P3BuiltSpawn, P3SpawnLineage
@@ -455,6 +468,7 @@ class ProcessRunner:
                     raise ValueError('exact P3 output custody is required')
                 p3_output = p3_built.output_custody
                 if (p3_built.job_id != job_id or p3_built.attempt_id != attempt_id
+                    or not callable(p3_built.replica_fence)
                     or not p3_output.matches(job_id,attempt_id)
                     or p3_built.cwd != Path('/') or p3_built.environment != {}
                     or not isinstance(p3_built.argv,tuple) or not p3_built.argv
@@ -469,6 +483,7 @@ class ProcessRunner:
                     or _COMMIT.fullmatch(p3_built.source_revision) is None
                     or timeout_seconds not in {None,p3_built.timeout_seconds}):
                     raise ValueError('attested P3 spawn shape is unsafe')
+                replica_fence = p3_built.replica_fence
                 timeout_seconds = p3_built.timeout_seconds
                 argv, cwd, child_environment, pass_fds = p3_built.argv,p3_built.cwd,p3_built.environment,p3_built.pass_fds
                 capability_fingerprint = p3_built.capability_fingerprint
@@ -476,9 +491,12 @@ class ProcessRunner:
                 source_revision = p3_built.source_revision
                 command_lineage = p3_built.lineage.as_metadata()
             elif engine_authority:
-                engine_built = consume_prepared_engine_spawn(
-                    cast(PreparedEngineSpawn, prepared)
-                )
+                if native_authority:
+                    from .p3_native_spawn import consume_prepared_p3_native_spawn
+                    engine_built = consume_prepared_p3_native_spawn(
+                        cast(PreparedP3NativeSpawn, prepared), job_id=job_id, attempt_id=attempt_id)
+                else:
+                    engine_built = consume_prepared_engine_spawn(cast(PreparedEngineSpawn, prepared))
                 # The provider has transferred ownership. Claim every
                 # descriptor before any validation branch can raise.
                 close_after_spawn_fds = engine_built.close_after_spawn_fds
@@ -587,7 +605,7 @@ class ProcessRunner:
                 "env": child_environment,
                 "shell": False,
                 "start_new_session": True,
-                "stdin": subprocess.DEVNULL,
+                "stdin": subprocess.PIPE if p3_authority else subprocess.DEVNULL,
                 "stdout": subprocess.PIPE,
                 "stderr": subprocess.PIPE,
             }
@@ -692,6 +710,7 @@ class ProcessRunner:
                     events = ()
                     cleanup_proven = False
                     reason = reason or "PROCESS_GROUP_CLEANUP_UNPROVEN"
+                pending_fence = None
                 for key, _ in events:
                     state = states[key.data]
                     try:
@@ -704,6 +723,15 @@ class ProcessRunner:
                     if chunk:
                         state.digest.update(chunk)
                         state.observed += len(chunk)
+                        if key.data == 'stderr' and fence_requests is not None and reason is None:
+                            try:
+                                request = fence_requests.feed(chunk)
+                                if request is not None:
+                                    if pending_fence is not None:
+                                        raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'pipelined replica request')
+                                    pending_fence = request
+                            except P3SpawnError:
+                                reason = 'P3_REPLICA_FENCE_REJECTED'
                         if len(state.retained) < MAX_STREAM_BYTES:
                             state.retained.extend(chunk[: MAX_STREAM_BYTES - len(state.retained)])
                     else:
@@ -723,6 +751,14 @@ class ProcessRunner:
                         reason = reason or "PROCESS_GROUP_CLEANUP_UNPROVEN"
                         session_cleanup.uncertain = True
 
+                if pending_fence is not None and reason is None and not leader_exited:
+                    try:
+                        assert replica_fence is not None
+                        replica_fence()
+                    except Exception:
+                        # Post-Popen authority failures require RUNNING cleanup.
+                        reason = 'P3_REPLICA_FENCE_REJECTED'
+
                 try:
                     instruction = heartbeat(identity)
                     if isinstance(instruction, HeartbeatInstruction):
@@ -731,15 +767,31 @@ class ProcessRunner:
                         decision = HeartbeatDecision(instruction)
                 except BaseException:
                     raise
-                if decision is not HeartbeatDecision.CONTINUE and reason is None:
+                if (decision is not HeartbeatDecision.CONTINUE
+                    and reason in {None, 'P3_REPLICA_FENCE_REJECTED'}):
                     reason = self._decision_reason(decision)
                     if (
                         decision is HeartbeatDecision.SAFETY_DRIFT
                         and isinstance(instruction, HeartbeatInstruction)
                     ):
                         safety_reason_code = instruction.reason_code
+                if pending_fence is not None:
+                    now = self._monotonic()
                 if reason is None and now - started >= timeout_seconds:
                     reason = "TIMEOUT"
+
+                if pending_fence is not None and reason is None and not leader_exited:
+                    try:
+                        stream = process.stdin
+                        if stream is None:
+                            raise ValueError('P3 parent grant pipe is missing')
+                        fd = stream.fileno()
+                        os.set_blocking(fd, False)
+                        ack = replica_fence_ack(pending_fence)
+                        if os.write(fd, ack) != len(ack):
+                            raise OSError('incomplete P3 parent grant')
+                    except (OSError, ValueError):
+                        reason = 'P3_REPLICA_FENCE_REJECTED'
 
                 pipes_done = all(state.eof for state in states.values())
                 cleanup_active = cleanup_active or leader_exited or reason is not None
@@ -780,6 +832,9 @@ class ProcessRunner:
             reaped = exit_code is not None
             if cleanup_errors or not reaped:
                 reason = "PROCESS_GROUP_CLEANUP_UNPROVEN"
+            if (p3_output is not None and reason is None and exit_code == 0
+                and cleanup_proven and reaped and not cleanup_errors):
+                p3_output.begin_postrun()
             captured = {
                 kind: self._persist_state(job_id, attempt_id, kind, state)
                 for kind, state in states.items()
@@ -787,12 +842,32 @@ class ProcessRunner:
             inventory_ref = None
             if (p3_output is not None and reason is None and exit_code == 0
                 and cleanup_proven and reaped and not cleanup_errors):
+                next_retention_heartbeat = 0.0
+                def retention_progress(*, force=False):
+                    nonlocal next_retention_heartbeat, reason, safety_reason_code
+                    if not force and self._monotonic() < next_retention_heartbeat:
+                        return
+                    instruction = heartbeat(identity)
+                    decision = (instruction.decision if isinstance(instruction, HeartbeatInstruction)
+                                else HeartbeatDecision(instruction))
+                    if decision is not HeartbeatDecision.CONTINUE:
+                        reason = self._decision_reason(decision)
+                        if decision is HeartbeatDecision.SAFETY_DRIFT and isinstance(instruction, HeartbeatInstruction):
+                            safety_reason_code = instruction.reason_code
+                        raise ValueError('P3 output retention authority changed')
+                    next_retention_heartbeat = self._monotonic() + 1
                 try:
                     from packages.engine_contracts.serialization import canonical_json_bytes
-                    inventory_ref = p3_output.retain()
+                    inventory_ref = p3_output.retain(progress=retention_progress)
+                    retention_progress(force=True)
+                    p3_output.check_deadline()
                     command_lineage = {**command_lineage,
                         'p3_output_inventory_ref':canonical_json_bytes(inventory_ref).decode()}
+                except TimeoutError:
+                    inventory_ref = None
+                    reason = reason or 'P3_POSTRUN_TIMEOUT'
                 except (OSError,ValueError):
+                    inventory_ref = None
                     reason = reason or 'P3_OUTPUT_INVALID'
             result = ProcessOutcome(
                 exit_code, reason, identity, captured["stdout"], captured["stderr"],
@@ -817,6 +892,8 @@ class ProcessRunner:
                 self._best_effort(lambda: process.send_signal(signal.SIGKILL), cleanup_errors)
             raise
         finally:
+            if p3_authority and (grant_pipe := getattr(process, 'stdin', None)) is not None:
+                self._best_effort(grant_pipe.close, cleanup_errors)
             if p3_output is not None:
                 p3_output.abandon()
             if reserve_fd >= 0:

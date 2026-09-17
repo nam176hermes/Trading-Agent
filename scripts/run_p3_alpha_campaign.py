@@ -21,6 +21,7 @@ from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
+from services.job_worker.p3_spawn_interface import parent_replica_fence
 
 
 def main() -> None:
@@ -38,6 +39,8 @@ def main() -> None:
     parser.add_argument("--runtime-mounts-ref", type=Path)
     parser.add_argument("--job-id")
     parser.add_argument("--authorization-ref", type=Path)
+    for name in ('holdout-view', 'holdout-manifest-ref', 'holdout-request-ref', 'instrument-spec-ref'):
+        parser.add_argument('--'+name, type=Path)
     args = parser.parse_args()
     store: ArtifactStore = LocalArtifactStore(args.store)
     intent_raw = store.read_bytes(ArtifactRefV1.model_validate_json(args.manifest_ref.read_bytes()))
@@ -63,6 +66,39 @@ def main() -> None:
     private_store = args.output/'artifacts'
     private_store.mkdir(mode=0o700,exist_ok=False)
     store = ReplicaArtifactStore(args.store,private_store)
+    from packages.alpha_lifecycle.operation_input import HoldoutInput
+    if isinstance(intent.body, HoldoutInput):
+        from packages.alpha_lifecycle.holdout import execute_holdout_manifest, derive_holdout_request
+        from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, read_calculation_view
+        if any(getattr(args, name) is None for name in
+            ('holdout_view', 'holdout_manifest_ref', 'holdout_request_ref', 'instrument_spec_ref')):
+            raise ValueError('holdout driver requires the current sealed view and references')
+        manifest_ref = ArtifactRefV1.model_validate_json(args.holdout_manifest_ref.read_bytes())
+        request_ref = ArtifactRefV1.model_validate_json(args.holdout_request_ref.read_bytes())
+        spec_ref = ArtifactRefV1.model_validate_json(args.instrument_spec_ref.read_bytes())
+        if spec_ref != intent.body.instrument_spec_ref or store.read_bytes(request_ref) != canonical_json_bytes(
+            derive_holdout_request(intent, authorization, expected_source=source)):
+            raise ValueError('holdout driver request differs from approved intent')
+        raw_view = read_calculation_view(args.holdout_view)
+        view = HoldoutCalculationView(raw_view, manifest_ref, spec_ref)
+        try:
+            runtime_mounts = _runtime_mounts(args.runtime_mounts_ref)
+            combined = ReplicaArtifactStore(ReplicaArtifactStore(LocalArtifactStore(args.store), view), private_store)
+            executor = BubblewrapExecutor(store=combined, store_root=args.store, release_root=args.release,
+                python=args.python, source=source, environment_ref=environment,
+                sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox,
+                runtime_mounts=runtime_mounts, instrument_spec_ref=spec_ref, holdout_view=view,
+                before_spawn=parent_replica_fence())
+            result = execute_holdout_manifest(request_ref, manifest_ref, spec_ref, executor, output_root=args.output)
+            raw_result = canonical_json_bytes(result)
+            executor.put_bytes(raw_result, media_type='application/json')
+            sys.stdout.buffer.write(raw_result+b'\n')
+            return
+        finally:
+            view.close()
+    if any(getattr(args, name) is not None for name in
+        ('holdout_view', 'holdout_manifest_ref', 'holdout_request_ref', 'instrument_spec_ref')):
+        raise ValueError('holdout transport is exclusive to the holdout driver')
     if isinstance(intent.body,RegisterFamilyInput):
         from services.job_worker.p3_publication_producer import prepare_family_registration
         proposal = prepare_family_registration(intent,job_id=args.job_id,
@@ -93,19 +129,10 @@ def main() -> None:
         validate_evaluation_registration(manifest,store=ReadbackStore(store,store))
         if intent.allowed_alpha_ids!=(read_registry_event(store,manifest.candidate_head_ref).record.alpha_id,):
             raise ValueError('OOS operation belongs to another candidate')
-    runtime_mounts = ()
-    if args.runtime_mounts_ref is not None:
-        with args.runtime_mounts_ref.open('rb') as stream:
-            raw = stream.read(1048577)
-        values = json.loads(raw)
-        if (len(raw) > 1048576 or not isinstance(values,list) or len(values) > 8192
-            or any(not isinstance(value,str) for value in values)
-            or canonical_json_bytes(values) != raw):
-            raise ValueError('runtime mounts must be a bounded canonical path list')
-        runtime_mounts = tuple(Path(value) for value in values)
+    runtime_mounts = _runtime_mounts(args.runtime_mounts_ref)
     executor = BubblewrapExecutor(
         store=store, store_root=args.store, release_root=args.release, python=args.python,
-        source=source, environment_ref=environment,
+        source=source, environment_ref=environment, before_spawn=parent_replica_fence(),
         sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox, runtime_mounts=runtime_mounts,
     )
     if isinstance(intent.body,CandidateOOSInput):
@@ -125,6 +152,18 @@ def main() -> None:
     raw_result=canonical_json_bytes(result)
     store.put_bytes(raw_result,media_type="application/json")
     sys.stdout.buffer.write(raw_result + b"\n")
+
+
+def _runtime_mounts(path: Path | None) -> tuple[Path, ...]:
+    if path is None:
+        return ()
+    with path.open('rb') as stream:
+        raw = stream.read(1048577)
+    values = json.loads(raw)
+    if (len(raw) > 1048576 or not isinstance(values, list) or len(values) > 8192
+        or any(not isinstance(value, str) for value in values) or canonical_json_bytes(values) != raw):
+        raise ValueError('runtime mounts must be a bounded canonical path list')
+    return tuple(Path(value) for value in values)
 
 
 if __name__ == "__main__":

@@ -206,6 +206,7 @@ def test_staging_requires_authorization_inside_its_review_window(tmp_path, edge)
                 "context_dataset_ref",
                 "buffer_ref",
                 "environment_ref",
+                "instrument_spec_ref",
                 "policy_digest",
             ),
             False,
@@ -287,3 +288,24 @@ def test_each_operation_has_one_closed_body_and_alpha_scope(
                 body=body,
             )
         )
+
+
+@pytest.mark.parametrize('include_spec',[False,True])
+def test_holdout_intent_binds_its_simulation_instrument_before_review(include_spec):
+    fields=('primary_selection_ref','candidate_spec_ref','registration_proof_ref','custody_record_ref',
+        'holdout_input_set_ref','holdout_dataset_ref','context_dataset_ref','buffer_ref','environment_ref')
+    ref=_ref('2'*64).model_dump(mode='json')
+    body={name:ref for name in fields}
+    body['policy_digest']='3'*64
+    if include_spec: body['instrument_spec_ref']=_ref('4'*64).model_dump(mode='json')
+    raw=intent(workflow_operation='p3-holdout-primary-v1',operation='HOLDOUT',
+        allowed_alpha_ids=['a0.donchian-20-10-close-confirm'],body=body)
+    if include_spec:
+        value=P3OperationInput.model_validate_json(raw)
+        assert value.body.instrument_spec_ref.content_sha256=='4'*64
+        changed=P3OperationInput.model_validate_json(intent(workflow_operation='p3-holdout-primary-v1',operation='HOLDOUT',
+            allowed_alpha_ids=['a0.donchian-20-10-close-confirm'],body={**body,'instrument_spec_ref':ref}))
+        assert changed.digest!=value.digest
+    else:
+        with pytest.raises(ValueError,match='instrument_spec_ref'):
+            P3OperationInput.model_validate_json(raw)

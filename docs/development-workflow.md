@@ -8,6 +8,7 @@ short feedback loop while editing:
 uv run python scripts/dev.py doctor
 uv run python scripts/dev.py static
 uv run python scripts/dev.py test tests/path/to/test_file.py
+uv run python scripts/dev.py test --native-custody tests/path/to/custody_test.py
 uv run python scripts/dev.py test tests/path/to/test_file.py -k focused_case
 uv run python scripts/dev.py test-debug tests/path/to/test_file.py -k focused_case
 uv run python scripts/generate_contracts.py --check
@@ -16,12 +17,33 @@ uv run python scripts/generate_contracts.py --check
 `test` captures successful output and prints failure context, which keeps local
 logs and agent context small. `test-debug` deliberately restores live, verbose
 output for diagnosis. Both commands create a private Linux-native temporary
-directory and clean it after the child process exits.
+directory and clean it after the child process exits. `--native-custody` builds
+and validates the native extension in that private directory, or validates the
+complete caller-supplied path/digest pair. SIGTERM terminates the owned test
+process group before cleanup.
 
 `static` runs pinned Ruff and Basedpyright versions over the root production
 packages and the legacy backend. Baselines keep the initial adoption bounded;
-new diagnostics still fail the command. Baseline changes must be reviewed as
-code changes, not regenerated automatically.
+error-level diagnostics outside the baseline fail the command. Zero reported
+errors is not zero typing debt. Both component results are reported even when
+one fails. The same static command runs in CI.
+
+After a verified refactor, remove only obsolete entries with:
+
+```bash
+uv run python scripts/prune_python_baselines.py core
+uv run python scripts/prune_python_baselines.py legacy
+uv run python scripts/dev.py static
+```
+
+The pruning command intersects the previous and current diagnostic multisets;
+it cannot add debt or collapse distinct occurrences of the same diagnostic.
+Review its diff as source. Do not use unbounded baseline regeneration to make
+a gate pass. The legacy component keeps its separate dependency and test graph.
+
+Hosted CI runs backend and dashboard tests through the governance topology
+owner; the common prerequisite target does not run them a second time.
+`make test-all` retains its local component checks.
 
 The workspace doctor verifies repository location, Git topology, temporary
 storage, generated contracts, and the paper-only execution boundary. It does

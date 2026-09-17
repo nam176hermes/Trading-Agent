@@ -14,7 +14,8 @@ def test_p3_workflow_has_only_fixed_dispatch_operations() -> None:
     assert "github.event.inputs.operation }}" not in source
     assert '"${{ github.ref }}" != \'refs/heads/main\'' in source
     assert '"${{ github.repository }}" != "nam176hermes/Trading-Agent"' in source
-    assert "dispatch --request-file" in source
+    assert "enqueue --request-file" in source
+    assert "wait --request-file" in source
     assert "${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}" in source
 
 
@@ -30,3 +31,11 @@ def test_fixture_dispatch_does_not_receive_official_sql_credentials():
     source = (Path(__file__).parents[2]/'.github/workflows/p3-authority.yml').read_text()
     assert "inputs.operation != 'p3-integration-fixture-v1' && secrets.P3_AUTHORITY_CREDENTIALS_DIRECTORY || ''" in source
     assert 'unset P3_AUTHORITY_CREDENTIALS_DIRECTORY' in source
+
+
+def test_p3_workflow_runs_bound_worker_between_enqueue_and_result_wait():
+    source=(Path(__file__).parents[2]/'.github/workflows/p3-authority.yml').read_text()
+    assert source.index('enqueue --request-file')<source.index('python -m services.job_worker')<source.index('wait --request-file')
+    assert 'p3-fixture-v1' in source and 'p3-official-v1' in source
+    assert 'P3_PREFLIGHT_DIRECTORY' in source and 'CREDENTIALS_DIRECTORY' in source
+    assert 'timeout-minutes: 37' in source

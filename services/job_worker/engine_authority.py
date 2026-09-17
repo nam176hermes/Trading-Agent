@@ -128,6 +128,8 @@ class BacktestEngineAuthorityFactory:
                 end_time=engine_input.end_time,
             )
         else:
+            if not isinstance(claimed.payload, EngineBacktestSimulationPayload):
+                raise ValueError("engine simulation authority input is required")
             simulation_input = claimed.payload.engine_backtest_simulation
             command = RunBacktestSimulation(
                 command_type="RunBacktestSimulation",

@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-python-static check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries check-p1-nautilus-lineage check-p1-nautilus-pin-inventory generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts check-hwc-boundaries check-hwc-status \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -470,6 +470,10 @@ test-security:
 test-backend:
 	cd legacy/research-backend && uv run --frozen --extra test pytest -q
 
+check-python-static:
+	cd legacy/research-backend && uv sync --frozen --extra test
+	uv run python scripts/dev.py static
+
 test-dashboard:
 	cd apps/dashboard && npm test
 
@@ -569,7 +573,7 @@ ci-portable-private:
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
+	$(MAKE) check-python-static audit-portable check-d0-closure check-contracts check-secrets typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
 
 artifact-firewall-check:
 	uv run python -m scripts.check_artifact_firewall publish \

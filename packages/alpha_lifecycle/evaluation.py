@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import hashlib
-from decimal import Decimal
+from collections.abc import Mapping
+from datetime import date
+from decimal import Decimal, ROUND_HALF_EVEN, localcontext
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, validate_research_inputs, _read
+from packages.alpha_lifecycle.baselines import BaselineId, baseline_weights_with_reset
 from packages.alpha_lifecycle.candidates import run_candidate
-from packages.alpha_lifecycle.contracts.data import DailyBar, FoldManifest, PITProof
-from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, EvaluationManifest
+from packages.alpha_lifecycle.contracts.data import DailyBar, Fold, FoldManifest, PITProof
+from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, EvaluationManifest, HoldoutManifest, InputSet, InstrumentSpec
 from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
 from packages.alpha_lifecycle.contracts.policy import CandidateSpec
 from packages.alpha_lifecycle.contracts.results import (
-    BaselineSelection, EvaluationResult, FoldResult, ScenarioResult,
+    BaselineSelection, EvaluationResult, FoldResult, HoldoutEvaluationResult, RegimeThreshold, ScenarioResult,
 )
 from packages.alpha_lifecycle.data_view import to_daily_close
-from packages.alpha_lifecycle.execution_trace import build_research_trace
+from packages.alpha_lifecycle.execution_trace import build_research_trace, suppress_terminal_signal
+from packages.alpha_lifecycle.executable_reference import _execution_inputs
+from packages.alpha_lifecycle.folds import build_holdout_fold_manifest
 from packages.alpha_lifecycle.metrics import CostModelV1, calculate_aggregate_performance_metrics
-from packages.alpha_lifecycle.regimes import assign_regimes
+from packages.alpha_lifecycle.regimes import assign_regimes, regime_labels
 from packages.alpha_lifecycle.lifecycle import read_registry_event
-from packages.alpha_lifecycle.robustness import build_robustness, delayed_weights
+from packages.alpha_lifecycle.robustness import _capacity, _scenario_samples, build_robustness, delayed_weights
+from packages.alpha_lifecycle.pit_evidence import _ReadBudget, _reference
 from packages.alpha_lifecycle.trials import deterministic_trial_keys
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -29,12 +35,12 @@ class EvaluationError(ValueError):
     """Evaluation inputs are not one preregistered, source-bound computation."""
 
 
-def _seal(store: ArtifactStore, value):
+def _seal(store: ArtifactStore, value: object) -> ArtifactRefV1:
     return store.put_bytes(canonical_json_bytes(value), media_type="application/json")
 
 
-def _digest(payload: dict[str, object]) -> str:
-    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+def _digest(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_json_bytes(dict(payload))).hexdigest()
 
 
 def _scenario(
@@ -57,6 +63,8 @@ def _scenario(
         if delayed:
             weights_int = delayed_weights(weights_int)
         weights = tuple(Decimal(value) for value in weights_int)
+        if delayed:
+            weights = suppress_terminal_signal(weights)
         scored_bars = tuple(
             bar for bar in bars
             if fold.decision_start <= bar.date <= fold.return_end_range.end
@@ -66,7 +74,8 @@ def _scenario(
             bar for bar in bars
             if fold.context_start <= bar.date <= fold.return_end_range.end
         )
-        labels = assign_regimes(tuple(to_daily_close(bar) for bar in context_bars), threshold)[-len(rows):]
+        labeler = regime_labels if folds.mode == 'HOLDOUT' else assign_regimes
+        labels = labeler(tuple(to_daily_close(bar) for bar in context_bars), threshold)[-len(rows):]
         trace = build_research_trace(
             rows, weights, costs, fold_ref=_seal(store, fold),
             subject_id=spec.alpha_id if perturbation_id is None else f"{spec.alpha_id}.{perturbation_id}",
@@ -153,4 +162,67 @@ def evaluate(manifest: EvaluationManifest, reader: ArtifactStore) -> EvaluationR
     return EvaluationResult.model_validate(payload)
 
 
-__all__ = ["EvaluationError", "evaluate"]
+def _holdout_regime(manifest: HoldoutManifest, reader: ArtifactStore) -> tuple[InputSet,RegimeThreshold]:
+    budget=_ReadBudget(reader)
+    registration=_read(budget,manifest.research_registration_ref,RegistrationProof)
+    inputs=_read(budget,registration.input_set_ref,InputSet)
+    _reference(inputs.regime_threshold_ref,65536)
+    regime=_read(budget,inputs.regime_threshold_ref,RegimeThreshold)
+    if (regime.policy_digest!=manifest.policy_digest
+        or regime.training_dataset_ref!=manifest.context_dataset_ref
+        or regime.training_range.start!=date(2018,1,1)
+        or regime.training_range.end!=date(2021,8,31)
+        or regime.sample_count!=(date(2021,8,31)-date(2018,1,1)).days+1-63
+        or Decimal(regime.threshold)<0):
+        raise EvaluationError('holdout regime threshold differs from frozen training inputs')
+    return inputs,regime
+
+
+def evaluate_holdout(
+    manifest: HoldoutManifest, spec: InstrumentSpec, reader: ArtifactStore,
+) -> HoldoutEvaluationResult:
+    """Calculate H1 only; protected authority remains with the parent."""
+    with localcontext(prec=50,rounding=ROUND_HALF_EVEN):
+        manifest=HoldoutManifest.model_validate(manifest)
+        spec=InstrumentSpec.model_validate(spec)
+        candidate,context,holdout,context_bars,holdout_bars,_=_execution_inputs(manifest,spec,reader)
+        inputs,regime=_holdout_regime(manifest,reader)
+        folds=build_holdout_fold_manifest(context,holdout,policy_digest=manifest.policy_digest)
+        fold=folds.folds[0]
+        bars=context_bars+holdout_bars
+        threshold=Decimal(regime.threshold)
+        costs=inputs.cost_model
+        double_costs=costs.model_copy(update={
+            'fee_bps':costs.fee_bps*2,'spread_bps':costs.spread_bps*2,'slippage_bps':costs.slippage_bps*2,
+        })
+        # All graph checks precede the first calculated artifact write.
+        base=_scenario(scenario='BASE',perturbation_id=None,spec=candidate,bars=bars,folds=folds,
+            threshold=threshold,costs=costs,delayed=False,store=reader)
+        double=_scenario(scenario='DOUBLE_COST',perturbation_id=None,spec=candidate,bars=bars,folds=folds,
+            threshold=threshold,costs=double_costs,delayed=False,store=reader)
+        delayed=_scenario(scenario='DELAYED',perturbation_id=None,spec=candidate,bars=bars,folds=folds,
+            threshold=threshold,costs=costs,delayed=True,store=reader)
+        closes=tuple(to_daily_close(bar) for bar in bars)
+        anchor=len(context_bars)-1
+        weights=suppress_terminal_signal(baseline_weights_with_reset(
+            BaselineId(manifest.selected_baseline),closes,score_start=closes[anchor].closed_at))
+        scored=closes[anchor:]
+        trace=build_research_trace(scored,weights,costs,fold_ref=_seal(reader,fold),
+            subject_id=manifest.selected_baseline,decision_row_refs=fold.decision_row_refs,
+            return_row_refs=fold.return_row_refs,regimes=regime_labels(closes,threshold)[-len(scored):])
+        baseline_fold={'fold_id':'H1','trace_ref':_seal(reader,trace),'metrics':trace.metrics}
+        baseline_payload={
+            'schema_version':'p3-scenario-result-v1','scenario':'BASE','perturbation_id':None,
+            'fold_results':(FoldResult.model_validate({**baseline_fold,'digest':_digest(baseline_fold)}),),
+            'aggregate_metrics':calculate_aggregate_performance_metrics(((scored,weights),),costs),
+        }
+        baseline=ScenarioResult.model_validate({**baseline_payload,'digest':_digest(baseline_payload)})
+        payload={
+            'schema_version':'p3-holdout-evaluation-result-v1','manifest_ref':_seal(reader,manifest),
+            'primary_base':base,'primary_double_cost':double,'primary_delayed':delayed,'baseline_base':baseline,
+            'capacity':_capacity(_scenario_samples(base,reader),manifest.policy_digest,reader),
+        }
+        return HoldoutEvaluationResult.model_validate({**payload,'digest':_digest(payload)})
+
+
+__all__ = ["EvaluationError", "evaluate", "evaluate_holdout"]

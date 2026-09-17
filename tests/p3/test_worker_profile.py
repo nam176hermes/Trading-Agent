@@ -84,7 +84,7 @@ def test_worker_repository_binds_p3_publication_to_its_pool() -> None:
         ("p3-register-family-v1", "REGISTER_FAMILY", "p3-publication-register-v1"),
         ("p3-oos-a0-v1", "OOS", "p3-publication-research-v1"),
         ("p3-select-primary-v1", "OOS", "p3-primary-selection-v1"),
-        ("p3-holdout-primary-v1", "HOLDOUT", "p3-holdout-evaluation-result-v1"),
+        ("p3-holdout-primary-v1", "HOLDOUT", "p3-holdout-operation-result-v1"),
         ("p3-native-parity-v1", "PARITY", "p3-parity-result-v1"),
         ("p3-phase-exit-v1", "PHASE_EXIT", "p3-publication-exit-v1"),
     ),
@@ -157,9 +157,12 @@ def test_p3_publication_commits_without_generic_success_finalize(receipt_failure
 
         def publish(self, *args, **kwargs):
             self.calls.append((args, kwargs))
+            return 'exact-committed-result'
 
-        def recover_receipt(self, job_id):
+        def recover_receipt(self, job_id, *, expected_request, expected_commit):
             assert self.calls, "receipt must follow SQL commit"
+            assert expected_request == 'request'
+            assert expected_commit == 'exact-committed-result'
             self.recovered.append(job_id)
             if receipt_failure:
                 raise RuntimeError("retained CAS temporarily unavailable")
@@ -302,6 +305,8 @@ def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
     events=[]
     inventory=object()
     class Custody:
+        def check_deadline(self):
+            pass  # This ordering-only double has no clock; real custody expiry is tested below.
         def cleanup(self):
             events.append('cleanup')
         def abandon(self):
@@ -326,7 +331,7 @@ def test_p3_private_outputs_survive_until_durable_commit(publication, fault):
             assert kwargs['output_inventory_ref'] is inventory
             if fault in {'commit_error','lost_fence'}:
                 raise RuntimeError('SQL unavailable')
-        def recover_receipt(self,job_id):
+        def recover_receipt(self,job_id,**kwargs):
             events.append('receipt')
             if fault == 'receipt_error':
                 raise RuntimeError('receipt unavailable')
@@ -353,3 +358,128 @@ def test_claim_record_has_no_worker_implementation_dependency():
     assert ClaimedJob is CompatibleClaim
     assert type(claim()) is ClaimedJob
     assert 'lease_token=' not in repr(claim())
+
+
+@pytest.mark.parametrize('control',['CANCEL','STALE'])
+def test_p3_validation_progress_stops_publication_when_control_changes(control):
+    claimed=replace(claim(max_attempts=1),job_type=JobType.ALPHA_CAMPAIGN,
+        payload=SimpleNamespace(operation='REGISTER_FAMILY',logical_trial_id='p3-register-family-v1'))
+    repository=P3Repository(claimed)
+    class Validator:
+        def validate_p3(self,*args,**kwargs):
+            repository.heartbeat_control=lambda *args,**kwargs:control
+            kwargs['progress']()
+            pytest.fail('validation continued after authority changed')
+    worker=JobWorker(repository,Runner(outcome()),Validator(),worker_id='worker-1',
+        code_commit='e'*40,environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
+        prepare_spawn=lambda _:object(),p3_profile=True,p3_publisher=object())
+    assert worker.run_once() is True
+    finalized=[call for call in repository.calls if call[0]=='finalize']
+    if control=='STALE':
+        assert not finalized
+    else:
+        assert len(finalized)==1
+        assert finalized[0][2]['final_state'].value=='CANCELLED'
+
+
+@pytest.mark.parametrize('expired_at',['validation','publication'])
+def test_p3_postrun_expiry_never_repeats_or_falsely_finalizes_publication(tmp_path,monkeypatch,expired_at):
+    from services.job_worker import p3_output
+    from tests.p3.test_output_custody import custody
+    clock=[0.0]
+    monkeypatch.setattr(p3_output,'time',SimpleNamespace(monotonic=lambda:clock[0]))
+    handle,output,_=custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw=b'{"synthetic":true}'
+    path=output/'artifacts'/(hashlib.sha256(raw).hexdigest()+'.blob')
+    path.write_bytes(raw); path.chmod(0o600)
+    inventory=handle.retain()
+    claimed=replace(claim(max_attempts=1),job_type=JobType.ALPHA_CAMPAIGN,
+        payload=SimpleNamespace(operation='REGISTER_FAMILY',logical_trial_id='p3-register-family-v1'))
+    repository=P3Repository(claimed)
+    published=[]
+    class Validator:
+        def validate_p3(self,*args,**kwargs):
+            if expired_at=='validation': clock[0]=300.0
+            return ValidatedP3Publication('request',('entry',))
+    class Publisher:
+        def publish(self,*args,**kwargs):
+            published.append(True)
+            if expired_at=='publication': clock[0]=300.0
+        def recover_receipt(self,job_id,**kwargs):
+            pytest.fail('receipt recovery ran after the post-run deadline')
+    worker=JobWorker(repository,Runner(replace(outcome(),p3_output_custody=handle,p3_output_inventory_ref=inventory)),
+        Validator(),worker_id='worker-1',code_commit='e'*40,environment=object(),
+        safety_preflight=lambda:safety_evidence('4'*64),prepare_spawn=lambda _:object(),
+        p3_profile=True,p3_publisher=Publisher())
+    if expired_at=='publication':
+        with pytest.raises(TimeoutError,match='post-run'): worker.run_once()
+        assert published==[True]
+        assert not [call for call in repository.calls if call[0]=='finalize']
+    else:
+        assert worker.run_once() is True
+        assert not published
+        final=next(call[2] for call in repository.calls if call[0]=='finalize')
+        assert final['final_state'].value=='BLOCKED'
+    assert path.read_bytes()==raw
+
+
+@pytest.mark.parametrize('job_id',['job_'+'a'*32,'job_'+'b'*32])
+def test_workflow_claim_selects_its_job_inside_sql(job_id):
+    connection=_Connection(None)
+    assert _worker(connection).claim_next_alpha_campaign(
+        'worker-p3',30,'p3:bound-claim',fixture_only=False,job_id=job_id) is None
+    statement,parameters=connection.calls[0]
+    assert 'job_plane.worker_claim_bound_alpha_campaign(' in statement
+    assert parameters[-1]==job_id
+
+
+@pytest.mark.parametrize('job_id',['',17,'job_other/../../x'])
+def test_workflow_claim_rejects_invalid_explicit_binding_before_database(job_id):
+    connection=_Connection(None)
+    with pytest.raises(ValueError,match='job'):
+        _worker(connection).claim_next_alpha_campaign(
+            'worker-p3',30,'p3:bound-claim',fixture_only=True,job_id=job_id)
+    assert connection.calls==[]
+
+
+def test_p3_worker_passes_assigned_job_to_claim_without_touching_other_jobs():
+    calls=[]
+    class BoundRepository(P3Repository):
+        def claim_next_alpha_campaign(self,*args,**kwargs):
+            calls.append(kwargs)
+            return None
+    worker=JobWorker(BoundRepository(None),Runner(None),object(),worker_id='worker-p3',
+        code_commit='a'*40,environment=object(),safety_preflight=lambda:safety_evidence("a"*64),
+        prepare_spawn=lambda _:object(),p3_profile=True,p3_publisher=object(),
+        p3_job_id='job_'+'a'*32)
+    worker.run_once()
+    assert calls==[dict(fixture_only=False,job_id='job_'+'a'*32)]
+
+
+def test_bound_recovery_filters_candidates_in_sql_before_process_inspection():
+    connection=_Connection([])
+    _worker(connection).recover_expired_leases(object(),alpha_campaign=True,
+        fixture_only=False,job_id='job_'+'a'*32)
+    statement,parameters=connection.calls[0]
+    assert 'j.job_id = %s' in statement
+    assert parameters==('job_'+'a'*32,)
+
+
+@pytest.mark.parametrize('job_id',['',17,'job_other/../../x'])
+def test_bound_worker_rejects_invalid_job_before_heartbeat(job_id):
+    with pytest.raises(ValueError,match='job'):
+        JobWorker(object(),object(),object(),worker_id='worker-p3',code_commit='a'*40,
+            environment=object(),safety_preflight=lambda:object(),prepare_spawn=lambda _:object(),
+            p3_profile=True,p3_publisher=object(),p3_job_id=job_id)
+
+
+def test_bound_claim_rolls_back_a_response_for_another_job():
+    request=_alpha_request()
+    connection=_Connection(dict(job_id='job_other',job_type='ALPHA_CAMPAIGN',
+        payload=request.payload.model_dump(mode='json'),attempt_number=1,max_attempts=1,
+        lease_expires_at='2026-09-05T01:00:00Z'))
+    with pytest.raises(ValueError,match='job'):
+        _worker(connection).claim_next_alpha_campaign('worker-p3',30,'test:bound-response',
+            fixture_only=False,job_id='job_expected')
+    assert connection.transaction_events[-1]==('exit',ValueError)

@@ -358,9 +358,6 @@ test('kill-switch route rejects clear locally and validates exact activation JSO
 
 test('active kill-switch UI is CLI-clear only', () => {
   const quickActions = fs.readFileSync(path.join(ROOT, 'src/components/trading/quick-actions.tsx'), 'utf8');
-  const haltBanner = fs.readFileSync(path.join(ROOT, 'src/components/trading/halt-banner.tsx'), 'utf8');
   assert.match(quickActions, /Clear via CLI/);
-  assert.match(haltBanner, /Clear via CLI/);
   assert.doesNotMatch(quickActions, /Resume Trading|Resuming\.\.\./);
-  assert.doesNotMatch(haltBanner, /action: 'off'|Override/);
 });

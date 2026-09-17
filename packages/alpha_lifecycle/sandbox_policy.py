@@ -29,6 +29,7 @@ DRIVER_ENTRY = ('/p3/python/bin/python3.11','-I','-B','/p3/release/scripts/run_p
 CHILD_ENTRY = 'scripts/run_p3_evaluation_child.py'
 MAX_ATTEMPT_OUTPUT_BYTES = 4 * CHILD_POLICY['child_output_bytes']
 MAX_OUTPUT_INVENTORY_BYTES = 4_194_304
+MAX_VIEW_BYTES = 67_108_864
 BWRAP_CAPABILITIES = tuple(sorted(set(
     arg for arg in (*SANDBOX_ARGS,*FILESYSTEM_ARGS,*ENVIRONMENT_ARGS,*ROOT_READONLY_ARGS,
         RO_FILE_FLAG,RO_PATH_FLAG,RO_DIRECTORY_FLAG,RW_DIRECTORY_FLAG,'--dir','--chdir','--seccomp','--bind','--perms')
@@ -54,8 +55,10 @@ SANDBOX_PROFILE_SHA256 = hashlib.sha256(canonical_json_bytes(dict(
         sealed_file_mode_flag='--perms',reference_mode='400',sandbox_mode='500'),
     outer=dict(namespaces='UNSHARE_ALL',environment=ENVIRONMENT_ARGS,
         inputs='READ_ONLY_DIRECTORY_DESCRIPTOR',outputs='EXCLUSIVE_ATTEMPT_DIRECTORY_DESCRIPTOR',
+        replica_fence='P3_REPLICA_FENCE_V1_STDERR_STDIN',
         runtime='SEALED_FILES',cpu_seconds=960,wall_seconds=DRIVER_WALL_SECONDS,
         memory_bytes=2147483648,open_files=256,processes=16,per_file_output_bytes=268435456,attempt_output_bytes=MAX_ATTEMPT_OUTPUT_BYTES),
     child=CHILD_POLICY,child_socket_filter_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest(),
+    holdout_input_transport=dict(kind='SEALED_EXACT_CALCULATION_VIEW',mode='600',max_bytes=MAX_VIEW_BYTES),
     max_closure_files=MAX_CLOSURE_FILES,max_closure_bytes=MAX_CLOSURE_BYTES,max_argv_bytes=MAX_ARGV_BYTES,
 ))).hexdigest()

@@ -651,7 +651,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         direct = _direct_map(job, 4)
         if direct != {
             "name": "verify-${{ github.event_name }}",
-            "runs-on": "ubuntu-24.04", "timeout-minutes": "90",
+            "runs-on": "ubuntu-24.04", "timeout-minutes": "120",
             "permissions": "", "outputs": "", "env": "", "steps": "",
         }:
             return False
@@ -737,7 +737,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
                     "name": "Generate protected-main P3 promotion provenance",
                     "id": "p3-promotion",
                     "if": "github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('docs/implementation/p3/receipts/p3-phase-exit-v1.json') != ''",
-                    "run": 'set -euo pipefail; output="${RUNNER_TEMP:?}/p3-promotion/${GITHUB_SHA}-v1.json"; install -d -m 0700 -- "$(dirname "$output")"; uv run --frozen python scripts/record_p3_promotion.py --output "$output"; echo \'generated=true\' >> "$GITHUB_OUTPUT"',
+                    "run": 'set -euo pipefail; output="${RUNNER_TEMP:?}/p3-promotion/${GITHUB_SHA}-v1.json"; install -d -m 0700 -- "$(dirname "$output")"; uv run --frozen python scripts/record_p3_promotion.py --skip-stale --output "$output"; if test -f "$output"; then echo \'generated=true\' >> "$GITHUB_OUTPUT"; fi',
                 },
                 {},
             ),

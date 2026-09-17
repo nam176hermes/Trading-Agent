@@ -10,13 +10,7 @@ from pydantic import BeforeValidator, Field, model_validator
 from packages.alpha_lifecycle.metrics import CostModelV1
 from packages.data_contracts import ArtifactRefV1
 
-from .base import DecimalText, DigestModel, Sha256, SourceIdentity, Text, Token
-
-
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
+from .models import json_array, DecimalText, DigestModel, Sha256, SourceIdentity, Text, Token
 
 
 class EnvironmentIdentity(DigestModel):
@@ -59,7 +53,7 @@ class BaselineManifest(DigestModel):
     schema_version: Literal["p3-baseline-manifest-v1"]
     input_set_ref: ArtifactRefV1
     required_baselines: Annotated[
-        tuple[str, ...], BeforeValidator(_tuple), Field(min_length=5, max_length=5)
+        tuple[str, ...], BeforeValidator(json_array), Field(min_length=5, max_length=5)
     ]
 
     @model_validator(mode="after")

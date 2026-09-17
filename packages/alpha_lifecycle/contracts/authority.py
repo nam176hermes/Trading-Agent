@@ -11,23 +11,17 @@ from pydantic import BeforeValidator, Field, model_validator
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime
 
-from .base import AlphaId, DigestModel, SafeAuthority, SemVer, Sha256, SourceIdentity, Text, Token
+from .models import json_array, AlphaId, DigestModel, SafeAuthority, SemVer, Sha256, SourceIdentity, Text, Token
 from .data import DateRange
 
 
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
-
-
-Refs = Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple)]
+Refs = Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array)]
 
 
 class ReviewApproval(DigestModel):
     schema_version: Literal["p3-review-approval-v1"]
     source: SourceIdentity
-    subject_digests: Annotated[tuple[Sha256, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=64)]
+    subject_digests: Annotated[tuple[Sha256, ...], BeforeValidator(json_array), Field(min_length=1, max_length=64)]
     operator_identity: Token
     reviewer_identity: Token
     review_execution_id: Token
@@ -43,7 +37,7 @@ class RunAuthorization(DigestModel):
     input_set_ref: ArtifactRefV1
     review_ref: ArtifactRefV1
     operation: Literal["BASELINES", "REGISTER_FAMILY", "OOS", "HOLDOUT", "PARITY", "PHASE_EXIT"]
-    allowed_alpha_ids: Annotated[tuple[AlphaId, ...], BeforeValidator(_tuple), Field(max_length=4)]
+    allowed_alpha_ids: Annotated[tuple[AlphaId, ...], BeforeValidator(json_array), Field(max_length=4)]
     issued_at: CanonicalUtcDateTime
     expires_at: CanonicalUtcDateTime
     nonce: UUID
@@ -93,8 +87,8 @@ class PrimarySelection(DigestModel):
 class FamilyReview(DigestModel):
     schema_version: Literal["p3-family-review-v1"]
     input_set_ref: ArtifactRefV1
-    candidate_report_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=4, max_length=4)]
-    trial_outcome_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=256)]
+    candidate_report_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=4, max_length=4)]
+    trial_outcome_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=1, max_length=256)]
     review_ref: ArtifactRefV1
     complete_disclosure: Literal[True]
 

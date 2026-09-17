@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -12,6 +13,11 @@ from packages.job_contracts import (
     JobState,
     JobType,
 )
+
+
+def validate_p3_job_id(job_id: object) -> None:
+    if not isinstance(job_id,str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}",job_id,re.ASCII) is None:
+        raise ValueError("P3 bound job id is invalid")
 
 
 @dataclass(frozen=True, slots=True)

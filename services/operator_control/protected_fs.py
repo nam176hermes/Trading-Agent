@@ -424,6 +424,7 @@ def rename_private_file_noreplace(
         )
         if (
             _identity(destination_info) != _identity(source_info)
+            or observed is None
             or observed != source
             or hashlib.sha256(observed).hexdigest() != expected_sha256
         ):

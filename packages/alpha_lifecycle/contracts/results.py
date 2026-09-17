@@ -11,14 +11,8 @@ from packages.alpha_lifecycle.protocol import PerformanceMetricsV1, Qualificatio
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime
 
-from .base import DecimalText, DigestModel, SemVer, Sha256, SourceIdentity, StrictModel, Text, Token
+from .models import json_array, DecimalText, DigestModel, SemVer, Sha256, SourceIdentity, StrictModel, Text, Token
 from .data import DateRange, Day
-
-
-def _tuple(value: object) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise ValueError("value must be a JSON array")
-    return tuple(value)
 
 
 class TraceSample(DigestModel):
@@ -89,7 +83,7 @@ class PerformanceTrace(DigestModel):
     cost_model_digest: Sha256
     raw_signal_digest: Sha256
     effective_weights_digest: Sha256
-    samples: Annotated[tuple[TraceSample, ...], BeforeValidator(_tuple), Field(min_length=2, max_length=5000)]
+    samples: Annotated[tuple[TraceSample, ...], BeforeValidator(json_array), Field(min_length=2, max_length=5000)]
     metrics: PerformanceMetricsV1
     round_trip_count: Annotated[int, Field(ge=0)]
 
@@ -107,7 +101,7 @@ class RegimeThreshold(DigestModel):
 class RegimeResult(StrictModel):
     schema_version: Literal["p3-regime-result-v1"]
     regime_id: Literal["BULL_LOW_VOL", "BEAR_LOW_VOL", "HIGH_VOL"]
-    sample_indices: Annotated[tuple[int, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=5000)]
+    sample_indices: Annotated[tuple[int, ...], BeforeValidator(json_array), Field(min_length=1, max_length=5000)]
     candidate_return: DecimalText
     baseline_return: DecimalText
     excess: DecimalText
@@ -116,18 +110,18 @@ class RegimeResult(StrictModel):
 class RegimeEvidence(DigestModel):
     threshold_ref: ArtifactRefV1
     assignment_trace_ref: ArtifactRefV1
-    regime_ids: Annotated[tuple[str, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    candidate_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    baseline_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    excess_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    sample_counts: Annotated[tuple[int, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
+    regime_ids: Annotated[tuple[str, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    candidate_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    baseline_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    excess_returns: Annotated[tuple[DecimalText, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    sample_counts: Annotated[tuple[int, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
 
 
 class CapacityEvidence(DigestModel):
     schema_version: Literal["p3-capacity-evidence-v1"]
     policy_digest: Sha256
-    event_participations: Annotated[tuple[DecimalText, ...], BeforeValidator(_tuple), Field(max_length=5000)]
-    event_keys: Annotated[tuple[Token, ...], BeforeValidator(_tuple), Field(max_length=5000)]
+    event_participations: Annotated[tuple[DecimalText, ...], BeforeValidator(json_array), Field(max_length=5000)]
+    event_keys: Annotated[tuple[Token, ...], BeforeValidator(json_array), Field(max_length=5000)]
     median: DecimalText
     peak: DecimalText
     no_trades: bool
@@ -141,8 +135,8 @@ class CapacityEvidence(DigestModel):
 
 class RobustnessEvidence(DigestModel):
     schema_version: Literal["p3-robustness-evidence-v1"]
-    regimes: Annotated[tuple[RegimeResult, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    perturbation_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=4, max_length=4)]
+    regimes: Annotated[tuple[RegimeResult, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    perturbation_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=4, max_length=4)]
     double_cost_ref: ArtifactRefV1
     delayed_ref: ArtifactRefV1
     capacity: CapacityEvidence
@@ -155,9 +149,9 @@ class EvaluationResult(DigestModel):
     double_cost: ScenarioResult
     delayed: ScenarioResult
     perturbations: Annotated[tuple[ScenarioResult, ...], Field(min_length=4, max_length=4)]
-    regimes: Annotated[tuple[RegimeResult, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
+    regimes: Annotated[tuple[RegimeResult, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
     capacity: CapacityEvidence
-    deterministic_trial_keys: Annotated[tuple[Token, ...], BeforeValidator(_tuple), Field(min_length=7, max_length=7)]
+    deterministic_trial_keys: Annotated[tuple[Token, ...], BeforeValidator(json_array), Field(min_length=7, max_length=7)]
 
 
 class ReplayReceipt(DigestModel):
@@ -180,7 +174,7 @@ class ReplayProof(DigestModel):
     schema_version: Literal["p3-replay-proof-v1"]
     manifest_digest: Sha256
     result_digest: Sha256
-    receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
+    receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
 
 
 class QualificationBundle(DigestModel):
@@ -190,7 +184,7 @@ class QualificationBundle(DigestModel):
     pit_ref: ArtifactRefV1
     legacy_evidence_ref: ArtifactRefV1
     legacy_result_ref: ArtifactRefV1
-    criteria: Annotated[tuple[QualificationCriterionV1, ...], BeforeValidator(_tuple), Field(min_length=16, max_length=16)]
+    criteria: Annotated[tuple[QualificationCriterionV1, ...], BeforeValidator(json_array), Field(min_length=16, max_length=16)]
     pipeline_verdict: Literal["PASS"]
     alpha_verdict: Literal["PASS", "FAIL"]
 
@@ -203,6 +197,17 @@ class HoldoutEvaluationResult(DigestModel):
     primary_delayed: ScenarioResult
     baseline_base: ScenarioResult
     capacity: CapacityEvidence
+
+    @model_validator(mode="after")
+    def _holdout_scenarios(self) -> "HoldoutEvaluationResult":
+        for result,expected in (
+            (self.primary_base,'BASE'),(self.primary_double_cost,'DOUBLE_COST'),
+            (self.primary_delayed,'DELAYED'),(self.baseline_base,'BASE'),
+        ):
+            if (result.scenario!=expected or result.perturbation_id is not None
+                or tuple(fold.fold_id for fold in result.fold_results)!=('H1',)):
+                raise ValueError('holdout scenarios require exact H1-only primary and baseline roles')
+        return self
 
 
 class NativeTraceRow(DigestModel):
@@ -237,8 +242,8 @@ class ExecutableResult(DigestModel):
 class ParityResult(DigestModel):
     schema_version: Literal["p3-parity-result-v1"]
     reference_ref: ArtifactRefV1
-    native_result_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
-    native_receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(min_length=3, max_length=3)]
+    native_result_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
+    native_receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(min_length=3, max_length=3)]
     comparison_ref: ArtifactRefV1
     exact_fields_pass: bool
     numeric_fields_pass: bool
@@ -260,9 +265,19 @@ class ExitResult(DigestModel):
     executable_ref: ArtifactRefV1
     baseline_executable_ref: ArtifactRefV1
     parity_ref: ArtifactRefV1
-    checks: Annotated[tuple[ExitCheck, ...], BeforeValidator(_tuple), Field(min_length=13, max_length=13)]
+    checks: Annotated[tuple[ExitCheck, ...], BeforeValidator(json_array), Field(min_length=13, max_length=13)]
     verdict: Literal["PASS", "FAIL", "HELD"]
-    limitations: Annotated[tuple[Token, ...], BeforeValidator(_tuple), Field(min_length=1, max_length=16)]
+    limitations: Annotated[tuple[Token, ...], BeforeValidator(json_array), Field(min_length=1, max_length=16)]
+
+
+    @model_validator(mode="after")
+    def _complete_exit_checks(self) -> "ExitResult":
+        if len({check.check_id for check in self.checks}) != 13:
+            raise ValueError("exit result must cover all 13 distinct checks")
+        passed = all(check.passed for check in self.checks)
+        if self.verdict != "HELD" and (self.verdict == "PASS") != passed:
+            raise ValueError("exit verdict differs from its checks")
+        return self
 
 
 class TrialOutcome(DigestModel):
@@ -270,7 +285,7 @@ class TrialOutcome(DigestModel):
     trial_key: Token
     status: Literal["PREREGISTERED", "STARTED", "COMPLETED", "PIPELINE_FAILED", "CANCELLED"]
     result_ref: ArtifactRefV1 | None
-    execution_receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(_tuple), Field(max_length=3)]
+    execution_receipt_refs: Annotated[tuple[ArtifactRefV1, ...], BeforeValidator(json_array), Field(max_length=3)]
 
 
 __all__ = ["BaselineEntry", "BaselinePack", "BaselineSelection", "CapacityEvidence", "EvaluationResult", "ExecutableResult", "ExitCheck", "ExitResult", "FoldResult", "HoldoutEvaluationResult", "NativeTraceRow", "ParityResult", "PerformanceTrace", "QualificationBundle", "RegimeEvidence", "RegimeResult", "RegimeThreshold", "ReplayProof", "ReplayReceipt", "RobustnessEvidence", "ScenarioResult", "TraceSample", "TrialOutcome"]

@@ -240,25 +240,6 @@ def _write_authority_file(parent_fd: int, name: str, content: bytes, *, exclusiv
         os.close(fd)
 
 
-def _validate_existing_active(parent_fd: int, name: str) -> None:
-    try:
-        fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        _fail("existing active authority is unsafe", exc)
-    try:
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != ROOT_AUTHORITY_UID
-            or info.st_gid != ROOT_AUTHORITY_GID
-        ):
-            _fail("existing active authority is unsafe")
-        if stat.S_IMODE(info.st_mode) != 0o444:
-            _fail("existing active authority mode is unsafe")
-    finally:
-        os.close(fd)
 
 
 def _open_publication_lock(parent_fd: int, active_name: str) -> int:

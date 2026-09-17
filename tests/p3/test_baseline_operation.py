@@ -14,7 +14,9 @@ def _cli_authorization(store, intent_ref, source):
     from packages.alpha_lifecycle.operation_input import P3OperationInput
     from tests.p3.test_replica_execution import _seal
     intent = P3OperationInput.model_validate_json(store.read_bytes(intent_ref))
-    now = datetime.now(UTC)
+    # ponytail: synthetic approval leads execution by 60s; use a fixed fixture
+    # clock if larger host corrections need to be simulated.
+    now = datetime.now(UTC)-timedelta(minutes=1)
     def utc(value):
         return value.isoformat(timespec='microseconds').replace('+00:00','Z')
     safe = dict(broker=False, live=False, network=False, production=False)
@@ -26,6 +28,29 @@ def _cli_authorization(store, intent_ref, source):
         review_ref=review_ref, operation=intent.operation, allowed_alpha_ids=intent.allowed_alpha_ids,
         issued_at=utc(now), expires_at=utc(now+timedelta(minutes=30)), nonce=str(UUID(int=2)), issuer_workflow='p3-authority.yml',
         issuer_run_id=1, issuer_attempt=1, authority=safe)
+
+
+def test_synthetic_review_predates_execution_without_weakening_future_denial(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    from packages.alpha_lifecycle.authority import validate_operation_review
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from tests.p3.test_job_api import _alpha_request
+    from tests.p3.test_replica_execution import _seal
+    store = LocalArtifactStore(tmp_path)
+    placeholder = store.put_bytes(b'{}', media_type='application/json')
+    source = _alpha_request().payload.expected_source
+    intent_ref = _seal(store, schema_version='p3-operation-input-v1',
+        workflow_operation='p3-baselines-v1', operation='BASELINES',
+        input_set_ref=placeholder, allowed_alpha_ids=[], body=dict(baseline_manifest_ref=placeholder))
+    intent = P3OperationInput.model_validate_json(store.read_bytes(intent_ref))
+    before = datetime.now(UTC)
+    auth = RunAuthorization.model_validate_json(store.read_bytes(_cli_authorization(store, intent_ref, source)))
+    # Reproduce the observed WSL clock rollback without changing the host clock.
+    validate_operation_review(auth, source, intent, store, now=before-timedelta(seconds=2))
+    with pytest.raises(ValueError, match='current independent review'):
+        validate_operation_review(auth, source, intent, store, now=auth.issued_at-timedelta(microseconds=1))
 
 
 @pytest.mark.parametrize('fault',['fold_policy','threshold_policy','threshold_dataset','fold_snapshot','pit_dataset','pit_folds','pit_vintage','fold_mode','dataset_segment','noncanonical_folds','training_before_dataset','training_overlaps_oos','pit_limitations','missing_revision','missing_no_future'])
@@ -124,7 +149,10 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
             workflow_operation='p3-baselines-v1',operation='BASELINES',
             input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],
             body={'baseline_manifest_ref':manifest_ref})
+        grants = []
+        monkeypatch.setattr(command,'parent_replica_fence',lambda:lambda:grants.append(len(calls)))
         def child_executor(**kwargs):
+            executor._before_spawn = kwargs['before_spawn']
             executor._store = kwargs['store']
             return executor
         monkeypatch.setattr(command,'BubblewrapExecutor',child_executor)
@@ -147,6 +175,7 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
         import hashlib
         before = {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()}
         command.main()
+        assert grants == [1,2,3]
         assert {p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (tmp_path/'inputs').iterdir()} == before
         from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore
         store = ReplicaArtifactStore(tmp_path/'inputs',tmp_path/'runs'/'artifacts')

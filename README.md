@@ -109,6 +109,9 @@ It is dispatched only to the protected Linux/x64 authority-host workflow and
 is never reachable from `make ci` or portable GitHub Actions.
 
 The narrower non-building aggregate remains available as `make test-all`.
+Run `uv run python scripts/dev.py static` once before its offline static-policy
+tests to populate the pinned checker cache. The error-level gate retains warning
+diagnostics and their baselines; warnings alone do not fail either local or CI output.
 Useful focused gates include:
 
 ```bash
@@ -222,7 +225,13 @@ rollback rules, and explicit held deployment verdicts are recorded in
 `docs/operations/hwc-process-topology.md`. It is documentation only and does not
 install or activate services.
 
-Current derived status is `HWC_SOURCE_COMPLETE=PASS` and
-`HWC_SOURCE_READY=HELD`: the remaining source-readiness evidence is the exact
-protected-main Foundation receipt, which cannot be replaced by feature-branch
-or local evidence. All deployment and live authorities remain held.
+Read current gate status from source and retained receipts:
+
+```bash
+uv run python scripts/derive_project_status.py
+```
+
+The result distinguishes HWC, pre-P3 and P3 gates and their hold reasons.
+Local tests and feature-branch evidence do not replace protected-main Foundation
+qualification, independent holdout custody, or a phase-exit receipt. Source
+changes do not grant deployment or live authority.

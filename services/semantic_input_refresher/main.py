@@ -13,14 +13,15 @@ import stat
 from typing import Callable
 
 from packages.runtime_release.semantic import SEMANTIC_INPUT_ROOT
+from packages.safety_evidence import CANONICAL_SAFETY_SOURCE_ROOT
 from scripts.build_phase4_semantic_manifest import (
     SemanticManifestBuildResult,
     build_semantic_manifest,
 )
 
 
-REPORTS_SOURCE_ROOT = Path("/home/thenam176/.hermes/crypto-research/reports")
-MACRO_SOURCE_ROOT = Path("/home/thenam176/.hermes/crypto-research/memory/macro")
+REPORTS_SOURCE_ROOT = CANONICAL_SAFETY_SOURCE_ROOT / "reports"
+MACRO_SOURCE_ROOT = CANONICAL_SAFETY_SOURCE_ROOT / "memory/macro"
 DESTINATION_ROOT = SEMANTIC_INPUT_ROOT
 MANIFEST_PATH = Path("/etc/trading-agent/research-input-manifests/phase4-v1.json")
 RUNTIME_UID = 1000

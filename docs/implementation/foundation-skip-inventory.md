@@ -109,3 +109,20 @@ make check-test-skips TEST_EVIDENCE_DIR=/absolute/private/path
 5. For security-critical nodes, require an explicit approval reason and record type.
 6. Remove stale entries when the underlying test runs again.
 7. Commit the allowlist change with the test or environment change that requires it.
+
+## P3 optimization runtime diagnostics — 2026-09-16
+
+Eight added tests use the existing explicit runtime selection contract: seven
+native adapter/request cases need `P3_NATIVE_TEST_PYTHON` with offline Nautilus
+1.231.0; one custodian release case needs an approved disposable PostgreSQL 16
+fixture and `P3_CUSTODIAN_SQL_SOURCE_TEST=1`. The exact collected node IDs are
+recorded in the canonical allowlist with the existing 2026-10-31 review deadline.
+A collection regression compares actual portable deselections against these
+records, including parameterized native roles and scenarios.
+
+These records classify unavailable runtime prerequisites; they do not turn a
+failed test into a skip or certify protected execution. Existing markers and
+selection guards are unchanged. Run these diagnostics explicitly in their
+own approved environments and retain their results separately. Portable CI
+alone does not prove cross-UID custody, protected native launch or official P3
+qualification. The 318-node frozen capability topology remains unchanged.

@@ -58,7 +58,7 @@ def test_daily_close_uses_end_exclusive_minus_one_microsecond() -> None:
     assert close.closed_at.date() == bar.date
 
 
-def _materialized_daily(store, day):
+def _materialized_daily(store, day, *, dataset='p3.research.daily'):
     import pyarrow as pa
     from uuid import UUID
     from packages.data_catalog.v3 import materialize_arrow_partition_v3
@@ -76,7 +76,7 @@ def _materialized_daily(store, day):
     schema=ArrowSchemaV1(schema_id='fixture.daily.v1',data_api_epoch=2,fields=fields)
     from packages.data_catalog.v2 import _expected_schema
     partition=materialize_arrow_partition_v3(pa.Table.from_pylist([row],schema=_expected_schema(schema)),
-        schema=schema,store=store,partition_id=UUID(int=day.toordinal()),dataset='p3.research.daily',
+        schema=schema,store=store,partition_id=UUID(int=day.toordinal()),dataset=dataset,
         partition_key=('BTCUSDT.BINANCE',day.isoformat()),partition_spec_version='fixture.v1',
         source_available_at=expected.system_observed_at,system_observed_at=expected.system_observed_at,
         ingested_at=expected.ingested_at,raw_evidence_sha256s=('a'*64,),
@@ -120,3 +120,47 @@ def test_research_sealer_reconstructs_complete_synthetic_v3_dataset(tmp_path):
     assert evidence.usable_rows==len(days)
     assert evidence.date_range.start==start and evidence.date_range.end==end
     assert evidence==seal_research_dataset(partitions,query,schema,ReadbackStore(store,store))
+
+
+def test_buffer_sealer_keeps_only_open_in_its_derived_row(tmp_path):
+    import json
+    from packages.alpha_lifecycle.contracts.data import BufferOpen
+    from packages.alpha_lifecycle.data_view import seal_research_dataset
+    from packages.alpha_lifecycle.baseline_campaign import ReadbackStore
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.data_contracts import PITQueryV1
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    root=tmp_path/'store';root.mkdir(mode=0o700)
+    store=LocalArtifactStore(root)
+    day=date(2026,9,1)
+    schema,partition=_materialized_daily(store,day,dataset='p3.buffer.daily')
+    query=PITQueryV1.model_validate_json('{"mode":"SYSTEM_OBSERVED","valid_at":"2026-09-02T00:00:00Z","cutoff":"2026-09-05T12:00:02Z"}')
+    evidence=seal_research_dataset((partition.manifest,),query,schema,store)
+    assert evidence.segment=='BUFFER' and evidence.usable_rows==1
+    raw=store.read_bytes(evidence.row_refs[0])
+    assert set(json.loads(raw))=={'schema_version','date','instrument','opened_at','open','source_evidence_ref','observed_at','digest'}
+    opening=BufferOpen.model_validate_json(raw)
+    assert raw==canonical_json_bytes(opening)
+    assert opening.open=='100' and opening.date==day
+    assert opening.source_evidence_ref==partition.artifact
+    assert opening.observed_at==partition.manifest.system_observed_at
+    assert evidence.ordered_rows_digest==hashlib.sha256(canonical_json_bytes([evidence.row_refs[0].content_sha256])).hexdigest()
+    assert evidence==seal_research_dataset((partition.manifest,),query,schema,ReadbackStore(store,store))
+
+
+@pytest.mark.parametrize('fault',[None,'zero','negative','date','boundary','observation'])
+def test_buffer_open_requires_positive_price_and_causal_utc_day(fault):
+    from packages.alpha_lifecycle.contracts.data import BufferOpen
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    value=dict(schema_version='p3-buffer-open-v1',date='2026-09-01',instrument='BTCUSDT.BINANCE',
+        opened_at='2026-09-01T00:00:00Z',open='100',source_evidence_ref=_ref('a'*64),observed_at='2026-09-01T00:00:01Z')
+    if fault in {'zero','negative'}: value['open']='0' if fault=='zero' else '-1'
+    elif fault=='date': value['date']='2026-08-31'
+    elif fault=='boundary': value['opened_at']='2026-09-01T00:00:01Z'
+    elif fault=='observation': value['observed_at']='2026-08-31T23:59:59Z'
+    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    if fault:
+        with pytest.raises(ValueError,match='buffer'):
+            BufferOpen.model_validate(value)
+    else:
+        assert BufferOpen.model_validate(value).open=='100'

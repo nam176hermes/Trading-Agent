@@ -20,7 +20,11 @@ from pathlib import Path, PurePosixPath
 from threading import Lock
 from types import MappingProxyType
 from collections.abc import Mapping
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from packages.alpha_lifecycle.replica_store import ArtifactStore
+    from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 
 from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore, _read
@@ -37,11 +41,11 @@ from packages.alpha_lifecycle.sandbox_policy import (
 from packages.data_contracts import ArtifactRefV1
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.job_contracts import AlphaCampaignPayload, JobType
+from packages.job_contracts import AlphaCampaignPayload, JobType, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity, _git, _parse_tree, _read_blobs
 from packages.runtime_release.v2 import inspect_python_runtime
 from services.job_store.records import ClaimedJob
-from .command_registry import p3_command_spec
+from .command_registry import CommandSpec, p3_command_spec
 from .engine_spawn import _sealed_memfd
 from .p3_spawn_interface import P3PreparedSpawnMarker, P3SpawnError
 from .p3_output import P3OutputCustody
@@ -82,6 +86,8 @@ class CompleteP3Closure:
     mounts: tuple[P3ClosureMount, ...]
     sandbox: P3Sandbox
     closure_sha256: str
+    bound_job_id: str
+    bound_payload_fingerprint: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +118,7 @@ class P3BuiltSpawn:
     source_revision: str
     lineage: P3SpawnLineage
     output_custody: P3OutputCustody
+    replica_fence: Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
@@ -122,7 +129,7 @@ class PreparedP3Spawn(P3PreparedSpawnMarker):
         return 'PreparedP3Spawn(validated=True)'
 
 
-def _digest(value) -> str:
+def _digest(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
@@ -154,7 +161,7 @@ def _release_files(source: SourceIdentity) -> dict[PurePosixPath, tuple[str, byt
     return {_RELEASE/p:files[p] for p in paths}
 
 
-def _file_bytes(path: Path, identity, size, mode, digest) -> bytes:
+def _file_bytes(path: Path, identity: tuple[int, int], size: int, mode: int, digest: str) -> bytes:
     if not path.is_absolute() or '..' in path.parts or type(size) is not int or not 0 <= size <= 268435456:
         raise ValueError('P3 closure file path or size is invalid')
     parent = _open_directory_chain(path.parent)
@@ -180,28 +187,37 @@ def _file_bytes(path: Path, identity, size, mode, digest) -> bytes:
 
 
 class P3SpawnProvider:
-    def __init__(self, *, attest_closure: Callable[[], CompleteP3Closure], store,
-        store_root: Path, output_root: Path):
+    def __init__(self, *, attest_closure: Callable[[], CompleteP3Closure], store: LocalArtifactStore,
+        store_root: Path, output_root: Path, holdout_inputs: Callable[[ClaimedJob], tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]] | None = None) -> None:
         if not callable(attest_closure):
             raise TypeError('complete P3 attestor is required')
         if type(store) is not LocalArtifactStore or store._root != store_root:
             raise ValueError('P3 validated store must equal the mounted store')
         self._attest_closure, self._store = attest_closure, store
         self._store_root, self._output_root = store_root, output_root
-        self._issued = weakref.WeakKeyDictionary()
+        if holdout_inputs is not None and not callable(holdout_inputs):
+            raise ValueError('holdout driver requires its owner callback')
+        self._holdout_inputs = holdout_inputs
+        self._issued: weakref.WeakKeyDictionary[PreparedP3Spawn,
+            tuple[ClaimedJob, CompleteP3Closure, tuple[tuple[int, int], ...], int]] = weakref.WeakKeyDictionary()
         self._lock = Lock()
 
-    def _inputs(self, job, closure):
+    def _inputs(self, job: ClaimedJob, closure: CompleteP3Closure) -> tuple[CommandSpec, EnvironmentIdentity, AlphaCampaignPayload]:
         if (platform.system() != 'Linux' or platform.machine().lower() != 'x86_64'
             or type(job) is not ClaimedJob or job.job_type is not JobType.ALPHA_CAMPAIGN
             or type(job.payload) is not AlphaCampaignPayload
-            or job.payload.operation not in {'BASELINES','REGISTER_FAMILY'}
+            or job.payload.operation not in ({'HOLDOUT'} if self._holdout_inputs is not None
+                else {'BASELINES','REGISTER_FAMILY','OOS'})
             or job.lease_expires_at <= datetime.now(UTC)):
             raise ValueError('P3 driver requires a current official campaign claim')
+        if self._holdout_inputs is not None:
+            self._holdout_inputs(job)
         spec = p3_command_spec(job.payload)
         if spec.argv_prefix != ('-I','-B','scripts/run_p3_alpha_campaign.py'):
             raise ValueError('P3 driver command differs')
         if (type(closure) is not CompleteP3Closure or closure.source != job.payload.expected_source
+            or closure.bound_job_id != job.job_id
+            or closure.bound_payload_fingerprint != payload_fingerprint(job.payload)
             or type(closure.sandbox) is not P3Sandbox
             or closure.sandbox.profile_sha256 != SANDBOX_PROFILE_SHA256
             or closure.sandbox.version != BWRAP_VERSION or closure.sandbox.capabilities != BWRAP_CAPABILITIES):
@@ -217,10 +233,12 @@ class P3SpawnProvider:
             or environment.python_version != '3.11'
             or environment.sandbox_policy_digest != closure.sandbox.profile_sha256):
             raise ValueError('P3 input, source, environment or authorization differs')
-        return spec, environment
+        return spec, environment, payload
 
-    def prepare(self, job: ClaimedJob) -> PreparedP3Spawn:
+    def prepare(self, job: object) -> PreparedP3Spawn:
         try:
+            if type(job) is not ClaimedJob:
+                raise ValueError("P3 driver requires a current official campaign claim")
             closure = self._attest_closure()
             self._inputs(job, closure)
             identities = tuple(_directory_identity(p) for p in (self._store_root,self._output_root))
@@ -234,7 +252,7 @@ class P3SpawnProvider:
         except Exception as error:
             raise P3SpawnError('P3_SPAWN_HELD','P3 capability preparation failed') from error
 
-    def _consume(self, token):
+    def _consume(self, token: PreparedP3Spawn) -> P3BuiltSpawn:
         with self._lock:
             record = self._issued.pop(token, None) if type(token) is PreparedP3Spawn else None
         if record is None:
@@ -247,7 +265,7 @@ class P3SpawnProvider:
             job, closure, identities, deadline = record
             if time.monotonic_ns() >= deadline or self._attest_closure() != closure:
                 raise ValueError('P3 capability expired or closure changed')
-            spec, environment = self._inputs(job, closure)
+            spec, environment, payload = self._inputs(job, closure)
             if tuple(_directory_identity(p) for p in (self._store_root,self._output_root)) != identities:
                 raise ValueError('P3 transport roots changed')
             inspect_python_runtime(closure.python_root, require_empty_site_packages=False)
@@ -306,8 +324,16 @@ class P3SpawnProvider:
                 descriptors.append(fd)
                 argv.extend(('--perms',f'{mount.mode:o}',RO_FILE_FLAG,str(fd),str(mount.target)))
             argv.extend(('--perms','500',RO_FILE_FLAG,str(sandbox_fd),'/p3/bin/bwrap'))
-            references = {'manifest-ref':job.payload.manifest_ref,'source':closure.source,
-                'environment-ref':closure.environment_ref,'authorization-ref':job.payload.authorization_ref}
+            references = {'manifest-ref':payload.manifest_ref,'source':closure.source,
+                'environment-ref':closure.environment_ref,'authorization-ref':payload.authorization_ref}
+            if self._holdout_inputs is not None:
+                view, request_ref, manifest_ref, spec_ref = self._holdout_inputs(job)
+                references.update({'holdout-manifest-ref':manifest_ref,
+                    'holdout-request-ref':request_ref, 'instrument-spec-ref':spec_ref})
+                view_fd = _sealed_memfd('p3-holdout-view', view.raw, mode=0o400)
+                descriptors.append(view_fd)
+                argv.extend(('--perms','700','--dir','/p3/holdout-inputs',
+                    '--perms','600',RO_FILE_FLAG,str(view_fd),'/p3/holdout-inputs/view.json'))
             for name, value in references.items():
                 fd = _sealed_memfd('p3-input',canonical_json_bytes(value),mode=0o400)
                 descriptors.append(fd)
@@ -336,8 +362,10 @@ class P3SpawnProvider:
                 *ENVIRONMENT_ARGS,*DRIVER_ENTRY))
             for name in references:
                 argv.extend((f'--{name}',f'/p3/inputs/{name}.json'))
+            if self._holdout_inputs is not None:
+                argv.extend(('--holdout-view','/p3/holdout-inputs/view.json'))
             argv.extend(('--store','/p3/store','--release','/p3/release','--python','/p3/python/bin/python3.11',
-                '--sandbox-policy-digest',environment.sandbox_policy_digest,'--logical-trial-id',job.payload.logical_trial_id,
+                '--sandbox-policy-digest',environment.sandbox_policy_digest,'--logical-trial-id',payload.logical_trial_id,
                 '--job-id',job.job_id,'--output','/p3/output','--sandbox','/p3/bin/bwrap',
                 '--runtime-mounts-ref','/p3/inputs/runtime-mounts.json'))
             if time.monotonic_ns() >= deadline or sum(len(a.encode())+1 for a in argv) > MAX_ARGV_BYTES:
@@ -350,13 +378,39 @@ class P3SpawnProvider:
                 argv_prefix=spec.argv_prefix,timeout_seconds=spec.timeout_seconds,
                 result_validator=spec.result_validator_id,transport_identities=identities,
                 output_identity=(output_info.st_dev,output_info.st_ino)))
-            custody = P3OutputCustody(output_parent,output_fd,run_name,self._store)
+            before_write: Callable[[], None] | None = None
+            before_retain: Callable[[dict[str, ArtifactRefV1], ArtifactStore], None] | None = None
+            if self._holdout_inputs is not None:
+                owner = self._holdout_inputs
+                def validate_outputs(inventory, outputs):
+                    from .p3_output_validation import validate_holdout_output
+                    view, _, manifest_ref, _ = owner(job)
+                    # Pure recomputation reads keep the view's current lifetime;
+                    # the pinned output reader owns lease/safety progress. Full
+                    # host admission runs again before every durable CAS write.
+                    def progress():
+                        view.read_bytes(manifest_ref)
+                    validate_holdout_output(job, inventory, outputs, self._store, view, progress=progress)
+                before_retain = validate_outputs
+                def write_fence():
+                    owner(job)
+                before_write = write_fence
+            custody = P3OutputCustody(output_parent,output_fd,run_name,self._store,
+                before_retain=before_retain, before_write=before_write)
             os.close(output_parent)
             descriptors.remove(output_parent)
             output_parent = -1
+            def replica_fence() -> None:
+                # SQL lease/safety belongs to the heartbeat before each grant.
+                if (self._attest_closure() != closure
+                    or tuple(_directory_identity(p) for p in (self._store_root,self._output_root)) != identities):
+                    raise ValueError('P3 replica profile or transport changed')
+                if self._holdout_inputs is not None:
+                    self._holdout_inputs(job)
+
             return P3BuiltSpawn(job.job_id,job.attempt_id,tuple(argv),Path('/'),MappingProxyType({}),tuple(descriptors),tuple(descriptors),
                 spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,
-                P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,job.payload.manifest_ref.content_sha256,claim_digest),custody)
+                P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody,replica_fence)
         except BaseException as error:
             if custody is not None:
                 custody.abandon()

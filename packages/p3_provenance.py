@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
-from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, SourceIdentity, Text, Token
+from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, SourceIdentity, Text, Token, Sha256, StrictModel
 from packages.data_contracts import ArtifactRefV1
 
 
@@ -55,3 +55,45 @@ def valid_promotion_output(raw: bytes) -> bool:
 
 
 __all__ = ["PhaseExitReceipt", "PromotionReceipt", "valid_phase_exit_output", "valid_promotion_output"]
+
+
+def _tuple(value: object) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("blocker codes must be an array")
+    return tuple(value)
+
+
+Gate = Literal["PASS", "HELD"]
+
+
+class P3StatusGates(StrictModel):
+    pipeline_complete: Gate
+    family_disclosed: Gate
+    primary_selected: Gate
+    holdout_pass: Gate
+    native_parity_pass: Gate
+    registry_lineage: Gate
+    protected_promotion: Gate
+    phase_complete: Gate
+
+
+class P3SourceStatus(DigestModel):
+    schema_version: Literal["p3-source-status-v1"]
+    qualified_source: SourceIdentity | None
+    phase_exit_receipt_digest: Sha256 | None
+    promotion_receipt_digest: Sha256 | None
+    current_semantic_closure_digest: Sha256
+    gates: P3StatusGates
+    blocker_codes: Annotated[
+        tuple[Annotated[str, Field(pattern=r"^E_[A-Z0-9_]+$", max_length=96)], ...],
+        BeforeValidator(_tuple), Field(max_length=64),
+    ]
+    authority: SafeAuthority
+
+
+def valid_status_output(raw: bytes) -> bool:
+    try:
+        P3SourceStatus.model_validate_json(raw)
+        return True
+    except Exception:
+        return False

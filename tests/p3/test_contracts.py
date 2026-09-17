@@ -184,3 +184,26 @@ def test_run_authorization_parser_accepts_valid_json_wire_types() -> None:
     raw = json.dumps(request["authorization"]).encode()
     expected = RunAuthorization.model_validate_json(raw)
     assert _base().parse_contract("RunAuthorization", raw) == expected
+
+
+@pytest.mark.parametrize('fault', [None, 'duplicate_check', 'false_pass', 'false_fail'])
+def test_exit_result_requires_complete_distinct_checks_and_consistent_verdict(fault):
+    from packages.alpha_lifecycle.contracts.results import ExitResult
+    from packages.engine_contracts.serialization import canonical_json_bytes
+
+    ids = ('RETURN', 'EXCESS', 'DOUBLE_COST', 'DELAY', 'MAX_DRAWDOWN', 'CAPACITY',
+        'NATIVE_RETURN', 'NATIVE_EXCESS', 'NATIVE_DRAWDOWN', 'PARITY', 'REPLAY', 'PRIMARY', 'IDENTITY')
+    reference = dict(content_sha256='a' * 64, size_bytes=1, media_type='application/json', locator='a' * 64 + '.blob')
+    value = dict(schema_version='p3-exit-result-v1', verdict='PASS', limitations=['synthetic_contract_only'],
+        checks=[dict(check_id=name, passed=True, code='E_' + name) for name in ids],
+        **{name:reference for name in ('primary_selection_ref', 'holdout_request_ref',
+            'holdout_evaluation_ref', 'holdout_replay_ref', 'executable_ref', 'baseline_executable_ref', 'parity_ref')})
+    if fault == 'duplicate_check': value['checks'][-1] = value['checks'][0]
+    elif fault == 'false_pass': value['checks'][0]['passed'] = False
+    elif fault == 'false_fail': value['verdict'] = 'FAIL'
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    if fault is None:
+        assert ExitResult.model_validate_json(canonical_json_bytes(value)).verdict == 'PASS'
+    else:
+        with pytest.raises(ValidationError, match='exit'):
+            ExitResult.model_validate_json(canonical_json_bytes(value))

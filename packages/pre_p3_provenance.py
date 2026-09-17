@@ -249,7 +249,7 @@ def _excluded_output(path: str, mode: str, raw: bytes) -> bool:
 
         return mode == "100644" and valid_phase_exit_output(raw)
     if path == "docs/implementation/p3/p3-source-status.json":
-        from packages.p3_status import valid_status_output
+        from packages.p3_provenance import valid_status_output
 
         return mode == "100644" and valid_status_output(raw)
     p3_promotion = re.fullmatch(

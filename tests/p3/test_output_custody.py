@@ -44,6 +44,23 @@ def test_verified_private_cas_is_retained_before_cleanup(tmp_path):
     handle.abandon()
 
 
+def test_operation_validation_rejects_before_any_cas_retention(tmp_path):
+    handle, output, store = custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    private = LocalArtifactStore(output/'artifacts')
+    ref = private.put_bytes(b'{"unexpected_raw_input":true}', media_type='application/json')
+    def reject(inventory, reader):
+        assert inventory == {'artifacts/'+ref.locator: ref}
+        assert reader.read_bytes(ref) == b'{"unexpected_raw_input":true}'
+        assert not list(store._root.iterdir())
+        raise ValueError('unexpected output')
+    handle._before_retain = reject
+    with pytest.raises(ValueError, match='unexpected output'):
+        handle.retain()
+    assert not list(store._root.iterdir())
+    assert private.read_bytes(ref)
+
+
 @pytest.mark.parametrize('fault',['digest','symlink','fifo','oversize','replaced','permissions'])
 def test_unsafe_outputs_are_preserved_and_never_imported(tmp_path,monkeypatch,fault):
     handle,output,store=custody(tmp_path)
@@ -163,5 +180,60 @@ def test_cleanup_requires_retained_readback_after_commit(tmp_path,lost):
         with pytest.raises((ValueError,OSError)):
             handle.cleanup()
         assert private.read_bytes() == raw
+    finally:
+        handle.abandon()
+
+
+@pytest.mark.parametrize('phase',['retain','cleanup'])
+def test_postrun_deadline_preserves_private_evidence(tmp_path,monkeypatch,phase):
+    from services.job_worker import p3_output
+    clock=[100.0]
+    monkeypatch.setattr(p3_output,'time',__import__('types').SimpleNamespace(monotonic=lambda:clock[0]),raising=False)
+    handle,output,store=custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw=b'{"synthetic":true}'
+    artifact=output/'artifacts'/(hashlib.sha256(raw).hexdigest()+'.blob')
+    artifact.write_bytes(raw); artifact.chmod(0o600)
+    try:
+        if phase=='retain':
+            original=store.put_bytes
+            def slow(value,*,media_type):
+                result=original(value,media_type=media_type)
+                clock[0]+=p3_output.CHILD_POLICY['child_wall_seconds']
+                return result
+            monkeypatch.setattr(store,'put_bytes',slow)
+            with pytest.raises(TimeoutError,match='post-run'):
+                handle.retain()
+        else:
+            handle.retain()
+            clock[0]+=p3_output.CHILD_POLICY['child_wall_seconds']
+            with pytest.raises(TimeoutError,match='post-run'):
+                handle.cleanup()
+        assert artifact.read_bytes()==raw
+    finally:
+        handle.abandon()
+    assert output.exists()
+
+
+@pytest.mark.parametrize('revoke', [1, 2, None])
+def test_retention_fences_each_artifact_and_inventory_write(tmp_path, revoke):
+    handle, output, store = custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw = b'{"allowed":true}'
+    name = hashlib.sha256(raw).hexdigest()+'.blob'
+    (output/'artifacts'/name).write_bytes(raw)
+    (output/'artifacts'/name).chmod(0o600)
+    calls = []
+    def fence():
+        calls.append(True)
+        if len(calls) == revoke: raise ValueError('synthetic revoked before write')
+    handle._before_write = fence
+    try:
+        if revoke is not None:
+            with pytest.raises(ValueError, match='revoked'): handle.retain()
+            assert len(list(store._root.iterdir())) == revoke-1
+        else:
+            handle.retain()
+            assert len(calls) == len(list(store._root.iterdir())) == 2
     finally:
         handle.abandon()
