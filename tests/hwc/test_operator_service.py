@@ -107,6 +107,27 @@ def test_cli_reads_state_and_web_cannot_read_or_set_mode(tmp_path: Path) -> None
         service.execute(actor("WEB"), mode_request())
 
 
+@pytest.mark.parametrize("reject_at", [2, 3, 4])
+def test_authority_change_stops_command_and_preserves_recovery(tmp_path, reject_at):
+    paths = provision_operator_state(tmp_path)
+    calls = 0
+    def recheck():
+        nonlocal calls
+        calls += 1
+        if calls >= reject_at:
+            raise RuntimeError("authority changed")
+    service = service_for(paths, authority_recheck=recheck)
+    with pytest.raises(RuntimeError, match="authority changed"):
+        service.execute(actor(), mode_request())
+    assert paths.mode_path.exists() is (reject_at == 4)
+    assert list((paths.command_root / "receipts").glob("*.json")) == []
+    # Only a newly composed service with valid authority may reconcile the
+    # durable intent; an interrupted write must not be reported as success.
+    recovered = service_for(paths).execute(actor(), mode_request())
+    assert recovered.receipt.outcome == ("RECOVERED_APPLIED" if reject_at == 4 else "APPLIED")
+    assert paths.mode_path.read_bytes() == b"paper\n"
+
+
 def test_mode_activation_and_clear_create_final_receipts(tmp_path: Path) -> None:
     (tmp_path / "mode").mkdir()
     mode_paths = provision_operator_state(tmp_path / "mode")
@@ -319,7 +340,10 @@ def test_safety_adapter_requires_protected_evidence_and_normalizes_digest() -> N
         )
 
 
-def test_production_composition_rejects_noncanonical_root(tmp_path: Path) -> None:
+def test_production_composition_rejects_noncanonical_root(tmp_path: Path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    from services.operator_control import composition
+    monkeypatch.setattr(composition, "load_runtime_authority", lambda: SimpleNamespace(deployment=None, recheck=lambda **kwargs: None))
     settings = OperatorControlRuntimeSettings(data_root=tmp_path)
     with pytest.raises(ValueError, match="canonical"):
         build_production_operator_control_service(settings)

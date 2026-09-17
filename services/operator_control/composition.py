@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 from dataclasses import dataclass
 from pathlib import Path
+import os
+
+from packages.runtime_release.config import load_runtime_authority
 
 from packages.safety_evidence import (
     CANONICAL_SAFETY_SOURCE_ROOT,
@@ -19,26 +24,33 @@ from .state_store import OperatorStatePaths, OperatorStateStore
 
 @dataclass(frozen=True, slots=True)
 class OperatorControlRuntimeSettings:
-    data_root: Path = CANONICAL_SAFETY_SOURCE_ROOT
+    data_root: Path | None = None
 
 
 def build_production_operator_control_service(
     settings: OperatorControlRuntimeSettings,
 ) -> OperatorControlService:
-    root = Path(settings.data_root)
-    if root != CANONICAL_SAFETY_SOURCE_ROOT:
+    authority = load_runtime_authority()
+    recheck = partial(authority.recheck, deployment_role="operator")
+    recheck()
+    binding = authority.require_deployment() if authority.deployment is not None else None
+    root = binding.safety_source_root if binding else CANONICAL_SAFETY_SOURCE_ROOT
+    if settings.data_root is not None and Path(settings.data_root) != root:
         raise ValueError("operator control requires the exact canonical data root")
+    if binding is not None and (os.geteuid(), os.getegid()) != (binding.runtime_uid, binding.runtime_gid):
+        raise ValueError("operator identity differs from protected authority")
     paths = OperatorStatePaths(
         data_root=root,
         command_root=root / ".operator-commands",
         mode_path=root / ".mode",
         kill_switch_path=root / ".kill_switch",
     )
-    protected_provider = authority_bound_safety_provider()
-    fingerprint = safety_source_fingerprint(CANONICAL_SAFETY_SOURCE_ROOT)
+    protected_provider = authority_bound_safety_provider(authority=authority)
+    fingerprint = safety_source_fingerprint(root)
     return OperatorControlService(
         state_store=OperatorStateStore(paths),
         journal=CommandJournal(paths),
+        authority_recheck=recheck,
         safety_provider=lambda: normalize_operator_safety_evidence(
             protected_provider(), source_fingerprint=fingerprint
         ),

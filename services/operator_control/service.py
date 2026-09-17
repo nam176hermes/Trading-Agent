@@ -40,13 +40,16 @@ class OperatorControlService:
         journal: CommandJournal,
         safety_provider: Callable[[], OperatorSafetyEvidenceV1],
         clock: Callable[[], datetime] | None = None,
+        authority_recheck: Callable[[], object] | None = None,
     ) -> None:
         self.state_store = state_store
         self.journal = journal
         self.safety_provider = safety_provider
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.authority_recheck = authority_recheck or (lambda: None)
 
     def read_state(self, actor: OperatorActorV1) -> OperatorSourceStateV1:
+        self.authority_recheck()
         if actor.interface != "CLI":
             raise OperatorCommandRejected("CAPABILITY_FORBIDDEN", 403)
         return self.state_store.read_state()
@@ -56,6 +59,7 @@ class OperatorControlService:
         actor: OperatorActorV1,
         request: SubmitOperatorCommandV1,
     ) -> CommandExecutionResultV1:
+        self.authority_recheck()
         key = idempotency_key_sha256(request.idempotency_key)
         expected_request = request_sha256(actor, request)
         with self.journal.locked():
@@ -76,6 +80,7 @@ class OperatorControlService:
                 safety=safety,
             )
             intent = self._intent(actor, request, key, accepted_at, plan)
+            self.authority_recheck()
             self.journal.create_intent(intent)
             return self._apply(key, intent, request, plan, deduplicated=False)
 
@@ -108,6 +113,7 @@ class OperatorControlService:
                 disposition,
                 tombstone if disposition == "RECOVERED_KILL_SWITCH_CLEAR" else None,
             )
+            self.authority_recheck()
             self.journal.create_applied(key, applied)
             return self._receipt(key, intent, applied, deduplicated=True)
 
@@ -148,6 +154,7 @@ class OperatorControlService:
             raise RecoveryError("COMMAND_OUTCOME_UNKNOWN")
 
         tombstone = None
+        self.authority_recheck()
         application_kind: ApplicationKind
         if plan.operation == "NO_CHANGE":
             resulting = current
@@ -171,6 +178,7 @@ class OperatorControlService:
         applied = self._applied(
             intent, resulting.state_sha256, application_kind, tombstone
         )
+        self.authority_recheck()
         self.journal.create_applied(key, applied)
         return self._receipt(key, intent, applied, deduplicated=deduplicated)
 
@@ -277,6 +285,7 @@ class OperatorControlService:
         receipt = base.model_copy(
             update={"receipt_sha256": journal_sha256(base, "receipt_sha256")}
         )
+        self.authority_recheck()
         self.journal.create_receipt(receipt)
         final = self.journal.load(key).receipt
         if final is None:

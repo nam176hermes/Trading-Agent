@@ -14,6 +14,16 @@ from packages.runtime_release.semantic import SEMANTIC_INPUT_ROOT
 NOW = datetime(2026, 7, 12, 18, 30, 1, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def legacy_authority(monkeypatch):
+    from types import SimpleNamespace
+    from services.job_worker.command_registry import APPROVED_BACKEND_REVISION
+    authority = SimpleNamespace(deployment=None, recheck=lambda **kwargs: None,
+        backend=SimpleNamespace(git_commit=APPROVED_BACKEND_REVISION),
+        semantic=SimpleNamespace(authority_path=main.MANIFEST_PATH))
+    monkeypatch.setattr(main, "load_runtime_authority", lambda: authority)
+
+
 def _fixture_sources(tmp_path: Path) -> tuple[Path, Path]:
     reports = tmp_path / "reports"
     macro = tmp_path / "memory" / "macro"

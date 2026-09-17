@@ -1,8 +1,9 @@
 # M4 source-root amendment — decision and implementation contract
 
-Status: DESIGN PREPARED; runtime authority change NOT APPLIED.
+Status: OPERATOR APPROVED; source candidate implemented; deployment NOT APPLIED.
 Base: main `0ba0229ab972642360530eb7483a060b28898be2`.
-This document records the missing architecture decision; it is not a profile,
+The operator approved this contract and the isolated WSL rehearsal target with
+"Duyệt toàn bộ" on 2026-09-17. This document is not a profile,
 credential, signature, deployment approval or qualification receipt.
 
 ## Outcome and boundary
@@ -39,7 +40,7 @@ separate architecture/cutover scope; extending its loader is not a path cleanup.
 - `packages/runtime_release/paper_application`: preserved release projection,
   subject to generator/pin review, never a directory to hand-edit.
 
-## Recommended source design: explicit Phase4 deployment amendment
+## Approved source design: explicit Phase4 deployment amendment
 
 Retain the exact existing Phase4 v1 format and semantics. Add a separately
 versioned Phase4 document format in the existing protected loader, at the same
@@ -51,7 +52,12 @@ and owner UID/GID. Release/interpreter/command pins remain in the existing
 release authority. All paths must be absolute/canonical, with reviewed separation
 of writable source, output and protected authority roots. Reject aliases,
 ancestor symlinks and writable authority ancestors. Typed factory-issued binding
-is consumed only after protected canonical-file validation.
+is consumed only after protected canonical-file validation. Filesystem checks run
+inside the consuming service namespace: exporter sees mounted sentinels and
+snapshot output; operator sees source state and snapshot; semantic refresher sees
+report/macro sources and protected destinations; readers see snapshot output.
+Requiring each service to open all other sources would break `ProtectHome` and
+expand access. The protected loader still validates every lexical path and binding.
 
 Bind the selected safety source root into the existing source fingerprint.
 Bind semantic destination and manifest path into its existing policy digest.
@@ -95,9 +101,8 @@ cannot fall back to v1. Historical migration/import scripts retain old approvals
 
 ## M12 dependency that this amendment does not solve
 
-The production V2 loader is explicitly unavailable. The operator must choose a
-protected qualification environment and either the already-defined Package6
-staging authority route or separately commission production Release Authority v2.
+The production V2 loader is explicitly unavailable. The selected environment is an isolated WSL rehearsal using the already-defined
+Package6 staging route. Production Release Authority v2 was not commissioned.
 Do not invent a permissive production loader or label the Phase4 amendment as
 complete production portability. Protected host, cluster/system identity,
 distinct worker/custodian UIDs, profile issuer and independent reviewer are
@@ -124,3 +129,38 @@ M4 source is complete only when the real entrypoints consume the reviewed
 binding, old/new compatibility tests pass, and source/CI/review evidence matches
 one commit. M4 deployment and M12 remain separate until actual protected-host
 execution and rollback evidence exist. No live authority is introduced.
+
+## Source candidate evidence and deployment limit
+
+The real exporter, operator service and semantic refresh entrypoints now use the
+protected Phase4 version-2 binding. Producers recheck at publication boundaries;
+operator journal recovery keeps interrupted writes distinct from completed
+receipts. The version-1 roots and backend pin remain unchanged. Missing authority
+or an invalid version never falls back to environment-supplied roots.
+
+The inactive `canonical_global_safety_authority` and legacy `validate_data_root`
+helpers have no active production callers in the indexed parent source. They
+remain compatibility code; normal worker composition uses the V2 authority seam.
+Frozen `paper_application` files and historical Phase3 import approval are not
+rewritten. This change does not make the production V2 loader available.
+
+Focused tests cover relocated roots, invalid binding/path/owner policy, hidden
+source directories, changed documents, rejected old fingerprints, publication
+interruption and operator recovery. Initial 146 focused checks passed; full
+source/hosted qualification is still pending on the final committed candidate.
+The earlier expanded invocation passed 485 tests and failed its host release
+build because its wheelhouse environment was not selected; this is not a PASS.
+The aggregate gate supplies the pinned wheelhouse through the existing Makefile.
+
+Installed systemd templates describe historical sealed Phase4 releases and keep
+their existing pins. A relocated deployment needs a newly reviewed stage with
+unit binds matching the new protected document, exact release interpreters and
+real runtime UID/GID. It must preserve `ProtectHome`, the exporter sentinel-only
+binds and the refresher's report/macro-only binds. Do not patch installed units
+or reuse their old sealed metadata digest as part of this source candidate.
+
+The isolated physical backup/restore rehearsal already matched revision 0030,
+its exact catalog and all 49 tables / 514 synthetic rows on parent e0abd3f. Both
+servers and their owned directory were removed. Logical pg_dump/restore failed
+the exact catalog comparison and remains rejected. Neither rehearsal supplies
+protected M12 authority, PITR evidence or independent approval.

@@ -87,6 +87,36 @@ def _apply(kwargs, monkeypatch, *, clock=None):
     )
 
 
+@pytest.mark.parametrize("reject_at", [2, 4, 5])
+def test_changed_deployment_cannot_publish_or_leave_partial_inputs(secure_tmp_path, monkeypatch, reject_at):
+    kwargs = _kwargs(secure_tmp_path)
+    planned = builder.build_semantic_manifest(**kwargs)
+    cleanup = builder._cleanup_version
+    def root_cleanup(input_fd, version_name):
+        # Apply is root-only. Emulate root's unlink permission for this
+        # unprivileged test after the real writer seals runtime directories.
+        version = kwargs["destination_root"] / version_name
+        for directory in (version, version / "reports", version / "memory", version / "memory/macro"):
+            if directory.exists():
+                directory.chmod(0o700)
+        cleanup(input_fd, version_name)
+    monkeypatch.setattr(builder, "_cleanup_version", root_cleanup)
+    calls = 0
+    def recheck():
+        nonlocal calls
+        calls += 1
+        if calls == reject_at:
+            raise RuntimeError("deployment changed")
+    monkeypatch.setattr(builder.os, "geteuid", lambda: 0)
+    with pytest.raises(RuntimeError, match="deployment changed"):
+        builder.build_semantic_manifest(**kwargs, apply=True,
+            approved_plan_digest=planned.plan_digest, authority_recheck=recheck,
+            clock=lambda: kwargs["generated_at"] + timedelta(minutes=1))
+    assert not kwargs["manifest_path"].exists()
+    assert list(kwargs["destination_root"].iterdir()) == []
+    assert [path.name for path in kwargs["manifest_path"].parent.iterdir()] == [".phase4-v1.json.lock"]
+
+
 def test_dry_run_is_reusable_and_apply_requires_exact_approved_plan(
     secure_tmp_path, monkeypatch,
 ):

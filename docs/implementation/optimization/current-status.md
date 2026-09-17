@@ -12,7 +12,7 @@ unwired M8/M9 source and absent HWC qualification. Earlier files remain history.
 | M7 | PR64 merged; retained 2,800-day exact-main inventory/readback PASS | Preserve source/policy/parser binding; no redownload of unchanged data |
 | M8/M9 source | Entrypoint/session/lifecycle/native proof/publication/recovery integrated and reviewed | Protected-host qualification, distinct-UID custody and actual sandbox/native campaign |
 | HWC | PR65 merged; genuine signed receipt validated after actual main commit | Any new source/closure change requires fresh qualification; no rebinding |
-| M4 | [Source amendment design](m4-source-root-amendment.md) prepared; V2 worker paths already attested | Approved authority contract, source wiring and separately verified deployment/rollback |
+| M4 | [Source amendment](m4-source-root-amendment.md) approved; relocated Phase4 producer/consumer source candidate implemented; V2 worker paths already attested | Final candidate source/hosted gates, review and separately verified deployment/rollback |
 | Pre-P3 | HWC prerequisite now PASS | P1 bridge/LTS, P2 source/runtime/final, P3 foundation, candidate and promotion receipts |
 | M12 | Fresh local read-only preflight collected externally | Target identities/authority, rehearsal, protected fault matrix and final receipts |
 | Official campaign | NOT RUN by this continuation | Validated source/data/qualification plus genuine per-stage approvals |
@@ -58,10 +58,14 @@ No DB migration, service/profile installation, official research or live action
 was performed on the installed runtime. In the existing disposable SQL source
 harness, 33 tests passed, including the migration chain through 0030, session
 catalog/role fences, lifecycle checks and verified owned-cluster cleanup. This
-is synthetic source evidence, not a backup/restore or protected-host receipt.
+is synthetic source evidence, not a protected-host receipt. A subsequent physical
+backup/restore rehearsal matched the exact 0030 catalog and 49 tables / 514
+synthetic rows; both servers were stopped and owned storage removed. Logical
+restore is rejected because 12 CHECK definitions were reserialized; catalog
+validation was not relaxed.
 The 75 HWC/project/provenance regression tests and dashboard build also passed.
-Target qualification host and independent reviewer remain inputs
-requested from the operator. The old f6c45d3 deployment proposal is historical.
+The operator selected isolated WSL rehearsal and approved the M4 amendment.
+The actual independent reviewer and profile issuer identities remain required. The old f6c45d3 deployment proposal is historical.
 
 GitHub currently reports zero repository self-hosted runners. The existing
 Host Authority workflow needs a `trading-authority` runner and protected
