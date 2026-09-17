@@ -3058,6 +3058,42 @@ def test_evidence_container_rejects_noncanonical_base64_pad_bits() -> None:
         )
 
 
+@pytest.mark.parametrize("kind", ["runtime", "controller"])
+def test_container_encoders_preserve_bytes_and_rejection_boundaries(
+    kind: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if kind == "runtime":
+        encode = evidence_module._encode_runtime_evidence_container
+        names = evidence_module._runtime_evidence_required_names()
+        container_kind = "PACKAGE6_RUNTIME_EVIDENCE_CONTAINER"
+        limit_name = "_MAX_RUNTIME_EVIDENCE_CONTAINER_BYTES"
+        invalid_type = TypeError
+    else:
+        encode = evidence_module._encode_controller_final_container
+        names = {"controller-final-decision.json", "index.json"}
+        container_kind = "PACKAGE6_CONTROLLER_FINAL_PUBLICATION"
+        limit_name = "_MAX_CONTROLLER_FINAL_CONTAINER_BYTES"
+        invalid_type = EvidenceIncomplete
+    files = {name: b"a\x00" for name in reversed(sorted(names))}
+    expected = json.dumps({
+        "schema_version": "1", "container_kind": container_kind,
+        "entries": [{
+            "path": name, "sha256": hashlib.sha256(b"a\x00").hexdigest(),
+            "size_bytes": 2, "content_base64": "YQA=",
+        } for name in sorted(names)],
+    }, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    assert encode(files) == expected
+    monkeypatch.setattr(evidence_module, limit_name, len(expected))
+    assert encode(files) == expected
+    monkeypatch.setattr(evidence_module, limit_name, len(expected) - 1)
+    with pytest.raises(EvidenceIncomplete, match="oversized"):
+        encode(files)
+    with pytest.raises(EvidenceIncomplete, match="inventory"):
+        encode({**files, "extra.json": b""})
+    with pytest.raises(invalid_type):
+        encode({**files, sorted(names)[0]: bytearray(b"a\x00")})
+
+
 def test_evidence_container_postlink_fsync_failure_preserves_complete_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

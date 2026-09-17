@@ -1100,30 +1100,25 @@ def _runtime_evidence_required_names() -> frozenset[str]:
     )
 
 
+def _encode_evidence_container(files: Mapping[str, bytes], kind: str) -> bytes:
+    return _canonical({
+        "schema_version": "1",
+        "container_kind": kind,
+        "entries": [{
+            "path": name,
+            "sha256": hashlib.sha256(files[name]).hexdigest(),
+            "size_bytes": len(files[name]),
+            "content_base64": base64.b64encode(files[name]).decode("ascii"),
+        } for name in sorted(files)],
+    })
+
+
 def _encode_runtime_evidence_container(files: Mapping[str, bytes]) -> bytes:
-    required = _runtime_evidence_required_names()
-    if set(files) != required:
+    if set(files) != _runtime_evidence_required_names():
         raise EvidenceIncomplete("runtime evidence inventory is not exact")
-    entries = []
-    for name in sorted(required):
-        raw = files[name]
-        if not isinstance(raw, bytes):
-            raise TypeError("runtime evidence entries must be bytes")
-        entries.append(
-            {
-                "path": name,
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "size_bytes": len(raw),
-                "content_base64": base64.b64encode(raw).decode("ascii"),
-            }
-        )
-    encoded = _canonical(
-        {
-            "schema_version": "1",
-            "container_kind": "PACKAGE6_RUNTIME_EVIDENCE_CONTAINER",
-            "entries": entries,
-        }
-    )
+    if any(not isinstance(raw, bytes) for raw in files.values()):
+        raise TypeError("runtime evidence entries must be bytes")
+    encoded = _encode_evidence_container(files, "PACKAGE6_RUNTIME_EVIDENCE_CONTAINER")
     if len(encoded) > _MAX_RUNTIME_EVIDENCE_CONTAINER_BYTES:
         raise EvidenceIncomplete("runtime evidence container is oversized")
     return encoded
@@ -2145,29 +2140,11 @@ def _validate_closure_custodian_authority(
 
 
 def _encode_controller_final_container(files: Mapping[str, bytes]) -> bytes:
-    required = {"controller-final-decision.json", "index.json"}
-    if set(files) != required:
+    if set(files) != {"controller-final-decision.json", "index.json"}:
         raise EvidenceIncomplete("controller final inventory is not exact")
-    entries = []
-    for path in sorted(required):
-        raw = files[path]
-        if not isinstance(raw, bytes):
-            raise EvidenceIncomplete("controller final entry is invalid")
-        entries.append(
-            {
-                "content_base64": base64.b64encode(raw).decode("ascii"),
-                "path": path,
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "size_bytes": len(raw),
-            }
-        )
-    encoded = _canonical(
-        {
-            "container_kind": _CONTROLLER_FINAL_KIND,
-            "entries": entries,
-            "schema_version": "1",
-        }
-    )
+    if any(not isinstance(raw, bytes) for raw in files.values()):
+        raise EvidenceIncomplete("controller final entry is invalid")
+    encoded = _encode_evidence_container(files, _CONTROLLER_FINAL_KIND)
     if len(encoded) > _MAX_CONTROLLER_FINAL_CONTAINER_BYTES:
         raise EvidenceIncomplete("controller final container is oversized")
     return encoded
