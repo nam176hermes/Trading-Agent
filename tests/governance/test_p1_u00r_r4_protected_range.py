@@ -21,7 +21,8 @@ CURRENT_EXTRACTOR_BLOB = "2924016c660796c110ddcec76effee69df812039"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
 )
-PACK_LAYOUT_TEST_BLOB = "c36114d7d3c4ba85312e4dd0bd2a70e5ab4608a9"
+# M7 fixture repair covers one/multiple real packs; reader assertions remain exact.
+PACK_LAYOUT_TEST_BLOB = "fe7f9dd03e39f62150fcf826887690a643d115c9"
 TASK1_ACCEPTED_PATHS = ("tests/governance/nautilus_pin_inventory/test_source_io.py",)
 OVERLAY_PATH = "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md"
 ACCEPTED_A_PATHS = (
