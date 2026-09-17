@@ -12,7 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from packages.alpha_lifecycle.acquisition import RetryableTransportError, acquire_day_receipt
+from packages.alpha_lifecycle.acquisition import (
+    MONTHLY_EXCEPTION_URL, RetryableTransportError, acquire_day_receipt, acquire_monthly_exception,
+)
 from packages.data_catalog.artifact_store import LocalArtifactStore
 
 
@@ -22,7 +24,8 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class PublicArchiveTransport:
-    def __init__(self) -> None:
+    def __init__(self, *, monthly_exception: bool = False) -> None:
+        self._monthly_exception = monthly_exception
         self._opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({}), _NoRedirect()
         )
@@ -30,7 +33,9 @@ class PublicArchiveTransport:
     def get(self, url: str, *, timeout_seconds: int, max_bytes: int) -> bytes:
         if not url.startswith(
             "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/"
-        ):
+        ) and not (self._monthly_exception and url in (
+            MONTHLY_EXCEPTION_URL, MONTHLY_EXCEPTION_URL + '.CHECKSUM'
+        )):
             raise ValueError("URL is outside the accepted public archive prefix")
         request = urllib.request.Request(url, headers={"User-Agent": "trading-agent-p3/1"})
         try:
@@ -47,14 +52,17 @@ class PublicArchiveTransport:
         return value
 
 
-def main(start: date, end: date, root: Path, *, receipt_jsonl: bool = False) -> None:
+def main(start: date, end: date, root: Path, *, receipt_jsonl: bool = False,
+    monthly_exception: bool = False) -> None:
     if start > end:
         raise ValueError("inclusive date range must be ordered")
+    if monthly_exception and not start == end == date(2018, 2, 8):
+        raise ValueError('monthly source exception is only approved for 2018-02-08')
     store = LocalArtifactStore(root)
-    transport = PublicArchiveTransport()
+    transport = PublicArchiveTransport(monthly_exception=monthly_exception)
     current = start
     while current <= end:
-        receipt = acquire_day_receipt(current, transport, store)
+        receipt = (acquire_monthly_exception if monthly_exception else acquire_day_receipt)(current, transport, store)
         if receipt_jsonl:
             print(receipt.artifact_ref.model_dump_json())
         else:
@@ -70,5 +78,6 @@ if __name__ == "__main__":
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--store", type=Path, required=True)
     parser.add_argument("--receipt-jsonl", action="store_true", help="emit acquisition references for research dataset preparation")
+    parser.add_argument("--monthly-exception", action="store_true", help="use the approved monthly source only for 2018-02-08")
     args = parser.parse_args()
-    main(args.start, args.end, args.store, receipt_jsonl=args.receipt_jsonl)
+    main(args.start, args.end, args.store, receipt_jsonl=args.receipt_jsonl, monthly_exception=args.monthly_exception)

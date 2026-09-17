@@ -15,7 +15,7 @@ from packages.alpha_lifecycle.contracts.policy import CandidateSpec
 from packages.engine_contracts.serialization import canonical_json_bytes
 
 
-POLICY_SHA256 = "75a9030d017df1de47c5c42aeb95b612f50fd34630c99f82ffd8d200da506336"
+POLICY_SHA256 = "6866cf48b3f1cd92578d81a1073d3a6d1bbf3b3f10500616c692688e639fb2a8"
 POLICY_SOURCE = ROOT / "docs/implementation/p3/specs/p3-policy-set-v21.json"
 _FIELDS = (
     "entry", "exit", "fast", "slow", "window", "entry_z", "exit_z",

@@ -3696,8 +3696,9 @@ def test_public_deep_wide_dag_hits_global_unique_scheduling_budget(
     assert len(object_reads) == 3
 
 
+@pytest.mark.parametrize("keep_intermediate_packs", [False, True])
 def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, keep_intermediate_packs
 ) -> None:
     """Break caught: a delta result is expanded through --batch before its declared size is bounded."""
     import scripts.nautilus_pin_inventory.git_source as git_source
@@ -3710,11 +3711,20 @@ def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
         commit_oid, _ = fixture.commit_file("pin.md", data)
         blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
         revisions[blob_oid] = (commit_oid, data)
+        if keep_intermediate_packs and revision in (7, 15):
+            fixture._git("repack", "-adf", "--depth=50", "--window=50")
+            for pack in (fixture.root / ".git/objects/pack").glob("*.pack"):
+                pack.with_suffix(".keep").touch()
     fixture._git("repack", "-adf", "--depth=50", "--window=50")
     fixture._git("prune-packed")
     indexes = tuple((fixture.root / ".git/objects/pack").glob("*.idx"))
-    assert len(indexes) == 1
-    verified = fixture._git("verify-pack", "-v", str(indexes[0])).decode("ascii")
+    assert indexes
+    if keep_intermediate_packs:
+        assert len(indexes) >= 3
+    verified = "\n".join(
+        fixture._git("verify-pack", "-v", str(index)).decode("ascii")
+        for index in indexes
+    )
     delta_lines = []
     for line in verified.splitlines():
         fields = line.split()
@@ -7465,7 +7475,10 @@ def _t2_delta_packed_fixture(
     fixture._git("prune-packed")
     pack_indexes = tuple((fixture.root / ".git/objects/pack").glob("*.idx"))
     assert pack_indexes
-    verification = fixture._git("verify-pack", "-v", str(pack_indexes[0])).decode("ascii")
+    verification = "\n".join(
+        fixture._git("verify-pack", "-v", str(index)).decode("ascii")
+        for index in pack_indexes
+    )
     delta_oids = {
         fields[0]
         for line in verification.splitlines()

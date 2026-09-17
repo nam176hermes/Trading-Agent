@@ -2,6 +2,7 @@
 from datetime import UTC, date, datetime, timedelta
 import hashlib
 import json
+import subprocess
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import pytest
@@ -15,6 +16,30 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 SOURCE=SourceIdentity(commit_sha='1'*40,tree_sha='2'*40,closure_schema_version='fixture',
     closure_policy_sha256='3'*64,closure_sha256='4'*64)
 POLICY='5'*64
+
+
+@pytest.fixture
+def producer_checkout(tmp_path, monkeypatch):
+    from scripts import seal_p3_dataset as producer
+    root = tmp_path / 'source'
+    root.mkdir()
+    policy = root / 'docs/implementation/p3/specs/p3-policy-set-v21.json'
+    policy.parent.mkdir(parents=True)
+    policy.write_bytes((producer.ROOT / policy.relative_to(root)).read_bytes())
+    subprocess.run(['git', 'init', '-q', str(root)], check=True)
+    subprocess.run(['git', 'add', '.'], cwd=root, check=True)
+    subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-qm', 'Fixture policy'], cwd=root, check=True)
+    monkeypatch.setattr(producer, 'ROOT', root)
+    return root
+
+
+def test_revision_producer_rejects_dirty_source_before_input_read(producer_checkout, tmp_path):
+    from scripts import seal_p3_dataset as producer
+    (producer_checkout / 'uncommitted.py').write_text('pending change\n')
+    with pytest.raises(ValueError, match='clean committed source'):
+        producer.main(tmp_path / 'missing-input.json', tmp_path / 'missing-cas', acquisition_refs=True)
+    assert not (tmp_path / 'missing-cas').exists()
 
 
 @pytest.mark.parametrize('fault',['locator','media','size'])
@@ -102,7 +127,33 @@ def test_complete_revision_reconstruction_is_read_only(complete_revision_inputs,
         query=query,dataset_ref=dataset_ref,store=store)==dataset
 
 
-def test_acquisition_cli_bridge_seals_all_research_days(complete_revision_inputs, tmp_path, capsys, monkeypatch):
+def test_monthly_exception_full_inventory_replay_and_missing_day_rejection(complete_revision_inputs, monkeypatch):
+    from packages.alpha_lifecycle.data_view import seal_research_dataset, DatasetSealError
+    from packages.alpha_lifecycle.acquisition import daily_arrow_table
+    from tests.p3.test_monthly_exception import retain
+    store, ref, query, _, _ = complete_revision_inputs
+    body = json.loads(store.read_bytes(ref))
+    acquired = retain(store)
+    entry = pit_evidence.materialize_daily_revision(acquired.artifact_ref, store, ingested_at=query.cutoff)
+    body['entries'][38] = entry.model_dump(mode='json')
+    entries = tuple(pit_evidence.P3RevisionEntry.model_validate_json(canonical_json_bytes(e)) for e in body['entries'])
+    schema, _ = daily_arrow_table(acquired.artifact_ref, store)
+    before = set(store._root.iterdir())
+    with pytest.raises(DatasetSealError):
+        seal_research_dataset(tuple(e.partition for e in entries if e.day != date(2018, 2, 8)), query, schema, store)
+    assert set(store._root.iterdir()) == before
+    dataset = seal_research_dataset(tuple(e.partition for e in entries), query, schema, store)
+    dataset_ref = store.put_bytes(canonical_json_bytes(dataset), media_type='application/json')
+    body.pop('digest')
+    body['digest'] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+    inventory_ref = store.put_bytes(canonical_json_bytes(body), media_type='application/json')
+    monkeypatch.setattr(store, 'put_bytes', lambda *a, **k: pytest.fail('replay wrote'))
+    assert pit_evidence.validate_revision_inventory(inventory_ref, source=SOURCE, policy_digest=POLICY,
+        query=query, dataset_ref=dataset_ref, store=store) == dataset
+
+
+@pytest.mark.parametrize('source_changed', [False, True])
+def test_acquisition_cli_bridge_seals_all_research_days(complete_revision_inputs, tmp_path, capsys, monkeypatch, producer_checkout, source_changed):
     from scripts import seal_p3_dataset as producer
     from packages.alpha_lifecycle.contracts.data import DatasetEvidence
 
@@ -113,7 +164,20 @@ def test_acquisition_cli_bridge_seals_all_research_days(complete_revision_inputs
     input_path.write_bytes(canonical_json_bytes(dict(
         acquisition_refs=[entry["acquisition_ref"] for entry in old["entries"]], query=query,
     )))
-    monkeypatch.setattr(producer, "canonical_source_identity", lambda _: SOURCE.model_dump())
+    calls = 0
+    def source_identity(_):
+        nonlocal calls
+        calls += 1
+        value = SOURCE.model_dump()
+        if source_changed and calls > 1:
+            value['commit_sha'] = '6' * 40
+        return value
+    monkeypatch.setattr(producer, "canonical_source_identity", source_identity)
+    if source_changed:
+        with pytest.raises(ValueError, match='source changed during'):
+            producer.main(input_path, store._root, acquisition_refs=True)
+        assert capsys.readouterr().out == ''
+        return
     producer.main(input_path, store._root, acquisition_refs=True)
     output = json.loads(capsys.readouterr().out)
     dataset = DatasetEvidence.model_validate_json(canonical_json_bytes(output["dataset"]))

@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import PurePosixPath
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 from zipfile import BadZipFile, ZipFile
 
-from pydantic import model_validator
+from pydantic import Field, TypeAdapter, model_validator
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256
 from packages.alpha_lifecycle.contracts.data import Day
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
@@ -24,6 +24,8 @@ from packages.data_contracts import ArtifactRefV1
 
 
 _BASE = "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/"
+MONTHLY_EXCEPTION_URL = "https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip"
+_EXCEPTION_DAY = date(2018, 2, 8)
 _ZIP_MAX = 1_048_576
 _MEMBER_MAX = 8_388_608
 _CHECKSUM_MAX = 4_096
@@ -75,8 +77,7 @@ def _get(transport: ApprovedHttpTransport, url: str, max_bytes: int) -> bytes:
     raise AssertionError("unreachable")
 
 
-def _member(day: date, zipped: bytes) -> tuple[str, bytes]:
-    expected = f"BTCUSDT-1d-{day.isoformat()}.csv"
+def _member(expected: str, zipped: bytes) -> tuple[str, bytes]:
     try:
         with ZipFile(io.BytesIO(zipped)) as archive:
             members = archive.infolist()
@@ -105,14 +106,20 @@ def _member(day: date, zipped: bytes) -> tuple[str, bytes]:
 
 
 def parse_daily_archive(day: date, zipped: bytes) -> AcquiredDailyRow:
-    _, raw = _member(day, zipped)
+    _, raw = _member(f"BTCUSDT-1d-{day.isoformat()}.csv", zipped)
     try:
         rows = tuple(csv.reader(io.StringIO(raw.decode("ascii"), newline="")))
     except (UnicodeDecodeError, csv.Error) as error:
         raise AcquisitionError("daily CSV is invalid") from error
     if len(rows) != 1 or len(rows[0]) != 12:
         raise AcquisitionError("daily CSV must contain one 12-column row")
-    opened_raw, closed_raw = _integer(rows[0][0]), _integer(rows[0][6])
+    return _parse_daily_columns(day, rows[0])
+
+
+def _parse_daily_columns(day: date, columns: list[str]) -> AcquiredDailyRow:
+    if len(columns) != 12:
+        raise AcquisitionError('daily CSV must contain one 12-column row')
+    opened_raw, closed_raw = _integer(columns[0]), _integer(columns[6])
     unit: Literal["MILLISECONDS", "MICROSECONDS"] = (
         "MICROSECONDS" if day.year >= 2025 else "MILLISECONDS"
     )
@@ -130,13 +137,12 @@ def parse_daily_archive(day: date, zipped: bytes) -> AcquiredDailyRow:
     except OverflowError as error:
         raise AcquisitionError('daily closing boundary is out of range') from error
     return AcquiredDailyRow(
-        expected_open, closed_exclusive, opened_raw, closed_raw, unit, tuple(rows[0])
+        expected_open, closed_exclusive, opened_raw, closed_raw, unit, tuple(columns)
     )
 
 
-class DailyAcquisitionReceipt(DigestModel):
+class _AcquisitionReceipt(DigestModel):
     """Private retained-input evidence; producer custody authenticates observation."""
-    schema_version: Literal['p3-daily-acquisition-v1']
     digest: Sha256
     day: Day
     archive_ref: ArtifactRefV1
@@ -163,8 +169,36 @@ class DailyAcquisitionReceipt(DigestModel):
         return self
 
 
-def _checked_archive(day: date, checksum: bytes, zipped: bytes) -> AcquiredDailyRow:
-    filename=f"BTCUSDT-1d-{day.isoformat()}.zip"
+class DailyAcquisitionReceipt(_AcquisitionReceipt):
+    schema_version: Literal['p3-daily-acquisition-v1']
+
+
+class MonthlyRowAcquisitionReceipt(_AcquisitionReceipt):
+    """Operator-approved exception; never represents a synthesized daily ZIP."""
+    schema_version: Literal['p3-monthly-row-acquisition-v1']
+    exception_id: Literal['m7-2018-02-08-monthly-v1']
+    archive_url: Literal['https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1d/BTCUSDT-1d-2018-02.zip']
+    instrument: Literal['BTCUSDT.BINANCE']
+    interval: Literal['1d']
+    member_name: Literal['BTCUSDT-1d-2018-02.csv']
+    member_sha256: Sha256
+    row_ordinal: Literal[7]
+    row_sha256: Sha256
+    parser_version: Literal['p3.binance.12-column.monthly-row.v1']
+
+    @model_validator(mode='after')
+    def _exception_scope(self):
+        _exception_day(self.day)
+        if self.system_observed_at < datetime(2018, 3, 1, tzinfo=UTC):
+            raise ValueError('monthly archive was not complete at observation')
+        return self
+
+
+_RECEIPT = TypeAdapter(Annotated[DailyAcquisitionReceipt | MonthlyRowAcquisitionReceipt,
+    Field(discriminator='schema_version')])
+
+
+def _check_checksum(filename: str, checksum: bytes, zipped: bytes) -> None:
     if len(checksum)>_CHECKSUM_MAX or len(zipped)>_ZIP_MAX:
         raise AcquisitionError('archive or checksum exceeds the accepted bound')
     match=re.fullmatch(rb"([0-9a-f]{64})  ([A-Za-z0-9._-]+)\n?",checksum)
@@ -172,19 +206,59 @@ def _checked_archive(day: date, checksum: bytes, zipped: bytes) -> AcquiredDaily
         raise AcquisitionError('checksum filename or format is invalid')
     if hashlib.sha256(zipped).hexdigest()!=match.group(1).decode():
         raise AcquisitionError('archive checksum is invalid')
-    return parse_daily_archive(day,zipped)
 
 
-def validate_acquisition_receipt(ref: ArtifactRefV1, store) -> DailyAcquisitionReceipt:
+def _checked_archive(day: date, checksum: bytes, zipped: bytes) -> AcquiredDailyRow:
+    _check_checksum(f"BTCUSDT-1d-{day.isoformat()}.zip", checksum, zipped)
+    return parse_daily_archive(day, zipped)
+
+
+def _exception_day(day: date) -> None:
+    if type(day) is not date or day != _EXCEPTION_DAY:
+        raise AcquisitionError('monthly source exception is only approved for 2018-02-08')
+
+
+def _monthly_row(day: date, checksum: bytes, zipped: bytes) -> tuple[AcquiredDailyRow, str, str]:
+    _exception_day(day)
+    _check_checksum('BTCUSDT-1d-2018-02.zip', checksum, zipped)
+    _, raw = _member('BTCUSDT-1d-2018-02.csv', zipped)
+    lines = raw.splitlines(keepends=True)
+    if len(lines) != 28:
+        raise AcquisitionError('monthly archive must contain all 28 February 2018 days')
+    parsed = []
+    for ordinal, line in enumerate(lines):
+        try:
+            rows = list(csv.reader(io.StringIO(line.decode('ascii'), newline=''), strict=True))
+        except (UnicodeDecodeError, csv.Error) as error:
+            raise AcquisitionError('monthly CSV is invalid') from error
+        if len(rows) != 1:
+            raise AcquisitionError('monthly CSV row is ambiguous')
+        row = _parse_daily_columns(date(2018, 2, ordinal + 1), rows[0])
+        _validated_numbers(row)
+        parsed.append(row)
+    return parsed[7], hashlib.sha256(raw).hexdigest(), hashlib.sha256(lines[7]).hexdigest()
+
+
+def _receipt_row(receipt: DailyAcquisitionReceipt | MonthlyRowAcquisitionReceipt, store) -> AcquiredDailyRow:
+    checksum, zipped = store.read_bytes(receipt.checksum_ref), store.read_bytes(receipt.archive_ref)
+    if isinstance(receipt, MonthlyRowAcquisitionReceipt):
+        row, member_sha, row_sha = _monthly_row(receipt.day, checksum, zipped)
+        if member_sha != receipt.member_sha256 or row_sha != receipt.row_sha256:
+            raise AcquisitionError('monthly member or selected row provenance differs')
+        return row
+    return _checked_archive(receipt.day, checksum, zipped)
+
+
+def validate_acquisition_receipt(ref: ArtifactRefV1, store) -> DailyAcquisitionReceipt | MonthlyRowAcquisitionReceipt:
     ref=ArtifactRefV1.model_validate(ref)
     if (ref.media_type!='application/json' or not 0<ref.size_bytes<=65536
         or ref.locator!=ref.content_sha256+'.blob'):
         raise AcquisitionError('acquisition receipt reference exceeds its bound')
     raw=store.read_bytes(ref)
-    receipt=DailyAcquisitionReceipt.model_validate_json(raw)
+    receipt=_RECEIPT.validate_json(raw)
     if canonical_json_bytes(receipt)!=raw:
         raise AcquisitionError('acquisition receipt is not canonical')
-    _checked_archive(receipt.day,store.read_bytes(receipt.checksum_ref),store.read_bytes(receipt.archive_ref))
+    _receipt_row(receipt, store)
     return receipt
 
 
@@ -207,7 +281,42 @@ def acquire_day_receipt(day: date, transport: ApprovedHttpTransport, store) -> D
     value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
     receipt=DailyAcquisitionReceipt.model_validate_json(canonical_json_bytes(value))
     ref=store.put_bytes(canonical_json_bytes(receipt),media_type='application/json')
-    return validate_acquisition_receipt(ref,store)
+    validated = validate_acquisition_receipt(ref,store)
+    assert isinstance(validated, DailyAcquisitionReceipt)
+    return validated
+
+
+def retain_monthly_exception(day: date, checksum: bytes, zipped: bytes, store, *,
+    system_observed_at: datetime, fetched_at: datetime) -> MonthlyRowAcquisitionReceipt:
+    """Retain inspected source bytes with their recorded (not historical) observation."""
+    _, member_sha, row_sha = _monthly_row(day, checksum, zipped)
+    if (system_observed_at.tzinfo is None or fetched_at.tzinfo is None
+        or not datetime(2018, 3, 1, tzinfo=UTC) <= system_observed_at <= fetched_at <= datetime.now(UTC)):
+        raise AcquisitionError('monthly observation/fetch times are invalid')
+    value = dict(schema_version='p3-monthly-row-acquisition-v1',
+        exception_id='m7-2018-02-08-monthly-v1', day=day.isoformat(),
+        archive_url=MONTHLY_EXCEPTION_URL, instrument='BTCUSDT.BINANCE', interval='1d',
+        member_name='BTCUSDT-1d-2018-02.csv', member_sha256=member_sha,
+        row_ordinal=7, row_sha256=row_sha, parser_version='p3.binance.12-column.monthly-row.v1',
+        archive_ref=store.put_bytes(zipped, media_type='application/zip'),
+        checksum_ref=store.put_bytes(checksum, media_type='text/plain'),
+        system_observed_at=system_observed_at.astimezone(UTC).isoformat().replace('+00:00', 'Z'),
+        fetched_at=fetched_at.astimezone(UTC).isoformat().replace('+00:00', 'Z'),
+        provider_published_at=None, vintage_class='RETROSPECTIVE_CURRENT_ARCHIVE')
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    receipt = MonthlyRowAcquisitionReceipt.model_validate_json(canonical_json_bytes(value))
+    validated = validate_acquisition_receipt(_retain_json(canonical_json_bytes(receipt), store), store)
+    assert isinstance(validated, MonthlyRowAcquisitionReceipt)
+    return validated
+
+
+def acquire_monthly_exception(day: date, transport: ApprovedHttpTransport, store) -> MonthlyRowAcquisitionReceipt:
+    _exception_day(day)
+    checksum = _get(transport, MONTHLY_EXCEPTION_URL + '.CHECKSUM', _CHECKSUM_MAX)
+    zipped = _get(transport, MONTHLY_EXCEPTION_URL, _ZIP_MAX)
+    observed = datetime.now(UTC)
+    return retain_monthly_exception(day, checksum, zipped, store,
+        system_observed_at=observed, fetched_at=datetime.now(UTC))
 
 
 def acquire_day(day: date, transport: ApprovedHttpTransport, store: LocalArtifactStore) -> ArtifactRefV1:
@@ -223,11 +332,8 @@ def _decimal_number(raw: str) -> str:
     return '0' if Decimal(text)==0 else text
 
 
-def normalize_daily_acquisition(ref: ArtifactRefV1, store) -> dict[str, object]:
-    """Revalidate retained raw input and construct the fixed noncyclic row document."""
+def _validated_numbers(parsed: AcquiredDailyRow) -> tuple[dict[int, str], int]:
     from packages.data_quality import DataQualityError, validate_bar_rows
-    receipt=validate_acquisition_receipt(ref,store)
-    parsed=parse_daily_archive(receipt.day,store.read_bytes(receipt.archive_ref))
     columns=parsed.columns
     numbers={index:_decimal_number(columns[index]) for index in (1,2,3,4,5,7,9,10)}
     trades=_integer(columns[8])
@@ -239,6 +345,14 @@ def normalize_daily_acquisition(ref: ArtifactRefV1, store) -> dict[str, object]:
             dataset='p3.research.daily')
     except DataQualityError as error:
         raise AcquisitionError('daily OHLC or volume quality failed') from error
+    return numbers, trades
+
+
+def normalize_daily_acquisition(ref: ArtifactRefV1, store) -> dict[str, object]:
+    """Revalidate retained raw input and construct the fixed noncyclic row document."""
+    receipt=validate_acquisition_receipt(ref,store)
+    parsed=_receipt_row(receipt, store)
+    numbers, trades = _validated_numbers(parsed)
     closed=parsed.closed_at_exclusive.isoformat().replace('+00:00','Z')
     return dict(schema_version='p3-normalized-daily-row-v1',row=dict(
         ts_event=closed,date=receipt.day.isoformat(),instrument='BTCUSDT.BINANCE',
@@ -257,9 +371,18 @@ def retain_normalization_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
     normalized=normalize_daily_acquisition(ref,store)
     archive_url=_BASE+f'BTCUSDT-1d-{acquired.day.isoformat()}.zip'
     checksum_url=archive_url+'.CHECKSUM'
-    query=dict(schema_version='p3-daily-acquisition-query-v1',provider='binance.public-archive',
+    query: dict[str, object]=dict(schema_version='p3-daily-acquisition-query-v1',provider='binance.public-archive',
         day=acquired.day.isoformat(),instrument='BTCUSDT.BINANCE',interval='1d',
         archive_url=archive_url,checksum_url=checksum_url)
+    normalization_version = 'p3.binance.12-column.daily.v1'
+    if isinstance(acquired, MonthlyRowAcquisitionReceipt):
+        archive_url, checksum_url = acquired.archive_url, acquired.archive_url + '.CHECKSUM'
+        query.update(schema_version='p3-monthly-row-acquisition-query-v1',
+            archive_url=archive_url, checksum_url=checksum_url,
+            exception_id=acquired.exception_id, acquisition_sha256=ref.content_sha256,
+            member_name=acquired.member_name, member_sha256=acquired.member_sha256,
+            row_ordinal=acquired.row_ordinal, row_sha256=acquired.row_sha256)
+        normalization_version = acquired.parser_version
     evidence=tuple(RawEvidenceArtifactV1(
         evidence_id=uuid5(NAMESPACE_URL,url+'#sha256='+raw.content_sha256),
         provider='binance.public-archive',media_type=raw.media_type,byte_length=raw.size_bytes,
@@ -269,7 +392,7 @@ def retain_normalization_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
     document=canonical_json_bytes(normalized)
     receipt=ProviderReceiptV1(provider='binance.public-archive',
         capability=ProviderCapabilityV1.MARKET_BARS,query_sha256=hashlib.sha256(canonical_json_bytes(query)).hexdigest(),
-        evidence=evidence,normalization_version='p3.binance.12-column.daily.v1',
+        evidence=evidence,normalization_version=normalization_version,
         output_sha256s=(hashlib.sha256(document).hexdigest(),))
     _retain_json(document,store)
     return _retain_json(canonical_json_bytes(receipt),store)
@@ -323,6 +446,7 @@ def retain_daily_quality_receipt(ref: ArtifactRefV1, store) -> ArtifactRefV1:
 
 
 __all__ = [
+    "MonthlyRowAcquisitionReceipt", "MONTHLY_EXCEPTION_URL", "acquire_monthly_exception", "retain_monthly_exception",
     "AcquiredDailyRow", "AcquisitionError", "ApprovedHttpTransport", "DailyAcquisitionReceipt",
     "RetryableTransportError", "acquire_day", "acquire_day_receipt", "parse_daily_archive", "validate_acquisition_receipt",
     "normalize_daily_acquisition",
