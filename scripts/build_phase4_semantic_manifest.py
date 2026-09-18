@@ -730,6 +730,8 @@ def build_semantic_manifest(
                 runtime_uid=runtime_uid,
                 runtime_gid=runtime_gid,
             )
+            if authority_recheck is not None:
+                authority_recheck()
             return SemanticManifestBuildResult(
                 applied=False,
                 plan_digest=plan_digest,

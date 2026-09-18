@@ -87,6 +87,34 @@ def _apply(kwargs, monkeypatch, *, clock=None):
     )
 
 
+@pytest.mark.parametrize("boundary", ["_open_publication_lock", "_validate_idempotent_publication"])
+def test_idempotent_publication_rejects_changed_authority(secure_tmp_path, monkeypatch, boundary):
+    kwargs = _kwargs(secure_tmp_path)
+    first = _apply(kwargs, monkeypatch)
+    before = {path: path.read_bytes() for path in secure_tmp_path.rglob("*") if path.is_file()}
+    revoked = False
+    original = getattr(builder, boundary)
+
+    def changed_boundary(*args, **options):
+        nonlocal revoked
+        result = original(*args, **options)
+        revoked = True
+        return result
+
+    def recheck():
+        if revoked:
+            raise RuntimeError("authority changed")
+
+    monkeypatch.setattr(builder, boundary, changed_boundary)
+    with pytest.raises(RuntimeError, match="authority changed"):
+        builder.build_semantic_manifest(
+            **kwargs, apply=True, approved_plan_digest=first.plan_digest,
+            authority_recheck=recheck,
+            clock=lambda: kwargs["generated_at"] + timedelta(minutes=1),
+        )
+    assert {path: path.read_bytes() for path in secure_tmp_path.rglob("*") if path.is_file()} == before
+
+
 @pytest.mark.parametrize("reject_at", [2, 4, 5])
 def test_changed_deployment_cannot_publish_or_leave_partial_inputs(secure_tmp_path, monkeypatch, reject_at):
     kwargs = _kwargs(secure_tmp_path)
