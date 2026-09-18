@@ -46,7 +46,8 @@ def test_authority_bound_safety_provider_keeps_existing_recheck_contract(
 
         safety = Safety()
 
-        def recheck(self) -> None:
+        def recheck(self, *, deployment_role: str) -> None:
+            assert deployment_role == "reader"
             calls.append("recheck")
 
     class Client:
@@ -62,6 +63,7 @@ def test_authority_bound_safety_provider_keeps_existing_recheck_contract(
     read = app_module.authority_bound_safety_provider()
     assert read() is expected
     assert calls == [
+        "recheck",
         (
             (Path("/protected/snapshot.json"),),
             {

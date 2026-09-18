@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import argparse
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -13,6 +15,7 @@ import stat
 from typing import Callable
 
 from packages.runtime_release.semantic import SEMANTIC_INPUT_ROOT
+from packages.runtime_release.config import load_runtime_authority
 from packages.safety_evidence import CANONICAL_SAFETY_SOURCE_ROOT
 from scripts.build_phase4_semantic_manifest import (
     SemanticManifestBuildResult,
@@ -122,13 +125,15 @@ def _regular_at(
 
 
 def _select_sources(
-    now: datetime,
+    now: datetime, *, reports_root: Path | None = None, macro_root: Path | None = None,
 ) -> tuple[dict[str, Path], dict[str, tuple[int, int, int, str]]]:
+    reports_root = REPORTS_SOURCE_ROOT if reports_root is None else reports_root
+    macro_root = MACRO_SOURCE_ROOT if macro_root is None else macro_root
     selected: dict[str, tuple[datetime, str]] = {}
     reports_fd = macro_fd = None
     try:
-        reports_fd = _open_source_directory(REPORTS_SOURCE_ROOT)
-        macro_fd = _open_source_directory(MACRO_SOURCE_ROOT)
+        reports_fd = _open_source_directory(reports_root)
+        macro_fd = _open_source_directory(macro_root)
         with os.scandir(reports_fd) as entries:
             for entry in entries:
                 match = _REPORT_PATTERN.fullmatch(entry.name)
@@ -147,14 +152,14 @@ def _select_sources(
             stamp, name = selected[kind]
             logical = f"{kind}_report"
             path, attestation = _regular_at(
-                reports_fd, REPORTS_SOURCE_ROOT, name,
+                reports_fd, reports_root, name,
                 logical_name=logical, now=now, source_time=stamp,
             )
             sources[logical] = path
             attestations[logical] = attestation
         for logical, name in _CACHE_NAMES.items():
             path, attestation = _regular_at(
-                macro_fd, MACRO_SOURCE_ROOT, name,
+                macro_fd, macro_root, name,
                 logical_name=logical, now=now,
             )
             sources[logical] = path
@@ -175,31 +180,41 @@ def refresh(
 ) -> SemanticManifestBuildResult:
     if apply and os.geteuid() != 0:
         raise SemanticRefreshError()
+    authority = load_runtime_authority()
+    recheck = partial(authority.recheck, deployment_role="semantic")
+    recheck()
+    binding = authority.require_deployment() if authority.deployment is not None else None
     generated_at = clock()
     if generated_at.tzinfo is None or generated_at.utcoffset() is None:
         raise SemanticRefreshError()
     generated_at = generated_at.astimezone(UTC)
-    sources, attestations = _select_sources(generated_at)
+    sources, attestations = _select_sources(generated_at,
+        reports_root=binding.semantic_reports_root if binding else REPORTS_SOURCE_ROOT,
+        macro_root=binding.semantic_macro_root if binding else MACRO_SOURCE_ROOT)
+    recheck()
+
     from services.job_worker.command_registry import APPROVED_BACKEND_REVISION
 
     manifest_version = generated_at.strftime("%Y%m%dT%H%M%SZ")
     arguments = {
         "sources": sources,
-        "destination_root": DESTINATION_ROOT,
-        "manifest_path": MANIFEST_PATH,
+        "destination_root": binding.semantic_input_root if binding else DESTINATION_ROOT,
+        "manifest_path": authority.semantic.authority_path,
         "manifest_version": manifest_version,
-        "backend_commit": APPROVED_BACKEND_REVISION,
-        "runtime_uid": RUNTIME_UID,
-        "runtime_gid": RUNTIME_GID,
+        "backend_commit": authority.backend.git_commit if binding else APPROVED_BACKEND_REVISION,
+        "runtime_uid": binding.runtime_uid if binding else RUNTIME_UID,
+        "runtime_gid": binding.runtime_gid if binding else RUNTIME_GID,
         "generated_at": generated_at,
         "validity_minutes": VALIDITY_MINUTES,
         "expected_source_attestations": attestations,
     }
-    planned = build_semantic_manifest(**arguments, apply=False)
+    planned = build_semantic_manifest(**arguments, apply=False, authority_recheck=recheck)
     if not apply:
         return planned
+    recheck()
     return build_semantic_manifest(
         **arguments, apply=True, approved_plan_digest=planned.plan_digest,
+        authority_recheck=recheck,
     )
 
 

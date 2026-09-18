@@ -163,6 +163,7 @@ class SafetyStateExporter:
         exporter_commit: str,
         gate_source: Mapping[str, str],
         clock: Callable[[], datetime] | None = None,
+        authority_recheck: Callable[[], object] | None = None,
     ) -> None:
         if not isinstance(exporter_commit, str) or _COMMIT.fullmatch(exporter_commit) is None:
             raise ValueError("safety exporter commit is invalid")
@@ -172,8 +173,10 @@ class SafetyStateExporter:
         self.exporter_commit = exporter_commit
         self.gate_source = gate_source
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.authority_recheck = authority_recheck or (lambda: None)
 
     def snapshot(self) -> dict[str, object]:
+        self.authority_recheck()
         root_fd = os.open(
             self.mounted_source_root,
             _READ_FLAGS | getattr(os, "O_DIRECTORY", 0),
@@ -222,6 +225,7 @@ class SafetyStateExporter:
         descriptor = -1
         parent_fd = -1
         try:
+            self.authority_recheck()
             parent_fd = os.open(
                 self.output_path.parent,
                 _READ_FLAGS | getattr(os, "O_DIRECTORY", 0),
@@ -253,6 +257,7 @@ class SafetyStateExporter:
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = -1
+            self.authority_recheck()
             os.replace(
                 temporary_name,
                 self.output_path.name,

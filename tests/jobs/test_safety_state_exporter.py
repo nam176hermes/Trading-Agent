@@ -116,6 +116,23 @@ def test_exporter_atomically_replaces_the_snapshot(tmp_path: Path, monkeypatch) 
     assert list(exporter.output_path.parent.glob("*.tmp")) == []
 
 
+def test_changed_authority_before_replace_preserves_previous_snapshot(tmp_path):
+    exporter = _exporter(tmp_path)
+    exporter.export_once()
+    before = exporter.output_path.read_bytes()
+    calls = 0
+    def recheck():
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("authority changed")
+    exporter.authority_recheck = recheck
+    with pytest.raises(RuntimeError, match="authority changed"):
+        exporter.export_once()
+    assert exporter.output_path.read_bytes() == before
+    assert list(exporter.output_path.parent.iterdir()) == [exporter.output_path]
+
+
 def test_exporter_opens_only_mounted_allowlist_and_never_canonical_legacy_root(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -153,9 +170,18 @@ def test_exporter_opens_only_mounted_allowlist_and_never_canonical_legacy_root(
     assert os.fspath(exporter.mounted_source_root) in opened_paths
 
 
-def test_composition_discards_every_environment_value_except_explicit_gate_inputs() -> None:
+def _legacy_composition(monkeypatch):
+    from types import SimpleNamespace
+    from services.safety_state_exporter import main
+    authority = SimpleNamespace(deployment=None, recheck=lambda **kwargs: None,
+        safety=SimpleNamespace(exporter_commit=COMMIT, snapshot_path=DEFAULT_SNAPSHOT_PATH))
+    monkeypatch.setattr(main, "load_runtime_authority", lambda: authority)
+
+
+def test_composition_discards_every_environment_value_except_explicit_gate_inputs(monkeypatch) -> None:
     from services.safety_state_exporter import main
 
+    _legacy_composition(monkeypatch)
     exporter = main.build_exporter({
         "TRADING_SAFETY_EXPORTER_COMMIT": COMMIT,
         "LIVE_EXECUTION_ENABLED": "false",
@@ -236,9 +262,10 @@ def test_composition_rejects_canonical_or_mounted_source_overrides(key: str) -> 
         })
 
 
-def test_xdg_runtime_environment_cannot_redirect_the_fixed_snapshot_path() -> None:
+def test_xdg_runtime_environment_cannot_redirect_the_fixed_snapshot_path(monkeypatch) -> None:
     from services.safety_state_exporter import main
 
+    _legacy_composition(monkeypatch)
     exporter = main.build_exporter({
         "TRADING_SAFETY_EXPORTER_COMMIT": COMMIT,
         "LIVE_EXECUTION_ENABLED": "false",

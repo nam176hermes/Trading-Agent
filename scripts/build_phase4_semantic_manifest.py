@@ -632,8 +632,11 @@ def build_semantic_manifest(
     approved_plan_digest: str | None = None,
     expected_source_attestations: Mapping[str, tuple[int, int, int, str]] | None = None,
     clock: Callable[[], datetime] = _utc_now,
+    authority_recheck: Callable[[], object] | None = None,
 ) -> SemanticManifestBuildResult:
     """Plan a publication, or apply only an exact previously approved plan."""
+    if authority_recheck is not None:
+        authority_recheck()
     records, plan, plan_digest, version_name = _prepare_plan(
         sources=sources, destination_root=destination_root, manifest_path=manifest_path,
         manifest_version=manifest_version, backend_commit=backend_commit,
@@ -705,6 +708,8 @@ def build_semantic_manifest(
     active_temp: str | None = None
     active_published = False
     try:
+        if authority_recheck is not None:
+            authority_recheck()
         _assert_directory_identity(destination_root, input_fd)
         _assert_directory_identity(manifest_path.parent, authority_fd)
         lock_fd = _open_publication_lock(authority_fd, manifest_path.name)
@@ -732,6 +737,8 @@ def build_semantic_manifest(
                 manifest_version=manifest_version,
                 idempotent=True,
             )
+        if authority_recheck is not None:
+            authority_recheck()
         version_fd = _create_directory(input_fd, version_name)
         version_created = True
         reports_fd = memory_fd = macro_fd = None
@@ -756,6 +763,8 @@ def build_semantic_manifest(
                     os.close(fd)
             os.close(version_fd)
 
+        if authority_recheck is not None:
+            authority_recheck()
         _write_authority_file(authority_fd, plan_name, plan_raw, exclusive=True)
         plan_created = True
         _write_authority_file(authority_fd, manifest_name, manifest_raw, exclusive=True)
@@ -766,6 +775,8 @@ def build_semantic_manifest(
         )
         _assert_directory_identity(destination_root, input_fd)
         _assert_directory_identity(manifest_path.parent, authority_fd)
+        if authority_recheck is not None:
+            authority_recheck()
         os.replace(
             active_temp, manifest_path.name,
             src_dir_fd=authority_fd, dst_dir_fd=authority_fd,

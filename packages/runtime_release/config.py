@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import hmac
 import json
@@ -11,7 +11,8 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
-from typing import Any, Mapping
+import weakref
+from typing import Any, Literal, Mapping
 
 from packages.safety_evidence import (
     CANONICAL_SAFETY_SOURCE_ROOT,
@@ -95,6 +96,21 @@ class SafetyAuthority:
     protected_root_owned: bool = True
 
 
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True, repr=False)
+class DeploymentBinding:
+    deployment_id: str
+    safety_source_root: Path
+    safety_mounted_root: Path
+    semantic_reports_root: Path
+    semantic_macro_root: Path
+    semantic_input_root: Path
+    runtime_uid: int
+    runtime_gid: int
+
+
+_ISSUED_DEPLOYMENTS: weakref.WeakSet[DeploymentBinding] = weakref.WeakSet()
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class RuntimeAuthority:
     application: ReleaseAuthority
@@ -104,13 +120,26 @@ class RuntimeAuthority:
     safety: SafetyAuthority
     _identity: tuple[int, int]
     _document_sha256: str
+    deployment: DeploymentBinding | None = None
 
-    def recheck(self) -> "RuntimeAuthority":
+    def require_deployment(self) -> DeploymentBinding:
+        if self.deployment is None or self.deployment not in _ISSUED_DEPLOYMENTS:
+            raise ProtectedAuthorityError("DEPLOYMENT_BINDING_UNAVAILABLE")
+        return self.deployment
+
+    def recheck(self, *, deployment_role: Literal["exporter", "operator", "semantic", "reader"] | None = None) -> "RuntimeAuthority":
+        if self.deployment is not None:
+            self.require_deployment()
         current = load_runtime_authority()
         if current._identity != self._identity or not hmac.compare_digest(
             current._document_sha256, self._document_sha256
-        ):
+        ) or asdict(current) != asdict(self):
             raise ProtectedAuthorityError("RUNTIME_AUTHORITY_CHANGED")
+        if self.deployment is not None and deployment_role is not None:
+            try:
+                _validate_deployment_paths(self, deployment_role)
+            except (OSError, ValueError):
+                raise ProtectedAuthorityError("DEPLOYMENT_PATH_INVALID") from None
         return self
 
     def __repr__(self) -> str:
@@ -431,11 +460,94 @@ def _release(value: Any, kind: str) -> ReleaseAuthority:
     return ReleaseAuthority(commit, root, manifest, _digest(item["manifest_sha256"]), python, identity)
 
 
+def _safe_deployment_ancestor(info: os.stat_result, uid: int) -> bool:
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid in {0, _EXPECTED_UID, uid}
+            and not info.st_mode & (0o022 | 0o7000))
+
+
+def _deployment_directory(path: Path, uid: int, gid: int) -> None:
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | os.O_CLOEXEC
+    descriptor = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            if not _safe_deployment_ancestor(os.fstat(descriptor), uid):
+                raise ValueError("unsafe deployment ancestor")
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        if (not _safe_deployment_ancestor(info, uid) or info.st_uid != uid
+                or info.st_gid != gid):
+            raise ValueError("unsafe deployment directory")
+    finally:
+        os.close(descriptor)
+
+
+def _deployment(value: Any, snapshot: Path, manifest: Path) -> DeploymentBinding:
+    names = ("deployment_id", "safety_source_root", "safety_mounted_root",
+             "semantic_reports_root", "semantic_macro_root", "semantic_input_root",
+             "runtime_uid", "runtime_gid")
+    item = _exact_dict(value, names)
+    if not isinstance(item["deployment_id"], str) or re.fullmatch(
+        r"[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}", item["deployment_id"]
+    ) is None:
+        raise ValueError("invalid deployment identity")
+    uid, gid = item["runtime_uid"], item["runtime_gid"]
+    if any(type(number) is not int or not 0 < number < 2**32 - 1 for number in (uid, gid)):
+        raise ValueError("invalid deployment owner")
+    paths = {name: _absolute(item[name]) for name in names[1:6]}
+    all_paths = (*paths.values(), snapshot, manifest)
+    if any(str(path).startswith("//") or path == Path("/") for path in all_paths):
+        raise ValueError("invalid deployment path")
+    def overlaps(left: Path, right: Path) -> bool:
+        return left.is_relative_to(right) or right.is_relative_to(left)
+    inputs = (paths["safety_source_root"], paths["safety_mounted_root"],
+              paths["semantic_reports_root"], paths["semantic_macro_root"])
+    outputs = (paths["semantic_input_root"], snapshot.parent, manifest.parent)
+    if (any(overlaps(source, output) for source in inputs for output in outputs)
+            or any(overlaps(left, right) for i, left in enumerate(outputs) for right in outputs[i+1:])
+            or overlaps(inputs[0], inputs[1]) or overlaps(inputs[2], inputs[3])
+            or any(overlaps(output, AUTHORITY_PATH) for output in (*inputs, *outputs))):
+        raise ValueError("deployment paths overlap")
+    return DeploymentBinding(item["deployment_id"], **paths, runtime_uid=uid, runtime_gid=gid)
+
+
+def _validate_deployment_paths(authority: RuntimeAuthority, role: str) -> None:
+    """Validate only paths exposed in this service's restricted mount namespace."""
+    binding = authority.require_deployment()
+    snapshot = authority.safety.snapshot_path
+    manifest = authority.semantic.authority_path
+    if role == "semantic":
+        sources = (binding.semantic_reports_root, binding.semantic_macro_root)
+        for path in (binding.semantic_input_root, manifest.parent):
+            _deployment_directory(path, _EXPECTED_UID, _EXPECTED_GID)
+        outputs = (manifest,)
+    elif role in ("exporter", "operator", "reader"):
+        sources = ((binding.safety_mounted_root,) if role == "exporter" else
+                   (binding.safety_source_root,) if role == "operator" else ())
+        _deployment_directory(snapshot.parent, binding.runtime_uid, binding.runtime_gid)
+        outputs = (snapshot,)
+    else:
+        raise ValueError("invalid deployment role")
+    for path in sources:
+        _deployment_directory(path, binding.runtime_uid, binding.runtime_gid)
+    for path in outputs:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("unsafe deployment output")
+
+
 def _parse(raw: bytes, identity: tuple[int, int]) -> RuntimeAuthority:
     try:
         document = json.loads(raw, object_pairs_hook=_pairs)
-        root = _exact_dict(document, _ROOT_KEYS)
-        if root["manifest_version"] != 1 or raw != _canonical(document) + b"\n":
+        version = document.get("manifest_version") if isinstance(document, dict) else None
+        if type(version) is not int or version not in (1, 2):
+            raise ValueError("invalid authority version")
+        root = _exact_dict(document, _ROOT_KEYS + (("deployment",) if version == 2 else ()))
+        if raw != _canonical(document) + b"\n":
             raise ValueError("noncanonical")
         application = _release(root["application"], "app")
         backend = _release(root["backend"], "backend")
@@ -448,12 +560,20 @@ def _parse(raw: bytes, identity: tuple[int, int]) -> RuntimeAuthority:
             raise ValueError("invalid command binding")
         semantic = _exact_dict(root["semantic"], ("authority_path", "policy_sha256"))
         semantic_path = _absolute(semantic["authority_path"])
-        if semantic_path != Path("/etc/trading-agent/research-input-manifests/phase4-v1.json"):
+        if version == 1 and semantic_path != Path("/etc/trading-agent/research-input-manifests/phase4-v1.json"):
             raise ValueError("invalid semantic binding")
         safety = _exact_dict(root["safety"], ("exporter_commit", "snapshot_path", "source_fingerprint"))
         snapshot_path = _absolute(safety["snapshot_path"])
-        expected_snapshot = Path(f"/run/user/{os.geteuid()}/trading-agent/safety-state.json")
-        expected_fingerprint = safety_source_fingerprint(CANONICAL_SAFETY_SOURCE_ROOT)
+        deployment = _deployment(root["deployment"], snapshot_path, semantic_path) if version == 2 else None
+        expected_snapshot = snapshot_path if deployment else Path(f"/run/user/{os.geteuid()}/trading-agent/safety-state.json")
+        expected_fingerprint = safety_source_fingerprint(
+            deployment.safety_source_root if deployment else CANONICAL_SAFETY_SOURCE_ROOT)
+        if deployment is not None:
+            from .semantic import semantic_policy_digest
+            if semantic["policy_sha256"] != semantic_policy_digest(
+                backend.git_commit, semantic_path, input_root=deployment.semantic_input_root
+            ):
+                raise ValueError("invalid semantic deployment binding")
         if (
             snapshot_path != expected_snapshot
             or safety["exporter_commit"] != application.git_commit
@@ -464,12 +584,14 @@ def _parse(raw: bytes, identity: tuple[int, int]) -> RuntimeAuthority:
             application=application,
             backend=backend,
             command_manifest=CommandManifestAuthority(command_path, _digest(command["sha256"])),
-            semantic=SemanticAuthority(semantic_path, _digest(semantic["policy_sha256"])),
+            semantic=SemanticAuthority(semantic_path, _digest(semantic["policy_sha256"]),
+                input_root=deployment.semantic_input_root if deployment else None),
             safety=SafetyAuthority(
                 _commit(safety["exporter_commit"]), snapshot_path, _digest(safety["source_fingerprint"])
             ),
             _identity=identity,
             _document_sha256=hashlib.sha256(raw).hexdigest(),
+            deployment=deployment,
         )
         return authority
     except ProtectedAuthorityError:
@@ -480,7 +602,10 @@ def _parse(raw: bytes, identity: tuple[int, int]) -> RuntimeAuthority:
 
 def load_runtime_authority() -> RuntimeAuthority:
     raw, identity = _read_protected_file(AUTHORITY_PATH)
-    return _parse(raw, identity)
+    authority = _parse(raw, identity)
+    if authority.deployment is not None:
+        _ISSUED_DEPLOYMENTS.add(authority.deployment)
+    return authority
 
 
 def _runtime_python_path() -> Path:
