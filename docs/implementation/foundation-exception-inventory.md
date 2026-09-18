@@ -564,7 +564,7 @@ scripts/build_p1_package6_host_authority.py|693|Exception|TOOLING_MIGRATION|RAIS
 scripts/build_p1_package6_host_authority.py|829|Exception|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|263|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|501|Exception|TOOLING_MIGRATION|OTHER
-scripts/build_phase4_semantic_manifest.py|788|Exception|TOOLING_MIGRATION|RAISE
+scripts/build_phase4_semantic_manifest.py|790|Exception|TOOLING_MIGRATION|RAISE
 scripts/check_artifact_firewall.py|750|Exception|TOOLING_MIGRATION|RAISE
 scripts/check_artifact_firewall.py|791|BaseException|TOOLING_MIGRATION|RAISE
 scripts/diagnose_nautilus_v12_runtime_failure.py|628|BaseException|TOOLING_MIGRATION|RAISE
