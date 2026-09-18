@@ -5,11 +5,11 @@ import hashlib
 import stat
 from typing import Annotated,Literal
 
-from pydantic import Field,model_validator
+from pydantic import Field,TypeAdapter,model_validator
 
-from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
+from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload, validate_operation_issuer, AuthorityHeld
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore,_read
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION, LocalRunAuthorization, LocalRunIdentity
 from packages.alpha_lifecycle.contracts.base import Sha256,StrictModel,SourceIdentity
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity,InputSet
 from packages.alpha_lifecycle.operation_input import P3OperationInput
@@ -21,7 +21,7 @@ from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload,payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
-from packages.project_status import derive_project_status
+from packages.project_status import require_p3_source_ready
 from packages.runtime_release.config import read_protected_canonical_json_current,_absolute
 from services.job_store.records import validate_p3_job_id
 from .engine_profiles import P1_REAL_BACKTEST_POLICY
@@ -33,8 +33,7 @@ from .p3_spawn import (
 )
 
 
-class OfficialHostProfile(StrictModel):
-    schema_version: Literal['p3-official-host-profile-v1']
+class _OfficialHostProfileFields(StrictModel):
     job_id: str
     payload: AlphaCampaignPayload
     environment_ref: ArtifactRefV1
@@ -53,10 +52,23 @@ class OfficialHostProfile(StrictModel):
     custodian_endpoint: CustodianEndpoint | None = None
 
     @model_validator(mode='after')
-    def _custody(self) -> 'OfficialHostProfile':
+    def _custody(self) -> '_OfficialHostProfileFields':
         if (self.payload.operation=='HOLDOUT')!=(self.custodian_endpoint is not None):
             raise ValueError('custodian endpoint is required exclusively for HOLDOUT')
         return self
+
+
+class OfficialHostProfile(_OfficialHostProfileFields):
+    schema_version: Literal['p3-official-host-profile-v1']
+
+
+class LocalOfficialHostProfile(_OfficialHostProfileFields):
+    schema_version: Literal['p3-local-official-host-profile-v1']
+    identity: LocalRunIdentity
+
+
+OFFICIAL_PROFILE = TypeAdapter(Annotated[OfficialHostProfile | LocalOfficialHostProfile,
+    Field(discriminator='schema_version')])
 
 
 class _HostFile(StrictModel):
@@ -75,7 +87,7 @@ class _HostFiles(StrictModel):
 def read_official_profile(
     path: Path, expected_digest: str, *, job_id: str, payload: object,
     context: Mapping[str, str],
-) -> tuple[OfficialHostProfile, CompleteP3Closure]:
+) -> tuple[OfficialHostProfile | LocalOfficialHostProfile, CompleteP3Closure]:
     """Recheck root custody, current source/gates, qualified inputs and exact file bytes.
 
     The producer must authenticate the retained Job API observation. A real pinned
@@ -87,7 +99,7 @@ def read_official_profile(
         raise ValueError('P3 profile requires protected root custody') from error
     if digest!=expected_digest:
         raise ValueError('P3 protected profile digest changed')
-    profile=OfficialHostProfile.model_validate_json(canonical_json_bytes(document))
+    profile=OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
     _absolute(profile.worker_credentials_directory)
     validate_p3_job_id(job_id)
     if profile.job_id!=job_id or type(payload) is not AlphaCampaignPayload or profile.payload!=payload:
@@ -95,25 +107,21 @@ def read_official_profile(
     source=SourceIdentity.model_validate(canonical_source_identity(ROOT))
     if source!=payload.expected_source:
         raise ValueError('P3 protected profile source is not current')
-    status=derive_project_status(ROOT)
-    if (status['gates']['HWC_SOURCE_READY']!='PASS' or status['gates']['PRE_P3_READY']!='PASS'
-        or status['p3_alpha_development_allowed'] is not True):
-        raise ValueError('P3 protected source gates are not current')
+    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,LocalOfficialHostProfile) else None)
     store_root,output_root,python_root=map(_absolute,(profile.store_root,profile.output_root,profile.python_root))
     if (_directory_identity(store_root)==_directory_identity(output_root)
         or store_root in output_root.parents or output_root in store_root.parents):
         raise ValueError('P3 profile transport roots overlap')
     store=LocalArtifactStore(store_root)
     intent=_read(store,payload.manifest_ref,P3OperationInput)
-    authorization=_read(store,payload.authorization_ref,RunAuthorization)
-    expected_context=dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',
-        GITHUB_REF='refs/heads/main',GITHUB_SHA=source.commit_sha,GITHUB_REF_PROTECTED='true',
-        GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ID=str(authorization.issuer_run_id),
-        GITHUB_RUN_ATTEMPT=str(authorization.issuer_attempt),
-        GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main')
-    if (authorization.issuer_workflow!='p3-authority.yml' or authorization.issuer_run_id<1
-        or authorization.issuer_attempt<1 or any(context.get(k)!=v for k,v in expected_context.items())):
-        raise ValueError('P3 protected profile differs from the current workflow')
+    authorization=_read(store,payload.authorization_ref,RUN_AUTHORIZATION)
+    if (isinstance(profile,LocalOfficialHostProfile) != isinstance(authorization,LocalRunAuthorization)
+        or isinstance(profile,LocalOfficialHostProfile) and profile.identity != getattr(authorization,'identity',None)):
+        raise ValueError('P3 protected profile and operation issuer differ')
+    try:
+        validate_operation_issuer(authorization,source,context=context,root=ROOT)
+    except AuthorityHeld as error:
+        raise ValueError('P3 protected profile differs from the current workflow or local authority') from error
     if stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,payload.logical_trial_id,
         canonical_json_bytes(intent),operation_input=intent)!=payload:
         raise ValueError('P3 protected payload or review differs')
@@ -124,9 +132,13 @@ def read_official_profile(
         or environment.native_manifest_digest!=P1_REAL_BACKTEST_POLICY.closure_sha256
         or environment.sandbox_policy_digest!=SANDBOX_PROFILE_SHA256):
         raise ValueError('P3 profile environment, InputSet or qualification differs')
-    validate_integration_job_result(profile.integration_receipt_ref,
+    integration=validate_integration_job_result(profile.integration_receipt_ref,
         job_detail_ref=profile.qualification_job_detail_ref,source=source,
         postgres_binary_sha256=profile.postgres_binary_sha256,store=store)
+    if not isinstance(profile,LocalOfficialHostProfile) and getattr(integration,'identity',None) is not None:
+        raise ValueError('P3 GitHub profile cannot use LOCAL integration qualification')
+    if isinstance(profile,LocalOfficialHostProfile) and getattr(integration,'identity',None) != profile.identity:
+        raise ValueError('P3 local profile and integration qualification issuer differ')
     raw=_bounded_bytes(profile.inventory_ref,store,media_type='application/json',max_bytes=4194304)
     inventory=_HostFiles.model_validate_json(raw)
     if canonical_json_bytes(inventory)!=raw or sum(item.size for item in inventory.files)>MAX_CLOSURE_BYTES:

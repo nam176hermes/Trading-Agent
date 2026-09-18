@@ -8,7 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from packages.alpha_lifecycle.baseline_campaign import ArtifactStore, _read
+from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
+from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
 from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity, StrictModel, Text
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, canonical_json_bytes
@@ -30,8 +31,13 @@ class PITQualification(StrictModel):
     run_attempt: Annotated[str, Field(pattern=r'^[1-9][0-9]*$')]
 
 
-class PITAdversarialSuiteReceiptV1(DigestModel):
-    schema_version: Literal['p3-pit-adversarial-suite-receipt-v1']
+class LocalPITQualification(StrictModel):
+    completed_at_utc: CanonicalUtcDateTime
+    producer: Literal['scripts/qualify_pre_p3.py']
+    identity: LocalRunIdentity
+
+
+class _PITSuiteEvidence(DigestModel):
     source: SourceIdentity
     suite_manifest_ref: ArtifactRefV1
     collection_ref: ArtifactRefV1
@@ -42,8 +48,17 @@ class PITAdversarialSuiteReceiptV1(DigestModel):
     collected_node_count: Annotated[int, Field(strict=True, ge=14, le=14)]
     passed_node_count: Annotated[int, Field(strict=True, ge=14, le=14)]
     nonpass_count: Annotated[int, Field(strict=True, ge=0, le=0)]
-    qualification: PITQualification
     authority: SafeAuthority
+
+
+class PITAdversarialSuiteReceiptV1(_PITSuiteEvidence):
+    schema_version: Literal['p3-pit-adversarial-suite-receipt-v1']
+    qualification: PITQualification
+
+
+class PITAdversarialSuiteReceiptV2(_PITSuiteEvidence):
+    schema_version: Literal['p3-pit-adversarial-suite-receipt-v2']
+    qualification: LocalPITQualification
 
 
 def pit_suite_cases(raw: bytes) -> tuple[PITCase, ...]:
@@ -96,7 +111,7 @@ def _json_ref(ref: ArtifactRefV1, maximum: int, *, exact: bool = False, media: s
 
 
 def build_pit_suite_receipt(source, suite_manifest_ref, collection_ref, report_ref, qualification,
-    *, store: ArtifactStore) -> PITAdversarialSuiteReceiptV1:
+    *, store: ArtifactStore) -> PITAdversarialSuiteReceiptV1 | PITAdversarialSuiteReceiptV2:
     _json_ref(suite_manifest_ref, len(SUITE_PATH.read_bytes()), exact=True, media=PIT_EVIDENCE_MEDIA)
     _json_ref(collection_ref, 131072)
     _json_ref(report_ref, 131072, media=PIT_EVIDENCE_MEDIA)
@@ -105,18 +120,26 @@ def build_pit_suite_receipt(source, suite_manifest_ref, collection_ref, report_r
     executed = _validate_observations(store.read_bytes(report_ref), cases, collection=False)
     if collected != executed:
         raise ValueError('PIT execution differs from complete collected parameter inventory')
-    value = dict(schema_version='p3-pit-adversarial-suite-receipt-v1', source=source,
+    local = isinstance(qualification, LocalPITQualification) or (
+        isinstance(qualification, dict) and 'identity' in qualification)
+    contract = PITAdversarialSuiteReceiptV2 if local else PITAdversarialSuiteReceiptV1
+    value = dict(schema_version='p3-pit-adversarial-suite-receipt-v2' if local else 'p3-pit-adversarial-suite-receipt-v1', source=source,
         suite_manifest_ref=suite_manifest_ref, collection_ref=collection_ref, report_ref=report_ref, cases=cases,
         executed_node_ids=executed, logical_selector_count=7, collected_node_count=len(collected), passed_node_count=len(executed), nonpass_count=0,
         qualification=qualification, authority=dict(broker=False, live=False, network=False, production=False))
     value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-    return PITAdversarialSuiteReceiptV1.model_validate_json(canonical_json_bytes(value))
+    return contract.model_validate_json(canonical_json_bytes(value))
 
 
 def validate_pit_suite_receipt(ref: ArtifactRefV1, *, source: SourceIdentity,
-    store: ArtifactStore) -> PITAdversarialSuiteReceiptV1:
+    store: ArtifactStore) -> PITAdversarialSuiteReceiptV1 | PITAdversarialSuiteReceiptV2:
     _json_ref(ref, 65536)
-    receipt = _read(store, ref, PITAdversarialSuiteReceiptV1)
+    from packages.alpha_lifecycle.local_qualification import _read_evidence
+    raw = _read_evidence(store, ref)
+    contract = PITAdversarialSuiteReceiptV2 if json.loads(raw).get('schema_version') == 'p3-pit-adversarial-suite-receipt-v2' else PITAdversarialSuiteReceiptV1
+    receipt = contract.model_validate_json(raw)
+    if canonical_json_bytes(receipt) != raw:
+        raise ValueError('PIT receipt is not canonical')
     if receipt.source != source:
         raise ValueError('PIT execution source differs from InputSet')
     expected = build_pit_suite_receipt(source, receipt.suite_manifest_ref, receipt.collection_ref, receipt.report_ref,

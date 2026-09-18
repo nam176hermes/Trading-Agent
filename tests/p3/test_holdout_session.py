@@ -52,7 +52,7 @@ def test_released_view_combines_metadata_without_persisting_raw_inputs(reference
 
 
 @pytest.fixture
-def session_inputs(reference_seed, tmp_path, monkeypatch):
+def session_inputs(reference_seed, tmp_path, monkeypatch, request):
     from dataclasses import asdict
     from datetime import UTC, datetime, timedelta
     import hashlib
@@ -61,7 +61,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
     from types import SimpleNamespace
     from uuid import uuid4
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload, stage_alpha_campaign_payload
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
     from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
     from packages.alpha_lifecycle.operation_input import P3OperationInput
@@ -95,6 +95,15 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         issued_at=utc(now-timedelta(minutes=1)), expires_at=utc(now+timedelta(minutes=3)),
         workflow_deadline=utc(now+timedelta(minutes=4)))
+    local=getattr(request,'param','GITHUB')=='LOCAL'
+    local_identity=None
+    if local:
+        from packages.alpha_lifecycle.local_qualification import _host_identity
+        machine,boot=_host_identity()
+        local_identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id=str(uuid4()),attempt=1,
+            host_id=machine,boot_id=str(boot))
+        profile.pop('workflow_run_id');profile.pop('workflow_attempt')
+        profile.update(schema_version='p3-local-holdout-session-v1',identity=local_identity)
     host = {}
     stage_profile = {}
     attempts = []
@@ -113,14 +122,16 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         if digest(host) != expected_digest or host['job_id'] != job_id or host['payload'] != payload:
             raise ValueError('host profile changed')
         intent = _read(store, payload.manifest_ref, P3OperationInput)
-        auth = _read(store, payload.authorization_ref, RunAuthorization)
+        auth = _read(store, payload.authorization_ref, RUN_AUTHORIZATION)
         assert stage_alpha_campaign_payload(ReadbackStore(store, store), auth, manifest.source,
             intent.workflow_operation, canonical_json_bytes(intent), operation_input=intent) == payload
         return SimpleNamespace(store_root=str(destination), custodian_endpoint=endpoint,
             model_dump=lambda **kwargs: {'runtime': host.get('runtime', 'fixed')}), SimpleNamespace(
             source=manifest.source, environment_ref=manifest.environment_ref, closure_sha256='f'*64)
     monkeypatch.setattr('services.job_worker.p3_host_profile.read_official_profile', host_reader)
-    session = module.P3HoldoutSession(Path('/run/trading-agent-p3/1-1/session.json'), store=store)
+    session_path=(Path('/run/trading-agent-p3/local/synthetic')/(local_identity['run_id']+'-1')/'session.json'
+        if local_identity else Path('/run/trading-agent-p3/1-1/session.json'))
+    session = module.P3HoldoutSession(session_path, store=store)
     def claim(operation, **changes):
         body = {
             'HOLDOUT': dict(primary_selection_ref=manifest.primary_selection_ref,
@@ -152,7 +163,13 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
             review_ref=review_ref, operation=operation, allowed_alpha_ids=intent.allowed_alpha_ids,
             issued_at=utc(now-timedelta(minutes=1)), expires_at=utc(now+timedelta(minutes=4)), nonce=str(uuid4()),
             issuer_workflow='p3-authority.yml', issuer_run_id=1, issuer_attempt=1, authority=authority)
-        auth = _read(store, auth_ref, RunAuthorization)
+        if local_identity:
+            import json
+            fields=json.loads(store.read_bytes(auth_ref))
+            for name in ('issuer_workflow','issuer_run_id','issuer_attempt','digest'):fields.pop(name)
+            fields.update(schema_version='p3-local-run-authorization-v1',identity=local_identity)
+            auth_ref=_seal(store,**fields)
+        auth = _read(store, auth_ref, RUN_AUTHORIZATION)
         payload = build_alpha_campaign_payload(auth, manifest.source, workflow, operation_input=intent)
         result = ClaimedJob('job_'+operation, JobType.ALPHA_CAMPAIGN, payload, 'attempt_'+operation,
             1, 'worker', 's'*32, now+timedelta(minutes=1), 1)
@@ -181,6 +198,7 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
             pass
 
 
+@pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
 def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
     from services.job_store.worker_repository import WorkerRepository
     x = session_inputs
@@ -199,6 +217,7 @@ def test_session_reuses_one_view_across_independently_admitted_stages(session_in
         view.read_bytes(x.manifest)
 
 
+@pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
 @pytest.mark.parametrize('fault', ['cancel', 'lease', 'profile', 'runtime', 'deadline', 'repeated_release',
     'stage_order', 'alias_between_jobs', 'attempt_chain', 'review', 'pid', 'boot'])
 def test_failed_session_revokes_alias_and_cannot_resume(session_inputs, monkeypatch, fault):
@@ -218,8 +237,8 @@ def test_failed_session_revokes_alias_and_cannot_resume(session_inputs, monkeypa
             elif fault == 'runtime': x.host['runtime'] = 'substituted'
             elif fault == 'attempt_chain': x.stage_profile['attempts'][0]['lease_token_sha256'] = '0'*64
             elif fault == 'review':
-                from packages.alpha_lifecycle.contracts.authority import RunAuthorization
-                auth = RunAuthorization.model_validate_json(x.store.read_bytes(x.host['payload'].authorization_ref))
+                from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
+                auth = RUN_AUTHORIZATION.validate_json(x.store.read_bytes(x.host['payload'].authorization_ref))
                 (x.store._root/auth.review_ref.locator).write_bytes(b'{}')
             elif fault == 'pid': monkeypatch.setattr(x.module.os, 'getpid', lambda: 999999999)
             elif fault == 'boot':
@@ -372,3 +391,29 @@ def test_session_exit_recomputes_with_same_view_without_raw_cas(session_inputs, 
     assert all(not (x.store._root/ref.locator).exists() for ref in (*reference_seed[-2], reference_seed[-1]))
     with pytest.raises(ValueError, match='closed'):
         _ = view.raw
+
+
+def test_local_session_uses_protected_local_identity_without_github_numbers(session_inputs,monkeypatch):
+    from pathlib import Path
+    from packages.engine_contracts import canonical_json_bytes
+    from packages.alpha_lifecycle.local_qualification import _host_identity
+    from services.job_worker import p3_session as module
+    import hashlib
+    x=session_inputs
+    document=x.session.profile.model_dump(mode='json')
+    for name in ('workflow_run_id','workflow_attempt'):document.pop(name)
+    host,boot=_host_identity()
+    identity=dict(issuer_kind='LOCAL',issuer_identity='operator-a',run_id='00000000-0000-4000-8000-000000000002',
+        attempt=1,host_id=host,boot_id=str(boot))
+    document.update(schema_version='p3-local-holdout-session-v1',identity=identity)
+    monkeypatch.setattr(module,'read_protected_canonical_json_current',lambda path:(document,hashlib.sha256(canonical_json_bytes(document)).hexdigest()))
+    path=Path('/run/trading-agent-p3/local/operator-a/00000000-0000-4000-8000-000000000002-1/session.json')
+    session=module.P3HoldoutSession(path,store=x.store)
+    assert session.profile.identity.model_dump(mode='json')==identity
+    assert module.session_identity(session.profile)==session.profile.identity
+    assert not hasattr(session.profile,'workflow_run_id')
+    with pytest.raises(ValueError,match='path'):
+        module.P3HoldoutSession(Path('/run/trading-agent-p3/1-1/session.json'),store=x.store)
+    document['identity']={**identity,'host_id':'0'*64}
+    with pytest.raises(ValueError,match='host|identity'):
+        module.P3HoldoutSession(path,store=x.store)

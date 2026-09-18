@@ -274,6 +274,24 @@ def test_corporate_action_union_covers_raw_p2_facts_only() -> None:
         )
         assert document.payload == payload
 
+    # A delisting correction effective at T1 but recorded at T3 cannot close
+    # the listing in a snapshot whose knowledge cutoff is T2.
+    from .test_p1_projection import _security_master
+    listing = _security_master()[6].revision
+    root = listing.model_copy(update={"known_at": KNOWN,
+        "evidence": (evidence(),), "effective_from": KNOWN - timedelta(days=1)})
+    t3 = KNOWN + timedelta(days=2)
+    correction = root.model_copy(update={
+        "revision_id": UUID("90000000-0000-4000-8000-000000000099"),
+        "revision_ordinal": 2, "supersedes_revision_id": root.revision_id,
+        "known_at": t3, "evidence": (evidence(known_at=t3),), "effective_to": KNOWN})
+    first = security_master.PersistedSecurityMasterRevisionV1(revision=root, recorded_at=KNOWN)
+    last = security_master.PersistedSecurityMasterRevisionV1(revision=correction, recorded_at=t3)
+    resolver = security_master.SecurityMasterResolver((first, last))
+    assert resolver.resolve_fact(root.fact_id, valid_at=KNOWN,
+        known_at=KNOWN + timedelta(days=1)) == first
+    assert resolver.resolve_fact(root.fact_id, valid_at=KNOWN, known_at=t3) is None
+
     with pytest.raises(ValidationError, match="effective_to"):
         revision(
             subject_id=ACTION_ID,

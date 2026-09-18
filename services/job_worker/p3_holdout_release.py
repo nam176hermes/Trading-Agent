@@ -111,7 +111,7 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     It must also be supplied to every replica's before_spawn callback. This
     source helper does not enable HOLDOUT in the official worker or SQL lane.
     """
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     from packages.alpha_lifecycle.holdout import validate_holdout_operation_input
     from packages.alpha_lifecycle.operation_input import P3OperationInput, HoldoutInput
     from packages.alpha_lifecycle.custody import released_view
@@ -123,7 +123,7 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     fence()
     for ref in (claim.payload.manifest_ref,claim.payload.authorization_ref):_reference(ref,65536)
     intent=_read(store,claim.payload.manifest_ref,P3OperationInput)
-    authorization=_read(store,claim.payload.authorization_ref,RunAuthorization)
+    authorization=_read(store,claim.payload.authorization_ref,RUN_AUTHORIZATION)
     request,manifest=validate_holdout_operation_input(intent,authorization,
         expected_source=claim.payload.expected_source,store=store,now=datetime.now(UTC))
     if not isinstance(intent.body,HoldoutInput):raise ValueError('holdout body is required')

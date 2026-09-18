@@ -11,7 +11,7 @@ import pytest
 
 from packages.alpha_lifecycle.holdout import derive_holdout_request
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, build_holdout_calculation_view
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.replica_store import _read
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -95,6 +95,7 @@ def test_view_read_allows_access_time_update(tmp_path):
     assert read_calculation_view(path) == b'{}'
 
 
+@pytest.mark.parametrize('session_inputs', ['GITHUB','LOCAL'], indirect=True)
 @pytest.mark.parametrize('extra', [None, 'raw', 'unrelated'])
 def test_driver_holdout_validates_before_retention(session_inputs, reference_seed, projected_release, tmp_path, monkeypatch, capsys, extra):
     from scripts import run_p3_alpha_campaign as command
@@ -104,7 +105,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
     x = session_inputs
     job = x.claim('HOLDOUT')
     intent = _read(x.store, job.payload.manifest_ref, P3OperationInput)
-    auth = _read(x.store, job.payload.authorization_ref, RunAuthorization)
+    auth = _read(x.store, job.payload.authorization_ref, RUN_AUTHORIZATION)
     request = derive_holdout_request(intent, auth, expected_source=job.payload.expected_source)
     request_ref = x.store.put_bytes(canonical_json_bytes(request), media_type='application/json')
     view = HoldoutCalculationView(build_holdout_calculation_view(x.manifest, x.spec, x.store), x.manifest, x.spec)

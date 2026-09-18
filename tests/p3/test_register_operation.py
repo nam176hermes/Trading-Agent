@@ -38,8 +38,9 @@ def test_register_operation_binds_sealed_family_before_proposing(retained_baseli
             prepare_family_registration(intent,**args)
 
 
+@pytest.mark.parametrize('lane', ['GITHUB','LOCAL'])
 @pytest.mark.parametrize('fault', [None, 'wrong_authorization_scope'])
-def test_register_cli_returns_proposal_without_replica_or_database_access(retained_baseline, tmp_path, monkeypatch, capsys, fault):
+def test_register_cli_returns_proposal_without_replica_or_database_access(retained_baseline, tmp_path, monkeypatch, capsys, fault, lane):
     import sys
     from pathlib import Path
     from uuid import UUID
@@ -66,10 +67,14 @@ def test_register_cli_returns_proposal_without_replica_or_database_access(retain
         subject_digests=[intent.digest], operator_identity='synthetic-operator', reviewer_identity='synthetic-reviewer',
         review_execution_id='synthetic-execution', verdict='APPROVED', issued_at=utc(now-timedelta(minutes=1)),
         expires_at=utc(now+timedelta(hours=1)), evidence_ref=store.put_bytes(b'{}', media_type='application/json'), authority=safe)
-    authorization_ref = _seal(store, schema_version='p3-run-authorization-v1', input_set_ref=evidence.input_set_ref,
+    issuer = dict(schema_version='p3-run-authorization-v1',issuer_workflow='p3-authority.yml',issuer_run_id=1,issuer_attempt=1)
+    if lane=='LOCAL':
+        issuer=dict(schema_version='p3-local-run-authorization-v1',identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',
+            run_id='00000000-0000-4000-8000-000000000002',attempt=1,host_id='a'*64,
+            boot_id='00000000-0000-4000-8000-000000000001'))
+    authorization_ref = _seal(store, **issuer, input_set_ref=evidence.input_set_ref,
         review_ref=review_ref, operation='OOS' if fault else 'REGISTER_FAMILY', allowed_alpha_ids=FAMILY_IDS,
-        issued_at=utc(now), expires_at=utc(now+timedelta(minutes=30)), nonce=str(UUID(int=1)), issuer_workflow='p3-authority.yml',
-        issuer_run_id=1, issuer_attempt=1, authority=safe)
+        issued_at=utc(now), expires_at=utc(now+timedelta(minutes=30)), nonce=str(UUID(int=1)), authority=safe)
     for name, value in [('manifest', intent_ref), ('source', inputs.source),
         ('environment', inputs.environment_ref), ('authorization', authorization_ref)]:
         (tmp_path/name).write_bytes(canonical_json_bytes(value))

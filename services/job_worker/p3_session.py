@@ -12,11 +12,13 @@ import time
 from typing import Annotated, Literal, TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, TypeAdapter, model_validator
 
 from packages.alpha_lifecycle.contracts.base import StrictModel, SourceIdentity, Sha256
 from packages.alpha_lifecycle.contracts.models import json_array
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord, RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import (CustodyRecord, RUN_AUTHORIZATION,
+    RunAuthorizationValue, LocalRunAuthorization, LocalRunIdentity)
+from packages.alpha_lifecycle.authority import local_run_directory
 from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.alpha_lifecycle.operation_input import P3OperationInput, HoldoutInput, NativeParityInput, PhaseExitInput
@@ -35,7 +37,7 @@ if TYPE_CHECKING:
     from packages.alpha_lifecycle.contracts.results import ParityResult
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
-    from .p3_host_profile import OfficialHostProfile
+    from .p3_host_profile import OfficialHostProfile, LocalOfficialHostProfile
     from .p3_native_spawn import P3NativeSpawnProvider
     from .p3_native_runner import NativeReplica
     from .process_runner import HeartbeatDecision, HeartbeatInstruction
@@ -65,16 +67,13 @@ class SessionStageProfile(StrictModel):
     attempts: Annotated[tuple[SessionAttempt, ...], BeforeValidator(json_array), Field(min_length=1, max_length=3)]
 
 
-class SessionProfile(StrictModel):
-    schema_version: Literal['p3-holdout-session-v1']
+class _SessionProfileFields(StrictModel):
     source: SourceIdentity
     environment_ref: ArtifactRefV1
     primary_selection_ref: ArtifactRefV1
     custody_record_ref: ArtifactRefV1
     holdout_commitment: Sha256
     closure_sha256: Sha256
-    workflow_run_id: Annotated[int, Field(gt=0)]
-    workflow_attempt: Annotated[int, Field(gt=0)]
     parent: ProcessIdentity
     boot_id: UUID
     issued_at: CanonicalUtcDateTime
@@ -82,10 +81,36 @@ class SessionProfile(StrictModel):
     workflow_deadline: CanonicalUtcDateTime
 
     @model_validator(mode='after')
-    def _bounded(self) -> 'SessionProfile':
+    def _bounded(self) -> '_SessionProfileFields':
         if not self.issued_at < self.expires_at <= self.workflow_deadline <= self.issued_at + timedelta(minutes=37):
             raise ValueError('session must fit its protected and enclosing workflow deadlines')
         return self
+
+
+class SessionProfile(_SessionProfileFields):
+    schema_version: Literal['p3-holdout-session-v1']
+    workflow_run_id: Annotated[int, Field(gt=0)]
+    workflow_attempt: Annotated[int, Field(gt=0)]
+
+
+class LocalSessionProfile(_SessionProfileFields):
+    schema_version: Literal['p3-local-holdout-session-v1']
+    identity: LocalRunIdentity
+
+    @model_validator(mode='after')
+    def _boot(self):
+        if self.identity.boot_id != self.boot_id:
+            raise ValueError('local session boot identity differs')
+        return self
+
+
+SESSION_PROFILE = TypeAdapter(Annotated[SessionProfile | LocalSessionProfile,Field(discriminator='schema_version')])
+
+
+def session_identity(profile) -> tuple[int,int] | LocalRunIdentity:
+    if isinstance(profile,LocalSessionProfile):
+        return profile.identity
+    return profile.workflow_run_id,profile.workflow_attempt
 
 
 class P3HoldoutSession:
@@ -94,8 +119,9 @@ class P3HoldoutSession:
             raise ValueError('session requires the concrete retained store')
         self._digest: str
         document, self._digest = read_protected_canonical_json_current(profile_path)
-        self.profile: SessionProfile = SessionProfile.model_validate_json(canonical_json_bytes(document))
-        expected = Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json')
+        self.profile = SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+        expected = (local_run_directory(self.profile.identity)/'session.json' if isinstance(self.profile,LocalSessionProfile)
+            else Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json'))
         if profile_path != expected:
             raise ValueError('session profile must use its workflow-owned path')
         self._path: Path = profile_path
@@ -111,7 +137,7 @@ class P3HoldoutSession:
         self._outputs: dict[str, ArtifactRefV1] = {}
         self.completed_jobs: list[str] = []
         self._native_receipts: tuple[ArtifactRefV1, ...] = ()
-        self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorization] | None = None
+        self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorizationValue] | None = None
         self._closed: bool = False
         self._release_attempted: bool = False
         self._native_spawn_issued: bool = False
@@ -130,6 +156,11 @@ class P3HoldoutSession:
         self.close()
 
     def _check_owner(self) -> None:
+        if isinstance(self.profile,LocalSessionProfile):
+            from packages.alpha_lifecycle.local_qualification import _host_identity
+            if _host_identity() != (self.profile.identity.host_id,self.profile.identity.boot_id):
+                self.close()
+                raise ValueError('local session host identity changed')
         if (self._closed or time.monotonic() >= self._deadline
             or not self.profile.issued_at <= datetime.now(UTC) < self.profile.expires_at
             or os.getpid() != self.profile.parent.pid
@@ -158,15 +189,16 @@ class P3HoldoutSession:
             if read_protected_canonical_json_current(self._path.with_name('stage.json'))[1] != self._stage_digest:
                 raise ValueError('session protected attempt chain changed')
             _ = self._host(claim, digest)
-            if (authorization.issuer_run_id != self.profile.workflow_run_id
-                or authorization.issuer_attempt != self.profile.workflow_attempt):
+            identity = (authorization.identity if isinstance(authorization,LocalRunAuthorization)
+                else (authorization.issuer_run_id,authorization.issuer_attempt))
+            if identity != session_identity(self.profile):
                 raise ValueError('stage belongs to another workflow attempt')
             self._check_view_access()
         except BaseException:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> 'OfficialHostProfile':
+    def _host(self, claim: ClaimedJob, digest: str) -> 'OfficialHostProfile | LocalOfficialHostProfile':
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
             job_id=claim.job_id, payload=claim.payload, context=os.environ)
@@ -209,7 +241,7 @@ class P3HoldoutSession:
                 raise ValueError('session protected attempt chain differs from current claim')
             self._stage_digest = stage_digest
             _ = self._host(claim, digest)
-            authorization = _read(self._store, claim.payload.authorization_ref, RunAuthorization)
+            authorization = _read(self._store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
             intent = _read(self._store, claim.payload.manifest_ref, P3OperationInput)
             body = intent.body
             if isinstance(body, HoldoutInput):

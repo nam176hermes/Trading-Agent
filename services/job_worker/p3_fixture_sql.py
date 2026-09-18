@@ -66,6 +66,26 @@ def validate_sql_fixture_checks(checks,*,process_identity_bound=True):
         raise ValueError('qualification SQL check inventory differs from the exact source fixture')
 
 
+def validate_local_sql_fixture_checks(proof):
+    from services.job_store.p3_catalog import SESSION_CATALOG_SHA256,SESSION_REVISION
+    expected={
+        'native_process_checks':dict(verdict='PASS',role_denials=5,null_denials=12,identity_denials=8,
+            lock_fences=6,concurrent_winners=1,crash_recovery='TERMINAL_NO_RETRY'),
+        'session_holdout_checks':dict(verdict='PASS',ordinary_holdout_claim='CLOSED',concurrent_winners=1,
+            workflow_denials=2,role_denials=5,null_denials=9,cancelled_and_expired='REJECTED',
+            expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
+            late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
+            expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
+        'local_identity_checks':dict(verdict='PASS',catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
+            identity_denials=5,role_denials=5,cross_lane_second_disclosures_rejected=2,expiry='REJECTED',
+            start_before_disclosure='REJECTED',wrong_identity_heartbeat='STALE',terminal='COMMITTED',
+            recovery='TERMINAL_NO_RETRY',retry='REJECTED',migration_parent_drift='REJECTED',phase_exit_readback='COMMITTED_CURRENT_HEAD_ONLY'),
+    }
+    if (proof['sql_revision']!=SESSION_REVISION or any(
+        canonical_json_bytes(proof.get(name))!=canonical_json_bytes(value) for name,value in expected.items())):
+        raise ValueError('local SQL identity, catalog, native or lifecycle coverage differs')
+
+
 def _alpha_request() -> EnqueueJobRequest:
     def ref(value: str) -> dict[str, object]:
         return {
@@ -390,7 +410,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
     custodian_release_source_checks: bool = False,
     native_process_source_checks: bool = False,
     session_holdout_source_checks: bool = False,
+    local_identity_source_checks: bool = False,
 ) -> dict[str, object]:
+    session_holdout_source_checks = session_holdout_source_checks or local_identity_source_checks
     if not __debug__:
         raise RuntimeError("source checks require assertions enabled")
     root = Path(tempfile.mkdtemp(prefix='p3-source-pg-', dir='/tmp')) if owned_root is None else owned_root
@@ -702,6 +724,10 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         if session_holdout_source_checks:
             from .p3_session_sql_fixture import check_session_holdout
             session_checks = check_session_holdout(sock,name,source)
+        local_checks = {}
+        if local_identity_source_checks:
+            from .p3_local_sql_fixture import check_local_identity
+            local_checks = check_local_identity(sock,name,source)
         with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
             revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
             if revision_row is None:
@@ -720,8 +746,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             raise SQLFixtureCleanupError(f"SQL cleanup unverified; retained {root}") from cause
     validate_sql_fixture_checks(checks,process_identity_bound=heartbeat is not None)
     return {"source": source.model_dump(mode="json"), "checks": checks, "sql_revision":sql_revision,
-            **({"native_process_checks": native_checks} if native_process_source_checks else {}),
+            **({"native_process_checks": native_checks} if native_process_source_checks or local_identity_source_checks else {}),
             **({"session_holdout_checks": session_checks} if session_holdout_source_checks else {}),
+            **({"local_identity_checks": local_checks} if local_identity_source_checks else {}),
             "postgres_binary_sha256": hashlib.sha256((BIN/'postgres').read_bytes()).hexdigest(),
             "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
             "cleanup": {"cluster_id": root.name, "root_absent": not root.exists(),

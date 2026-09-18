@@ -16,7 +16,7 @@ from packages.alpha_lifecycle.contracts.authority import (
     CustodyRecord,
     HoldoutRequest,
     PrimarySelection,
-    RunAuthorization,
+    RUN_AUTHORIZATION, RunAuthorizationValue,
 )
 from packages.alpha_lifecycle.contracts.base import DigestModel, SourceIdentity
 from packages.alpha_lifecycle.operation_input import HoldoutInput, P3OperationInput
@@ -86,12 +86,12 @@ def execute_holdout_manifest(
 
 
 def derive_holdout_request(
-    intent: P3OperationInput, authorization: RunAuthorization, *, expected_source: SourceIdentity,
+    intent: P3OperationInput, authorization: RunAuthorizationValue, *, expected_source: SourceIdentity,
 ) -> HoldoutRequest:
     """Pure post-review projection; authenticating custody and consuming access are separate."""
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
     intent=P3OperationInput.model_validate(intent)
-    authorization=RunAuthorization.model_validate(authorization)
+    authorization=RUN_AUTHORIZATION.validate_python(authorization)
     source=SourceIdentity.model_validate(expected_source)
     if not isinstance(intent.body,HoldoutInput):
         raise ValueError('holdout request requires the fixed holdout operation input')
@@ -136,7 +136,7 @@ def validate_holdout_access(
         raise ValueError("holdout custody separation is invalid")
 
 
-def validate_holdout_operation_input(intent: P3OperationInput, authorization: RunAuthorization, *,
+def validate_holdout_operation_input(intent: P3OperationInput, authorization: RunAuthorizationValue, *,
     expected_source: SourceIdentity, store: ArtifactStore, now: datetime,
 ) -> tuple[HoldoutRequest, HoldoutManifest]:
     """Reconstruct retained research and holdout metadata, never release authority.
@@ -147,7 +147,7 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
     from datetime import date
     from packages.alpha_lifecycle.authority import validate_operation_review
     from packages.alpha_lifecycle.baseline_campaign import validate_baseline_selection
-    from packages.alpha_lifecycle.contracts.authority import FamilyReview,IntegrationReceipt
+    from packages.alpha_lifecycle.contracts.authority import FamilyReview,INTEGRATION_RECEIPT
     from packages.alpha_lifecycle.contracts.data import FoldManifest,PITProof
     from packages.alpha_lifecycle.contracts.execution import InputSet,HoldoutManifest,InstrumentSpec,EnvironmentIdentity,EvaluationManifest
     from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof,PublicationReceipt,CampaignClosureReport
@@ -162,7 +162,7 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
     from packages.alpha_lifecycle.replica_store import ReadbackStore,_read
 
     intent=P3OperationInput.model_validate(intent)
-    authorization=RunAuthorization.model_validate(authorization)
+    authorization=RUN_AUTHORIZATION.validate_python(authorization)
     request=derive_holdout_request(intent,authorization,expected_source=expected_source)
     body=intent.body
     assert isinstance(body,HoldoutInput)
@@ -207,9 +207,10 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
     for ref in (primary.family_review_ref,inputs.environment_ref,inputs.regime_threshold_ref,
         inputs.integration_receipt_ref,h_inputs.pit_proof_ref):
         _reference(ref,65536)
-    integration=_read(reader,inputs.integration_receipt_ref,IntegrationReceipt)
-    if integration.source!=expected_source:
-        raise ValueError('holdout integration receipt differs from source')
+    integration=_read(reader,inputs.integration_receipt_ref,INTEGRATION_RECEIPT)
+    if (integration.source!=expected_source
+        or getattr(integration,'identity',None)!=getattr(authorization,'identity',None)):
+        raise ValueError('holdout integration receipt differs from source or issuer')
     _reference(outer.evidence_ref,67108864)
     reader.read_bytes(outer.evidence_ref)
     _reference(h_inputs.fold_manifest_ref,2097152)

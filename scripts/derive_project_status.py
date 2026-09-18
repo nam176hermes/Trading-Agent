@@ -19,11 +19,14 @@ from packages.project_status import derive_project_status
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--local',action='store_true')
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--check", type=Path)
     output.add_argument("--write", type=Path)
     args = parser.parse_args(arguments)
-    expected = canonical_json_bytes(derive_project_status(args.root)) + b"\n"
+    if args.local and args.write is not None and args.write.resolve().is_relative_to(args.root.resolve()):
+        parser.error('local status must remain external to source')
+    expected = canonical_json_bytes(derive_project_status(args.root,local=args.local)) + b"\n"
     if args.check is not None:
         if (
             args.check.is_symlink()

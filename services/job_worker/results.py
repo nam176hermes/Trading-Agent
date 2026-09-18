@@ -228,9 +228,9 @@ class ResultValidator:
                     holdout_view=holdout_view)
             except (OSError,ValueError) as exc:
                 raise ResultValidationError('P3 output custody or operation closure is invalid') from exc
-        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
+        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt, LocalIntegrationReceipt
 
-        if isinstance(result, IntegrationReceipt) and result.source != payload.expected_source:
+        if isinstance(result, (IntegrationReceipt,LocalIntegrationReceipt)) and result.source != payload.expected_source:
             raise ResultValidationError("P3 integration receipt source differs from job")
         progress()
         from services.job_store.p3_sql import PublicationProposal
@@ -250,7 +250,7 @@ class ResultValidator:
 
     def seal_integration_receipt(self, job: object, receipt: object) -> ValidatedResult:
         """Seal a trusted-parent fixture result without claiming a child emitted it."""
-        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
+        from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt, LocalIntegrationReceipt, INTEGRATION_RECEIPT
         from packages.engine_contracts import canonical_json_bytes
         from packages.job_contracts import JobType
         from .command_registry import p3_command_spec
@@ -261,15 +261,15 @@ class ResultValidator:
             or
             getattr(job, "job_type", None) is not JobType.ALPHA_CAMPAIGN
             or payload.logical_trial_id != "p3-integration-fixture-v1"
-            or type(receipt) is not IntegrationReceipt
+            or not isinstance(receipt,(IntegrationReceipt,LocalIntegrationReceipt))
             or receipt.source != payload.expected_source
-            or receipt.workflow_run_id < 1 or receipt.workflow_attempt < 1
+            or isinstance(receipt,IntegrationReceipt) and (receipt.workflow_run_id < 1 or receipt.workflow_attempt < 1)
         ):
             raise ResultValidationError("parent integration receipt authority differs from job")
-        receipt = IntegrationReceipt.model_validate(receipt)
+        validated = INTEGRATION_RECEIPT.validate_python(receipt)
         validator_id = p3_command_spec(payload).result_validator_id
-        return self._seal(job, canonical_json_bytes(receipt), validator_id, {
-            "operation": payload.logical_trial_id, "result_digest": receipt.digest,
+        return self._seal(job, canonical_json_bytes(validated), validator_id, {
+            "operation": payload.logical_trial_id, "result_digest": validated.digest,
             "producer": "p3-integration-parent",
         })
 
@@ -647,7 +647,7 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
 
     from packages.engine_contracts.serialization import canonical_json_bytes
     from packages.alpha_lifecycle.contracts.authority import (
-        IntegrationReceipt,
+        INTEGRATION_RECEIPT,
         PrimarySelection,
     )
     from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
@@ -661,7 +661,7 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
     from packages.alpha_lifecycle.holdout import HoldoutOperationResult
 
     models = {
-        "p3-integration-qualified-v1": IntegrationReceipt,
+        "p3-integration-qualified-v1": INTEGRATION_RECEIPT,
         "p3-baseline-selection-v1": BaselineSelection,
         "p3-registration-proof-v1": RegistrationProof,
         "p3-qualification-bundle-v1": QualificationBundle,
@@ -682,7 +682,9 @@ def validate_p3_result_bytes(validator_id: str, raw: bytes):
                 raise ValueError("publication stage differs from fixed operation")
             result = proposal
         else:
-            result = models[validator_id].model_validate_json(raw)
+            from pydantic import TypeAdapter
+            model=models[validator_id]
+            result=model.validate_json(raw) if isinstance(model,TypeAdapter) else model.model_validate_json(raw)
         canonical = canonical_json_bytes(result)
         if raw not in (canonical, canonical + b"\n"):
             raise ValueError("P3 result framing is not canonical")

@@ -9,7 +9,7 @@ import re
 import secrets
 from datetime import datetime
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, LiteralString
+from typing import TYPE_CHECKING, Any, LiteralString, cast
 from uuid import uuid4
 
 from psycopg.rows import dict_row
@@ -28,6 +28,7 @@ from .errors import InvalidTraceId
 from .records import ClaimedJob as ClaimedJob, validate_p3_job_id
 
 if TYPE_CHECKING:
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
     from packages.alpha_lifecycle.replica_store import ArtifactStore
 
 
@@ -163,18 +164,21 @@ class WorkerRepository:
             "trading_job_worker", P3_DISPOSABLE_DATABASE_REVISION
         )
 
-    def assert_session_runtime_identity(self) -> None:
+    def assert_session_runtime_identity(self, *, revision: str | None = None) -> None:
         """Admit only the reviewed private lifecycle catalog; ordinary startup stays pinned."""
-        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOGS, SESSION_REVISION
         from .p3_custodian_release import IDENTITY
+        revision=SESSION_REVISION if revision is None else revision
+        if revision not in SESSION_CATALOGS:
+            raise ValueError('session database revision is not reviewed')
         with self._pool.connection() as connection:
             with connection.transaction():
                 connection.execute("SET LOCAL search_path=pg_catalog")
                 identity = connection.execute(IDENTITY).fetchone()
                 if identity != {'current_user': 'trading_job_worker', 'session_user': 'trading_job_worker',
-                    'version_num': SESSION_REVISION, 'restricted': True}:
+                    'version_num': revision, 'restricted': True}:
                     raise ValueError('session database identity or revision differs')
-                if connection.execute(SESSION_CATALOG_SQL).fetchone() != {'catalog_sha256': SESSION_CATALOG_SHA256}:
+                if connection.execute(SESSION_CATALOG_SQL).fetchone() != {'catalog_sha256': SESSION_CATALOGS[revision]}:
                     raise ValueError('session database catalog differs')
 
     def _assert_database_identity(
@@ -287,13 +291,35 @@ class WorkerRepository:
             fixture_only=fixture_only, job_id=job_id)
 
     @staticmethod
-    def _validate_session_workflow(workflow: tuple[int, int] | None, alpha_campaign: bool) -> tuple[int, ...]:
+    def _validate_session_workflow(workflow: tuple[int, int] | LocalRunIdentity | None, alpha_campaign: bool) -> tuple[int | str, ...]:
         if workflow is None:
             return ()
+        from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+        from packages.engine_contracts.serialization import canonical_json_bytes
+        if isinstance(workflow,LocalRunIdentity) and alpha_campaign is True:
+            return (canonical_json_bytes(LocalRunIdentity.model_validate(workflow)).decode(),)
         if (alpha_campaign is not True or type(workflow) is not tuple or len(workflow) != 2
             or any(type(value) is not int or not 0 < value < 2**63 for value in workflow)):
             raise ValueError('positive bounded workflow identities in the explicit alpha lane required')
         return workflow
+
+    @staticmethod
+    def _session_statement(statement: LiteralString, parameters: tuple[int | str,...]) -> LiteralString:
+        # The local overload takes one complete identity, the legacy overload two integers.
+        if len(parameters)==1:
+            narrowed,count=re.subn(r',\s*%s(\s*\))',r'\1',statement,count=1)
+            if count!=1 or 'session_holdout(' not in statement:
+                raise ValueError('private local lifecycle statement differs')
+            # Only remove a bind placeholder from caller-owned literal SQL; values remain parameters.
+            statement=cast(LiteralString,narrowed)
+        return statement
+
+    def claim_local_holdout(self,worker_id: str,lease_seconds: int,trace_id: str,*,job_id: str,identity: LocalRunIdentity):
+        from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+        identity=LocalRunIdentity.model_validate(identity)
+        validate_p3_job_id(job_id)
+        return self._claim_alpha_campaign(worker_id,lease_seconds,trace_id,
+            fixture_only=False,job_id=job_id,workflow=identity)
 
     def claim_session_holdout(
         self, worker_id: str, lease_seconds: int, trace_id: str, *, job_id: str,
@@ -307,7 +333,7 @@ class WorkerRepository:
 
     def _claim_alpha_campaign(
         self, worker_id: str, lease_seconds: int, trace_id: str, *,
-        fixture_only: bool, job_id: str | None, workflow: tuple[int, int] | None = None,
+        fixture_only: bool, job_id: str | None, workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> ClaimedJob | None:
         self._validate_worker(worker_id)
         self._validate_lease_seconds(lease_seconds)
@@ -316,10 +342,11 @@ class WorkerRepository:
             validate_p3_job_id(job_id)
         attempt_id = self._new_id("attempt")
         lease_token = secrets.token_urlsafe(48)
+        identity_parameters=self._validate_session_workflow(workflow,True)
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    """SELECT job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at
+                    self._session_statement("""SELECT job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at
                     FROM job_plane.worker_claim_session_holdout(%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """ if workflow is not None else """
                     SELECT job_id,job_type,payload,attempt_number,max_attempts,
@@ -330,11 +357,11 @@ class WorkerRepository:
                     """ if job_id is None else """
                     SELECT job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at
                     FROM job_plane.worker_claim_bound_alpha_campaign(%s,%s,%s,%s,%s,%s,%s,%s)
-                    """,
+                    """,identity_parameters),
                     (
                         attempt_id, worker_id, lease_token, lease_seconds,
                         trace_id, self._new_id("event"),
-                    ) + ((job_id, *workflow) if workflow is not None else
+                    ) + ((job_id, *identity_parameters) if workflow is not None else
                         (fixture_only,) + (() if job_id is None else (job_id,))),
                 ).fetchone()
                 if row is not None and job_id is not None and row['job_id'] != job_id:
@@ -352,7 +379,7 @@ class WorkerRepository:
     def start_attempt(
         self, job_id: str, attempt_id: str, worker_id: str, lease_token: str,
         identity: ProcessIdentity, trace_id: str, *, alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> bool:
         workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         self._validate_worker(worker_id)
@@ -374,7 +401,7 @@ class WorkerRepository:
                     ) AS started"""
                 )
                 row = connection.execute(
-                    statement,
+                    self._session_statement(statement,workflow),
                     (
                         job_id,
                         attempt_id,
@@ -467,7 +494,7 @@ class WorkerRepository:
     def heartbeat_control(
         self, job_id: str, attempt_id: str, worker_id: str,
         lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> str:
         """Renew the current fence and return cancellation without a race."""
 
@@ -486,7 +513,7 @@ class WorkerRepository:
     def pre_spawn_control(
         self, job_id: str, attempt_id: str, worker_id: str,
         lease_token: str, lease_seconds: int, *, alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> str:
         """Fence the CLAIMED-to-spawn boundary and observe cancellation."""
 
@@ -512,7 +539,7 @@ class WorkerRepository:
         phase: str,
         *,
         alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> str:
         workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         with self._pool.connection() as connection:
@@ -530,7 +557,7 @@ class WorkerRepository:
                     ) AS control"""
                 )
                 row = connection.execute(
-                    statement,
+                    self._session_statement(statement,workflow),
                     (
                         job_id,
                         attempt_id,
@@ -588,7 +615,7 @@ class WorkerRepository:
         error_code: str | None = None, error_message: str | None = None,
         artifacts: tuple[object, ...] = (), retry: bool = False,
         alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> bool:
         workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
         self._validate_worker(worker_id)
@@ -651,7 +678,7 @@ class WorkerRepository:
                     ) AS finalized"""
                 )
                 authority = connection.execute(
-                    statement,
+                    self._session_statement(statement,workflow),
                     (
                         job_id,
                         attempt_id,
@@ -730,7 +757,7 @@ class WorkerRepository:
         reason_code: str, trace_id: str, outcome: object | None,
         result: object | None, stream_artifacts: tuple[object, ...],
         alpha_campaign: bool = False,
-        session_workflow: tuple[int, int] | None = None,
+        session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> bool:
         artifacts = (*stream_artifacts, *((result,) if result is not None else ()))
         result_metadata: dict[str, object] = {
@@ -819,7 +846,7 @@ class WorkerRepository:
             )
         return outcome
 
-    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None, job_id: str | None = None, session_workflow: tuple[int, int] | None = None) -> tuple[tuple[str, str], ...]:
+    def recover_expired_leases(self, process_inspector: ProcessInspector, *, trace_id: str | None = None, recovery_id: str = "lease-recovery", alpha_campaign: bool = False, fixture_only: bool | None = None, job_id: str | None = None, session_workflow: tuple[int, int] | LocalRunIdentity | None = None) -> tuple[tuple[str, str], ...]:
         """Recover expired attempts only after process identity is resolved."""
 
         workflow = self._validate_session_workflow(session_workflow, alpha_campaign)
@@ -891,7 +918,7 @@ class WorkerRepository:
 
     def _recover_observed_candidate(
         self, candidate: dict[str, Any], observation: str,
-        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False, fixture_only: bool | None = None, session_workflow: tuple[int, int] | None = None,
+        trace_id: str, recovery_id: str, *, alpha_campaign: bool = False, fixture_only: bool | None = None, session_workflow: tuple[int, int] | LocalRunIdentity | None = None,
     ) -> str:
         """Lock and re-read the full fence after the potentially slow procfs read."""
 
@@ -906,7 +933,7 @@ class WorkerRepository:
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    statement,
+                    self._session_statement(statement,workflow),
                     (
                         candidate["job_id"],
                         candidate["attempt_id"],

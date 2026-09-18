@@ -27,7 +27,7 @@ from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody, JobMetadata, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
-from packages.project_status import derive_project_status
+from packages.project_status import require_p3_source_ready
 from apps.job_api.contracts import (
     JobDeduplicatedEnvelope, JobDetailEnvelope, JobEnqueuedEnvelope,
 )
@@ -115,13 +115,10 @@ def _validated_request(request_file: Path, workflow_operation: str):
     request = validate_request(request_file, source, operation)
     authorization = request.authorization
     payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=request.operation_input)
-    status = derive_project_status(ROOT)
-    if not (
-        status["gates"]["HWC_SOURCE_READY"] == "PASS"
-        and status["gates"]["PRE_P3_READY"] == "PASS"
-        and status["p3_alpha_development_allowed"] is True
-    ):
-        raise RuntimeError("HELD E_SOURCE_READY: protected source gates are not current")
+    try:
+        require_p3_source_ready(ROOT,getattr(authorization,'identity',None))
+    except ValueError as error:
+        raise RuntimeError('HELD E_SOURCE_READY: protected source gates are not current') from error
     return request, payload
 
 
@@ -147,11 +144,11 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
 
 def _stage_request(request, payload, workflow_operation, store, manifest_file, review_file):
     authorization = request.authorization
-    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan, validate_fixture_authority
+    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FIXTURE_PLAN, validate_fixture_authority
     review = _read_review(review_file,authorization.review_ref)
     manifest = _read_authority_bytes(manifest_file)
     if workflow_operation == "p3-integration-fixture-v1":
-        plan = FixturePlan.model_validate_json(manifest)
+        plan = FIXTURE_PLAN.validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:
             raise RuntimeError("HELD E_MANIFEST: fixture plan differs from source")
         validate_fixture_authority(payload,authorization,plan,review)

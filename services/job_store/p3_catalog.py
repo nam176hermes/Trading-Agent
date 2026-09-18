@@ -110,5 +110,9 @@ SESSION_CATALOG_SQL = CUSTODIAN_CATALOG_SQL.replace("'event_outbox']",
     "'event_outbox','p3_alpha_heads','p3_alpha_projection','event_append_idempotency',"
     "'event_publications','job_artifacts','worker_heartbeats']")
 
-SESSION_REVISION = '0030_p3_session_terminal_fences'
-SESSION_CATALOG_SHA256 = '506071c06cdd91fe7e9506a03c15df10949e41f97f80dbbdd27c305aef3a82d4'
+LEGACY_SESSION_REVISION = '0030_p3_session_terminal_fences'
+LEGACY_SESSION_CATALOG_SHA256 = '506071c06cdd91fe7e9506a03c15df10949e41f97f80dbbdd27c305aef3a82d4'
+SESSION_REVISION = '0031_p3_local_identity'
+# Observed from the real disposable upgrade and cross-lane disclosure test.
+SESSION_CATALOG_SHA256 = '55db6daf246896ff3f17c5e6a125a4a3d64cdae93a9a726db3db52ca7c6fb310'
+SESSION_CATALOGS = {LEGACY_SESSION_REVISION:LEGACY_SESSION_CATALOG_SHA256,SESSION_REVISION:SESSION_CATALOG_SHA256}

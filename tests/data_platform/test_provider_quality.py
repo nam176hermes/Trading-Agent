@@ -122,3 +122,15 @@ def test_provider_conflicts_use_explicit_priority_and_fail_on_same_rank_ambiguit
             (preferred, ProviderCandidateV1("primary", "c" * 64, T0)),
             provider_priority=("primary", "backup"),
         )
+    # The higher-priority observation becomes known at T3, after the T2 query.
+    late = ProviderCandidateV1("primary", "c" * 64, T0 + timedelta(days=2))
+    assert resolve_provider_conflict(
+        (backup, late), provider_priority=("primary", "backup"),
+        known_at=T0 + timedelta(days=1),
+    ).selected == backup
+    assert resolve_provider_conflict(
+        (backup, late), provider_priority=("primary", "backup"),
+        known_at=T0 + timedelta(days=2),
+    ).selected == late
+    with pytest.raises(DataConflictError, match="visible"):
+        resolve_provider_conflict((late,), provider_priority=("primary",), known_at=T0)

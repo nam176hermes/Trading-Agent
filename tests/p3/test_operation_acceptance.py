@@ -12,13 +12,32 @@ from services.job_worker.p3_operation_fixture import _authorization
 from tests.p3.test_job_api import _alpha_request
 
 
-@pytest.mark.parametrize('fault', [None, 'api_role', 'changed_digest', 'database_error', 'remote_host'])
-def test_acceptance_uses_protected_login_and_commits_only_bound_response(monkeypatch,tmp_path,fault):
+@pytest.mark.parametrize('lane', ['GITHUB','LOCAL'])
+@pytest.mark.parametrize('fault', [None, 'api_role', 'changed_digest', 'database_error', 'remote_host', 'revoked_before_commit'])
+def test_acceptance_uses_protected_login_and_commits_only_bound_response(monkeypatch,tmp_path,fault,lane):
     from services.job_store import p3_operation_authority as module
     raw, intent_raw, review_raw = _authorization(_alpha_request().payload.expected_source)
     authorization = RunAuthorization.model_validate_json(raw)
     intent = P3OperationInput.model_validate_json(intent_raw)
     review = ReviewApproval.model_validate_json(review_raw)
+    if lane == 'LOCAL':
+        from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+        from tests.p3.test_local_qualification import sealed
+        value=authorization.model_dump(mode='json')
+        for field in ('issuer_workflow','issuer_run_id','issuer_attempt'):value.pop(field)
+        value.update(schema_version='p3-local-run-authorization-v1',identity=dict(issuer_kind='LOCAL',
+            issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000002',attempt=1,
+            host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'))
+        authorization=LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(value)))
+        raw=canonical_json_bytes(authorization).decode()
+        admitted=SimpleNamespace(operation_input=intent)
+        reads=[]
+        def protected(*a,**k):
+            reads.append(1)
+            if fault=='revoked_before_commit' and len(reads)>1:
+                raise module.AuthorityHeld('revoked')
+            return admitted
+        monkeypatch.setattr(module,'validate_local_operation_authority',protected)
     expected = hashlib.sha256(raw.encode()).hexdigest()
     calls, commits = [], []
     credentials = {'database-host':'127.0.0.1','database-port':'55432','database-name':'disposable-source-test','database-password':'synthetic-private-password'}
@@ -45,7 +64,7 @@ def test_acceptance_uses_protected_login_and_commits_only_bound_response(monkeyp
         yield Connection()
         commits.append(True)
     monkeypatch.setattr(module.psycopg,'connect',connect)
-    if fault is None:
+    if fault is None or (fault == 'revoked_before_commit' and lane == 'GITHUB'):
         module.accept_operation_authorization(authorization,intent,review,credential_directory=tmp_path)
         assert commits == [True]
         assert len(calls) == 2
@@ -166,3 +185,26 @@ def test_dispatch_rejects_valid_envelopes_for_other_jobs(tmp_path,monkeypatch,ph
             dispatch.dispatch(tmp_path/'request',tmp_path/'token',tmp_path/'output',intent.workflow_operation,
                 artifact_root=tmp_path/'cas',manifest_file=tmp_path/'manifest',review_file=tmp_path/'review')
         assert 'job-result.json' not in outputs
+
+
+@pytest.mark.parametrize('fault',['revoked','input'])
+def test_local_acceptance_checks_protected_operation_before_credentials(monkeypatch,tmp_path,fault):
+    import json
+    from packages.alpha_lifecycle import authority
+    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+    from tests.p3.test_local_qualification import sealed
+    from services.job_store import p3_operation_authority as module
+    raw,intent_raw,review_raw=_authorization(_alpha_request().payload.expected_source)
+    value=json.loads(raw)
+    for field in ('issuer_workflow','issuer_run_id','issuer_attempt'):value.pop(field)
+    value.update(schema_version='p3-local-run-authorization-v1',identity=dict(issuer_kind='LOCAL',
+        issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000002',attempt=1,
+        host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'))
+    auth=LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(value)))
+    def protected(*a,**k):
+        if fault=='revoked':raise authority.AuthorityHeld('revoked')
+        return SimpleNamespace(operation_input=None)
+    monkeypatch.setattr(module,'validate_local_operation_authority',protected)
+    monkeypatch.setattr(module,'read_systemd_credential',lambda *a:pytest.fail('credentials accessed before protected validation'))
+    with pytest.raises(authority.AuthorityHeld):module.accept_operation_authorization(auth,
+        P3OperationInput.model_validate_json(intent_raw),ReviewApproval.model_validate_json(review_raw),credential_directory=tmp_path)

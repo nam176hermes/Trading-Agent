@@ -9,10 +9,13 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from typing import Literal
+from typing import Annotated,Literal
+from pydantic import Field,TypeAdapter
 
-from packages.alpha_lifecycle.authority import _FixtureAuthorization, AuthorityHeld, _validate_workflow_context
-from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt, ReviewApproval
+from packages.alpha_lifecycle.authority import (_FixtureAuthorization,_LocalFixtureAuthorization,
+    FIXTURE_AUTHORIZATION,AuthorityHeld,validate_operation_issuer)
+from packages.alpha_lifecycle.contracts.authority import (IntegrationReceiptValue,INTEGRATION_RECEIPT,
+    ReviewApproval)
 from packages.alpha_lifecycle.contracts.base import DigestModel, Sha256, SourceIdentity
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts import canonical_json_bytes, payload_digest
@@ -26,19 +29,30 @@ from .results import ResultValidator, _open_directory_chain
 ROOT = Path(__file__).resolve().parents[2]
 
 
-class FixturePlan(DigestModel):
-    schema_version: Literal['p3-integration-fixture-plan-v1']
+class _FixturePlanFields(DigestModel):
     source: SourceIdentity
     purpose: Literal['SYNTHETIC_ONLY']
     native_request_digest: Sha256
     policy_set_sha256: Sha256
-    sql_revision: Literal['0026_p3_holdout_disclosure']
     cleanup_policy: Literal['OWNED_ROOTS_ONLY']
+
+
+class FixturePlan(_FixturePlanFields):
+    schema_version: Literal['p3-integration-fixture-plan-v1']
+    sql_revision: Literal['0026_p3_holdout_disclosure']
+
+
+class LocalFixturePlan(_FixturePlanFields):
+    schema_version: Literal['p3-local-integration-fixture-plan-v1']
+    sql_revision: Literal['0031_p3_local_identity']
+
+
+FIXTURE_PLAN=TypeAdapter(Annotated[FixturePlan | LocalFixturePlan,Field(discriminator='schema_version')])
 
 
 @dataclass(frozen=True, slots=True)
 class IntegrationExecution:
-    receipt: IntegrationReceipt
+    receipt: IntegrationReceiptValue
     native_runs: tuple[NativeFixtureRun, ...]
 
 
@@ -86,20 +100,20 @@ def _read_review(path: Path, reference: ArtifactRefV1) -> ReviewApproval:
 
 
 def validate_fixture_authority(
-    payload: object, authorization: object, plan: FixturePlan, review: ReviewApproval,
+    payload: object, authorization: object, plan: FixturePlan | LocalFixturePlan, review: ReviewApproval,
 ) -> None:
     """Shared admission and execution checks; performs no writes or SQL access."""
     if (not isinstance(payload,AlphaCampaignPayload) or payload.operation!='PARITY'
         or payload.logical_trial_id!='p3-integration-fixture-v1'
-        or not isinstance(authorization,_FixtureAuthorization)):
+        or not isinstance(authorization,(_FixtureAuthorization,_LocalFixtureAuthorization))):
         raise AuthorityHeld('HELD E_OPERATION: exact fixture authority required')
     source=payload.expected_source
     now=datetime.now(UTC)
     if (authorization.fixture_plan_ref!=payload.manifest_ref or plan.source!=source
-        or authorization.issuer_workflow!='p3-authority.yml'
+        or isinstance(plan,LocalFixturePlan)!=isinstance(authorization,_LocalFixtureAuthorization)
         or not authorization.issued_at<=now<authorization.expires_at):
         raise AuthorityHeld('HELD E_AUTHORITY: fixture scope/source/expiry differs')
-    _validate_workflow_context(authorization,source)
+    validate_operation_issuer(authorization,source,root=ROOT)
     for reference,value in ((payload.authorization_ref,authorization),(payload.manifest_ref,plan),(authorization.review_ref,review)):
         raw=canonical_json_bytes(value)
         if (reference.media_type!='application/json' or reference.size_bytes!=len(raw)
@@ -131,8 +145,8 @@ class P3IntegrationFixtureExecutor:
             source = SourceIdentity.model_validate(canonical_source_identity(ROOT))
             if source != job.payload.expected_source:
                 raise AuthorityHeld('HELD E_SOURCE: executor source differs from job')
-            authorization = _FixtureAuthorization.model_validate_json(self.store.read_bytes(job.payload.authorization_ref))
-            plan = FixturePlan.model_validate_json(self.store.read_bytes(job.payload.manifest_ref))
+            authorization = FIXTURE_AUTHORIZATION.validate_json(self.store.read_bytes(job.payload.authorization_ref))
+            plan = FIXTURE_PLAN.validate_json(self.store.read_bytes(job.payload.manifest_ref))
             review = _read_review(self.review_file, authorization.review_ref)
             validate_fixture_authority(job.payload,authorization,plan,review)
             self.store.read_bytes(review.evidence_ref)
@@ -183,6 +197,7 @@ class P3IntegrationFixtureExecutor:
                 'schema_version':'p3-native-fixture-proof-v1','source':source,'runs':native_records,
             }),media_type='application/json')
             sql = run_sql_fixture(source,progress=progress,heartbeat=heartbeat,
+                                  local_identity_source_checks=isinstance(authorization,_LocalFixtureAuthorization),
                                   owned_root=self.private_root/("sql-"+hashlib.sha256(
                                       f"{job.job_id}/{job.attempt_id}".encode()).hexdigest()[:32]))
             cleanup = sql.get('cleanup')
@@ -196,6 +211,9 @@ class P3IntegrationFixtureExecutor:
                 raise AuthorityHeld('HELD E_SQL_PROOF: source, revision or cleanup differs')
             if not REQUIRED_SQL_CHECKS <= set(checks):
                 raise AuthorityHeld('HELD E_SQL_COVERAGE: required SQL qualification vectors are missing')
+            if isinstance(authorization,_LocalFixtureAuthorization):
+                from .p3_fixture_sql import validate_local_sql_fixture_checks
+                validate_local_sql_fixture_checks(sql)
             sql_ref = self.store.put_bytes(canonical_json_bytes(sql),media_type='application/json')
             progress()
             shutil.rmtree(root)
@@ -210,12 +228,15 @@ class P3IntegrationFixtureExecutor:
             preflight()
             if self._attest(job) != (source, authorization, plan):
                 raise AuthorityHeld('HELD E_AUTHORITY: fixture authority changed during execution')
-            receipt = dict(schema_version='p3-integration-qualified-v1',source=source,
+            receipt: dict[str,object] = dict(schema_version='p3-integration-qualified-v1',source=source,
                            sql_proof_ref=sql_ref,native_fixture_proof_ref=native_ref,cleanup_proof_ref=cleanup_ref,
-                           workflow_run_id=authorization.issuer_run_id,workflow_attempt=authorization.issuer_attempt,
                            status='PASS',authority=dict(broker=False,live=False,network=False,production=False))
+            if isinstance(authorization,_LocalFixtureAuthorization):
+                receipt.update(schema_version='p3-local-integration-qualified-v1',identity=authorization.identity)
+            else:
+                receipt.update(workflow_run_id=authorization.issuer_run_id,workflow_attempt=authorization.issuer_attempt)
             receipt['digest'] = hashlib.sha256(canonical_json_bytes(receipt)).hexdigest()
-            return IntegrationExecution(IntegrationReceipt.model_validate(receipt),runs)
+            return IntegrationExecution(INTEGRATION_RECEIPT.validate_python(receipt),runs)
         except Exception as error:
             outcome = error.outcome if isinstance(error,NativeFixtureError) else (runs[-1].outcome if runs else None)
             completed = error.completed if isinstance(error,NativeFixtureError) else runs

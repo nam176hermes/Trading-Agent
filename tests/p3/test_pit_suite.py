@@ -15,6 +15,28 @@ from tests.p3.test_publication import _changed
 SUITE = Path(__file__).resolve().parents[2]/'docs/implementation/pre-p3/p2-pit-adversarial-suite-v1.json'
 
 
+def test_local_pit_observations_keep_local_identity_without_numeric_workflow(tmp_path):
+    from packages.alpha_lifecycle.pit_suite import build_pit_suite_receipt, validate_pit_suite_receipt
+    store, manifest_ref, source, report, _ = suite_inputs(tmp_path)
+    identity = dict(issuer_kind='LOCAL', issuer_identity='operator-a',
+        run_id='00000000-0000-4000-8000-000000000002', attempt=1,
+        host_id='a'*64, boot_id='00000000-0000-4000-8000-000000000001')
+    qualification = dict(completed_at_utc='2026-09-18T12:00:00Z',
+        producer='scripts/qualify_pre_p3.py', identity=identity)
+    collection = {**report, 'collection_only':True, 'summary':{'collected':14},
+        'tests':[{**row, 'outcome':'collected', 'phase':'collection'} for row in report['tests']]}
+    collected = store.put_bytes(canonical_json_bytes(collection), media_type='application/json')
+    executed = store.put_bytes((json.dumps(report, indent=2, sort_keys=True)+'\n').encode(), media_type=PIT_EVIDENCE_MEDIA)
+    receipt = build_pit_suite_receipt(source, manifest_ref, collected, executed, qualification, store=store)
+    assert receipt.schema_version == 'p3-pit-adversarial-suite-receipt-v2'
+    assert receipt.qualification.identity.model_dump(mode='json') == identity
+    ref = store.put_bytes(canonical_json_bytes(receipt), media_type='application/json')
+    assert validate_pit_suite_receipt(ref, source=source, store=store) == receipt
+    with pytest.raises(ValueError):
+        build_pit_suite_receipt(source, manifest_ref, collected, executed,
+            {**qualification, 'run_id':'123'}, store=store)
+
+
 def suite_inputs(tmp_path):
     (tmp_path/'artifacts').mkdir(mode=0o700)
     store = LocalArtifactStore(tmp_path/'artifacts')

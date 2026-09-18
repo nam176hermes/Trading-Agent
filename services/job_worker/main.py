@@ -308,6 +308,13 @@ def _fixture_job(values):
     payload=binding[1].payload
     if not isinstance(payload,AlphaCampaignPayload) or payload.operation!='PARITY' or payload.logical_trial_id!='p3-integration-fixture-v1':
         raise ValueError('fixture worker enqueue operation differs')
+    lane=values.get('P3_ISSUER_KIND','GITHUB')
+    if lane not in {'LOCAL','GITHUB'}:raise ValueError('fixture issuer lane differs')
+    if lane=='LOCAL':
+        from packages.alpha_lifecycle.authority import validate_request,_LocalFixtureAuthorization
+        admitted=validate_request(paths['P3_AUTHORITY_REQUEST_FILE'],payload.expected_source,'PARITY')
+        if not isinstance(admitted.authorization,_LocalFixtureAuthorization):
+            raise ValueError('local fixture launcher requires protected local fixture authority')
     return binding[0],payload,binding[2]
 
 def main() -> int:
@@ -336,7 +343,10 @@ def main() -> int:
         raise ValueError('fixture worker enqueue changed before database admission')
     with WorkerRepository(settings) as repository:
         if fixture_binding is not None:
-            repository.assert_p3_runtime_identity()
+            if values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
+                repository.assert_session_runtime_identity()
+            else:
+                repository.assert_p3_runtime_identity()
             worker = build_p3_fixture_worker(repository,values,authority=authority,job_id=fixture_binding[0])
             return 0 if worker.run_once() else 2
         repository.assert_runtime_identity(

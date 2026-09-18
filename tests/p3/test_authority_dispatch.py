@@ -110,7 +110,7 @@ def test_shape_preflight_does_not_emit_an_execution_approval(
         lambda root: source.model_dump(mode="json"),
     )
     monkeypatch.setattr(
-        p3_authority,
+        __import__("packages.project_status",fromlist=["derive_project_status"]),
         "derive_project_status",
         lambda root: {
             "gates": {"HWC_SOURCE_READY": "PASS", "PRE_P3_READY": "PASS"},
@@ -190,7 +190,7 @@ def dispatch_fixture(tmp_path,monkeypatch):
     request.chmod(0o600)
     payload=build_alpha_campaign_payload(authorization,source,'p3-integration-fixture-v1')
     monkeypatch.setattr(command,'canonical_source_identity',lambda root:source.model_dump(mode='json'))
-    monkeypatch.setattr(command,'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='PASS',PRE_P3_READY='PASS'),p3_alpha_development_allowed=True))
+    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='PASS',PRE_P3_READY='PASS'),p3_alpha_development_allowed=True))
     monkeypatch.setattr(p3_integration,'_read_review',lambda *args:ReviewApproval.model_validate_json(store.read_bytes(review_ref)))
     monkeypatch.setattr(p3_integration,'_read_authority_bytes',lambda path:store.read_bytes(plan_ref))
     monkeypatch.setattr(command,'_read_token',lambda path:'synthetic-test-token')
@@ -288,7 +288,7 @@ def test_wait_rechecks_protected_source_before_any_job_read(dispatch_fixture,mon
     command,args,kwargs,calls,state=dispatch_fixture
     command.enqueue(*args,**kwargs)
     state.worker_ran=True
-    monkeypatch.setattr(command,'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='HELD',PRE_P3_READY='PASS'),p3_alpha_development_allowed=False))
+    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='HELD',PRE_P3_READY='PASS'),p3_alpha_development_allowed=False))
     with pytest.raises(RuntimeError,match='E_SOURCE_READY'):
         command.wait_for_result(*args,**kwargs)
     assert calls==[('POST','/v1/jobs')]

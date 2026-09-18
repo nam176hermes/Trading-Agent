@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore, _read
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.operation_input import P3OperationInput
@@ -223,7 +223,7 @@ class P3SpawnProvider:
             or closure.sandbox.version != BWRAP_VERSION or closure.sandbox.capabilities != BWRAP_CAPABILITIES):
             raise ValueError('complete P3 source attestation is required')
         intent = _read(self._store, job.payload.manifest_ref, P3OperationInput)
-        authorization = _read(self._store, job.payload.authorization_ref, RunAuthorization)
+        authorization = _read(self._store, job.payload.authorization_ref, RUN_AUTHORIZATION)
         payload = stage_alpha_campaign_payload(ReadbackStore(self._store,self._store), authorization,
             closure.source, job.payload.logical_trial_id, canonical_json_bytes(intent), operation_input=intent)
         inputs = _read(self._store, intent.input_set_ref, InputSet)

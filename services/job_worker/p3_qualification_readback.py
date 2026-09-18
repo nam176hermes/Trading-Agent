@@ -11,7 +11,7 @@ from uuid import NAMESPACE_URL,uuid5
 from packages.engine_contracts import EngineCommandEnvelope,RunBacktest,canonical_json_bytes,payload_digest
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.replica_store import ArtifactStore
-from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt
+from packages.alpha_lifecycle.contracts.authority import IntegrationReceiptValue
 from packages.job_contracts import AlphaCampaignPayload
 from packages.data_contracts import ArtifactRefV1
 from packages.nautilus_runtime_contracts.result import validate_p1_result, P1ValidatedResult
@@ -164,15 +164,15 @@ def validate_integration_receipt(
     ref: ArtifactRefV1, *, fixture_payload: AlphaCampaignPayload, source: SourceIdentity,
     job_id: str, attempt_id: str, worker_id: str, postgres_binary_sha256: str,
     store: ArtifactStore, progress: Callable[[], None] | None = None,
-) -> IntegrationReceipt:
+) -> IntegrationReceiptValue:
     """Recompute retained proof closure; caller authenticates the job/profile binding.
 
     Hash-valid CAS bytes and historical reviews alone never grant host authority.
     """
-    from packages.alpha_lifecycle.authority import _FixtureAuthorization
-    from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt,ReviewApproval
+    from packages.alpha_lifecycle.authority import FIXTURE_AUTHORIZATION, _LocalFixtureAuthorization
+    from packages.alpha_lifecycle.contracts.authority import INTEGRATION_RECEIPT,LocalIntegrationReceipt,ReviewApproval
     from packages.job_contracts import AlphaCampaignOperation,AlphaCampaignPayload
-    from .p3_integration import FixturePlan,ROOT
+    from .p3_integration import FIXTURE_PLAN,LocalFixturePlan,ROOT
     from .p3_fixture_sql import validate_sql_fixture_checks
     from .p3_fixture_native import native_fixture_definition
 
@@ -188,21 +188,25 @@ def validate_integration_receipt(
     def model(reference,contract):
         progress()
         raw=_read(reference,store,media_type='application/json',max_bytes=65536)
-        result=contract.model_validate_json(raw)
+        from pydantic import TypeAdapter
+        result=contract.validate_json(raw) if isinstance(contract,TypeAdapter) else contract.model_validate_json(raw)
         if canonical_json_bytes(result)!=raw:
             raise ValueError('qualification typed artifact is not canonical')
         return result
 
-    receipt=model(ref,IntegrationReceipt)
-    plan=model(fixture_payload.manifest_ref,FixturePlan)
+    receipt=model(ref,INTEGRATION_RECEIPT)
+    plan=model(fixture_payload.manifest_ref,FIXTURE_PLAN)
     if plan.native_request_digest!=payload_digest(native_fixture_definition()[0]):
         raise ValueError('qualification plan differs from the fixed fixture command')
-    authorization=model(fixture_payload.authorization_ref,_FixtureAuthorization)
+    authorization=model(fixture_payload.authorization_ref,FIXTURE_AUTHORIZATION)
     review=model(authorization.review_ref,ReviewApproval)
+    local=isinstance(authorization,_LocalFixtureAuthorization)
+    issuer_matches=(isinstance(receipt,LocalIntegrationReceipt) and receipt.identity==authorization.identity
+        if local else not isinstance(receipt,LocalIntegrationReceipt) and authorization.issuer_workflow=='p3-authority.yml'
+        and (receipt.workflow_run_id,receipt.workflow_attempt)==(authorization.issuer_run_id,authorization.issuer_attempt))
     if (receipt.source!=source or plan.source!=source or review.source!=source
         or authorization.fixture_plan_ref!=fixture_payload.manifest_ref
-        or authorization.issuer_workflow!='p3-authority.yml'
-        or (receipt.workflow_run_id,receipt.workflow_attempt)!=(authorization.issuer_run_id,authorization.issuer_attempt)
+        or not issuer_matches or isinstance(plan,LocalFixturePlan)!=local
         or review.verdict!='APPROVED' or review.operator_identity==review.reviewer_identity
         or not review.issued_at<=authorization.issued_at<authorization.expires_at<=review.expires_at
         or plan.digest not in review.subject_digests
@@ -214,11 +218,15 @@ def validate_integration_receipt(
         expected_request_digest=plan.native_request_digest,store=store,progress=progress)
     progress()
     sql=_object(_read(receipt.sql_proof_ref,store,media_type='application/json',max_bytes=65536),
-        ('source','checks','sql_revision','postgres_binary_sha256','started_at','finished_at','cleanup'))
+        ('source','checks','sql_revision','postgres_binary_sha256','started_at','finished_at','cleanup')
+        + (('native_process_checks','session_holdout_checks','local_identity_checks') if local else ()))
     if (sql['source']!=source.model_dump(mode='json') or sql['sql_revision']!=plan.sql_revision
         or sql['postgres_binary_sha256']!=postgres_binary_sha256):
         raise ValueError('qualification SQL source, binary or required checks differ')
     validate_sql_fixture_checks(sql['checks'])
+    if local:
+        from .p3_fixture_sql import validate_local_sql_fixture_checks
+        validate_local_sql_fixture_checks(sql)
     instants=[]
     for key in ('started_at','finished_at'):
         value=sql[key]
@@ -249,12 +257,12 @@ def validate_integration_receipt(
 def validate_integration_job_result(
     ref: ArtifactRefV1, *, job_detail_ref: ArtifactRefV1, source: SourceIdentity,
     postgres_binary_sha256: str, store: ArtifactStore, progress: Callable[[], None] | None = None,
-) -> IntegrationReceipt:
+) -> IntegrationReceiptValue:
     """Bind retained Job API observation to its fixture result; root provenance is external."""
     from datetime import timedelta
     from apps.job_api.contracts import JobDetailEnvelope
     from packages.job_contracts import ActorType,JobType,JobState,AlphaCampaignPayload,payload_fingerprint
-    from packages.alpha_lifecycle.authority import _FixtureAuthorization
+    from packages.alpha_lifecycle.authority import FIXTURE_AUTHORIZATION
     from packages.alpha_lifecycle.contracts.authority import ReviewApproval
 
     progress=progress or (lambda:None)
@@ -310,7 +318,7 @@ def validate_integration_job_result(
     receipt=validate_integration_receipt(ref,fixture_payload=job.payload,source=source,job_id=job.job_id,
         attempt_id=attempt.attempt_id,worker_id=attempt.worker_id,postgres_binary_sha256=postgres_binary_sha256,
         store=store,progress=progress)
-    authorization=_FixtureAuthorization.model_validate_json(_read(job.payload.authorization_ref,store,
+    authorization=FIXTURE_AUTHORIZATION.validate_json(_read(job.payload.authorization_ref,store,
         media_type='application/json',max_bytes=65536))
     review=ReviewApproval.model_validate_json(_read(authorization.review_ref,store,media_type='application/json',max_bytes=65536))
     sql=json.loads(_read(receipt.sql_proof_ref,store,media_type='application/json',max_bytes=65536))

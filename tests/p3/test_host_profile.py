@@ -52,7 +52,7 @@ def profile_inputs(synthetic_provider,monkeypatch):
     monkeypatch.setattr(module,'_release_files',p3_spawn._release_files)
     monkeypatch.setattr(module,'inspect_python_runtime',p3_spawn.inspect_python_runtime)
     monkeypatch.setattr(module,'canonical_source_identity',lambda root:closure.source.model_dump(mode='json'))
-    monkeypatch.setattr(module,'derive_project_status',lambda root:dict(gates={
+    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates={
         'HWC_SOURCE_READY':'PASS','PRE_P3_READY':'PASS'},p3_alpha_development_allowed=True))
     observations=[]
     def qualify(ref,**kwargs):
@@ -101,7 +101,7 @@ def test_profile_rejects_changed_binding_or_evidence(profile_inputs,monkeypatch,
     elif fault=='context':
         context['GITHUB_RUN_ATTEMPT']='2'
     elif fault=='gates':
-        monkeypatch.setattr(module,'derive_project_status',lambda root:dict(gates={
+        monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates={
             'HWC_SOURCE_READY':'HELD','PRE_P3_READY':'PASS'},p3_alpha_development_allowed=False))
     elif fault=='receipt':
         monkeypatch.setattr(module,'validate_integration_job_result',lambda *args,**kwargs:(_ for _ in ()).throw(ValueError('bad retained proof')))
@@ -133,3 +133,39 @@ def test_holdout_profile_requires_a_custodian_endpoint(profile_inputs):
     document['payload']['operation']='BASELINES'
     document['payload']['logical_trial_id']='p3-baselines-v1'
     with pytest.raises(ValueError):OfficialHostProfile.model_validate_json(canonical_json_bytes(document))
+
+
+@pytest.mark.parametrize('fault',[None,'mixed_lane','wrong_identity','qualification_identity','revoked'])
+def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profile_inputs,monkeypatch,fault):
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
+    from tests.p3.test_local_qualification import sealed
+    module,provider,job,closure,document,_,digest,observations=profile_inputs
+    value=__import__('json').loads(provider._store.read_bytes(job.payload.authorization_ref))
+    for key in ('issuer_workflow','issuer_run_id','issuer_attempt'):value.pop(key)
+    identity=dict(issuer_kind='LOCAL',issuer_identity='operator-a',run_id='00000000-0000-4000-8000-000000000002',
+        attempt=1,host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001')
+    auth=RUN_AUTHORIZATION.validate_json(canonical_json_bytes(sealed({**value,
+        'schema_version':'p3-local-run-authorization-v1','identity':identity})))
+    auth_ref=provider._store.put_bytes(canonical_json_bytes(auth),media_type='application/json')
+    job=replace(job,payload=job.payload.model_copy(update={'authorization_ref':auth_ref}))
+    document.update(schema_version='p3-local-official-host-profile-v1',identity=identity,payload=job.payload.model_dump(mode='json'))
+    if fault=='mixed_lane':document.pop('identity');document['schema_version']='p3-official-host-profile-v1'
+    elif fault=='wrong_identity':document['identity']={**identity,'attempt':2}
+    checked=[]
+    def gates(root,expected): checked.append(('gates',expected))
+    def issuer(authorization,source,**kwargs):
+        assert source==closure.source and authorization==auth and kwargs['context']=={}
+        checked.append(('issuer',authorization.identity))
+        if fault=='revoked':raise module.AuthorityHeld('revoked')
+    monkeypatch.setattr(module,'require_p3_source_ready',gates)
+    monkeypatch.setattr(module,'validate_operation_issuer',issuer)
+    monkeypatch.setattr(module,'validate_integration_job_result',lambda *a,**k:SimpleNamespace(
+        identity=auth.identity.model_copy(update={'attempt':2}) if fault=='qualification_identity' else auth.identity))
+    if fault:
+        with pytest.raises(ValueError):module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,context={})
+    else:
+        profile,actual=module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,context={})
+        assert actual==replace(closure,bound_payload_fingerprint=__import__('packages.job_contracts',fromlist=['payload_fingerprint']).payload_fingerprint(job.payload)) and profile.identity==auth.identity
+        assert checked==[('gates',auth.identity),('issuer',auth.identity)]

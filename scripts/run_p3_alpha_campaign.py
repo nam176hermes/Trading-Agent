@@ -56,10 +56,10 @@ def main() -> None:
         or environment_identity.sandbox_policy_digest != args.sandbox_policy_digest):
         raise ValueError('operation manifest, InputSet or execution identity differs')
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     if not args.job_id or args.authorization_ref is None:
         raise ValueError('operation requires job attribution and retained authorization')
-    authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RunAuthorization)
+    authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RUN_AUTHORIZATION)
     stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,intent.workflow_operation,
         intent_raw,operation_input=intent)
     args.output.mkdir(mode=0o700,exist_ok=True)

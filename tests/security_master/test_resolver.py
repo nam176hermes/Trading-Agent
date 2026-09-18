@@ -254,6 +254,20 @@ def test_symbol_mapping_lookup_keys_cannot_change_within_fact(
 
     with pytest.raises(SecurityMasterIntegrityError, match="lookup keys"):
         SecurityMasterResolver((stored(revision()), stored(correction)))
+    # A legitimate canonical mapping correction must remain invisible at T2.
+    root = revision()
+    corrected = revision(
+        revision_id=UUID("90000000-0000-4000-8000-000000000002"),
+        revision_ordinal=2, supersedes_revision_id=REVISION_ID,
+        known_at=KNOWN + timedelta(days=2),
+        evidence=(evidence(known_at=KNOWN + timedelta(days=2)),),
+        payload=mapping_payload().model_copy(update={"canonical_symbol": "XBTUSDT"}),
+    )
+    resolver = SecurityMasterResolver((stored(root), stored(corrected)))
+    assert resolver.resolve_symbol_mapping(provider="BINANCE", raw_symbol="BTCUSDT",
+        valid_at=KNOWN, known_at=KNOWN + timedelta(days=1)) == stored(root)
+    assert resolver.resolve_symbol_mapping(provider="BINANCE", raw_symbol="BTCUSDT",
+        valid_at=KNOWN, known_at=KNOWN + timedelta(days=2)) == stored(corrected)
 
 
 def test_corporate_action_security_cannot_change_within_fact() -> None:

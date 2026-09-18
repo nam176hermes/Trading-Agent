@@ -159,7 +159,42 @@ def test_private_holdout_claim_in_disposable_postgres():
     from packages.pre_p3_provenance import canonical_source_identity
     from services.job_worker import p3_fixture_sql
     source = SourceIdentity.model_validate(canonical_source_identity(p3_fixture_sql.ROOT))
-    result = p3_fixture_sql.run_sql_fixture(source, session_holdout_source_checks=True)
-    assert result['sql_revision'] == '0030_p3_session_terminal_fences'
+    result = p3_fixture_sql.run_sql_fixture(source, local_identity_source_checks=True)
+    assert result['sql_revision'] == '0031_p3_local_identity'
+    assert result['local_identity_checks']['cross_lane_second_disclosures_rejected'] == 2
+    assert result['local_identity_checks']['phase_exit_readback'] == 'COMMITTED_CURRENT_HEAD_ONLY'
     assert result['session_holdout_checks']['verdict'] == 'PASS'
     assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']
+
+
+@pytest.mark.parametrize('action',['claim','start','control','finalize','recover'])
+def test_local_identity_is_passed_intact_to_private_sql_overloads(action):
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+    from packages.engine_contracts import canonical_json_bytes
+    identity=LocalRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='LOCAL',
+        issuer_identity='operator-a',run_id='00000000-0000-4000-8000-000000000002',attempt=1,
+        host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001')))
+    connection=_Connection(None if action=='claim' else {'started':True,'control':'CONTINUE','finalized':True})
+    repository=_worker(connection)
+    claim=('job-session','attempt-session','worker-session','x'*32)
+    scope=dict(alpha_campaign=True,session_workflow=identity)
+    if action=='claim':
+        assert repository.claim_local_holdout('worker-session',30,'test:local',job_id=claim[0],identity=identity) is None
+    elif action=='start':
+        assert repository.start_attempt(*claim,ProcessIdentity(71,71,99,'a'*64),'test:start',**scope)
+    elif action=='control':
+        assert repository.pre_spawn_control(*claim,30,**scope)=='CONTINUE'
+    elif action=='finalize':
+        assert repository.finalize(*claim,expected_state=JobState.CLAIMED,expected_attempt_outcome='CLAIMED',
+            final_state=JobState.BLOCKED,reason_code='P3_AUTHORITY_HELD',trace_id='test:finalize',**scope)
+    else:
+        candidate=dict(job_id=claim[0],attempt_id=claim[1],state='RUNNING',attempt_outcome='RUNNING',
+            lease_owner=claim[2],lease_token=claim[3],child_pid=None,process_group_id=None,
+            process_start_ticks=None,command_fingerprint=None)
+        connection=_Connection([candidate],{'outcome':'LEASE_EXPIRED_IDENTITY_UNVERIFIABLE'})
+        repository=_worker(connection)
+        assert repository.recover_expired_leases(object(),fixture_only=False,job_id=claim[0],**scope)==((claim[0],'LEASE_EXPIRED_IDENTITY_UNVERIFIABLE'),)
+    query,parameters=connection.calls[-1]
+    assert 'session_holdout' in query
+    assert parameters[-1]==canonical_json_bytes(identity).decode()
+    assert query.count('%s')==len(parameters)

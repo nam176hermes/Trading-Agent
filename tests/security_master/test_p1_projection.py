@@ -556,6 +556,21 @@ def test_rejects_stale_ambiguous_or_unrepresentable_inputs(
                 effective_from=OPEN + timedelta(minutes=1),
             ),
         )
+        original = revisions[-1]
+        t3 = CUTOFF + timedelta(days=1)
+        correction = original.revision.model_copy(update={
+            "revision_id": UUID("90000000-0000-4000-8000-000000000099"),
+            "revision_ordinal": 2,
+            "supersedes_revision_id": original.revision.revision_id,
+            "known_at": t3, "evidence": (_evidence(10, t3),),
+            "payload": original.revision.payload.model_copy(update={"new_units": "3"}),
+        })
+        persisted = PersistedSecurityMasterRevisionV1(revision=correction, recorded_at=t3)
+        resolver = security_master.SecurityMasterResolver((original, persisted))
+        assert resolver.resolve_fact(original.revision.fact_id, valid_at=OPEN + timedelta(minutes=1),
+            known_at=CUTOFF) == original
+        assert resolver.resolve_fact(original.revision.fact_id, valid_at=OPEN + timedelta(minutes=1),
+            known_at=t3) == persisted
     security_snapshot, market_dataset = _materialized_inputs(
         tmp_path, revisions=revisions, market=market
     )

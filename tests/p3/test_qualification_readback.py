@@ -524,3 +524,59 @@ def test_fixture_job_readback_rejects_reversed_serial_event_times(integration_jo
     events[1]['created_at']=(datetime.fromisoformat(events[2]['created_at'])+timedelta(milliseconds=1)).isoformat().replace('+00:00','Z')
     context['job_detail_ref']=store.put_bytes(canonical_json_bytes(value),media_type='application/json')
     with pytest.raises(ValueError): validate_integration_job_result(ref,**context)
+
+
+@pytest.mark.parametrize('fault',[None,'issuer','host','attempt','github','catalog','cross_lane','native','recovery'])
+def test_local_integration_readback_retains_lane_and_full_sql_coverage(integration_proof,fault):
+    import json
+    from uuid import uuid4
+    from packages.alpha_lifecycle.authority import _LocalFixtureAuthorization
+    from packages.alpha_lifecycle.contracts.authority import LocalIntegrationReceipt,ReviewApproval
+    from services.job_worker.p3_integration import LocalFixturePlan
+    from services.job_worker.p3_qualification_readback import validate_integration_receipt
+    from services.job_store.p3_catalog import SESSION_CATALOG_SHA256,SESSION_REVISION
+    ref,context=integration_proof;store=context['store'];payload=context['fixture_payload']
+    def load(reference):return json.loads(store.read_bytes(reference))
+    identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id=str(uuid4()),attempt=1,
+        host_id='a'*64,boot_id=str(uuid4()))
+    plan=load(payload.manifest_ref)
+    plan.update(schema_version='p3-local-integration-fixture-plan-v1',sql_revision=SESSION_REVISION)
+    plan_ref=_seal(store,LocalFixturePlan,**plan)
+    auth=load(payload.authorization_ref);review=load(auth['review_ref'])
+    review['subject_digests']=[load(plan_ref)['digest']]
+    auth.update(schema_version='p3-local-fixture-authorization-v1',identity=identity,
+        fixture_plan_ref=plan_ref,review_ref=_seal(store,ReviewApproval,**review))
+    for key in ('issuer_workflow','issuer_run_id','issuer_attempt'):auth.pop(key)
+    context['fixture_payload']=payload.model_copy(update=dict(manifest_ref=plan_ref,
+        authorization_ref=_seal(store,_LocalFixtureAuthorization,**auth)))
+    receipt=load(ref);sql=load(receipt['sql_proof_ref'])
+    sql.update(sql_revision=SESSION_REVISION,
+        native_process_checks=dict(verdict='PASS',role_denials=5,null_denials=12,identity_denials=8,
+            lock_fences=6,concurrent_winners=1,crash_recovery='TERMINAL_NO_RETRY'),
+        session_holdout_checks=dict(verdict='PASS',ordinary_holdout_claim='CLOSED',concurrent_winners=1,
+            workflow_denials=2,role_denials=5,null_denials=9,cancelled_and_expired='REJECTED',
+            expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
+            late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
+            expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
+        local_identity_checks=dict(verdict='PASS',catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
+            identity_denials=5,role_denials=5,cross_lane_second_disclosures_rejected=2,expiry='REJECTED',
+            start_before_disclosure='REJECTED',wrong_identity_heartbeat='STALE',terminal='COMMITTED',
+            recovery='TERMINAL_NO_RETRY',retry='REJECTED',migration_parent_drift='REJECTED',phase_exit_readback='COMMITTED_CURRENT_HEAD_ONLY'))
+    receipt.update(schema_version='p3-local-integration-qualified-v1',identity=dict(identity))
+    for key in ('workflow_run_id','workflow_attempt'):receipt.pop(key)
+    if fault=='issuer':receipt['identity']['issuer_identity']='another'
+    elif fault=='host':receipt['identity']['host_id']='b'*64
+    elif fault=='attempt':receipt['identity']['attempt']=2
+    elif fault=='github':context['fixture_payload']=payload
+    elif fault=='catalog':sql['local_identity_checks']['catalog_sha256']='f'*64
+    elif fault=='cross_lane':sql['local_identity_checks']['cross_lane_second_disclosures_rejected']=True
+    elif fault=='native':sql['native_process_checks']['role_denials']=0
+    elif fault=='recovery':sql['local_identity_checks']['recovery']='RETRIED'
+    receipt['sql_proof_ref']=store.put_bytes(canonical_json_bytes(sql),media_type='application/json')
+    ref=_seal(store,LocalIntegrationReceipt,**receipt)
+    if fault:
+        with pytest.raises(ValueError):validate_integration_receipt(ref,**context)
+    else:
+        result=validate_integration_receipt(ref,**context)
+        assert result.identity.model_dump(mode='json')==identity
+        assert 'workflow_run_id' not in result.model_dump()

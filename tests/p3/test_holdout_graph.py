@@ -221,13 +221,19 @@ def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypa
     assert reads
 
 
-@pytest.mark.parametrize('fault',['untyped','source'])
+@pytest.mark.parametrize('fault',['untyped','source','local_issuer'])
 def test_holdout_rejects_unqualified_integration_before_family(holdout_graph,monkeypatch,fault):
     graph=holdout_graph
     intent,authorization=_request(graph)
     receipt=_read(graph.store,graph.inputs.integration_receipt_ref,IntegrationReceipt)
     raw=b'{}' if fault=='untyped' else canonical_json_bytes(_changed(receipt,
         source=receipt.source.model_copy(update={'commit_sha':'9'*40})))
+    if fault=='local_issuer':
+        from uuid import uuid4
+        value=receipt.model_dump(mode='json',exclude={'digest','workflow_run_id','workflow_attempt'})
+        value.update(schema_version='p3-local-integration-qualified-v1',identity=dict(issuer_kind='LOCAL',
+            issuer_identity='synthetic',run_id=str(uuid4()),attempt=1,host_id='a'*64,boot_id=str(uuid4())))
+        raw=graph.store.read_bytes(_seal(graph.store,**value))
     bad_ref=graph.store.put_bytes(raw,media_type='application/json')
     body=intent.body.model_dump(mode='json')
     for name in ('input_set_ref','holdout_input_set_ref'):

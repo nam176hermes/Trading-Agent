@@ -207,8 +207,8 @@ class JobWorker:
             kwargs["alpha_campaign"] = True
             if self._p3_session is not None:
                 if self._session_holdout:
-                    kwargs['session_workflow'] = (self._p3_session.profile.workflow_run_id,
-                        self._p3_session.profile.workflow_attempt)
+                    from .p3_session import session_identity
+                    kwargs['session_workflow'] = session_identity(self._p3_session.profile)
         return getattr(self._repository, method)(*args, **kwargs)
 
     def _worker_heartbeat(self, status: str, claim=None) -> None:

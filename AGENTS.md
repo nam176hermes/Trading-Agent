@@ -52,6 +52,17 @@ before adding a production dependency.
 
 ## Default Codex workflow
 
+The operator-approved default is **local development with publication by phase**:
+finish P3 locally, publish a review batch when authorized, resolve external
+review, then plan and build P4 locally; repeat for later phases. Follow the
+[phase workflow design](docs/superpowers/specs/2026-09-18-local-phase-workflow.md)
+and [implementation plan](docs/superpowers/plans/2026-09-18-local-phase-workflow.md).
+Use focused checks during development and full applicable checks at candidate
+freeze. Do not require a push or hosted CI after each small change. Publication
+does not replace local validation, and local validation does not grant runtime
+authority. The new authenticated local qualification lane is planned, not yet
+implemented; preserve existing formal gates until its source migration passes.
+
 Use this workflow for every task unless the operator gives a narrower
 task-specific instruction. Repository rules and explicit operator decisions
 always override skills and tools.
@@ -88,10 +99,13 @@ always override skills and tools.
    Ponytail over-engineering pass. Use Codex Security for sensitive diffs and
    direct Playwright browser smoke for browser-facing behavior. A tool report,
    worker summary, or green unit suite is evidence only for what it exercised.
-8. **Qualify source.** After affected checks pass, run the safe root gates below
-   and `make ci-portable NONINTERACTIVE=1` when source qualification is in
-   scope. Use `make audit-release` only for a clean release candidate. Never
-   infer host, runtime, paper activation, or live authority from source gates.
+8. **Qualify source.** At candidate freeze, after affected checks pass, run the
+   safe root gates below. Keep `make ci-portable NONINTERACTIVE=1` in genuine
+   hosted context at publication; never invent GitHub identities locally.
+   Until the authenticated local qualification lane is implemented, report
+   missing formal qualification as HELD without blocking ordinary local source
+   development. Use `make audit-release` only for a clean release candidate.
+   Never infer host, runtime, paper activation, or live authority from source gates.
 9. **Hand off evidence.** Report changed behavior, files, exact commands and
    results, candidate SHA/tree, skipped checks, and residual risks. Keep source
    verdict, official ledger status, remote branch/main state, and runtime/live
