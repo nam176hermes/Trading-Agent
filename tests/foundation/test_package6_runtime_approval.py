@@ -591,6 +591,7 @@ def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
         "tests/foundation/test_package6_runtime_approval.py",
         "tests/foundation/test_package6_runtime_controller.py",
         "tests/foundation/test_package6_controller_closure.py",
+        "tests/p3/test_local_runtime.py",
         "tests/runtime_release/test_v2_runtime_config.py",
     }
 
