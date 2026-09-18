@@ -166,7 +166,7 @@ def derive_local_p3_status(root: Path):
     from importlib import import_module
     WorkerRepository=import_module('services.job_store.worker_repository').WorkerRepository
     validate_phase_exit_receipt=import_module('services.job_worker.p3_phase_readback').validate_phase_exit_receipt
-    source=None;phase=None;qualified=False;blockers=[]
+    source=None;phase=None;ready=None;qualified=False;blockers=[]
     code='E_LOCAL_PREREQUISITES'
     try:
         ready=read_local_pre_p3(root)['PRE_P3_READY'];qualified=True;source=ready.binding.source
@@ -201,12 +201,20 @@ def derive_local_p3_status(root: Path):
                 raise ValueError('phase receipt differs from qualified binding')
             code='E_LOCAL_PHASE_CHANGED'
             if (validate_local_qualification(profile.identity,profile.binding,store=store)!=approval
-                or read_local_pre_p3(root)['PRE_P3_READY']!=ready
                 or read_protected_canonical_json_current(LOCAL_PHASE_PROFILE)[1]!=digest):
                 raise ValueError('local phase authority changed during readback')
             phase=value
     except (OSError,ValueError,RuntimeError,psycopg.Error) as error:
         blockers.append(getattr(error,'code',code))
+    # Source freshness is independent of phase availability. Recheck even when
+    # phase readback failed, and invalidate every dependent projection on drift.
+    if qualified:
+        try:
+            if read_local_pre_p3(root)['PRE_P3_READY']!=ready:
+                raise ValueError('local prerequisites changed during readback')
+        except (OSError,ValueError,RuntimeError,psycopg.Error) as error:
+            qualified=False;source=None;phase=None
+            blockers.append(getattr(error,'code','E_LOCAL_PREREQUISITES_CHANGED'))
     outcome='HELD' if phase is None else phase.outcome
     value=dict(schema_version='p3-local-source-status-v1',issuer_kind='LOCAL',qualified_source=source,
         phase_exit_receipt_digest=None if phase is None else phase.digest,

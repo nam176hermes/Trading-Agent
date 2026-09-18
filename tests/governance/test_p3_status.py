@@ -99,7 +99,8 @@ def test_structural_receipt_cannot_bypass_external_attestation(monkeypatch) -> N
 
 
 @pytest.mark.parametrize('outcome', ['PASS','FAIL','NONE_QUALIFIED','HELD'])
-@pytest.mark.parametrize('fault',[None,'source','revoked','changed'])
+@pytest.mark.parametrize('fault',[None,'source','revoked','changed','missing_phase',
+    'prerequisite_revoked','prerequisite_expired','prerequisite_changed','missing_phase_prerequisite_revoked'])
 def test_local_status_keeps_economic_and_published_verdicts_separate(tmp_path,monkeypatch,outcome,fault):
     """Status routing only; custody and committed reconstruction have separate tests."""
     from types import SimpleNamespace
@@ -125,9 +126,22 @@ def test_local_status_keeps_economic_and_published_verdicts_separate(tmp_path,mo
     store=tmp_path/'cas';store.mkdir(mode=0o700)
     profile=p3_status.LocalPhaseProfile(schema_version='p3-local-phase-profile-v1',identity=identity,binding=binding,
         phase_receipt_ref=ref,store_root=str(store),worker_credentials_directory='/synthetic/credentials')
-    monkeypatch.setattr(local_pre_p3,'read_local_pre_p3',lambda root:{'PRE_P3_READY':ready})
+    prerequisite_reads=[]
+    def prerequisite(root):
+        prerequisite_reads.append(root)
+        if len(prerequisite_reads)>1:
+            if fault in {'prerequisite_revoked','missing_phase_prerequisite_revoked'}:
+                raise local_qualification.LocalQualificationError('E_LOCAL_APPROVAL_REVOKED','revoked')
+            if fault=='prerequisite_expired':
+                raise local_qualification.LocalQualificationError('E_LOCAL_APPROVAL_EXPIRED','expired')
+            if fault=='prerequisite_changed':
+                return {'PRE_P3_READY':object()}
+        return {'PRE_P3_READY':ready}
+    monkeypatch.setattr(local_pre_p3,'read_local_pre_p3',prerequisite)
     count=[]
     def protected(path):
+        if fault in {'missing_phase','missing_phase_prerequisite_revoked'}:
+            raise FileNotFoundError('phase profile unavailable')
         count.append(path)
         return profile.model_dump(mode='json'),('changed' if fault=='changed' and len(count)>1 else 'pinned')
     monkeypatch.setattr(config,'read_protected_canonical_json_current',protected)
@@ -147,6 +161,10 @@ def test_local_status_keeps_economic_and_published_verdicts_separate(tmp_path,mo
         policy_digest=binding.policy_digest,input_ref=ref,environment_ref=ref,outcome=outcome,digest='9'*64))
     result=p3_status.derive_local_p3_status(tmp_path)
     assert result.protected_promotion==result.published_complete=='HELD'
+    assert result.source_qualification==('HELD' if fault and 'prerequisite' in fault else 'PASS')
+    if fault and 'prerequisite' in fault:
+        assert result.qualified_source is None
+        assert result.phase_exit_receipt_digest is None
     if fault:
         assert result.local_complete=='HELD' and result.economic_outcome=='HELD' and result.blocker_codes
         if fault=='revoked':assert result.blocker_codes==('E_LOCAL_APPROVAL_REVOKED',)

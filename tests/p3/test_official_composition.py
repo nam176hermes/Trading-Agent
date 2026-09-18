@@ -5,8 +5,9 @@ import pytest
 from tests.p3.test_spawn_capability import synthetic_provider
 
 
+@pytest.mark.parametrize('local',[False,True])
 @pytest.mark.parametrize('job_id',['job_'+'a'*32,'job_'+'b'*32])
-def test_official_composition_reuses_canonical_worker_publication_and_recovery(synthetic_provider,monkeypatch,tmp_path,job_id):
+def test_official_composition_reuses_canonical_worker_publication_and_recovery(synthetic_provider,monkeypatch,tmp_path,job_id,local):
     from services.job_worker import main
     provider,job,_=synthetic_provider
     calls=[]
@@ -25,7 +26,13 @@ def test_official_composition_reuses_canonical_worker_publication_and_recovery(s
     monkeypatch.setattr(main,'SafetyStateClient',lambda *args,**kwargs:object())
     monkeypatch.setattr(main,'AuthorityBoundSafetyPreflight',lambda *args:lambda:calls.append(('safety',{})))
     monkeypatch.setattr(main,'JobWorker',lambda *args,**kwargs:calls.append(('worker',kwargs)) or kwargs)
-    result=main.build_worker(Repository(),{},authority=authority,p3_spawn_provider=provider,p3_job_id=job_id)
+    revoked=[False]
+    def runtime_guard():
+        from services.job_worker.errors import SafetyBlockedError
+        if revoked[0]:raise SafetyBlockedError('SAFETY_AUTHORITY_CHANGED','LOCAL runtime revoked')
+    result=main.build_worker(Repository(),{'P3_ISSUER_KIND':'LOCAL'} if local else {},
+        authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,
+        p3_runtime_guard=runtime_guard if local else None)
     assert [name for name,_ in calls]==['safety','recover','worker']
     assert calls[1][1]==dict(recovery_id='worker-startup-recovery',alpha_campaign=True,fixture_only=False,
         **({'job_id':job_id} if job_id is not None else {}))
@@ -35,6 +42,11 @@ def test_official_composition_reuses_canonical_worker_publication_and_recovery(s
     assert result['prepare_spawn']==provider.prepare
     assert result['p3_fixture_executor'] is None
     assert result['engine_spawn_provider'] is None
+    if local:
+        from services.job_worker.errors import SafetyBlockedError
+        revoked[0]=True
+        with pytest.raises(SafetyBlockedError):result['safety_preflight']()
+        assert [name for name,_ in calls]==['safety','recover','worker']
 
 
 @pytest.mark.parametrize('fault',['forged','fixture','engine'])

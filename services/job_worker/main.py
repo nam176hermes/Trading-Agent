@@ -59,6 +59,7 @@ def build_worker(
     p3_spawn_provider: object | None = None,
     p3_job_id: str | None = None,
     p3_session: object | None = None,
+    p3_runtime_guard=None,
 ) -> JobWorker:
     if p3_session is not None and (p3_spawn_provider is None or p3_fixture_executor is not None):
         raise ValueError('session requires its official provider')
@@ -165,6 +166,19 @@ def build_worker(
                 current_authority, current_client
             )()
 
+    p3_profile = p3_fixture_executor is not None or p3_spawn_provider is not None
+    if p3_profile and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
+        if p3_runtime_guard is None:
+            raise ValueError('LOCAL P3 worker requires pinned runtime approval')
+        base_preflight=safety_preflight
+        def safety_preflight():
+            p3_runtime_guard()
+            evidence=base_preflight()
+            p3_runtime_guard()
+            return evidence
+    elif p3_runtime_guard is not None:
+        raise ValueError('LOCAL runtime guard requires a LOCAL P3 worker')
+
     # Fail before the worker can recover leases, claim, or construct a runner.
     safety_preflight()
     worker_id = values.get("TRADING_WORKER_ID") or f"worker-{socket.gethostname()}"
@@ -270,7 +284,7 @@ def build_p1_worker(
 
 
 
-def build_p3_fixture_worker(repository, source, *, authority, job_id):
+def build_p3_fixture_worker(repository, source, *, authority, job_id, p3_runtime_guard=None):
     """Compose the explicit fixture lane using existing protected host authority."""
     from pathlib import Path
     from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -289,7 +303,7 @@ def build_p3_fixture_worker(repository, source, *, authority, job_id):
             runtime_root=Path(source['P3_NATIVE_RUNTIME_ROOT']),
             artifact_directory=Path(source['P3_NATIVE_ARTIFACT_DIRECTORY']),
             sandbox_executable=Path(source['P3_SANDBOX_EXECUTABLE'])))
-    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor,p3_job_id=job_id)
+    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor,p3_job_id=job_id,p3_runtime_guard=p3_runtime_guard)
 
 
 def _fixture_job(values):
@@ -329,6 +343,16 @@ def main() -> int:
     authority = attest_worker_runtime_authority()
     if fixture_binding is not None and authority.application_revision!=fixture_binding[1].expected_source.commit_sha:
         raise ValueError('fixture worker revision differs from workflow source')
+    runtime_guard=None
+    if fixture_binding is not None and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
+        from packages.alpha_lifecycle.authority import validate_request,_LocalFixtureAuthorization
+        from .p3_local_runtime import local_runtime_guard
+        from pathlib import Path
+        admitted=validate_request(Path(values['P3_AUTHORITY_REQUEST_FILE']),fixture_binding[1].expected_source,'PARITY')
+        if not isinstance(admitted.authorization,_LocalFixtureAuthorization):
+            raise ValueError('LOCAL fixture authorization is unavailable')
+        runtime_guard=local_runtime_guard(authority,admitted.authorization.identity,fixture_binding[1].expected_source,
+            admitted.authorization.expires_at)
     idle_seconds = float(values.get("TRADING_WORKER_IDLE_SECONDS", "1"))
     settings = (
         JobStoreSettings.from_systemd_credentials(
@@ -347,7 +371,8 @@ def main() -> int:
                 repository.assert_session_runtime_identity()
             else:
                 repository.assert_p3_runtime_identity()
-            worker = build_p3_fixture_worker(repository,values,authority=authority,job_id=fixture_binding[0])
+            worker = build_p3_fixture_worker(repository,values,authority=authority,job_id=fixture_binding[0],
+                **({"p3_runtime_guard":runtime_guard} if runtime_guard is not None else {}))
             return 0 if worker.run_once() else 2
         repository.assert_runtime_identity(
             expected_user="trading_job_worker",

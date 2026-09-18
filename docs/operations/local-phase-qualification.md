@@ -92,7 +92,15 @@ access. Use distinct approved accounts; actual UIDs must be observed, not assume
 
 Provision a new isolated rehearsal database through reviewed owner credentials;
 apply the existing migration chain and new forward-only
-`0031_p3_local_identity`. Its parent and final catalogs are pinned in source.
+`0031_p3_local_identity`, then `0032_p3_enqueue_freshness`. Their parent and final
+catalogs are pinned in source. Current LOCAL admission requires0032; old0031
+is held, while historical hosted0026/0030 code paths remain explicit. The API
+reads only accepted authority through its scoped SQL reader, validates current
+LOCAL request/prerequisites before enqueue and again before transaction commit.
+A rejection rolls back jobs, events and authorization bindings. This is an API
+admission checkpoint; filesystem revocation and SQL commit are not one atomic
+operation. Worker/custodian fences remain required, and a SQL principal is not
+granted independent local qualification authority.
 Never run this against the installed historical database as part of preparation.
 LOCAL and GITHUB use the same experiment/disclosure ledger. Do not create a fresh
 database, family, epoch or lane to retry an already disclosed experiment.
@@ -118,6 +126,73 @@ Its parent must execute three real pinned native runs and disposable PostgreSQL,
 retain streams, prove cleanup, and validate the canonical terminal Job API result.
 The LOCAL SQL proof includes native process fencing, session terminal expiry,
 local issuer rejection, cross-lane single disclosure and phase-exit readback.
+
+
+## Complete LOCAL runtime composition
+
+The paper projection is not a full P3 runtime. Prepare a **standalone Git clone
+at `stage/application`** with frozen root dependencies and the pinned CPython
+archive. Seal the Git objects, tracked source and runtime together; no separate
+mutable source import path is permitted. This preparation produces no approval,
+activation, credential, service or job. Run under the proposed service UID only
+after the host package is approved; the private root must be a direct0700 `/tmp`
+child owned by that UID. Do not change permissions on the operator's home.
+
+```bash
+uv run python scripts/prepare_p3_local_runtime.py \
+  --source /absolute/clean/candidate \
+  --stage /tmp/approved-private-slot/stage \
+  --python-runtime /absolute/pinned-cpython-archive.tar.gz \
+  --uv /absolute/pinned/uv
+```
+
+`--python-runtime` is the archive pinned by `PAPER_PYTHON_RUNTIME_PROVENANCE`,
+not an arbitrary interpreter having the same version. The builder verifies it,
+uses pinned uv and the frozen root lock, includes development dependencies needed
+by the integration fixture, and requires an already populated offline uv cache.
+It copies dependency files instead of linking them. Only installer entrypoints
+and greenlet's development-only C header are omitted to preserve the existing
+Python core contract. Missing cache material is a preparation failure, never a
+network download. Outputs from failure remain task-owned diagnostic material.
+
+Use existing `build_staging_release_authority_v2` and
+`build_staging_activation_v2` to prepare and review the exact authority bytes
+for this stage, with actual prior-release/Package6 approval digests, runtime
+paths and validity. The operator must review the stage inventory; synthetic
+staging documents from tests are not installable authority. Scope stays
+`PACKAGE6_STAGING_ONLY`. The30-minute authority window and6-second safety
+snapshot are unchanged. A bounded, approved owner must refresh actual safety
+observations and activation during a longer run; do not reuse the P1-only
+refresh capability or extend TTL. The session deadline must fit the approved
+runtime interval, even though its general upper bound is37minutes.
+
+In addition to current request and Pre-P3 approvals, install one independent
+root-owned0444 canonical `LocalRuntimeProfile` (JSON plus newline) at
+`/etc/trading-agent/local-qualification/<issuer>/runtime.json`. Its schema is
+`p3-local-runtime-profile-v1`, with exact `identity`, `source`,
+`application_root`, `application_python`, `uid`, `static_authority_sha256`,
+`package6_approval_sha256`, `issued_at`, `expires_at` and `revoked=false`.
+These are observed values from the actual stage and approved user; do not install
+placeholders. Self-written staging JSON alone cannot satisfy this root custody.
+
+Launch with the actual sealed interpreter, for example
+`<stage>/application/.venv/bin/python3.11 -I -B -m services.job_worker.main`,
+using the four existing `TRADING_PACKAGE6_*` staging bindings and the exact LOCAL
+fixture/official environment from the reviewed host packet. Python's installed
+source path is inside the sealed application. Both fixture and official startup
+now enforce source/root/interpreter/UID/host/boot/static authority/approval/expiry
+before reading worker credentials. Session entry also checks its full deadline.
+The unchanged attester verifies sealed bytes and dynamic evidence. Switching
+issuer lane does not change experiment identity or the disclosure ledger.
+
+The executable source-composition test is
+`uv run python scripts/dev.py test tests/p3/test_local_runtime.py`. It runs the
+actual staged interpreter, loader and attester without GitHub variables, with
+explicit synthetic staging material and no installed approval or job. Set
+`P3_TEST_PYTHON_ARCHIVE` when the pinned archive is outside the documented local
+cache. No archive means the heavy test is skipped and composition is unverified
+on that host. Cross-UID protected installation and live qualification remain
+separate approval/evidence steps.
 
 ## Official research and terminal readback
 
@@ -173,3 +248,12 @@ Local source qualification, pipeline completion, economic outcome and local
 completion are separate. Protected promotion and published completion remain
 HELD. Default tracked v1/v2 status and GitHub promotion retain their original
 attestation requirements; no CI change or protected-main publication is implied.
+
+The LOCAL runtime approval digest is pinned at startup and reread before/after
+each shared worker safety preflight, including recovery, claim, pre-spawn, active
+execution and session waits/fences. Revocation, replacement, missing custody or
+expiry follows the existing `SAFETY_AUTHORITY_CHANGED` blocked-worker path. A
+holdout session retains that original digest through all stages and binds runtime
+validity to its `workflow_deadline`; current stage approvals retain their own
+independent expiry checks. A new still-valid runtime profile cannot silently
+rebind a running session.

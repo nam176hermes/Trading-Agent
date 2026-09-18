@@ -54,7 +54,7 @@ def test_fixture_entry_binds_enqueue_before_database_and_recovery(monkeypatch,fa
         assert calls==['enqueue','authority','credentials','enqueue','database','schema','build','run','closed']
 
 
-@pytest.mark.parametrize('fault',[None,'mixed'])
+@pytest.mark.parametrize('fault',[None,'mixed','runtime'])
 def test_local_fixture_entry_requires_local_request_before_current_catalog(monkeypatch,fault):
     from services.job_worker import main
     from scripts import p3_authority
@@ -78,8 +78,11 @@ def test_local_fixture_entry_requires_local_request_before_current_catalog(monke
             attempt=1,host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'),
         authority=dict(broker=False,live=False,network=False,production=False)))))
     monkeypatch.setattr(p3_authority,'read_enqueued_job',lambda *a,**k:('job_fixture',SimpleNamespace(payload=payload),'synthetic'))
-    monkeypatch.setattr(authority,'validate_request',lambda *a,**k:SimpleNamespace(authorization=object() if fault else auth))
+    monkeypatch.setattr(authority,'validate_request',lambda *a,**k:SimpleNamespace(authorization=object() if fault=='mixed' else auth))
     monkeypatch.setattr(main,'attest_worker_runtime_authority',lambda:SimpleNamespace(application_revision=payload.expected_source.commit_sha))
+    def runtime(*a):
+        if fault=='runtime':raise ValueError('local fixture runtime rejected')
+    monkeypatch.setattr('services.job_worker.p3_local_runtime.require_local_runtime',runtime)
     monkeypatch.setattr(main.JobStoreSettings,'from_systemd_credentials',lambda **k:object())
     calls=[]
     class Repository:

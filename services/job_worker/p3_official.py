@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 from packages.alpha_lifecycle.authority import WORKFLOW_OPERATIONS, validate_request, local_run_directory
-from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity,LocalRunAuthorization
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.pre_p3_provenance import canonical_source_identity
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -23,6 +23,7 @@ def run_official_once(values,*,build_worker):
         raise ValueError('P3 official operation is not implemented')
     local = values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL'
     directory=None
+    request=None
     if values.get('P3_ISSUER_KIND','GITHUB') not in {'LOCAL','GITHUB'}:
         raise ValueError('P3 issuer lane is invalid')
     if not local:
@@ -63,6 +64,12 @@ def run_official_once(values,*,build_worker):
 
     attest_closure()
     authority=attest_worker_runtime_authority()
+    runtime_guard=None
+    if local:
+        from .p3_local_runtime import local_runtime_guard
+        if request is None or not isinstance(request.authorization,LocalRunAuthorization):
+            raise ValueError('LOCAL official authorization is unavailable')
+        runtime_guard=local_runtime_guard(authority,request.authorization.identity,closure.source,request.authorization.expires_at)
     if authority.application_revision!=closure.source.commit_sha:
         raise ValueError('P3 official worker revision differs from its closure')
     settings=JobStoreSettings.from_systemd_credentials(
@@ -73,18 +80,18 @@ def run_official_once(values,*,build_worker):
     with WorkerRepository(settings) as repository:
         if WORKFLOW_OPERATIONS.get(operation) == 'HOLDOUT':
             return run_session(values, repository=repository, profile=profile, closure=closure,
-                authority=authority, build_worker=build_worker)
+                authority=authority, build_worker=build_worker, runtime_guard=runtime_guard)
         if local:
             repository.assert_session_runtime_identity()
         else:
             repository.assert_p3_runtime_identity()
-        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id)
+        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,p3_runtime_guard=runtime_guard)
         # Processing an attempt is not research success; workflow wait must read
         # its canonical terminal Job API result and retained operation receipt.
         return 0 if worker.run_once() else 2
 
 
-def run_session(values, *, repository: WorkerRepository, profile, closure, authority, build_worker) -> int:
+def run_session(values, *, repository: WorkerRepository, profile, closure, authority, build_worker, runtime_guard=None) -> int:
     """Consume three independently approved jobs in one bounded process lifetime.
 
     Protected stage profiles are supplied by the existing host authority. Waiting
@@ -104,6 +111,13 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
         else Path(f"/run/trading-agent-p3/{values['GITHUB_RUN_ID']}-{values['GITHUB_RUN_ATTEMPT']}/session.json"))
     store = LocalArtifactStore(Path(profile.store_root))
     with P3HoldoutSession(path, store=store) as session:
+        if isinstance(profile,LocalOfficialHostProfile):
+            if runtime_guard is None:raise ValueError('LOCAL session lost runtime approval')
+            from functools import partial
+            # Preserve the startup digest for the whole session; stage-specific
+            # approvals keep their own expiry checks in the existing fences.
+            runtime_guard=partial(runtime_guard,deadline=session.profile.workflow_deadline)
+            runtime_guard()
         if (session.profile.source != closure.source or session.profile.environment_ref != profile.environment_ref
             or session.profile.closure_sha256 != closure.closure_sha256):
             raise ValueError('session differs from admitted startup closure')
@@ -139,7 +153,7 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
             provider = P3SpawnProvider(attest_closure=attest, store=store, store_root=Path(profile.store_root),
                 output_root=Path(profile.output_root), holdout_inputs=session.spawn_inputs)
             worker = build_worker(repository, values, authority=authority, p3_spawn_provider=provider,
-                p3_job_id=profile.job_id, p3_session=session)
+                p3_job_id=profile.job_id, p3_session=session,p3_runtime_guard=runtime_guard)
             workflow = session_identity(session.profile)
             repository.assert_session_runtime_identity()
             worker._safety_preflight()

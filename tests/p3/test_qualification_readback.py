@@ -558,7 +558,9 @@ def test_local_integration_readback_retains_lane_and_full_sql_coverage(integrati
             expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
             late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
             expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
-        local_identity_checks=dict(verdict='PASS',catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
+        local_identity_checks=dict(verdict='PASS',enqueue_freshness=dict(revoked='REJECTED',expired='REJECTED',
+            after_insert='ROLLED_BACK',intent='REJECTED',changed='ROLLED_BACK',dedup='CURRENT_AUTHORITY_REQUIRED',
+            api_status=503,role_denials=4),catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
             identity_denials=5,role_denials=5,cross_lane_second_disclosures_rejected=2,expiry='REJECTED',
             start_before_disclosure='REJECTED',wrong_identity_heartbeat='STALE',terminal='COMMITTED',
             recovery='TERMINAL_NO_RETRY',retry='REJECTED',migration_parent_drift='REJECTED',phase_exit_readback='COMMITTED_CURRENT_HEAD_ONLY'))
