@@ -763,14 +763,14 @@ services/job_worker/engine_spawn.py|1062|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p1_engine_spawn.py|417|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_native.py|107|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_fixture_sql.py|743|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_fixture_sql.py|745|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_holdout_release.py|155|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_host_profile.py|98|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|240|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_native_runner.py|126|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_native_runner.py|189|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_native_spawn.py|127|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_official.py|196|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_official.py|210|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|49|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|216|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_session.py|197|BaseException|PRODUCTION_CRITICAL|RAISE
