@@ -129,6 +129,16 @@ def _validate_local_request(path, source, operation, *, root=_SOURCE_ROOT):
         prerequisite = require_p3_source_ready(root,auth.identity)
         if (prerequisite is None or prerequisite.binding.source != source or auth.expires_at > prerequisite.expires_at):
             raise ValueError('local operation source or validity exceeds qualification')
+        if request.operation_input is not None:
+            # Official campaigns additionally need their InputSet admitted. The
+            # fixture lane never reaches here, so it can never certify official
+            # research. Every boundary re-runs this; it is not a lease.
+            from packages.alpha_lifecycle.local_research import read_local_research_inputs
+            research = read_local_research_inputs(auth.identity,source=source,
+                policy_digest=prerequisite.binding.policy_digest,
+                input_set_ref=request.operation_input.input_set_ref)
+            if auth.expires_at > research.expires_at:
+                raise ValueError('local operation validity exceeds research inputs qualification')
         if (read_protected_canonical_json_current(path)[1] != digest
             or _host_identity() != (auth.identity.host_id,auth.identity.boot_id)
             or not now <= datetime.now(UTC) < auth.expires_at):

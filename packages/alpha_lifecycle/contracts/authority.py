@@ -189,6 +189,9 @@ class QualificationBinding(StrictModel):
         "P2_SOURCE_COMPLETE", "P2_RUNTIME_QUALIFIED", "P2_QUALIFIED",
         "ALPHA_REGISTRY_FOUNDATION", "P3_BASELINES_FROZEN",
         "P3_EVALUATION_PROTOCOL_FROZEN", "PRE_P3_READY", "P3_INTEGRATION", "P3_PHASE_EXIT",
+        # Campaign InputSet admission. Deliberately outside the fixed Pre-P3
+        # prerequisite set so requiring it cannot create a dependency cycle.
+        "P3_RESEARCH_INPUTS",
     ]
     source: SourceIdentity
     policy_digest: Sha256

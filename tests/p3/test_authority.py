@@ -202,7 +202,15 @@ def test_local_request_needs_current_protected_request_and_local_readiness(tmp_p
     from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
     run=LocalRunIdentity.model_validate_json(canonical_json_bytes(identity))
     monkeypatch.setattr(local_pre_p3,'read_local_pre_p3',lambda root:dict(PRE_P3_READY=SimpleNamespace(
-        identity=run,binding=SimpleNamespace(source=source),expires_at=now+timedelta(minutes=10))))
+        identity=run,binding=SimpleNamespace(source=source,policy_digest='f'*64),
+        expires_at=now+timedelta(minutes=10))))
+    # T02: the official lane now also admits its InputSet. This test keeps its own
+    # scope (protected request plus local readiness); a dedicated test below covers
+    # a request that has no research qualification at all.
+    from packages.alpha_lifecycle import local_research
+    monkeypatch.setattr(local_research,'read_local_research_inputs',
+        lambda identity,*,source,policy_digest,input_set_ref:SimpleNamespace(
+            expires_at=now+timedelta(minutes=10)))
     monkeypatch.setattr(custody,'_host_identity',lambda:('0'*64 if fault=='wrong_host' else 'a'*64,UUID(identity['boot_id'])))
     calls=[]
     def protected(candidate):
@@ -224,3 +232,48 @@ def test_local_request_needs_current_protected_request_and_local_readiness(tmp_p
         assert validated.authorization.identity==run
         payload=build_alpha_campaign_payload(validated.authorization,source,'p3-baselines-v1',operation_input=validated.operation_input)
         assert payload.expected_source==source
+
+
+def test_official_local_request_without_research_qualification_is_held(tmp_path,monkeypatch):
+    """T02: an official InputSet may not be admitted without P3_RESEARCH_INPUTS."""
+    from datetime import UTC,datetime,timedelta
+    from types import SimpleNamespace
+    from uuid import UUID
+    from packages.alpha_lifecycle import local_qualification as custody, local_research
+    from packages import local_pre_p3
+    from packages.runtime_release import config
+    from tests.p3.test_local_qualification import sealed
+    from tests.p3.test_operation_input import intent
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+    now=datetime.now(UTC)
+    request,source=_request('2026-01-01T01:00:00Z')
+    value=request['authorization']
+    for key in ('issuer_workflow','issuer_run_id','issuer_attempt'):value.pop(key)
+    identity=dict(issuer_kind='LOCAL',issuer_identity='operator-a',
+        run_id='00000000-0000-4000-8000-000000000002',attempt=1,host_id='a'*64,
+        boot_id='00000000-0000-4000-8000-000000000001')
+    value.update(schema_version='p3-local-run-authorization-v1',identity=identity,
+        issued_at=(now-timedelta(minutes=1)).isoformat().replace('+00:00','Z'),
+        expires_at=(now+timedelta(minutes=5)).isoformat().replace('+00:00','Z'))
+    request['authorization']=sealed(value)
+    request['schema_version']='p3-local-authority-request-v1'
+    request['operation_input']=P3OperationInput.model_validate_json(
+        intent(input_set_ref=value['input_set_ref'])).model_dump(mode='json')
+    path=Path('/etc/trading-agent/local-qualification/operator-a/operations')/(value['nonce']+'.json')
+    run=LocalRunIdentity.model_validate_json(canonical_json_bytes(identity))
+    monkeypatch.setattr(local_pre_p3,'read_local_pre_p3',lambda root:dict(PRE_P3_READY=SimpleNamespace(
+        identity=run,binding=SimpleNamespace(source=source,policy_digest='f'*64),
+        expires_at=now+timedelta(minutes=10))))
+    monkeypatch.setattr(custody,'_host_identity',lambda:('a'*64,UUID(identity['boot_id'])))
+    def protected(candidate):
+        assert candidate==path
+        return canonical_json_bytes(request)+b'\n',(1,2)
+    monkeypatch.setattr(config,'_read_protected_file',protected)
+    for key in tuple(__import__('os').environ):
+        if key.startswith('GITHUB_'):monkeypatch.delenv(key)
+    def absent(identity,*,source,policy_digest,input_set_ref):
+        raise ValueError('no protected research profile for this issuer')
+    monkeypatch.setattr(local_research,'read_local_research_inputs',absent)
+    with pytest.raises(AuthorityHeld):
+        validate_request(path,source,'BASELINES')
