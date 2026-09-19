@@ -150,6 +150,14 @@ def check_publication(sock, name, root, payload, mark):
         assert claim is not None and claim.job_id == 'job_publication'
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             ProcessIdentity(301,301,301,'d'*64),'publication:start',alpha_campaign=True)
+        def active_mark(name,**kwargs):
+            # Outer runtime verification must not silently age this still-active fixture claim.
+            def renew():
+                assert worker.heartbeat_control(claim.job_id,claim.attempt_id,claim.worker_id,
+                    claim.lease_token,30,alpha_campaign=True)=='CONTINUE'
+            renew()
+            mark(name,**kwargs)
+            renew()
         entries, refs, heads = publication_entries(store, evidence_ref, (f'a{n}.source.fixture' for n in range(4)))
         request_payload = {
             'schema_version':'p3-publication-request-v1','idempotency_key':'source-registration',
@@ -167,14 +175,14 @@ def check_publication(sock, name, root, payload, mark):
             assert error.sqlstate == 'P3D01'
         else:
             raise AssertionError('stale publication fence accepted')
-        mark('PUBLICATION_STALE_FENCE_PASS',flush=True)
+        active_mark('PUBLICATION_STALE_FENCE_PASS',flush=True)
         try:
             publisher.publish(request,replace(claim,attempt_id='attempt_wrong'),tuple(entries),trace_id='publication:wrong-attempt')
         except psycopg.Error as error:
             assert error.sqlstate == 'P3D01'
         else:
             raise AssertionError('wrong publication attempt accepted')
-        mark('PUBLICATION_WRONG_ATTEMPT_PASS')
+        active_mark('PUBLICATION_WRONG_ATTEMPT_PASS')
         wrong_head = request.model_dump(mode='json')
         wrong_head['expected_heads'][0].update(sequence=1,event_digest='0'*64)
         wrong_head.pop('digest')
@@ -185,7 +193,7 @@ def check_publication(sock, name, root, payload, mark):
             pass
         else:
             raise AssertionError('stale registry head accepted')
-        mark('PUBLICATION_STALE_HEAD_PASS')
+        active_mark('PUBLICATION_STALE_HEAD_PASS')
         duplicate_event = json.loads(entries[-1].canonical_event_text)
         duplicate_event['event_id'] = str(entries[0].event_id)
         duplicate = entries[-1].model_copy(update={
@@ -198,7 +206,7 @@ def check_publication(sock, name, root, payload, mark):
             pass
         else:
             raise AssertionError('duplicate publication event accepted')
-        mark('PUBLICATION_DUPLICATE_EVENT_PASS')
+        active_mark('PUBLICATION_DUPLICATE_EVENT_PASS')
 
 
         bad_entries = tuple(entries[:-1]) + (entries[-1].model_copy(update={
@@ -214,7 +222,7 @@ def check_publication(sock, name, root, payload, mark):
             for table in ('p3_alpha_heads','p3_alpha_job_commits','domain_events','event_outbox','event_append_idempotency'):
                 assert inspector.execute(f'SELECT count(*) FROM public.{table}').fetchone() == (0,)
             assert inspector.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
-        mark('PUBLICATION_MID_BATCH_ROLLBACK_PASS',flush=True)
+        active_mark('PUBLICATION_MID_BATCH_ROLLBACK_PASS',flush=True)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres',autocommit=True) as injector:
             injector.execute("CREATE FUNCTION public.p3_source_reject_terminal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.reason_code='P3_COMMITTED' THEN RAISE EXCEPTION 'source-test terminal failure'; END IF; RETURN NEW; END $$")
             injector.execute("CREATE TRIGGER p3_source_reject_terminal BEFORE INSERT ON public.job_events FOR EACH ROW EXECUTE FUNCTION public.p3_source_reject_terminal()")
@@ -232,7 +240,7 @@ def check_publication(sock, name, root, payload, mark):
             finally:
                 injector.execute('DROP TRIGGER p3_source_reject_terminal ON public.job_events')
                 injector.execute('DROP FUNCTION public.p3_source_reject_terminal()')
-        mark('PUBLICATION_TERMINAL_FAILURE_ROLLBACK_PASS',flush=True)
+        active_mark('PUBLICATION_TERMINAL_FAILURE_ROLLBACK_PASS',flush=True)
 
         # Cancellation owns the job lock before publication enters its capability.
         with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
@@ -264,16 +272,14 @@ def check_publication(sock, name, root, payload, mark):
                 else:
                     raise AssertionError('publication passed cancellation that held the job lock')
             assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(cancel_claim.job_id,)).fetchone() == (0,)
-        mark('PUBLICATION_CANCEL_BEFORE_PASS')
+        active_mark('PUBLICATION_CANCEL_BEFORE_PASS')
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             owner.execute("UPDATE public.jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=%s",(cancel_claim.job_id,))
             owner.execute("UPDATE public.job_attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE attempt_id=%s",(cancel_claim.attempt_id,))
         assert worker.recover_expired_leases(ProcProcessInspector(),recovery_id='worker-startup-recovery',alpha_campaign=True,fixture_only=True) == ()
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             assert owner.execute('SELECT state FROM public.jobs WHERE job_id=%s',(cancel_claim.job_id,)).fetchone() == ('CANCEL_REQUESTED',)
-        mark('FIXTURE_RECOVERY_ISOLATION_PASS')
-
-        assert worker.heartbeat_control(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,30,alpha_campaign=True) == 'CONTINUE'
+        active_mark('FIXTURE_RECOVERY_ISOLATION_PASS')
 
 
         from concurrent.futures import ThreadPoolExecutor

@@ -42,3 +42,33 @@ def test_operation_authority_in_disposable_postgres(tmp_path):
     assert validate_integration_receipt(receipt_ref,**context).status=='PASS'
     assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']
     assert REQUIRED_OPERATION_CHECKS <= set(result['checks'])
+
+
+@pytest.mark.runtime_postgres
+@pytest.mark.skipif(os.environ.get('P3_OPERATION_SQL_SOURCE_TEST')!='1',
+                   reason='explicit disposable SQL source selection required')
+@pytest.mark.parametrize('delay,expires',[(16,False),(31,True)])
+def test_publication_progress_renews_only_a_live_fixture_claim(monkeypatch,delay,expires):
+    import tempfile,time
+    from pathlib import Path
+    source=SourceIdentity.model_validate(canonical_source_identity(p3_fixture_sql.ROOT))
+    original=p3_fixture_sql.check_publication
+    observed=[]
+    def publication(sock,name,root,payload,mark):
+        def checkpoint(label,**kwargs):
+            mark(label,**kwargs)
+            if label in {'PUBLICATION_STALE_FENCE_PASS','PUBLICATION_WRONG_ATTEMPT_PASS'}:
+                observed.append(label)
+                time.sleep(delay)
+        return original(sock,name,root,payload,checkpoint)
+    monkeypatch.setattr(p3_fixture_sql,'check_publication',publication)
+    with tempfile.TemporaryDirectory(prefix='p3-lease-progress-',dir='/tmp') as private:
+        owned=Path(private)/'sql'
+        if expires:
+            with pytest.raises(AssertionError):p3_fixture_sql.run_sql_fixture(source,owned_root=owned)
+            assert observed==['PUBLICATION_STALE_FENCE_PASS']
+        else:
+            result=p3_fixture_sql.run_sql_fixture(source,owned_root=owned)
+            assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']
+            assert observed==['PUBLICATION_STALE_FENCE_PASS','PUBLICATION_WRONG_ATTEMPT_PASS']
+        assert not owned.exists()

@@ -166,6 +166,30 @@ observations and activation during a longer run; do not reuse the P1-only
 refresh capability or extend TTL. The session deadline must fit the approved
 runtime interval, even though its general upper bound is37minutes.
 
+For a host composition that owns the approved safety producer, construct
+`LocalRuntimeSafetyPreflight(authority, identity, source, deadline,
+refresh_dynamic_evidence=producer)` and pass it as `p3_safety_preflight` to
+`build_worker` or `build_p3_fixture_worker`. Use the admitted operation deadline,
+or the admitted session deadline for session work. Do not also pass a separate
+`p3_runtime_guard`: the preflight pins and rechecks that approval itself. The
+producer must export actual observations and the matching activation; it grants
+no authority. The shared worker accepts this composition only for LOCAL P3 and
+the exact initial runtime authority.
+
+This reuses `refresh_staging_worker_runtime_authority`: full immutable stage
+attestation completes before the producer creates the six-second snapshot.
+The existing `AuthorityBoundSafetyPreflight` then checks both protected dynamic
+reads, followed by current LOCAL approval and final snapshot freshness checks.
+Expired, replaced or revoked authority still blocks. Repeated full-stage hashing
+after snapshot creation can consume its validity window on a large runtime.
+P3 staging approval stays in the attester's environment and is not forwarded as
+half of a legacy research-fixture configuration.
+
+HWC also validates the exact dashboard build tree. Copy its already-qualified
+artifact into the runtime, check its tree hash, seal it with the rest of the
+stage, and derive a new static authority for that inventory. A tracked-source
+clone alone does not reproduce HWC's build evidence.
+
 In addition to current request and Pre-P3 approvals, install one independent
 root-owned0444 canonical `LocalRuntimeProfile` (JSON plus newline) at
 `/etc/trading-agent/local-qualification/<issuer>/runtime.json`. Its schema is

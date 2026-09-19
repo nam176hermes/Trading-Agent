@@ -452,3 +452,26 @@ No official holdout, protected approval, running database change, service
 installation, hosted workflow mutation or promotion was performed by this source
 implementation. Final verification and unresolved gates are recorded in the
 acceptance matrix and external execution manifest.
+
+## Host execution findings and completion criteria
+
+The operator delegated technical review and the isolated host changes for all
+seven completion steps. This removes a human-review pause; it does not create
+human-review evidence, hosted identity, official economic results or live authority.
+Keep every prior receipt bound to its original candidate and execution.
+
+| Finding | Gap classification | Repair and required acceptance |
+| --- | --- | --- |
+| Historical Git revisions absent from a standalone candidate caused four aggregate failures | Environment | Import only verified historical objects; preserve HEAD/source. Recheck the four exact tests and run the final candidate aggregate. |
+| HWC passed in the producer checkout but the sealed runtime lacked its dashboard build | Environment | Include the exact qualified build artifact, seal it, rederive runtime authority and read all ten prerequisites under service UIDs. |
+| Complete stage checks after snapshot creation could exhaust the six-second window | Implementation and runtime qualification | Reuse the existing static-before-dynamic refresh primitive through the shared LOCAL P3 worker composition. Keep static/source/interpreter/UID/approval checks and final snapshot freshness. Prove a real worker run and active revocation. |
+| Slow outer progress callbacks expired the synthetic publication claim before its stale-head check | Test-fixture lifecycle | Renew only its still-active fenced claim around ordinary checkpoints, with the existing30-second lease. Two16-second callbacks must pass; a callback exceeding30seconds must fail. Keep cancellation, deliberate expiry, locks and terminal replay unchanged. |
+| Passing native replicas or a terminal FAILED job is not a successful integration receipt | Certification | Require all original SQL vectors, cleanup, a SUCCEEDED durable Job API result, and recomputation by `validate_integration_job_result`. |
+
+The actual reproduction and historical execution records remain outside Git in
+`trading-agent-optimization-evidence/local-host-qualification-e01c3f9-20260919`.
+The source repair continues in an isolated descendant candidate. Its fresh
+qualification must cover the final source identity; old host results are
+diagnostic evidence rather than replacement certificates. The final seven-step
+matrix must separately report source checks, protected prerequisite approval,
+runtime/session/custodian behavior, current readback and official phase status.

@@ -1,4 +1,5 @@
 """Bind a complete sealed LOCAL source runtime to independent host approval."""
+from collections.abc import Callable
 from datetime import UTC,datetime
 import os
 from pathlib import Path
@@ -75,3 +76,46 @@ def local_runtime_guard(authority,identity,source,expires_at):
             raise SafetyBlockedError('SAFETY_AUTHORITY_CHANGED',
                 'LOCAL runtime approval changed or is unavailable') from error
     return check
+
+
+class LocalRuntimeSafetyPreflight:
+    """Complete static attestation before producing the unchanged six-second proof."""
+
+    def __init__(self,authority,identity,source,expires_at,*,refresh_dynamic_evidence: Callable[[], None]):
+        if not callable(refresh_dynamic_evidence):
+            raise TypeError('LOCAL safety refresh requires its host producer')
+        self._initial_authority=authority
+        self._current=authority
+        self._refresh=refresh_dynamic_evidence
+        self._guard=local_runtime_guard(authority,identity,source,expires_at)
+
+    def matches_authority(self,authority):
+        return self._initial_authority is authority
+
+    def __call__(self):
+        from packages.runtime_release.config import SafetyAuthority,refresh_runtime_authority_v2
+        from .command_registry import refresh_staging_worker_runtime_authority
+        from .safety_state import AuthorityBoundSafetyPreflight,SafetyStateClient,validate_current_safety_evidence
+        from .errors import SafetyBlockedError
+        try:
+            self._guard()
+            current=refresh_staging_worker_runtime_authority(self._current,
+                refresh_dynamic_evidence=self._refresh)
+            self._current=current
+            safety=current.runtime_authority.safety
+            if not isinstance(safety,SafetyAuthority):
+                raise ValueError('LOCAL runtime safety authority is invalid')
+            client=SafetyStateClient(current.safety_snapshot_path,
+                expected_exporter_commit=current.safety_exporter_commit,
+                expected_source_fingerprint=current.safety_source_fingerprint,
+                expected_owner_uid=safety.expected_owner_uid,
+                protected_root_owned=safety.protected_root_owned)
+            evidence=AuthorityBoundSafetyPreflight(current,client,
+                authority_loader=lambda:refresh_runtime_authority_v2(current.runtime_authority))()
+            self._guard()
+            return validate_current_safety_evidence(evidence,datetime.now(UTC))
+        except SafetyBlockedError:
+            raise
+        except Exception as error:
+            raise SafetyBlockedError('SAFETY_AUTHORITY_CHANGED',
+                'LOCAL static or dynamic authority changed during refresh') from error

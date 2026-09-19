@@ -60,6 +60,7 @@ def build_worker(
     p3_job_id: str | None = None,
     p3_session: object | None = None,
     p3_runtime_guard=None,
+    p3_safety_preflight=None,
 ) -> JobWorker:
     if p3_session is not None and (p3_spawn_provider is None or p3_fixture_executor is not None):
         raise ValueError('session requires its official provider')
@@ -124,8 +125,16 @@ def build_worker(
         )
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
+    environment_values=values
+    if ((p3_fixture_executor is not None or p3_spawn_provider is not None)
+        and getattr(runtime_authority,'scope','')=='PACKAGE6_STAGING_ONLY'):
+        # Staging approval authenticates P3 itself; it is not a legacy research fixture.
+        if 'TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH' in values:
+            raise ValueError('P3 cannot consume a legacy research fixture authority')
+        environment_values={key:value for key,value in values.items()
+            if key!='TRADING_PACKAGE6_APPROVAL_SHA256'}
     environment = ResearchEnvironmentSettings.from_authority(
-        runtime_authority, values
+        runtime_authority, environment_values
     )
     runtime_paths = selected_authority.runtime_paths
     if _p1_safety_authority_refresher is None:
@@ -167,7 +176,14 @@ def build_worker(
             )()
 
     p3_profile = p3_fixture_executor is not None or p3_spawn_provider is not None
-    if p3_profile and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
+    if p3_safety_preflight is not None:
+        from .p3_local_runtime import LocalRuntimeSafetyPreflight
+        if (not p3_profile or values.get('P3_ISSUER_KIND','GITHUB')!='LOCAL'
+            or p3_runtime_guard is not None or type(p3_safety_preflight) is not LocalRuntimeSafetyPreflight
+            or not p3_safety_preflight.matches_authority(selected_authority)):
+            raise ValueError('LOCAL safety refresh requires its exact P3 runtime authority')
+        safety_preflight=p3_safety_preflight
+    elif p3_profile and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
         if p3_runtime_guard is None:
             raise ValueError('LOCAL P3 worker requires pinned runtime approval')
         base_preflight=safety_preflight
@@ -284,7 +300,7 @@ def build_p1_worker(
 
 
 
-def build_p3_fixture_worker(repository, source, *, authority, job_id, p3_runtime_guard=None):
+def build_p3_fixture_worker(repository, source, *, authority, job_id, p3_runtime_guard=None,p3_safety_preflight=None):
     """Compose the explicit fixture lane using existing protected host authority."""
     from pathlib import Path
     from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -303,7 +319,7 @@ def build_p3_fixture_worker(repository, source, *, authority, job_id, p3_runtime
             runtime_root=Path(source['P3_NATIVE_RUNTIME_ROOT']),
             artifact_directory=Path(source['P3_NATIVE_ARTIFACT_DIRECTORY']),
             sandbox_executable=Path(source['P3_SANDBOX_EXECUTABLE'])))
-    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor,p3_job_id=job_id,p3_runtime_guard=p3_runtime_guard)
+    return build_worker(repository,source,authority=authority,p3_fixture_executor=executor,p3_job_id=job_id,p3_runtime_guard=p3_runtime_guard,p3_safety_preflight=p3_safety_preflight)
 
 
 def _fixture_job(values):
