@@ -74,6 +74,7 @@ def run_official_once(values,*,build_worker):
         runtime_guard=local_runtime_guard(authority,request.authorization.identity,closure.source,request.authorization.expires_at)
         safety_preflight=LocalRuntimeSafetyPreflight(authority,request.authorization.identity,
             closure.source,request.authorization.expires_at,
+            runtime_guard=runtime_guard,
             refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,request.authorization.identity))
         safety_preflight()
     if authority.application_revision!=closure.source.commit_sha:
@@ -128,6 +129,7 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
             from .p3_local_runtime import LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
             safety_preflight=LocalRuntimeSafetyPreflight(authority,profile.identity,closure.source,
                 session.profile.workflow_deadline,
+                runtime_guard=runtime_guard,
                 refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,profile.identity))
         if (session.profile.source != closure.source or session.profile.environment_ref != profile.environment_ref
             or session.profile.closure_sha256 != closure.closure_sha256):

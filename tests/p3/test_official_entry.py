@@ -98,7 +98,7 @@ def test_unimplemented_official_operation_never_reads_host_authority(monkeypatch
         module.run_official_once({'P3_OPERATION':operation},build_worker=lambda *args:pytest.fail('unexpected worker'))
 
 
-@pytest.mark.parametrize('failed_refresh', [False, True])
+@pytest.mark.parametrize('failed_refresh', [False, True, 'replaced'])
 def test_local_official_refresh_precedes_database_and_reaches_worker(synthetic_provider, monkeypatch, failed_refresh):
     from services.job_worker import p3_official as module, p3_local_runtime
     from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
@@ -125,14 +125,18 @@ def test_local_official_refresh_precedes_database_and_reaches_worker(synthetic_p
     monkeypatch.setattr(module, 'read_official_profile', lambda *a, **k: (profile, closure))
     monkeypatch.setattr(module, 'probe_p3_startup', lambda *a, **k: None)
     monkeypatch.setattr(module, 'attest_worker_runtime_authority', lambda: authority)
-    monkeypatch.setattr(p3_local_runtime, 'local_runtime_guard', lambda *a: lambda: None)
-    class Preflight:
-        def __init__(self, actual, run, source, expires, *, refresh_dynamic_evidence):
+    digest = ['a'*64]
+    monkeypatch.setattr(p3_local_runtime, 'require_local_runtime', lambda *a: digest[0])
+    class Preflight(p3_local_runtime.LocalRuntimeSafetyPreflight):
+        def __init__(self, actual, run, source, expires, **kwargs):
             assert actual is authority and run == identity and source == closure.source
-            assert callable(refresh_dynamic_evidence)
+            assert callable(kwargs['refresh_dynamic_evidence'])
+            if failed_refresh == 'replaced':
+                digest[0] = 'b'*64
+            super().__init__(actual, run, source, expires, **kwargs)
         def __call__(self):
             calls.append('refresh')
-            if failed_refresh:
+            if failed_refresh is True:
                 raise ValueError('refresh rejected')
     monkeypatch.setattr(p3_local_runtime, 'LocalRuntimeSafetyPreflight', Preflight)
     monkeypatch.setattr(module.JobStoreSettings, 'from_systemd_credentials', lambda *a, **k: object())
@@ -150,7 +154,12 @@ def test_local_official_refresh_precedes_database_and_reaches_worker(synthetic_p
         P3_PREFLIGHT_DIRECTORY='/synthetic/enqueue', P3_ARTIFACT_ROOT=profile.store_root,
         P3_MANIFEST_FILE='/synthetic/manifest', P3_REVIEW_FILE='/synthetic/review',
         CREDENTIALS_DIRECTORY=profile.worker_credentials_directory)
-    if failed_refresh:
+    if failed_refresh == 'replaced':
+        from services.job_worker.errors import SafetyBlockedError
+        with pytest.raises(SafetyBlockedError):
+            module.run_official_once(values, build_worker=worker)
+        assert 'database' not in calls
+    elif failed_refresh:
         with pytest.raises(ValueError, match='refresh rejected'):
             module.run_official_once(values, build_worker=worker)
         assert 'database' not in calls

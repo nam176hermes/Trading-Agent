@@ -99,13 +99,19 @@ def local_runtime_guard(authority,identity,source,expires_at):
 class LocalRuntimeSafetyPreflight:
     """Complete static attestation before producing the unchanged six-second proof."""
 
-    def __init__(self,authority,identity,source,expires_at,*,refresh_dynamic_evidence: Callable[[], None]):
+    def __init__(self,authority,identity,source,expires_at,*,refresh_dynamic_evidence: Callable[[], None],
+                 runtime_guard: Callable[[], None] | None = None):
         if not callable(refresh_dynamic_evidence):
             raise TypeError('LOCAL safety refresh requires its host producer')
+        if runtime_guard is not None and not callable(runtime_guard):
+            raise TypeError('LOCAL startup guard must be callable')
+        self._startup_guard=runtime_guard
+        if runtime_guard is not None:runtime_guard()
         self._initial_authority=authority
         self._current=authority
         self._refresh=refresh_dynamic_evidence
         self._guard=local_runtime_guard(authority,identity,source,expires_at)
+        if runtime_guard is not None:runtime_guard()
 
     def matches_authority(self,authority):
         return self._initial_authority is authority
@@ -116,6 +122,7 @@ class LocalRuntimeSafetyPreflight:
         from .safety_state import AuthorityBoundSafetyPreflight,SafetyStateClient,validate_current_safety_evidence
         from .errors import SafetyBlockedError
         try:
+            if self._startup_guard is not None:self._startup_guard()
             self._guard()
             current=refresh_staging_worker_runtime_authority(self._current,
                 refresh_dynamic_evidence=self._refresh)
@@ -131,6 +138,7 @@ class LocalRuntimeSafetyPreflight:
             evidence=AuthorityBoundSafetyPreflight(current,client,
                 authority_loader=lambda:refresh_runtime_authority_v2(current.runtime_authority))()
             self._guard()
+            if self._startup_guard is not None:self._startup_guard()
             return validate_current_safety_evidence(evidence,datetime.now(UTC))
         except SafetyBlockedError:
             raise

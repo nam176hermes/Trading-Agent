@@ -71,6 +71,15 @@ fixed Pre-P3 prerequisite. Other gates retain their existing policy-file hash.
 
 ## Official launcher
 
+Official execution is currently **HELD** by the accepted runtime transport.
+The pinned CPython core contains 4,306 files. Mounting each sealed file requires
+five arguments, exceeding bubblewrap 0.9.0's 9,000-argument limit before adding
+dependencies. The actual host startup probe rejects this closure. Removing dev
+dependencies fixes the separate argv byte limit but cannot fix the token limit;
+`--args FD` is subject to the same counter. A reviewed immutable-transport plan
+delta and fresh qualification are required. Do not change the pinned core,
+weaken sealing, or treat the commands below as an operational PASS.
+
 Use the existing `python -m services.job_worker` entry with
 `TRADING_WORKER_PROFILE=p3-official-v1` and `P3_ISSUER_KIND=LOCAL`, the protected
 request/profile, existing enqueue artifacts and the role's credential directory.
@@ -88,6 +97,9 @@ precedes the original exporter and activation refresh, followed by safety
 validation with the unchanged six-second TTL. Startup preflight finishes before
 database construction. Session owner/deadline guards remain separate; worker
 composition never passes both runtime guard and explicit safety preflight.
+The preflight retains the original startup approval guard in addition to its
+own checks, including construction and both sides of dynamic refresh. A valid
+replacement approval cannot silently replace the digest pinned at startup.
 PARITY and PHASE_EXIT remain available only through the existing holdout session.
 
 ## Custodian producer and serving
