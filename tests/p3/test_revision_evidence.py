@@ -404,3 +404,25 @@ def test_local_backup_rejects_a_non_local_identity(complete_revision_inputs,tmp_
                 ref,source=SOURCE,policy_digest=POLICY,query=query,dataset_ref=dataset_ref,
                 store=store,backup=backup,identity=identity)
     assert not any(root.iterdir())
+
+
+def test_local_research_proposal_uses_full_backup_readback(complete_revision_inputs, tmp_path):
+    from scripts.prepare_p3_local_research import produce_research_proposal
+    from packages.alpha_lifecycle.local_research import LocalResearchProof
+    from packages.alpha_lifecycle.research_custody import validate_research_batch_commitment
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store, ref, query, dataset_ref, dataset = complete_revision_inputs
+    root = tmp_path/'proposal-backup'; root.mkdir(mode=0o700)
+    backup = LocalArtifactStore(root)
+    result = produce_research_proposal(ref, source=SOURCE, policy_digest=POLICY, query=query,
+        dataset_ref=dataset_ref, store=store, backup=backup, identity=_LOCAL_IDENTITY)
+    commitment = validate_research_batch_commitment(result['commitment_ref'], source=SOURCE,
+        policy_digest=POLICY, dataset_ref=dataset_ref, dataset=dataset, store=store)
+    proof = _read(store, result['proof_ref'], LocalResearchProof)
+    assert proof.commitment_ref == result['commitment_ref']
+    assert proof.backup_receipt_ref == commitment.backup_receipt_ref
+    assert proof.source_store_root == str(store._root)
+    assert proof.backup_store_root == str(root)
+    assert backup.read_bytes(proof.backup_inventory_ref)
+    assert result['qualification'] == 'PROPOSAL_ONLY'

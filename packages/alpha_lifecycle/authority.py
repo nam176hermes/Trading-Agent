@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -134,8 +135,10 @@ def _validate_local_request(path, source, operation, *, root=_SOURCE_ROOT):
             # fixture lane never reaches here, so it can never certify official
             # research. Every boundary re-runs this; it is not a lease.
             from packages.alpha_lifecycle.local_research import read_local_research_inputs
+            from packages.local_pre_p3 import POLICY_PATH
             research = read_local_research_inputs(auth.identity,source=source,
-                policy_digest=prerequisite.binding.policy_digest,
+                policy_digest=hashlib.sha256(canonical_json_bytes(
+                    json.loads((root/POLICY_PATH).read_bytes()))).hexdigest(),
                 input_set_ref=request.operation_input.input_set_ref)
             if auth.expires_at > research.expires_at:
                 raise ValueError('local operation validity exceeds research inputs qualification')

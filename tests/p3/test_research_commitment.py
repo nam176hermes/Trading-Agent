@@ -293,3 +293,33 @@ def test_parse_research_backup_receipt_dispatches_on_schema_version():
     unknown['schema_version']='p3-research-backup-receipt-v2'
     with pytest.raises(ValueError):
         parse_research_backup_receipt(canonical_json_bytes(_sealed(**unknown)))
+
+
+@pytest.mark.parametrize('fault', [None, 'github_backup', 'wrong_local_identity'])
+def test_local_commitment_consumes_matching_local_backup(inputs, fault):
+    from packages.alpha_lifecycle.research_custody import validate_research_batch_commitment
+    store, retain, source, _, dataset, dataset_ref, backup, commitment = inputs
+
+    def local(value, schema, identity):
+        value = json.loads(canonical_json_bytes(value))
+        for key in ('digest', 'producer_repository', 'producer_workflow_ref',
+                    'producer_run_id', 'producer_attempt'):
+            value.pop(key)
+        return _sealed(**dict(value, schema_version=schema, identity=identity))
+
+    if fault != 'github_backup':
+        identity = dict(_LOCAL_IDENTITY)
+        if fault == 'wrong_local_identity':
+            identity['attempt'] += 1
+        backup = local(backup, 'p3-local-research-backup-receipt-v1', identity)
+    commitment = local(dict(commitment, backup_receipt_ref=retain(backup)),
+                       'p3-local-research-batch-commitment-v1', _LOCAL_IDENTITY)
+    ref = retain(commitment)
+    if fault:
+        with pytest.raises(ValueError, match='producer|lane'):
+            validate_research_batch_commitment(ref, source=source, policy_digest='5'*64,
+                dataset_ref=dataset_ref, dataset=dataset, store=store)
+    else:
+        result = validate_research_batch_commitment(ref, source=source, policy_digest='5'*64,
+            dataset_ref=dataset_ref, dataset=dataset, store=store)
+        assert str(result.identity.run_id) == _LOCAL_IDENTITY['run_id']

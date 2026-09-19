@@ -1,5 +1,6 @@
 """One workflow-bound P3 attempt after protected startup; no import-time action."""
 from pathlib import Path
+from functools import partial
 import re
 
 from packages.alpha_lifecycle.authority import WORKFLOW_OPERATIONS, validate_request, local_run_directory
@@ -65,11 +66,16 @@ def run_official_once(values,*,build_worker):
     attest_closure()
     authority=attest_worker_runtime_authority()
     runtime_guard=None
+    safety_preflight=None
     if local:
-        from .p3_local_runtime import local_runtime_guard
+        from .p3_local_runtime import local_runtime_guard, LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
         if request is None or not isinstance(request.authorization,LocalRunAuthorization):
             raise ValueError('LOCAL official authorization is unavailable')
         runtime_guard=local_runtime_guard(authority,request.authorization.identity,closure.source,request.authorization.expires_at)
+        safety_preflight=LocalRuntimeSafetyPreflight(authority,request.authorization.identity,
+            closure.source,request.authorization.expires_at,
+            refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,request.authorization.identity))
+        safety_preflight()
     if authority.application_revision!=closure.source.commit_sha:
         raise ValueError('P3 official worker revision differs from its closure')
     settings=JobStoreSettings.from_systemd_credentials(
@@ -85,7 +91,8 @@ def run_official_once(values,*,build_worker):
             repository.assert_session_runtime_identity()
         else:
             repository.assert_p3_runtime_identity()
-        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,p3_runtime_guard=runtime_guard)
+        safety_kwargs=({'p3_safety_preflight':safety_preflight} if local else {'p3_runtime_guard':runtime_guard})
+        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,**safety_kwargs)
         # Processing an attempt is not research success; workflow wait must read
         # its canonical terminal Job API result and retained operation receipt.
         return 0 if worker.run_once() else 2
@@ -111,13 +118,17 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
         else Path(f"/run/trading-agent-p3/{values['GITHUB_RUN_ID']}-{values['GITHUB_RUN_ATTEMPT']}/session.json"))
     store = LocalArtifactStore(Path(profile.store_root))
     with P3HoldoutSession(path, store=store) as session:
+        safety_preflight=None
         if isinstance(profile,LocalOfficialHostProfile):
             if runtime_guard is None:raise ValueError('LOCAL session lost runtime approval')
-            from functools import partial
             # Preserve the startup digest for the whole session; stage-specific
             # approvals keep their own expiry checks in the existing fences.
             runtime_guard=partial(runtime_guard,deadline=session.profile.workflow_deadline)
             runtime_guard()
+            from .p3_local_runtime import LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
+            safety_preflight=LocalRuntimeSafetyPreflight(authority,profile.identity,closure.source,
+                session.profile.workflow_deadline,
+                refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,profile.identity))
         if (session.profile.source != closure.source or session.profile.environment_ref != profile.environment_ref
             or session.profile.closure_sha256 != closure.closure_sha256):
             raise ValueError('session differs from admitted startup closure')
@@ -152,8 +163,10 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
                 return closure
             provider = P3SpawnProvider(attest_closure=attest, store=store, store_root=Path(profile.store_root),
                 output_root=Path(profile.output_root), holdout_inputs=session.spawn_inputs)
+            safety_kwargs=({'p3_safety_preflight':safety_preflight} if safety_preflight is not None
+                else {'p3_runtime_guard':runtime_guard})
             worker = build_worker(repository, values, authority=authority, p3_spawn_provider=provider,
-                p3_job_id=profile.job_id, p3_session=session,p3_runtime_guard=runtime_guard)
+                p3_job_id=profile.job_id, p3_session=session,**safety_kwargs)
             workflow = session_identity(session.profile)
             repository.assert_session_runtime_identity()
             worker._safety_preflight()

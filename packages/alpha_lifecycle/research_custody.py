@@ -2,10 +2,11 @@
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from packages.alpha_lifecycle.replica_store import ArtifactStore, _read
 from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
@@ -112,7 +113,7 @@ _COMMITMENT_LANES={'p3-research-batch-commitment-v1':P3ResearchBatchCommitment,
     'p3-local-research-batch-commitment-v1':P3LocalResearchBatchCommitment}
 
 
-def _parse_lane(raw: bytes, lanes: dict):
+def _parse_lane(raw: bytes, lanes: Mapping[str, type[_ResearchReceipt]]):
     """Dispatch on schema_version only; neither lane may absorb the other's shape."""
     try:
         declared=json.loads(raw)
@@ -120,7 +121,8 @@ def _parse_lane(raw: bytes, lanes: dict):
         raise ValueError('research receipt is not canonical JSON') from error
     if type(declared) is not dict:
         raise ValueError('research receipt must be a JSON object')
-    model=lanes.get(declared.get('schema_version'))
+    version=declared.get('schema_version')
+    model=lanes.get(version) if isinstance(version,str) else None
     if model is None:
         raise ValueError('research receipt schema_version is not an accepted lane')
     return model.model_validate_json(raw)
@@ -138,12 +140,14 @@ def parse_research_batch_commitment(raw: bytes):
 
 def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIdentity,
     policy_digest: str, dataset_ref: ArtifactRefV1, dataset: DatasetEvidence,
-    store: ArtifactStore) -> P3ResearchBatchCommitment:
+    store: ArtifactStore) -> P3ResearchBatchCommitment | P3LocalResearchBatchCommitment:
     """Verify retained structure only; never infer authentic custody from hashes."""
     _reference(ref,65536)
     _reference(dataset_ref,2097152)
     reader=_ReadBudget(store)
-    commitment=_read(reader,ref,P3ResearchBatchCommitment)
+    commitment=_read(reader,ref,TypeAdapter(Annotated[
+        P3ResearchBatchCommitment | P3LocalResearchBatchCommitment,
+        Field(discriminator='schema_version')]))
     dataset=DatasetEvidence.model_validate(dataset)
     if _read(reader,dataset_ref,DatasetEvidence)!=dataset:
         raise ValueError('research commitment dataset bytes differ')
@@ -170,13 +174,20 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
         or dataset.query_digest!=commitment.query.canonical_digest
         or dataset.observed_cutoff!=commitment.completed_at):
         raise ValueError('research commitment source, policy or fixed dataset differs')
-    backup=_read(reader,commitment.backup_receipt_ref,P3ResearchBackupReceipt)
+    backup=_read(reader,commitment.backup_receipt_ref,TypeAdapter(Annotated[
+        P3ResearchBackupReceipt | P3LocalResearchBackupReceipt,
+        Field(discriminator='schema_version')]))
+    if isinstance(commitment,P3LocalResearchBatchCommitment):
+        if not isinstance(backup,P3LocalResearchBackupReceipt) or backup.identity!=commitment.identity:
+            raise ValueError('research backup lane or LOCAL producer differs')
+    elif (not isinstance(backup,P3ResearchBackupReceipt)
+        or backup.producer_run_id!=commitment.producer_run_id
+        or backup.producer_attempt!=commitment.producer_attempt):
+        raise ValueError('research backup lane or GITHUB producer differs')
     if (backup.source!=commitment.source
         or backup.inventory_content_sha256!=commitment.inventory_content_sha256
         or backup.dataset_content_sha256!=commitment.dataset_content_sha256
         or backup.snapshot_content_sha256!=commitment.snapshot_content_sha256
-        or backup.producer_run_id!=commitment.producer_run_id
-        or backup.producer_attempt!=commitment.producer_attempt
         or backup.object_count<max(commitment.inventory_entry_count,len(known))
         or backup.total_bytes<sum(known.values())
         or not commitment.completed_at<=backup.verified_at<=commitment.issued_at):
@@ -184,7 +195,7 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
     return commitment
 
 
-def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment:
+def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment | P3LocalResearchBatchCommitment:
     """Resolve the exact structural commitment; producer and reviewer admission is separate."""
     from packages.alpha_lifecycle.contracts.execution import InputSet
     from packages.alpha_lifecycle.contracts.data import PITProof
@@ -256,9 +267,9 @@ def _reconstruct_and_backup(ref: ArtifactRefV1, *, source: SourceIdentity,
     return facts,inventory_ref
 
 
-def _seal(payload: dict, model):
-    payload['digest']=hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
-    return model.model_validate_json(canonical_json_bytes(payload))
+def _seal(payload: Mapping[str, object], model):
+    value=dict(payload,digest=hashlib.sha256(canonical_json_bytes(payload)).hexdigest())
+    return model.model_validate_json(canonical_json_bytes(value))
 
 
 def backup_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,

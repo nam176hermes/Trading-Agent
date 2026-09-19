@@ -17,6 +17,24 @@ from packages.runtime_release.config import read_protected_canonical_json_curren
 
 ROOT=Path(__file__).resolve().parents[2]
 PROFILE_ROOT=Path('/etc/trading-agent/local-qualification')
+OFFICIAL_DATA_ROOT=Path('/var/lib/trading-agent-local/p3-official')
+
+
+def refresh_local_safety_evidence(authority, identity):
+    """Refresh the existing exporter/activation from the attested official run root."""
+    from scripts.build_p1_package6_host_authority import _digest_file, _replace_activation
+    from services.safety_state_exporter.exporter import SafetyStateExporter, source_fingerprint
+    runtime=authority.runtime_authority
+    identity=LocalRunIdentity.model_validate(identity)
+    source_root=OFFICIAL_DATA_ROOT/str(identity.run_id)/'safety'
+    if (runtime.scope!='PACKAGE6_STAGING_ONLY' or Path(sys.executable)!=runtime.application_python
+        or runtime.safety.source_fingerprint!=source_fingerprint(source_root)
+        or _host_identity()!=(identity.host_id,identity.boot_id)):
+        raise ValueError('LOCAL safety producer differs from its attested host or source root')
+    SafetyStateExporter(canonical_source_root=source_root,mounted_source_root=source_root,
+        output_path=runtime.runtime_paths.safety_snapshot,exporter_commit=runtime.source_commit,
+        gate_source={'LIVE_EXECUTION_ENABLED':'false','LIVE_TRADING_APPROVED':'false'}).export_once()
+    _replace_activation(runtime,_digest_file(runtime.runtime_paths.safety_snapshot))
 
 
 class LocalRuntimeProfile(StrictModel):

@@ -96,3 +96,64 @@ def test_unimplemented_official_operation_never_reads_host_authority(monkeypatch
     monkeypatch.setattr(module,'read_enqueued_job',lambda *args,**kwargs:pytest.fail('unsupported operation reached authority'))
     with pytest.raises(ValueError,match='operation'):
         module.run_official_once({'P3_OPERATION':operation},build_worker=lambda *args:pytest.fail('unexpected worker'))
+
+
+@pytest.mark.parametrize('failed_refresh', [False, True])
+def test_local_official_refresh_precedes_database_and_reaches_worker(synthetic_provider, monkeypatch, failed_refresh):
+    from services.job_worker import p3_official as module, p3_local_runtime
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+    from datetime import UTC, datetime, timedelta
+    provider, job, closure = synthetic_provider
+    identity = LocalRunIdentity.model_validate_json(
+        '{"issuer_kind":"LOCAL","issuer_identity":"test","run_id":"00000000-0000-4000-8000-000000000001",'
+        '"attempt":1,"host_id":"' + 'a'*64 + '","boot_id":"00000000-0000-4000-8000-000000000002"}')
+    class Authorization(SimpleNamespace):
+        pass
+    class Profile(SimpleNamespace):
+        pass
+    profile = Profile(identity=identity, store_root=str(provider._store_root), output_root=str(provider._output_root),
+                      worker_credentials_directory='/synthetic/credentials')
+    auth = Authorization(identity=identity, expires_at=datetime.now(UTC)+timedelta(minutes=30))
+    authority = SimpleNamespace(application_revision=closure.source.commit_sha)
+    calls = []
+    monkeypatch.setattr(module, 'LocalRunAuthorization', Authorization)
+    monkeypatch.setattr(module, 'LocalOfficialHostProfile', Profile)
+    monkeypatch.setattr(module, 'canonical_source_identity', lambda root: closure.source)
+    monkeypatch.setattr(module, 'validate_request', lambda *args: SimpleNamespace(authorization=auth))
+    monkeypatch.setattr(module, 'read_enqueued_job', lambda *a, **k: (job.job_id, SimpleNamespace(payload=job.payload), 'operator'))
+    monkeypatch.setattr(module, 'read_protected_canonical_json_current', lambda path: ({}, 'a'*64))
+    monkeypatch.setattr(module, 'read_official_profile', lambda *a, **k: (profile, closure))
+    monkeypatch.setattr(module, 'probe_p3_startup', lambda *a, **k: None)
+    monkeypatch.setattr(module, 'attest_worker_runtime_authority', lambda: authority)
+    monkeypatch.setattr(p3_local_runtime, 'local_runtime_guard', lambda *a: lambda: None)
+    class Preflight:
+        def __init__(self, actual, run, source, expires, *, refresh_dynamic_evidence):
+            assert actual is authority and run == identity and source == closure.source
+            assert callable(refresh_dynamic_evidence)
+        def __call__(self):
+            calls.append('refresh')
+            if failed_refresh:
+                raise ValueError('refresh rejected')
+    monkeypatch.setattr(p3_local_runtime, 'LocalRuntimeSafetyPreflight', Preflight)
+    monkeypatch.setattr(module.JobStoreSettings, 'from_systemd_credentials', lambda *a, **k: object())
+    class Repository:
+        def __init__(self, settings): calls.append('database')
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def assert_session_runtime_identity(self): pass
+    monkeypatch.setattr(module, 'WorkerRepository', Repository)
+    def worker(*args, **kwargs):
+        assert isinstance(kwargs.get('p3_safety_preflight'), Preflight)
+        assert kwargs.get('p3_runtime_guard') is None
+        return SimpleNamespace(run_once=lambda: True)
+    values = dict(P3_ISSUER_KIND='LOCAL', P3_OPERATION='p3-baselines-v1', P3_AUTHORITY_REQUEST_FILE='/synthetic/request',
+        P3_PREFLIGHT_DIRECTORY='/synthetic/enqueue', P3_ARTIFACT_ROOT=profile.store_root,
+        P3_MANIFEST_FILE='/synthetic/manifest', P3_REVIEW_FILE='/synthetic/review',
+        CREDENTIALS_DIRECTORY=profile.worker_credentials_directory)
+    if failed_refresh:
+        with pytest.raises(ValueError, match='refresh rejected'):
+            module.run_official_once(values, build_worker=worker)
+        assert 'database' not in calls
+    else:
+        assert module.run_official_once(values, build_worker=worker) == 0
+        assert calls[:2] == ['refresh', 'database']

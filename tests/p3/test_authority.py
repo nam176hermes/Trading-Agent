@@ -208,9 +208,15 @@ def test_local_request_needs_current_protected_request_and_local_readiness(tmp_p
     # scope (protected request plus local readiness); a dedicated test below covers
     # a request that has no research qualification at all.
     from packages.alpha_lifecycle import local_research
-    monkeypatch.setattr(local_research,'read_local_research_inputs',
-        lambda identity,*,source,policy_digest,input_set_ref:SimpleNamespace(
-            expires_at=now+timedelta(minutes=10)))
+    def research_admission(identity,*,source,policy_digest,input_set_ref):
+        import json
+        import hashlib
+        policy_path = Path(__file__).resolve().parents[2] / local_pre_p3.POLICY_PATH
+        canonical_policy = hashlib.sha256(canonical_json_bytes(json.loads(policy_path.read_bytes()))).hexdigest()
+        assert policy_digest == canonical_policy
+        assert policy_digest != hashlib.sha256(policy_path.read_bytes()).hexdigest()
+        return SimpleNamespace(expires_at=now+timedelta(minutes=10))
+    monkeypatch.setattr(local_research,'read_local_research_inputs',research_admission)
     monkeypatch.setattr(custody,'_host_identity',lambda:('0'*64 if fault=='wrong_host' else 'a'*64,UUID(identity['boot_id'])))
     calls=[]
     def protected(candidate):

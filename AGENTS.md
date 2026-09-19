@@ -60,8 +60,9 @@ and [implementation plan](docs/superpowers/plans/2026-09-18-local-phase-workflow
 Use focused checks during development and full applicable checks at candidate
 freeze. Do not require a push or hosted CI after each small change. Publication
 does not replace local validation, and local validation does not grant runtime
-authority. The new authenticated local qualification lane is planned, not yet
-implemented; preserve existing formal gates until its source migration passes.
+authority. The authenticated local qualification lane uses protected, source-bound
+receipts; preserve its gates and the separate hosted publication requirements.
+See the [official LOCAL runbook](docs/implementation/p3/local-official-runbook.md).
 
 Use this workflow for every task unless the operator gives a narrower
 task-specific instruction. Repository rules and explicit operator decisions
@@ -102,9 +103,8 @@ always override skills and tools.
 8. **Qualify source.** At candidate freeze, after affected checks pass, run the
    safe root gates below. Keep `make ci-portable NONINTERACTIVE=1` in genuine
    hosted context at publication; never invent GitHub identities locally.
-   Until the authenticated local qualification lane is implemented, report
-   missing formal qualification as HELD without blocking ordinary local source
-   development. Use `make audit-release` only for a clean release candidate.
+   Report missing or expired local qualification as HELD without blocking ordinary
+   local source development. Use `make audit-release` only for a clean release candidate.
    Never infer host, runtime, paper activation, or live authority from source gates.
 9. **Hand off evidence.** Report changed behavior, files, exact commands and
    results, candidate SHA/tree, skipped checks, and residual risks. Keep source
