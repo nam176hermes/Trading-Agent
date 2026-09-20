@@ -502,6 +502,25 @@ def backing_fence(descriptor: dict, image_fd: int, loop_fd: int) -> dict:
     return status
 
 
+def mount_challenge(mount: Path, inventory: dict, nonce: str) -> str:
+    """A fresh readback challenge bound to this mount generation.
+
+    Metadata comparison shows the mount looks right; it does not show that the bytes behind
+    it are still the ones admitted. The nonce selects which entries to read, so a response
+    cannot be precomputed or replayed across generations.
+    """
+    entries = sorted(inventory['entries'])
+    if not entries:
+        raise TransportHeld('inventory is empty; nothing to challenge')
+    digest = hashlib.sha256(nonce.encode())
+    seed = int(nonce[:16], 16)
+    for step in range(8):
+        chosen = entries[(seed + step * 7919) % len(entries)]
+        digest.update(chosen.encode())
+        digest.update((mount / chosen).read_bytes())
+    return digest.hexdigest()
+
+
 def mount_fence(descriptor: dict, image_fd: int, loop_fd: int, mount: Path) -> dict:
     """Re-verify the whole chain: backing bytes, loop association and mount identity."""
     info = os.fstat(image_fd)
@@ -634,6 +653,35 @@ def build_v2_closure(mount: Path, descriptor: dict, libraries: list[dict], inven
 # Operations
 # ---------------------------------------------------------------------------
 
+def reap_with_escalation(child: int, deadline: float) -> dict:
+    """Wait for the worker, then escalate. An unbounded wait is not a deadline.
+
+    TERMINATE_GRACE_SECONDS and REAP_GRACE_SECONDS existed as constants before this and were
+    never used, so the contract's escalation was declared rather than implemented. A task
+    stuck in uninterruptible kernel sleep can still outlast this; that case is reported as
+    unreaped rather than described as clean.
+    """
+    escalation = []
+    for signal_number, grace in ((None, max(0.0, deadline - time.monotonic())),
+                                 (signal.SIGTERM, TERMINATE_GRACE_SECONDS),
+                                 (signal.SIGKILL, REAP_GRACE_SECONDS)):
+        if signal_number is not None:
+            try:
+                os.kill(child, signal_number)
+                escalation.append(signal.Signals(signal_number).name)
+            except ProcessLookupError:
+                break
+        limit = time.monotonic() + grace
+        while time.monotonic() < limit:
+            pid, status = os.waitpid(child, os.WNOHANG)
+            if pid == child:
+                return dict(status=status, escalation=escalation, reaped=True)
+            time.sleep(0.02)
+    return dict(status=None, escalation=escalation, reaped=False,
+                note='the worker did not reap; resources are retained rather than '
+                     'reported as cleaned')
+
+
 def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     """Build the image, then publish its descriptor durably before anything consumes it."""
     stage = Path(request['stage'])
@@ -727,10 +775,19 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
         try:
             backing_fence(descriptor, image_fd, loop_fd)
             mount_image(device, mount)
-            fence = mount_fence(descriptor, image_fd, loop_fd, mount)
+            # A generation nonce distinguishes this mount lifetime from a later one at the
+            # same device name or numeric mount id, neither of which is identity.
+            nonce = os.urandom(32).hex()
+            fences = [dict(point='after-mount', nonce=nonce,
+                           **mount_fence(descriptor, image_fd, loop_fd, mount))]
+            expected_challenge = mount_challenge(mount, inventory, nonce)
             private = root / 'worker'
             private.mkdir(mode=0o700, exist_ok=True)
             os.chown(private, descriptor['worker_uid'], descriptor['worker_gid'])
+            # Fence again immediately before the worker is admitted, so the window between
+            # setup and use is covered rather than assumed.
+            fences.append(dict(point='before-worker', nonce=nonce,
+                               **mount_fence(descriptor, image_fd, loop_fd, mount)))
             read, write = os.pipe()
             child = os.fork()
             if child == 0:
@@ -754,7 +811,9 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                     closure = build_v2_closure(mount, descriptor, descriptor['external_libraries'],
                         inventory, request['source'], request['environment_ref'], request['job_id'])
                     proof = probe_p3_startup(closure, private_root=private)
+                    challenge = mount_challenge(mount, inventory, nonce)
                     os.write(write, canonical_json_bytes(dict(startup=proof,
+                        challenge=challenge,
                         diagnostics=diagnostics,
                         open_fds=sorted(os.listdir('/proc/self/fd')))))
                 except BaseException as error:
@@ -771,7 +830,17 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                 payload += block
             os.close(read)
             observed = json.loads(payload) if payload else dict(error='worker produced no output')
-            observed['worker_status'] = os.waitpid(child, 0)[1]
+            reaped = reap_with_escalation(child, deadline)
+            observed['worker_status'] = reaped['status']
+            observed['worker_reaping'] = reaped
+            if not reaped['reaped']:
+                raise TransportHeld('worker did not reap within the deadline')
+            # Fence once more after the worker finishes, and require the challenge the
+            # worker computed to match what the controller computed for this generation.
+            fences.append(dict(point='after-worker', nonce=nonce,
+                               **mount_fence(descriptor, image_fd, loop_fd, mount)))
+            if observed.get('challenge') != expected_challenge:
+                raise TransportHeld('mount readback challenge did not match this generation')
         finally:
             if _libc.umount(str(mount).encode()) != 0:
                 _libc.umount2(str(mount).encode(), MNT_DETACH)
@@ -780,7 +849,8 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
     finally:
         os.close(image_fd)
         os.chmod(root, 0o700)
-    return dict(fence=fence, loop_device=device, loop_number=number, observed=observed)
+    return dict(fences=fences, mount_nonce=nonce, loop_device=device,
+                loop_number=number, observed=observed)
 
 
 def command_inspect(root: Path) -> dict:
