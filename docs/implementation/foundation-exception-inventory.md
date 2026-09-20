@@ -693,8 +693,8 @@ scripts/p3_local_transport.py|122|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|269|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|308|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|352|BaseException|TOOLING_MIGRATION|RAISE
-scripts/p3_local_transport.py|1189|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_local_transport.py|1355|Exception|TOOLING_MIGRATION|RETURN
+scripts/p3_local_transport.py|1269|BaseException|TOOLING_MIGRATION|OTHER
+scripts/p3_local_transport.py|1455|Exception|TOOLING_MIGRATION|RETURN
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
 scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
@@ -774,7 +774,7 @@ services/job_worker/p1_engine_spawn.py|417|BaseException|PRODUCTION_CRITICAL|RAI
 services/job_worker/p3_fixture_native.py|107|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_sql.py|751|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_holdout_release.py|155|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_host_profile.py|234|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_host_profile.py|241|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|240|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_local_runtime.py|145|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_native_runner.py|126|Exception|PRODUCTION_CRITICAL|RAISE
