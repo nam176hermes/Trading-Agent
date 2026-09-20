@@ -158,9 +158,24 @@ def _wheel_metadata(path: Path) -> tuple[str, str, str]:
         _fail()
     name = message.get("Name")
     version = message.get("Version")
-    license_value = message.get("License-Expression") or message.get("License") or "UNKNOWN"
-    if not isinstance(name, str) or not isinstance(version, str) or not isinstance(license_value, str):
+    if not isinstance(name, str) or not isinstance(version, str):
         _fail()
+    # The manifest records a licence identifier, not a licence document. Some wheels put the
+    # full licence text in the legacy License field rather than an SPDX identifier: polars
+    # 1.44.1 ships 1141 characters there and has no License-Expression, which made the
+    # wheelhouse for this lock impossible to build at all. Prefer the canonical field, then a
+    # License field short enough to be an identifier, then the OSI classifier, which is an
+    # identifier by construction.
+    license_value = message.get("License-Expression")
+    if not isinstance(license_value, str) or not license_value.strip():
+        legacy = message.get("License")
+        legacy = " ".join(legacy.split()) if isinstance(legacy, str) else ""
+        if legacy and len(legacy) <= 512:
+            license_value = legacy
+        else:
+            classifiers = [value for value in (message.get_all("Classifier") or [])
+                           if isinstance(value, str) and value.startswith("License ::")]
+            license_value = classifiers[0].split("::")[-1].strip() if classifiers else "UNKNOWN"
     license_value = " ".join(license_value.split())
     if not license_value or len(license_value) > 512:
         _fail()
