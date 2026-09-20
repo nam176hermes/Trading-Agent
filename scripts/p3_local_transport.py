@@ -356,6 +356,18 @@ def seal_library(path: Path, expected_sha256: str | None = None) -> tuple[int, d
                     source_dev=info.st_dev, source_ino=info.st_ino)
 
 
+def _in_stage(soname: str, stage: Path) -> bool:
+    """Is this library name a file the stage already carries?
+
+    If it is, the image carries it too and the loader finds it there, whatever it could not
+    find on the host while the object was being listed in isolation.
+    """
+    try:
+        return any(candidate.is_file() for candidate in stage.rglob(soname))
+    except OSError:
+        return False
+
+
 def _within(target: str, root: Path) -> bool:
     """Path containment, not a string prefix.
 
@@ -418,7 +430,8 @@ def _elf_needed(path: Path) -> set[str]:
     return names
 
 
-def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Path]:
+def library_closure(objects: list[Path], stage: Path, loader_fd: int,
+                    unresolvable: list[dict] | None = None) -> list[Path]:
     """Exact host library file targets the staged ELF objects resolve to.
 
     The SONAME path the loader asks for is kept as the target. Binding a realpath publishes
@@ -458,9 +471,40 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
         # accepted becomes a closure missing libraries the object needs. Discarding stderr and
         # ignoring the status turned that into a silent partial result.
         if result.returncode != 0:
+            stderr = result.stderr.decode()
+            # The line reads "<object>: error while loading shared libraries: <soname>:
+            # cannot open shared object file: No such file or directory", so the name is the
+            # field before the message, not the second from the end -- which is the message.
+            missing = []
+            for line in stderr.splitlines():
+                parts = [part.strip() for part in line.split(':')]
+                for index, part in enumerate(parts):
+                    if part == 'cannot open shared object file' and index:
+                        missing.append(parts[index - 1])
+            # An optional extension whose dependency is absent on this host cannot contribute
+            # host libraries, because there are none to seal: the pinned core ships
+            # _tkinter, which needs libtcl9.0.so, and this host has no tcl. Refusing the whole
+            # build over it would make the canonical closure unbuildable anywhere tcl is not
+            # installed. Skipping it silently is the partial result this check exists to stop,
+            # so it is recorded instead, and every other failure still refuses.
+            if unresolvable is not None and missing:
+                # A name that is itself a file inside the stage travels in the image and
+                # resolves there. The manylinux libraries under *.libs carry no RUNPATH of
+                # their own: they are only ever loaded as dependencies of the extension that
+                # does, so listing one in isolation fails on this host while the closure is
+                # complete. Recording that as unresolvable would have been a false alarm on
+                # seven of the eight objects this found.
+                in_image = sorted({name for name in set(missing) if _in_stage(name, stage)})
+                absent = sorted(set(missing) - set(in_image))
+                unresolvable.append(dict(object=str(path.relative_to(stage))
+                                         if _within(str(path), stage) else str(path),
+                                         missing=absent, resolved_in_image=in_image,
+                                         exit=result.returncode,
+                                         loadable_on_this_host=not absent))
+                continue
             raise TransportHeld(
                 f'the loader could not resolve {path}: exit {result.returncode}; '
-                f'{result.stderr.decode()[-300:]}')
+                f'{stderr[-300:]}')
         for line in result.stdout.decode().splitlines():
             entry = line.strip()
             if not entry:
@@ -1097,7 +1141,9 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
         # on the image, and building first meant a closure this refuses left a 180 MB
         # artifact behind with no descriptor -- which cleanup then rightly declines to remove,
         # because it cannot account for it. Failing before anything is created costs nothing.
-        sources = library_closure(_closure_objects(stage, inventory), stage, loader_fd)
+        unresolvable: list[dict] = []
+        sources = library_closure(_closure_objects(stage, inventory), stage, loader_fd,
+                                  unresolvable)
         # A durable record of the attempt, written before the artifact exists. Without it a
         # crash between creation and the PREPARED record leaves a file nothing identifies.
         #
@@ -1122,6 +1168,10 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
         python_root=request['python_root'], worker_uid=uid, worker_gid=gid,
         toolchain_manifest_sha256=hashlib.sha256(canonical_json_bytes(manifest)).hexdigest(),
         inventory_ref=request['inventory_ref'], external_libraries=libraries, **built)
+    # Recorded in the summary and the inventory rather than in the descriptor, whose schema is
+    # pinned. These objects travel in the image and remain unloadable on this host, which is
+    # the same thing that would happen without the transport.
+    inventory['unresolvable_objects'] = unresolvable
     _durable_write(root / 'quarantine.json', canonical_json_bytes(dict(
         task=request['job_id'], image_dev=built['backing_dev'], image_ino=built['backing_ino'],
         image_sha256=built['image_sha256'], owner_pid=os.getpid(),
@@ -1133,6 +1183,7 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     summary = {k: v for k, v in descriptor.items() if k != 'external_libraries'}
     summary['external_library_count'] = len(libraries)
     summary['toolchain_members'] = len(manifest['members'])
+    summary['unresolvable_objects'] = unresolvable
     summary['inventory'] = dict(entry_count=inventory['entry_count'],
                                 total_bytes=inventory['total_bytes'],
                                 directory_count=inventory['directory_count'])

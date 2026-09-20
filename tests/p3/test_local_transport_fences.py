@@ -510,3 +510,67 @@ def test_a_sibling_directory_is_not_inside_the_stage(tmp_path):
     sibling.mkdir()
     assert transport._within(str(stage/'lib.so'), stage)
     assert not transport._within(str(sibling/'lib.so'), stage)
+
+
+def test_an_object_whose_dependency_is_absent_is_recorded_not_skipped(tmp_path, monkeypatch):
+    """The pinned core ships extensions this host cannot load, and both easy answers are wrong.
+
+    Refusing the build makes the canonical closure unbuildable anywhere the optional library
+    is not installed. Skipping it silently is the partial result the exit-status check exists
+    to stop. It is recorded, so a reader sees which objects cannot load and why.
+    """
+    class _Missing:
+        returncode = 127
+        stdout = b''
+        stderr = (b'/stage/python/lib/_tkinter.so: error while loading shared libraries: '
+                  b'libtcl9.0.so: cannot open shared object file: No such file or directory\n')
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Missing())
+    found: list = []
+    resolved = transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage',
+                                         loader_fd=-1, unresolvable=found)
+    assert all('tkinter' not in str(item) for item in resolved)
+    assert len(found) == 1
+    assert found[0]['missing'] == ['libtcl9.0.so'] and found[0]['exit'] == 127
+    assert found[0]['loadable_on_this_host'] is False
+    assert found[0]['resolved_in_image'] == []
+
+
+def test_another_loader_failure_still_refuses(tmp_path, monkeypatch):
+    """Only an absent shared object is tolerated; anything else is still a refusal."""
+    class _Broken:
+        returncode = 1
+        stdout = b''
+        stderr = b'not a dynamic executable'
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Broken())
+    with pytest.raises(TransportHeld, match='the loader could not resolve'):
+        transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage',
+                                  loader_fd=-1, unresolvable=[])
+
+
+def test_a_missing_name_the_stage_carries_is_not_a_finding(tmp_path, monkeypatch):
+    """manylinux bundles libraries that carry no RUNPATH of their own.
+
+    They are only ever loaded as dependencies of the extension that does, so listing one in
+    isolation fails on the host while the closure is complete. Seven of the eight objects
+    this rule first reported were exactly that.
+    """
+    import shutil
+
+    stage = tmp_path/'stage'
+    (stage/'pkg.libs').mkdir(parents=True)
+    shutil.copy('/lib/x86_64-linux-gnu/libz.so.1', stage/'pkg.libs'/'libsibling.so.1')
+
+    class _Missing:
+        returncode = 127
+        stdout = b''
+        stderr = (b'/stage/pkg.libs/a.so: error while loading shared libraries: '
+                  b'libsibling.so.1: cannot open shared object file: No such file\n')
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Missing())
+    found: list = []
+    transport.library_closure([transport.MKSQUASHFS], stage, loader_fd=-1, unresolvable=found)
+    assert found[0]['missing'] == []
+    assert found[0]['resolved_in_image'] == ['libsibling.so.1']
+    assert found[0]['loadable_on_this_host'] is True
