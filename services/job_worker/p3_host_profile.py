@@ -153,6 +153,49 @@ class _HostFiles(StrictModel):
     files: Annotated[tuple[_HostFile,...],Field(min_length=1,max_length=MAX_CLOSURE_FILES)]
 
 
+_RELEASE_ROOT = PurePosixPath('/p3/release')
+_PYTHON_ROOT = PurePosixPath('/p3/python')
+
+
+def _transport_policy(profile) -> str:
+    """The sandbox policy identity that belongs to this profile's transport.
+
+    Read from the concrete class, never from the lane base: this is a version question,
+    and answering it from the lane would let a v2 profile present the v1 identity.
+    """
+    return SANDBOX_PROFILE_V2_SHA256 if type(profile) is LocalOfficialHostProfileV2 else SANDBOX_PROFILE_SHA256
+
+
+def _verify_image_transport(profile, python_root: Path, mounts):
+    """Bind the image descriptor to the inventory this profile actually declares.
+
+    Returns (None, None) on the sealed-file transport. On v2 the mount root is derived from
+    the verified Python root rather than supplied separately, so the interpreter that was
+    just read back and the roots that get bound cannot come from different places.
+    """
+    if type(profile) is not LocalOfficialHostProfileV2:
+        return None,None
+    image=profile.image
+    if python_root.name!=image.python_root:
+        raise ValueError('P3 image Python root does not match the descriptor')
+    mount=python_root.parent
+    release_root=mount/image.release_root
+    if not release_root.is_dir() or release_root==python_root:
+        raise ValueError('P3 image release root is missing or collides with the Python root')
+    imaged=[m for m in mounts
+            if m.target.is_relative_to(_RELEASE_ROOT) or m.target.is_relative_to(_PYTHON_ROOT)]
+    if len(imaged)!=image.entry_count or sum(m.size for m in imaged)!=image.logical_bytes:
+        raise ValueError('P3 image descriptor does not match the declared closure inventory')
+    fingerprint=_digest(dict(schema_version=IMAGE_SCHEMA_VERSION,
+        files=[dict(target=str(m.target),sha256=m.sha256,size=m.size,mode=m.mode) for m in imaged]))
+    if fingerprint!=image.closure_fingerprint:
+        raise ValueError('P3 image closure fingerprint differs from the declared inventory')
+    external={m.target for m in mounts} - {m.target for m in imaged}
+    if {PurePosixPath(library.target) for library in image.external_libraries}!=external:
+        raise ValueError('P3 image external library set differs from the declared inventory')
+    return image,mount
+
+
 def read_official_profile(
     path: Path, expected_digest: str, *, job_id: str, payload: object,
     context: Mapping[str, str],
@@ -199,7 +242,7 @@ def read_official_profile(
     if (inputs.source!=source or inputs.environment_ref!=profile.environment_ref
         or inputs.integration_receipt_ref!=profile.integration_receipt_ref or environment.python_version!='3.11'
         or environment.native_manifest_digest!=P1_REAL_BACKTEST_POLICY.closure_sha256
-        or environment.sandbox_policy_digest!=SANDBOX_PROFILE_SHA256):
+        or environment.sandbox_policy_digest!=_transport_policy(profile)):
         raise ValueError('P3 profile environment, InputSet or qualification differs')
     integration=validate_integration_job_result(profile.integration_receipt_ref,
         job_detail_ref=profile.qualification_job_detail_ref,source=source,
@@ -243,7 +286,7 @@ def read_official_profile(
         raise ValueError('P3 profile sandbox mode is invalid')
     _file_bytes(sandbox_path,identity,info.st_size,mode,profile.sandbox_sha256)
     sandbox=P3Sandbox(sandbox_path,identity,profile.sandbox_sha256,mode,
-        SANDBOX_PROFILE_SHA256,BWRAP_VERSION,BWRAP_CAPABILITIES)
+        _transport_policy(profile),BWRAP_VERSION,BWRAP_CAPABILITIES)
     fingerprint=_digest(dict(source=source,environment_ref=profile.environment_ref,
         files=[dict(target=str(m.target),sha256=m.sha256,size=m.size,mode=m.mode) for m in mounts],
         sandbox_sha256=sandbox.executable_sha256,sandbox_policy_sha256=sandbox.profile_sha256))
@@ -251,5 +294,6 @@ def read_official_profile(
         raise ValueError('P3 profile closure digest differs')
     if read_protected_canonical_json_current(path)[1]!=expected_digest:
         raise ValueError('P3 protected profile changed during readback')
+    image,image_mount=_verify_image_transport(profile,python_root,mounts)
     return profile,CompleteP3Closure(source,profile.environment_ref,python_root,tuple(mounts),sandbox,
-        fingerprint,job_id,payload_fingerprint(payload))
+        fingerprint,job_id,payload_fingerprint(payload),image,image_mount)

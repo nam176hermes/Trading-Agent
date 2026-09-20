@@ -16,6 +16,10 @@ DRIVER_WALL_SECONDS = 4 * CHILD_POLICY['child_wall_seconds']
 MAX_CLOSURE_FILES = 8192
 MAX_CLOSURE_BYTES = 1073741824
 MAX_ARGV_BYTES = 1048576
+# Hard parser limit of the pinned bubblewrap 0.9.0 build: parse_args counts every token,
+# including the child command and tokens read from an --args file, so no argument-file
+# transport evades it. This is the backend's capacity, not a tunable budget.
+BWRAP_PARSER_TOKEN_CAPACITY = 9000
 BWRAP_VERSION = 'bubblewrap 0.9.0'
 SANDBOX_ARGS = ('--unshare-all','--die-with-parent','--clearenv')
 ROOT_READONLY_ARGS = ('--remount-ro','/')

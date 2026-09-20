@@ -15,12 +15,14 @@ import uuid
 
 from packages.alpha_lifecycle.sandbox_policy import (
     BWRAP_VERSION,BWRAP_CAPABILITIES,SANDBOX_ARGS,FILESYSTEM_ARGS,ROOT_READONLY_ARGS,
-    ENVIRONMENT_ARGS,MAX_CLOSURE_FILES,MAX_CLOSURE_BYTES,MAX_ARGV_BYTES,SANDBOX_PROFILE_SHA256,socket_filter_bytes,
+    ENVIRONMENT_ARGS,MAX_CLOSURE_FILES,MAX_CLOSURE_BYTES,MAX_ARGV_BYTES,
+    BWRAP_PARSER_TOKEN_CAPACITY,SANDBOX_PROFILE_SHA256,SANDBOX_PROFILE_V2_SHA256,socket_filter_bytes,
 )
 from services.job_store.records import validate_p3_job_id
 from services.operator_control.protected_fs import ProtectedDirectory,open_private_directory,read_private_file
 from .engine_spawn import _sealed_memfd
-from .p3_spawn import CompleteP3Closure,P3ClosureMount,P3Sandbox,_file_bytes,_digest
+from .p3_spawn import (CompleteP3Closure,P3ClosureMount,P3Sandbox,_RELEASE,_PYTHON,
+    _file_bytes,_digest,_image_root_args)
 from .p3_output import _identity
 
 
@@ -156,8 +158,18 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
     targets=tuple(m.target for m in closure.mounts)
     if targets!=tuple(sorted(set(targets))):
         raise ValueError('P3 startup inventory is not sorted and unique')
+    # Capacity is a property of the pinned backend and is knowable from the inventory alone,
+    # so it is the cheapest rejection available and runs before any digest, snapshot, probe
+    # directory or memfd. The historical failure built thousands of descriptors first and
+    # then surfaced bwrap's opaque token error.
+    imaged=closure.image is not None
+    directory_estimate=len({p for m in closure.mounts for p in m.target.parents if p!=PurePosixPath('/')})
+    lower_bound=(6 if imaged else 5*len(targets))+2*directory_estimate+len(SANDBOX_ARGS)+len(FILESYSTEM_ARGS)
+    if lower_bound>BWRAP_PARSER_TOKEN_CAPACITY:
+        raise ValueError('P3 startup closure exceeds the pinned sandbox parser capacity')
     sandbox=closure.sandbox
-    if (type(sandbox) is not P3Sandbox or sandbox.profile_sha256!=SANDBOX_PROFILE_SHA256
+    expected_policy=SANDBOX_PROFILE_V2_SHA256 if imaged else SANDBOX_PROFILE_SHA256
+    if (type(sandbox) is not P3Sandbox or sandbox.profile_sha256!=expected_policy
         or sandbox.version!=BWRAP_VERSION or sandbox.capabilities!=BWRAP_CAPABILITIES
         or sandbox.mode not in {0o500,0o555,0o755}):
         raise ValueError('P3 startup sandbox policy differs')
@@ -200,10 +212,14 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                 argv.extend(('--dir',str(directory)))
             for mount in closure.mounts:
                 raw=_file_bytes(mount.source,mount.identity,mount.size,mount.mode,mount.sha256)
+                if imaged and (mount.target.is_relative_to(_RELEASE) or mount.target.is_relative_to(_PYTHON)):
+                    continue
                 fd=_sealed_memfd('p3-startup-file',raw,mode=mount.mode);descriptors.append(fd)
                 argv.extend(('--perms',f'{mount.mode:o}','--ro-bind-data',str(fd),str(mount.target)))
                 if time.monotonic()-started>=120:
                     raise ValueError('P3 startup preparation timed out')
+            if imaged:
+                argv.extend(_image_root_args(closure))
             input_fd=os.dup(inputs.descriptor);descriptors.append(input_fd)
             output_fd=os.dup(output.descriptor);descriptors.append(output_fd)
             filter_fd=_sealed_memfd('p3-startup-filter',socket_filter_bytes(),mode=0o400);descriptors.append(filter_fd)
@@ -212,6 +228,8 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                 '/p3/python/bin/python3.11','-I','-B','-c',_PROGRAM,*map(str,descriptors)))
             if sum(len(arg.encode())+1 for arg in argv)>MAX_ARGV_BYTES:
                 raise ValueError('P3 startup argument bound exceeded')
+            if len(argv)-1>BWRAP_PARSER_TOKEN_CAPACITY:
+                raise ValueError('P3 startup argument count exceeds the pinned sandbox parser capacity')
             code,stdout,stderr=_run_probe(tuple(argv),tuple(descriptors))
             if (code or stdout!=b'P3_STARTUP_PROBE_PASS\n' or stderr
                 or os.listdir(inputs.descriptor) or os.listdir(output.descriptor)!=['probe-output']):
