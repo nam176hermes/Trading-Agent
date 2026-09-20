@@ -273,6 +273,44 @@ def open_verified_tool(path: Path, expected_sha256: str) -> tuple[int, dict]:
                     size=before.st_size, sha256=digest.hexdigest())
 
 
+def seal_verified_tool(path: Path, expected_sha256: str) -> tuple[int, dict]:
+    """Verify one pinned executable, then run it from a sealed copy, never from the file.
+
+    Executing `/proc/self/fd/N` binds the bytes that run to the inode that was hashed. It does
+    not bind them to the bytes that inode held at the moment of hashing: a writer with access
+    to the file can still change them in place between the verification and the exec, and the
+    verification would be of bytes that no longer run. Re-hashing just before the exec narrows
+    that window; copying into a sealed memfd removes it, because the sealed image cannot be
+    written by anyone afterwards. This is the same thing p3_startup already does for
+    bubblewrap, applied to the tools the controller itself runs.
+    """
+    fd, record = open_verified_tool(path, expected_sha256)
+    try:
+        payload, offset = bytearray(), 0
+        while chunk := os.pread(fd, 1 << 20, offset):
+            payload += chunk
+            offset += len(chunk)
+    finally:
+        os.close(fd)
+    payload = bytes(payload)
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        raise TransportHeld(f'{path} changed between verification and sealing')
+    from services.job_worker.engine_spawn import _sealed_memfd
+    sealed = _sealed_memfd(f'p3-tool-{path.name}', payload, mode=0o500)
+    try:
+        try:
+            os.pwrite(sealed, b'\0', 0)
+        except OSError as error:
+            if error.errno not in (errno.EPERM, errno.EBADF):
+                raise
+        else:
+            raise TransportHeld(f'{path} sealed copy is still writable')
+    except BaseException:
+        os.close(sealed)
+        raise
+    return sealed, dict(record, sealed=True)
+
+
 def seal_library(path: Path, expected_sha256: str | None = None) -> tuple[int, dict]:
     """Copy one allowlisted library into a sealed memfd and hand that to bwrap.
 
@@ -446,24 +484,30 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
     return [Path(p) for p in sorted(needed)]
 
 
-def toolchain_manifest(tool: Path, tool_record: dict, loader_fd: int, stage: Path) -> dict:
-    """The build tool and every object it loads, each by digest.
+def toolchain_manifest(tools: list[tuple[Path, dict]], loader_fd: int, stage: Path) -> dict:
+    """Every executable the transport runs, and every object each of them loads, by digest.
 
-    Hashing only the tool's own record left its dynamic dependencies unpinned: the bytes that
+    Hashing only one tool's own record left its dynamic dependencies unpinned: the bytes that
     actually execute during a build include every library the loader brings in, and none of
-    them were named, let alone bound.
+    them were named, let alone bound. Covering only mksquashfs was the same mistake one level
+    up -- bubblewrap runs too, and its closure was not in the manifest either.
     """
-    members = [dict(tool_record, role='tool')]
-    for dependency in library_closure([tool], stage, loader_fd):
-        info = dependency.lstat()
-        if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
-            raise TransportHeld(f'toolchain dependency is not a file: {dependency}')
-        resolved = Path(os.path.realpath(dependency))
-        members.append(dict(role='dependency', path=str(dependency),
-                            resolved=str(resolved), size=resolved.stat().st_size,
-                            sha256=hashlib.sha256(resolved.read_bytes()).hexdigest()))
+    members, seen = [], set()
+    for tool, record in tools:
+        members.append(dict(record, role='tool'))
+        for dependency in library_closure([tool], stage, loader_fd):
+            if str(dependency) in seen:
+                continue
+            seen.add(str(dependency))
+            info = dependency.lstat()
+            if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                raise TransportHeld(f'toolchain dependency is not a file: {dependency}')
+            resolved = Path(os.path.realpath(dependency))
+            members.append(dict(role='dependency', path=str(dependency),
+                                resolved=str(resolved), size=resolved.stat().st_size,
+                                sha256=hashlib.sha256(resolved.read_bytes()).hexdigest()))
     members.sort(key=lambda member: (member['role'], member.get('path', '')))
-    return dict(schema_version='p3-local-toolchain-manifest-v1', members=members)
+    return dict(schema_version='p3-local-toolchain-manifest-v2', members=members)
 
 
 # ---------------------------------------------------------------------------
@@ -1017,10 +1061,15 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     # Both descriptors stay open across the build. The expected digests come from the
     # protected request, not from whatever the paths currently hold: hashing the present
     # bytes and then treating that digest as the authority pins nothing at all.
-    loader_fd, loader = open_verified_tool(LOADER, request['loader_sha256'])
-    tool_fd, toolchain = open_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'])
+    loader_fd, loader = seal_verified_tool(LOADER, request['loader_sha256'])
+    tool_fd, toolchain = seal_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'])
+    sandbox_fd, sandbox = open_verified_tool(BWRAP, request['bwrap_sha256'])
     try:
-        manifest = toolchain_manifest(MKSQUASHFS, toolchain, loader_fd, stage)
+        # Every executable the transport runs is in the manifest, bubblewrap included. It is
+        # not executed here, so it is verified rather than sealed; p3_startup reads it into
+        # its own sealed memfd at launch.
+        manifest = toolchain_manifest([(MKSQUASHFS, toolchain), (BWRAP, sandbox)],
+                                      loader_fd, stage)
         manifest['loader'] = loader
         # Resolved before the image is built, not after. The library closure does not depend
         # on the image, and building first meant a closure this refuses left a 180 MB
@@ -1036,6 +1085,7 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
         built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd, deadline)
         libraries = _seal_external_libraries(sources, snapshots)
     finally:
+        os.close(sandbox_fd)
         os.close(tool_fd)
         os.close(loader_fd)
     descriptor = dict(schema_version=IMAGE_SCHEMA_VERSION, release_root=request['release_root'],

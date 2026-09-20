@@ -28,7 +28,7 @@ from .p3_output import _identity
 
 
 _PROGRAM='''
-import errno,os,socket,sys
+import ast,errno,os,socket,sys
 # Assert on what each descriptor refers to, not on its number. Numbers are reused: the
 # sealed-file transport happened to allocate high ones, but a transport that seals only a
 # handful leaves low numbers free for the sandboxed interpreter to reopen for itself, and a
@@ -67,6 +67,33 @@ os.close(nested_read)
 if os.waitpid(nested,0)[1]!=0: raise AssertionError('nested descriptor probe did not complete')
 print('P3_STARTUP_NESTED_FD_INVENTORY '+inherited)
 if not inherited.endswith(', [])'): raise AssertionError('descriptor reached a nested child: '+inherited)
+# A forked child inherits every descriptor; one that execs keeps only those without
+# close-on-exec. Research code can create either, and only the forked case was measured, so
+# a descriptor that survives exec would have gone unseen here.
+native_read,native_write=os.pipe()
+os.set_inheritable(native_write,True)
+reader=['import os','fd=%d'%native_write,'found=[]',
+ 'for entry in os.listdir("/proc/self/fd"):',
+ ' try: link=os.readlink("/proc/self/fd/"+entry)',
+ ' except OSError: continue',
+ ' found.append((int(entry),link))',
+ 'os.write(fd,repr(sorted(found)).encode())']
+native=os.fork()
+if native==0:
+ os.close(native_read)
+ # argv[0] has to be the full path: CPython locates its prefix from it, and a bare name
+ # makes it warn about <exec_prefix> on stderr, which this probe treats as a failure.
+ os.execv('/p3/python/bin/python3.11',['/p3/python/bin/python3.11','-I','-B','-c',chr(10).join(reader)])
+ os._exit(127)
+os.close(native_write)
+raw=os.read(native_read,65536).decode()
+os.close(native_read)
+if os.waitpid(native,0)[1]!=0: raise AssertionError('native descriptor probe did not complete')
+if not raw: raise AssertionError('native descriptor probe produced nothing')
+carried_native=ast.literal_eval(raw)
+extra=['%d:%s'%(n,t) for n,t in carried_native if n not in (0,1,2,native_write)]
+print('P3_STARTUP_NATIVE_FD_INVENTORY '+repr((carried_native,extra)))
+if extra: raise AssertionError('descriptor reached a native child: '+','.join(extra))
 for create in (socket.socket,socket.socketpair):
  try: create()
  except OSError as error: assert error.errno==errno.EPERM
@@ -83,6 +110,7 @@ print('P3_STARTUP_PROBE_PASS')
 
 _FD_INVENTORY='P3_STARTUP_FD_INVENTORY '
 _NESTED_FD_INVENTORY='P3_STARTUP_NESTED_FD_INVENTORY '
+_NATIVE_FD_INVENTORY='P3_STARTUP_NATIVE_FD_INVENTORY '
 
 
 def _close_on_exec(descriptors: tuple[int, ...]) -> None:
@@ -305,15 +333,17 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                 if not (imaged and (m.target.is_relative_to(_RELEASE)
                                     or m.target.is_relative_to(_PYTHON)))),default=0)
             code,stdout,stderr=_run_probe(tuple(argv),tuple(descriptors),sealed_bytes+65536,(fd_sandbox,))
-            # Three lines, in this order: the descriptor set the sandboxed process holds,
-            # the set its nested child inherits with the findings against the allowlist, and
-            # the pass marker. Matching one fixed byte string was enough while the program
-            # printed only the marker; it is not a reason to stop recording what the boundary
-            # actually held, so the shape is checked and the inventories are kept.
+            # Four lines, in this order: the descriptor set the sandboxed process holds, the
+            # set its forked child inherits, the set a child that execs keeps, each with its
+            # findings against the allowlist, and the pass marker. Matching one fixed byte
+            # string was enough while the program printed only the marker; it is not a reason
+            # to stop recording what the boundary actually held, so the shape is checked and
+            # the inventories are kept.
             lines=stdout.decode('utf-8','replace').splitlines()
-            shaped=(len(lines)==3 and lines[0].startswith(_FD_INVENTORY)
+            shaped=(len(lines)==4 and lines[0].startswith(_FD_INVENTORY)
                 and lines[1].startswith(_NESTED_FD_INVENTORY)
-                and lines[2]=='P3_STARTUP_PROBE_PASS')
+                and lines[2].startswith(_NATIVE_FD_INVENTORY)
+                and lines[3]=='P3_STARTUP_PROBE_PASS')
             if (code or stderr or not shaped
                 or os.listdir(inputs.descriptor) or os.listdir(output.descriptor)!=['probe-output']):
                 # Report what the probe actually produced. The historical message named no
@@ -322,6 +352,7 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                     f'exit={code} stdout={stdout[:400]!r} stderr={stderr[:400]!r} '
                     f'argv_tokens={len(argv)-1}')
             held,nested=lines[0][len(_FD_INVENTORY):],lines[1][len(_NESTED_FD_INVENTORY):]
+            native=lines[2][len(_NATIVE_FD_INVENTORY):]
             _read_probe_output(output)
         finally:
             for descriptor in reversed(descriptors):
@@ -330,4 +361,4 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
         bound_job_id=closure.bound_job_id,bound_payload_fingerprint=closure.bound_payload_fingerprint,
         sandbox_sha256=sandbox.executable_sha256,program_sha256=hashlib.sha256(_PROGRAM.encode()).hexdigest(),
         stdout_sha256=hashlib.sha256(stdout).hexdigest(),root_absent=True,
-        fd_inventory=held,nested_fd_inventory=nested)
+        fd_inventory=held,nested_fd_inventory=nested,native_fd_inventory=native)

@@ -270,29 +270,68 @@ def test_a_non_elf_object_is_refused(tmp_path):
         transport._elf_needed(plain)
 
 
-def test_the_toolchain_manifest_covers_the_whole_dependency_closure(tmp_path):
-    """Hashing only the tool's own record left every library it loads unpinned."""
+def _digest_of(path):
     import hashlib as _hashlib
 
-    loader_digest = _hashlib.sha256(transport.LOADER.read_bytes()).hexdigest()
-    tool_digest = _hashlib.sha256(transport.MKSQUASHFS.read_bytes()).hexdigest()
-    loader_fd, _ = transport.open_verified_tool(transport.LOADER, loader_digest)
-    tool_fd, record = transport.open_verified_tool(transport.MKSQUASHFS, tool_digest)
+    return _hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def test_the_toolchain_manifest_covers_every_executable_the_transport_runs(tmp_path):
+    """Hashing one tool's own record left both its dependencies and the other tool unpinned.
+
+    bubblewrap executes too. Covering only mksquashfs was the same omission one level up.
+    """
+    loader_fd, _ = transport.open_verified_tool(transport.LOADER, _digest_of(transport.LOADER))
+    tool_fd, tool = transport.open_verified_tool(transport.MKSQUASHFS,
+                                                 _digest_of(transport.MKSQUASHFS))
+    sandbox_fd, sandbox = transport.open_verified_tool(transport.BWRAP,
+                                                       _digest_of(transport.BWRAP))
     try:
-        manifest = transport.toolchain_manifest(transport.MKSQUASHFS, record, loader_fd, tmp_path)
+        manifest = transport.toolchain_manifest(
+            [(transport.MKSQUASHFS, tool), (transport.BWRAP, sandbox)], loader_fd, tmp_path)
     finally:
-        os.close(loader_fd)
-        os.close(tool_fd)
+        for fd in (loader_fd, tool_fd, sandbox_fd):
+            os.close(fd)
     roles = [member['role'] for member in manifest['members']]
-    assert roles.count('tool') == 1
+    assert roles.count('tool') == 2
     assert roles.count('dependency') >= 1, 'the dependency closure must not be empty'
     assert all(len(member['sha256']) == 64 for member in manifest['members'])
-    declared = transport._elf_needed(transport.MKSQUASHFS)
     named = {Path(member['path']).name for member in manifest['members']
              if member['role'] == 'dependency'}
-    assert declared.issubset(named), f'unpinned declared dependencies: {declared - named}'
+    for executable in (transport.MKSQUASHFS, transport.BWRAP):
+        declared = transport._elf_needed(executable)
+        assert declared.issubset(named), f'unpinned dependencies of {executable}: {declared - named}'
     assert not any(member.get('path', '').startswith('/proc/self/fd/')
                    for member in manifest['members'])
+    assert len({member.get('path') for member in manifest['members']
+                if member['role'] == 'dependency'}) == roles.count('dependency'), \
+        'a shared dependency must be listed once'
+
+
+def test_a_sealed_tool_cannot_be_written_and_still_executes(tmp_path):
+    """Executing the file binds the inode, not the bytes it held when it was hashed.
+
+    A writer with access to the file can change them in place between the verification and
+    the exec, so the verified bytes are not the bytes that run. The sealed copy removes that
+    window rather than narrowing it.
+    """
+    import subprocess as _subprocess
+
+    fd, record = transport.seal_verified_tool(transport.MKSQUASHFS, _digest_of(transport.MKSQUASHFS))
+    try:
+        assert record['sealed'] is True
+        with pytest.raises(OSError):
+            os.pwrite(fd, b'\0', 0)
+        result = _subprocess.run([f'/proc/self/fd/{fd}', '-version'],
+                                 capture_output=True, pass_fds=(fd,))
+        assert result.returncode == 0 and b'mksquashfs version' in result.stdout
+    finally:
+        os.close(fd)
+
+
+def test_a_tool_that_does_not_match_its_pinned_digest_is_refused():
+    with pytest.raises(TransportHeld, match='does not match its pinned digest'):
+        transport.seal_verified_tool(transport.MKSQUASHFS, 'f' * 64)
 
 
 def test_a_library_nothing_in_the_closure_declares_is_refused(tmp_path, monkeypatch):

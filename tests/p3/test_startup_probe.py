@@ -40,19 +40,26 @@ def test_probe_rejects_excess_or_inherited_pipe_without_leaking_processes(progra
 
 def _probe_stdout(held="[(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]')]",
                   nested="([(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]'), (4, 'pipe:[3]')], [])",
+                  native="([(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]'), (4, 'pipe:[4]')], [])",
                   marker='P3_STARTUP_PROBE_PASS'):
-    """What the sandboxed program prints: the two descriptor inventories, then the marker.
+    """What the sandboxed program prints: three descriptor inventories, then the marker.
+
+    The process itself, the child it forks, and a child that execs -- a forked child inherits
+    every descriptor, one that execs keeps only those without close-on-exec, and research code
+    can create either.
 
     The fake used to return the marker alone. That was accurate while the program printed
     nothing else, and it stopped being accurate the moment the program started recording what
     the boundary actually held -- which is the evidence the review asked for.
     """
-    return f'P3_STARTUP_FD_INVENTORY {held}\nP3_STARTUP_NESTED_FD_INVENTORY {nested}\n{marker}\n'.encode()
+    return (f'P3_STARTUP_FD_INVENTORY {held}\n'
+            f'P3_STARTUP_NESTED_FD_INVENTORY {nested}\n'
+            f'P3_STARTUP_NATIVE_FD_INVENTORY {native}\n{marker}\n').encode()
 
 
 @pytest.mark.parametrize('fault',[None,'version','capability','kernel','symlink','rename',
                                  'fifo','mode','size','marker_only','no_nested_inventory',
-                                 'extra_line'])
+                                 'no_native_inventory','extra_line'])
 def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,monkeypatch,fault):
     from services.job_worker import p3_startup as module
     from packages.alpha_lifecycle.sandbox_policy import BWRAP_VERSION,BWRAP_CAPABILITIES,socket_filter_bytes
@@ -84,6 +91,8 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
             return 0,b'P3_STARTUP_PROBE_PASS\n',b''
         if fault=='no_nested_inventory':
             return 0,b"P3_STARTUP_FD_INVENTORY [(0, '/dev/null')]\nP3_STARTUP_PROBE_PASS\n",b''
+        if fault=='no_native_inventory':
+            return 0,_probe_stdout().replace(b'P3_STARTUP_NATIVE_FD_INVENTORY ',b'OTHER '),b''
         if fault=='extra_line':
             return 0,_probe_stdout()+b'unexpected\n',b''
         output=int(argv[argv.index('--bind-fd')+1])
@@ -117,6 +126,7 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
         assert proof['bound_payload_fingerprint']==closure.bound_payload_fingerprint
         assert proof['fd_inventory']=="[(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]')]"
         assert proof['nested_fd_inventory'].endswith(', [])')
+        assert proof['native_fd_inventory'].endswith(', [])')
         assert len(calls)==3
     assert set(os.listdir('/proc/self/fd'))==before
     if fault=='rename':
