@@ -27,7 +27,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -199,22 +199,50 @@ class AuthorityStore:
 
     # -- writer path -----------------------------------------------------
 
-    def replace_approval(self, gate: str, payload: bytes, gates: tuple[str, ...]) -> int:
-        """Install, replace or revoke one approval through the protocol.
+    def replace_approvals(self, payloads: Mapping[str, bytes],
+                          gates: tuple[str, ...]) -> int:
+        """Install, replace or revoke approvals through the protocol, in one critical section.
 
         This is the writer half of the contract. A writer that takes this path advances the
-        generation and refreshes the attestation in the same critical section, so consumers
-        see a coherent store. A writer that does not take it is caught by that attestation.
+        generation and refreshes the attestation without releasing the lock, so consumers see
+        a coherent store. A writer that does not take it is caught by that attestation.
+
+        It takes a set rather than a single gate because `store_digest` is defined over the
+        whole admitted gate set, so installing a store one gate at a time is not expressible:
+        the first call would advance the generation, write its approval, and then fail
+        computing a digest over gates that do not exist yet -- leaving an approval installed,
+        the generation moved, and no attestation, which no consumer accepts and `recover` does
+        not repair. Accepting the set the digest is defined over removes that state rather
+        than documenting it, and it is what lets a store be placed under the protocol at all
+        without a bare write that skips it.
         """
-        if gate not in gates:
-            raise AuthorityHeld(f'{gate} is not in the admitted gate set')
+        if not payloads:
+            raise AuthorityHeld('a writer transaction must install at least one approval')
+        unknown = sorted(set(payloads) - set(gates))
+        if unknown:
+            raise AuthorityHeld(f'{", ".join(unknown)} is not in the admitted gate set')
         with self.locked():
+            # Everything the post-state digest will read has to be readable before anything
+            # is written, through the same reader that digest uses: the generation advance is
+            # not reversible, so a failure discovered afterwards cannot be backed out.
+            for gate in sorted(set(gates) - set(payloads)):
+                try:
+                    _protected_bytes(self.path / f'{gate}.json')
+                except FileNotFoundError as error:
+                    raise AuthorityHeld(
+                        f'{gate} has no approval in this store; install the admitted gate set '
+                        'in one transaction') from error
             generation = self._advance(self.generation())
-            _publish(self.path / f'{gate}.json', payload)
+            for gate in sorted(payloads):
+                _publish(self.path / f'{gate}.json', payloads[gate])
             record = dict(schema_version=PROTOCOL_VERSION, issuer=self.issuer,
                           generation=generation, store_digest=store_digest(self, gates))
             _publish(self.path / ATTESTATION_NAME, canonical_json_bytes(record) + b'\n')
             return generation
+
+    def replace_approval(self, gate: str, payload: bytes, gates: tuple[str, ...]) -> int:
+        """The one-gate case of `replace_approvals`, for a store already under the protocol."""
+        return self.replace_approvals({gate: payload}, gates)
 
     # -- snapshot --------------------------------------------------------
 
@@ -277,10 +305,12 @@ def enrol(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict[str, Any]:
 def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict[str, Any]:
     """Publish what the store contains at the current generation.
 
-    This is what makes a bypassing writer detectable. The writers that install approvals are
-    root helpers outside this repository, so they cannot be made to take the lock by editing
-    consumers. What consumers can do is refuse when the bytes moved without the generation
-    moving with them, which is the observable signature of a write that skipped the protocol.
+    This is what makes a bypassing writer detectable: a consumer refuses when the bytes moved
+    without the generation moving with them, which is the observable signature of a write that
+    skipped the protocol. Detection is the backstop, not the design. `replace_approvals` is the
+    writer every installer is expected to take, and `scripts/p3_local_install_approval.py` is
+    the one that does; an approval installed by a bare rename is a defect this catches after
+    the fact, not a supported second path.
     """
     record = dict(schema_version=PROTOCOL_VERSION, issuer=store.issuer,
                   generation=store.generation(), store_digest=store_digest(store, gates))

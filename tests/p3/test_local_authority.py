@@ -17,7 +17,7 @@ import pytest
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.local_authority import (
     AuthorityHeld, AuthorityStore, BUNDLE_MEMBERS, _deadline_ns, admit, consume,
-    consumed_generation, enrol, recover)
+    consumed_generation, enrol, recover, require_no_bypassing_writer)
 
 GATES = ('P1_H_COMPLETE', 'PRE_P3_READY')
 IDENTITY = dict(issuer_kind='LOCAL', issuer_identity='operator-a',
@@ -493,3 +493,69 @@ def test_the_monotonic_deadline_tracks_the_admitted_window(store):
     record = _admit(store, expires_at='2099-01-01T00:00:00Z', now_ns=now)
     remaining = _deadline_ns('2099-01-01T00:00:00Z') - now
     assert record['monotonic_deadline_ns'] - time.monotonic_ns() <= remaining
+
+
+# -- the writer half -------------------------------------------------------------------
+#
+# B1: approvals were installed by a bare rename outside this lock. `replace_approvals` is the
+# writer that participates, and these hold the properties that make it usable as one -- above
+# all that it can place a store under the protocol at all, which is what a writer restricted
+# to one gate at a time could not do.
+
+
+def _fresh(tmp_path):
+    root = tmp_path/'local-qualification'
+    (root/'operator-a').mkdir(parents=True)
+    return AuthorityStore('operator-a', root=root)
+
+
+def test_a_partial_install_into_a_fresh_store_is_refused_without_mutating(tmp_path):
+    value = _fresh(tmp_path)
+    with pytest.raises(AuthorityHeld, match='install the admitted gate set'):
+        value.replace_approval('PRE_P3_READY', _approval(), GATES)
+    # The refusal has to come before the generation moves. A writer that advanced and then
+    # failed would leave an approval installed with no attestation covering it, which no
+    # consumer accepts and `recover` does not repair.
+    assert value.generation() == 0
+    assert not (value.path/'PRE_P3_READY.json').exists()
+    assert not (value.path/'store-attestation.json').exists()
+
+
+def test_the_admitted_gate_set_installs_in_one_transaction(tmp_path):
+    value = _fresh(tmp_path)
+    generation = value.replace_approvals({gate: _approval() for gate in GATES}, GATES)
+    assert generation == 1
+    require_no_bypassing_writer(value, GATES)
+
+
+def test_installing_several_approvals_moves_the_generation_once(tmp_path):
+    value = _fresh(tmp_path)
+    value.replace_approvals({gate: _approval() for gate in GATES}, GATES)
+    assert value.generation() == 1
+    value.replace_approvals({gate: _approval(marker='second') for gate in GATES}, GATES)
+    # One transaction is one linearization point, whatever it touched. Counting per file
+    # would let a consumer that read between two files of the same write see a generation
+    # that no coherent store ever had.
+    assert value.generation() == 2
+
+
+def test_one_gate_still_replaces_once_the_store_is_under_the_protocol(store):
+    before = store.generation()
+    store.replace_approval('PRE_P3_READY', _approval(marker='second'), GATES)
+    assert store.generation() == before + 1
+    require_no_bypassing_writer(store, GATES)
+
+
+def test_a_gate_outside_the_admitted_set_is_never_written(tmp_path):
+    value = _fresh(tmp_path)
+    with pytest.raises(AuthorityHeld, match='not in the admitted gate set'):
+        value.replace_approvals(dict({g: _approval() for g in GATES}, OTHER=_approval()), GATES)
+    assert not (value.path/'OTHER.json').exists()
+    assert value.generation() == 0
+
+
+def test_an_empty_writer_transaction_is_refused(tmp_path):
+    value = _fresh(tmp_path)
+    with pytest.raises(AuthorityHeld, match='at least one approval'):
+        value.replace_approvals({}, GATES)
+    assert value.generation() == 0

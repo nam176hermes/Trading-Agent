@@ -20,9 +20,11 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
 import re
 import resource
 import select
+import shutil
 import signal
 import stat
 import struct
@@ -30,6 +32,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -43,7 +46,13 @@ from packages.engine_contracts.serialization import canonical_json_bytes   # noq
 
 OPERATIONS = ('prepare', 'probe', 'run', 'inspect', 'cleanup')
 TASK_PARENT = Path('/run/trading-agent-local/p3-transport')
+BUILD_PARENT = Path('/run/trading-agent-local/p3-transport-build')
 REQUEST_PARENT = Path('/etc/trading-agent/local-p3-transport')
+
+# The builder's own identity, reserved for it and shared with no other role. It is resolved by
+# name rather than by a number in the request, because a uid a caller could choose is not a
+# reservation: the point of the account is that nothing else on the host runs as it.
+BUILDER_USER = 'ta-local-builder'
 
 MKSQUASHFS = Path('/usr/bin/mksquashfs')
 BWRAP = Path('/usr/bin/bwrap')
@@ -62,6 +71,7 @@ BUILDER_CPU_SECONDS = 120
 BUILDER_ADDRESS_SPACE = 2 * 1024**3
 BUILDER_FILE_SIZE = MAX_IMAGE_BYTES
 BUILDER_OPEN_FILES = 256
+BUILDER_PROCESSES = 32
 TERMINATE_GRACE_SECONDS = 2
 REAP_GRACE_SECONDS = 3
 # The challenge reads a prefix of each selected entry rather than the whole file, so a
@@ -199,11 +209,90 @@ def task_root(digest: str) -> Path:
     return TASK_PARENT / digest
 
 
-class TaskLock:
-    """Exclusive ownership for the whole image lifetime, not one operation.
+def open_task_root(digest: str) -> Path:
+    """Derive the task root and check the chain that leads to it before using it.
 
-    A prepared image outlives the call that built it, so a lock scoped to a single
-    operation leaves a gap in which another controller could claim the same task.
+    An existing directory with the right name is not evidence that this task created it. The
+    parent chain is checked for root ownership and for group or world writability, because a
+    writable ancestor means the final component can be replaced between the check and the use,
+    and the root itself is opened with O_NOFOLLOW so a symlink cannot stand in for it.
+    """
+    for ancestor in reversed(TASK_PARENT.parents):
+        if ancestor == Path('/'):
+            continue
+        try:
+            info = ancestor.stat()
+        except FileNotFoundError:
+            # Nothing to vouch for yet. The mkdir below creates it as root, under root's own
+            # umask, which is the state this check would have demanded of it anyway. On a
+            # fresh boot /run is empty, so refusing here would mean the first prepare after
+            # every reboot failed on a directory the controller was about to create itself.
+            continue
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise TransportHeld(f'{ancestor} is not a protected ancestor of the task root')
+    # Root-owned and traversable, not private: the probe drops to the worker uid and has to
+    # reach the task root through here. Tightening this to 0700 would close the one operation
+    # the transport exists for. Traversal is not enumeration, and every entry below is
+    # separately permissioned.
+    TASK_PARENT.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chown(TASK_PARENT, 0, 0)
+    os.chmod(TASK_PARENT, 0o755)
+    root = task_root(digest)
+    root.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise TransportHeld('task root is not a directory')
+        if info.st_uid != 0 or info.st_gid != 0:
+            raise TransportHeld('task root is not root-owned')
+        os.fchown(fd, 0, 0)
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+    return root
+
+
+def require_task_claim(root: Path, operation: str) -> dict | None:
+    """The ownership that spans the image lifetime, checked before the operation runs.
+
+    B3.1 asks for the lock to be held across the whole prepare-to-run lifetime rather than one
+    operation. `flock` cannot express that on its own and saying otherwise would be false: it
+    lives on an open descriptor, so it is released when the invocation exits, and a prepared
+    image outlives the call that built it by design. So the two are separated. The lock
+    serialises concurrent invocations; this durable claim is what says the task is owned
+    between them, written by `prepare` and released only by `cleanup`.
+
+    A claim from a previous boot is refused rather than reused. Everything it records -- the
+    loop device, the mount, the owning process -- belongs to a boot that is gone, so there is
+    nothing left for a later operation to take ownership of.
+    """
+    path = root / 'quarantine.json'
+    if not path.exists():
+        if operation in ('probe', 'run'):
+            raise TransportHeld(f'{operation} requires a prepared image; this task holds no claim')
+        return None
+    try:
+        claim = json.loads(path.read_bytes())
+    except (OSError, ValueError) as error:
+        # `cleanup` already treats an unreadable record as a reason to retain rather than
+        # remove, and `inspect` exists to look at exactly this. Everything else stops.
+        if operation not in ('inspect', 'cleanup'):
+            raise TransportHeld('this task holds an unreadable claim') from error
+        return None
+    if claim.get('boot_id') != _host_identity()[1] and operation not in ('inspect', 'cleanup'):
+        raise TransportHeld('this task is claimed by a previous boot; '
+                            'release it with cleanup before preparing again')
+    return claim
+
+
+class TaskLock:
+    """Exclusive ownership for one invocation. Lifetime ownership is the claim, not this.
+
+    An earlier version of this docstring said it covered the whole image lifetime. It never
+    did: the lock is an open descriptor and dies with the process. What it gives is mutual
+    exclusion between concurrent invocations, which is real and necessary; `require_task_claim`
+    carries the part that has to survive between them.
     """
 
     def __init__(self, root: Path):
@@ -273,7 +362,8 @@ def open_verified_tool(path: Path, expected_sha256: str) -> tuple[int, dict]:
                     size=before.st_size, sha256=digest.hexdigest())
 
 
-def seal_verified_tool(path: Path, expected_sha256: str) -> tuple[int, dict]:
+def seal_verified_tool(path: Path, expected_sha256: str,
+                       owner: tuple[int, int] | None = None) -> tuple[int, dict]:
     """Verify one pinned executable, then run it from a sealed copy, never from the file.
 
     Executing `/proc/self/fd/N` binds the bytes that run to the inode that was hashed. It does
@@ -298,6 +388,10 @@ def seal_verified_tool(path: Path, expected_sha256: str) -> tuple[int, dict]:
     from services.job_worker.engine_spawn import _sealed_memfd
     sealed = _sealed_memfd(f'p3-tool-{path.name}', payload, mode=0o500)
     try:
+        if owner is not None:
+            # Sealing fixes the bytes, not the metadata, so this still takes effect -- and it
+            # is the only reason a dropped builder can execute the descriptor at all.
+            os.fchown(sealed, owner[0], owner[1])
         try:
             os.pwrite(sealed, b'\0', 0)
         except OSError as error:
@@ -681,38 +775,127 @@ def logical_inventory(stage: Path) -> dict:
                 directory_count=len(tree), directories=tree)
 
 
-def _builder_limits() -> None:
-    resource.setrlimit(resource.RLIMIT_CPU, (BUILDER_CPU_SECONDS, BUILDER_CPU_SECONDS))
-    resource.setrlimit(resource.RLIMIT_AS, (BUILDER_ADDRESS_SPACE, BUILDER_ADDRESS_SPACE))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (BUILDER_FILE_SIZE, BUILDER_FILE_SIZE))
-    resource.setrlimit(resource.RLIMIT_NOFILE, (BUILDER_OPEN_FILES, BUILDER_OPEN_FILES))
+def builder_identity(worker: tuple[int, int]) -> tuple[int, int]:
+    """The reserved builder account, or a refusal. There is no fall back to root.
+
+    An absent account used to mean the build ran as root, which is how the builder stayed
+    privileged while four rlimits made it look bounded. Refusing here states the precondition
+    instead: the host reserves an identity for the builder, or no image is built.
+    """
+    try:
+        entry = pwd.getpwnam(BUILDER_USER)
+    except KeyError as error:
+        raise TransportHeld(
+            f'builder identity {BUILDER_USER} is not reserved on this host; '
+            'the transport does not build as root') from error
+    if entry.pw_uid == 0 or entry.pw_gid == 0:
+        raise TransportHeld('builder identity is privileged')
+    if (entry.pw_uid, entry.pw_gid) == worker:
+        raise TransportHeld('builder identity is shared with the worker')
+    return entry.pw_uid, entry.pw_gid
 
 
-def build_image(stage: Path, image: Path, uid: int, gid: int, tool_fd: int, deadline: float) -> dict:
-    """Deterministic build under enforced limits, executed through the verified descriptor.
+def _builder_limits(uid: int, gid: int) -> Callable[[], None]:
+    """Drop to the builder, then bound it. The order is what makes the bound real.
+
+    RLIMIT_NPROC counts against the real uid and is not enforced for a process holding
+    CAP_SYS_RESOURCE, so setting it while still root bounds nothing -- which is exactly why
+    the previous version left it out and said so. Once the credentials are gone the limit
+    applies at every fork, so it is set after the drop rather than dropped from the contract.
+
+    This runs between fork and exec in the child, so it must not allocate or log; everything
+    it needs is already resolved.
+    """
+    def apply() -> None:
+        os.setgroups([])
+        os.setresgid(gid, gid, gid)
+        os.setresuid(uid, uid, uid)
+        if os.getresuid() != (uid, uid, uid):
+            raise RuntimeError('builder privilege drop did not take effect')
+        resource.setrlimit(resource.RLIMIT_NPROC, (BUILDER_PROCESSES, BUILDER_PROCESSES))
+        resource.setrlimit(resource.RLIMIT_CPU, (BUILDER_CPU_SECONDS, BUILDER_CPU_SECONDS))
+        resource.setrlimit(resource.RLIMIT_AS, (BUILDER_ADDRESS_SPACE, BUILDER_ADDRESS_SPACE))
+        resource.setrlimit(resource.RLIMIT_FSIZE, (BUILDER_FILE_SIZE, BUILDER_FILE_SIZE))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (BUILDER_OPEN_FILES, BUILDER_OPEN_FILES))
+    return apply
+
+
+def _builder_workspace(image: Path, uid: int, gid: int) -> Path:
+    """A directory the builder owns, outside the root-only task root.
+
+    The task root stays 0700 root-owned, so the builder cannot traverse it and cannot be given
+    somewhere to write inside it without widening it. It writes here and root moves the result
+    across; both live under the same tmpfs, so the move is a rename and never a copy.
+    """
+    BUILD_PARENT.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chown(BUILD_PARENT, 0, 0)
+    os.chmod(BUILD_PARENT, 0o755)
+    workspace = BUILD_PARENT / image.parent.name
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, uid, gid)
+    return workspace
+
+
+def _stage_is_reachable(stage: Path, uid: int, gid: int) -> None:
+    """The builder has to be able to traverse to the stage, not merely read its entries.
+
+    `normalise_stage_modes` makes the stage itself 0555, but an ancestor without o+x refuses
+    the walk before any of that matters, and mksquashfs reports it as a missing source.
+    """
+    for ancestor in reversed((stage, *stage.parents)):
+        info = ancestor.stat()
+        if info.st_mode & 0o001:
+            continue
+        if info.st_uid == uid and info.st_mode & 0o100:
+            continue
+        if info.st_gid == gid and info.st_mode & 0o010:
+            continue
+        raise TransportHeld(f'{ancestor} is not traversable by the builder identity')
+
+
+def build_image(stage: Path, image: Path, uid: int, gid: int, tool_fd: int, deadline: float,
+                builder: tuple[int, int]) -> dict:
+    """Deterministic build under enforced limits, run by the reserved builder identity.
 
     RLIMIT_FSIZE carries the image cap, so an oversized artifact cannot be written at all
-    rather than being noticed afterwards. RLIMIT_NPROC is deliberately absent: it is not
-    enforced for a privileged process and counts per real uid, so it would protect nothing
-    here and claiming otherwise would be false.
+    rather than being noticed afterwards. The builder drops to its own credentials before the
+    exec, which is what lets RLIMIT_NPROC bound anything: the earlier version applied four
+    limits to a process that was still root, where `-force-uid` relabelled the image contents
+    and left the builder privileged.
+
+    The build runs in a workspace the builder owns and root moves the finished image into the
+    task root, so the task root is never widened to let the builder write into it.
     """
     if image.exists():
         raise TransportHeld('image already exists for this task')
-    command = [f'/proc/self/fd/{tool_fd}', str(stage), str(image), *MKSQUASHFS_OPTIONS,
+    builder_uid, builder_gid = builder
+    _stage_is_reachable(stage, builder_uid, builder_gid)
+    workspace = _builder_workspace(image, builder_uid, builder_gid)
+    target = workspace / image.name
+    command = [f'/proc/self/fd/{tool_fd}', str(stage), str(target), *MKSQUASHFS_OPTIONS,
                '-force-uid', str(uid), '-force-gid', str(gid)]
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TransportHeld('preparation deadline passed before the build started')
     started = time.monotonic()
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        timeout=remaining, preexec_fn=_builder_limits, pass_fds=(tool_fd,),
-        env=dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8'))
-    elapsed = time.monotonic() - started
-    if result.returncode != 0:
-        raise TransportHeld(f'image build failed ({result.returncode}): '
-                            f'{result.stdout.decode()[-2000:]}')
-    os.chown(image, 0, 0)
-    os.chmod(image, 0o400)
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=remaining, preexec_fn=_builder_limits(builder_uid, builder_gid),
+            pass_fds=(tool_fd,), cwd=str(workspace),
+            env=dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8'))
+        elapsed = time.monotonic() - started
+        if result.returncode != 0:
+            raise TransportHeld(f'image build failed ({result.returncode}): '
+                                f'{result.stdout.decode()[-2000:]}')
+        # Ownership is taken back before the move, so the artifact is never root-owned while
+        # it still sits in a directory the builder can write.
+        os.chown(target, 0, 0)
+        os.chmod(target, 0o400)
+        os.replace(target, image)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
     info = image.lstat()
     if info.st_nlink != 1 or not stat.S_ISREG(info.st_mode):
         raise TransportHeld('backing image is not a single-link regular file')
@@ -1095,14 +1278,28 @@ def _seal_external_libraries(sources: list[Path], snapshots: Path) -> list[dict]
     libraries = []
     for index, path in enumerate(sources):
         fd, record = seal_library(path)
-        os.close(fd)
         snapshot = snapshots / f'{index:02d}-{Path(record["target"]).name}'
-        snapshot.write_bytes(Path(os.path.realpath(record['target'])).read_bytes())
+        try:
+            # Copied out of the sealed descriptor, never re-read from the host path. The
+            # previous version sealed the library, closed the seal, read the host file a
+            # second time and compared the two digests. That detects a writer who moved in
+            # between, but it does not exclude one -- and it threw away the sealed copy that
+            # would have. Writing from the seal makes the bytes in the snapshot the bytes
+            # that were hashed, by construction rather than by comparison.
+            payload, offset = bytearray(), 0
+            while chunk := os.pread(fd, 1 << 20, offset):
+                payload += chunk
+                offset += len(chunk)
+        finally:
+            os.close(fd)
+        snapshot.write_bytes(bytes(payload))
         os.chown(snapshot, 0, 0)
         os.chmod(snapshot, 0o555)
         info = snapshot.lstat()
+        # A readback, not a race check: it says the write landed intact. There is no longer a
+        # second read of the host file for a writer to get between.
         if hashlib.sha256(snapshot.read_bytes()).hexdigest() != record['sha256']:
-            raise TransportHeld(f'library snapshot for {record["target"]} does not match its seal')
+            raise TransportHeld(f'library snapshot for {record["target"]} did not land intact')
         record['source'] = str(snapshot)
         record['source_dev'], record['source_ino'] = info.st_dev, info.st_ino
         libraries.append(record)
@@ -1115,6 +1312,10 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     """Build the image, then publish its descriptor durably before anything consumes it."""
     stage = Path(request['stage'])
     uid, gid = request['worker_uid'], request['worker_gid']
+    # Resolved before anything is touched. `normalise_stage_modes` rewrites every mode in the
+    # stage, so discovering an unreserved builder after it would mean refusing the operation
+    # with the stage already modified.
+    builder = builder_identity((uid, gid))
     normalised = normalise_stage_modes(stage)
     inventory = logical_inventory(stage)
     inventory['normalised'] = normalised
@@ -1128,7 +1329,13 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     # protected request, not from whatever the paths currently hold: hashing the present
     # bytes and then treating that digest as the authority pins nothing at all.
     loader_fd, loader = seal_verified_tool(LOADER, request['loader_sha256'])
-    tool_fd, toolchain = seal_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'])
+    # The sealed copy is handed to the builder rather than widened. Measured: a dropped
+    # builder cannot exec a root-owned 0500 memfd through /proc/self/fd at all, and making it
+    # world-executable would hand every local uid the same descriptor. The seal already fixes
+    # the bytes, so ownership is the only thing left to decide, and it belongs to the one
+    # identity that has to run it.
+    tool_fd, toolchain = seal_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'],
+                                            owner=builder)
     sandbox_fd, sandbox = open_verified_tool(BWRAP, request['bwrap_sha256'])
     try:
         # Every executable the transport runs is in the manifest, bubblewrap included. It is
@@ -1158,7 +1365,8 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
             task=request['job_id'], owner_pid=os.getpid(),
             owner_start_time=_process_start_time(os.getpid()), boot_id=_host_identity()[1],
             image_path=str(root / 'runtime.squashfs'), state='PREPARING')) + b'\n')
-        built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd, deadline)
+        built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd,
+                            deadline, builder)
         libraries = _seal_external_libraries(sources, snapshots)
     finally:
         os.close(sandbox_fd)
@@ -1432,13 +1640,11 @@ def main(argv: list[str]) -> int:
     try:
         request = read_request(argv[1])
         digest, identity = task_identity(request)
-        root = task_root(digest)
-        root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chown(root, 0, 0)
-        os.chmod(root, 0o700)
+        root = open_task_root(digest)
         deadline = time.monotonic() + PREPARE_WALL_SECONDS
         with TaskLock(root):
             operation = request['operation']
+            require_task_claim(root, operation)
             if operation == 'prepare':
                 result = command_prepare(request, root, deadline)
             elif operation == 'probe':

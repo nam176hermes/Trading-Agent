@@ -574,3 +574,171 @@ def test_a_missing_name_the_stage_carries_is_not_a_finding(tmp_path, monkeypatch
     assert found[0]['missing'] == []
     assert found[0]['resolved_in_image'] == ['libsibling.so.1']
     assert found[0]['loadable_on_this_host'] is True
+
+
+# ---------------------------------------------------------------------------
+# B3.5 The builder has an identity of its own, and no fall back to root
+# ---------------------------------------------------------------------------
+
+class _Entry:
+    def __init__(self, uid, gid):
+        self.pw_uid, self.pw_gid = uid, gid
+
+
+def test_an_unreserved_builder_identity_refuses_the_build(monkeypatch):
+    # The previous behaviour was to build as root and apply four rlimits, which looks bounded
+    # and is not. An absent reservation is a precondition failure, not a reason to fall back.
+    def missing(name):
+        raise KeyError(name)
+    monkeypatch.setattr(transport.pwd, 'getpwnam', missing)
+    with pytest.raises(TransportHeld, match='does not build as root'):
+        transport.builder_identity((980, 980))
+
+
+def test_a_privileged_builder_identity_is_refused(monkeypatch):
+    monkeypatch.setattr(transport.pwd, 'getpwnam', lambda name: _Entry(0, 0))
+    with pytest.raises(TransportHeld, match='builder identity is privileged'):
+        transport.builder_identity((980, 980))
+
+
+def test_a_builder_identity_shared_with_the_worker_is_refused(monkeypatch):
+    # Sharing the worker's uid would make RLIMIT_NPROC count the worker's processes against
+    # the builder's bound, and would let either reach the other's files.
+    monkeypatch.setattr(transport.pwd, 'getpwnam', lambda name: _Entry(980, 980))
+    with pytest.raises(TransportHeld, match='shared with the worker'):
+        transport.builder_identity((980, 980))
+
+
+def test_the_reserved_builder_identity_is_accepted(monkeypatch):
+    monkeypatch.setattr(transport.pwd, 'getpwnam', lambda name: _Entry(979, 979))
+    assert transport.builder_identity((980, 980)) == (979, 979)
+
+
+def test_the_builder_bound_includes_the_process_limit():
+    # RLIMIT_NPROC is the one the earlier version left out, on the correct observation that it
+    # bounds nothing for a privileged process. It is in the set now because the credentials
+    # are gone before it is applied.
+    applied = []
+
+    class _Recorder:
+        RLIMIT_NPROC = transport.resource.RLIMIT_NPROC
+        RLIMIT_CPU = transport.resource.RLIMIT_CPU
+        RLIMIT_AS = transport.resource.RLIMIT_AS
+        RLIMIT_FSIZE = transport.resource.RLIMIT_FSIZE
+        RLIMIT_NOFILE = transport.resource.RLIMIT_NOFILE
+
+        @staticmethod
+        def setrlimit(which, pair):
+            applied.append((which, pair))
+
+    order = []
+    calls = dict(setgroups=lambda groups: order.append('setgroups'),
+                 setresgid=lambda *a: order.append('setresgid'),
+                 setresuid=lambda *a: order.append('setresuid'),
+                 getresuid=lambda: (979, 979, 979))
+    saved = {name: getattr(transport.os, name) for name in calls}
+    saved_resource = transport.resource
+    try:
+        for name, value in calls.items():
+            setattr(transport.os, name, value)
+        transport.resource = _Recorder
+        transport._builder_limits(979, 979)()
+    finally:
+        for name, value in saved.items():
+            setattr(transport.os, name, value)
+        transport.resource = saved_resource
+
+    assert order == ['setgroups', 'setresgid', 'setresuid']
+    assert applied[0] == (transport.resource.RLIMIT_NPROC,
+                          (transport.BUILDER_PROCESSES, transport.BUILDER_PROCESSES))
+    assert transport.BUILDER_PROCESSES == 32
+
+
+def test_a_stage_behind_an_untraversable_ancestor_is_refused(tmp_path):
+    closed = tmp_path/'closed'
+    closed.mkdir(mode=0o700)
+    stage = closed/'stage'
+    stage.mkdir(mode=0o555)
+    os.chmod(closed, 0o700)
+    with pytest.raises(TransportHeld, match='not traversable by the builder identity'):
+        transport._stage_is_reachable(stage, 979, 979)
+
+
+def test_a_stage_whose_whole_chain_the_identity_can_traverse_is_accepted(tmp_path):
+    # Checked against the running uid rather than the builder's, because `tmp_path` lives under
+    # a private home: the owner reaches it through the owner-execute bit on each ancestor. An
+    # earlier version of this asserted the builder could reach it, which was a claim about this
+    # host's home permissions rather than about the function, and it failed for that reason.
+    stage = tmp_path/'stage'
+    stage.mkdir(mode=0o555)
+    transport._stage_is_reachable(stage, os.getuid(), os.getgid())
+
+
+def test_a_stage_under_a_private_home_is_refused_for_another_identity(tmp_path):
+    # The same path, the same modes, a different identity. This is the case that matters: a
+    # stage staged into someone's home is genuinely unreachable by the builder, and the build
+    # would otherwise fail deep inside mksquashfs as a missing source.
+    stage = tmp_path/'stage'
+    stage.mkdir(mode=0o555)
+    with pytest.raises(TransportHeld, match='not traversable by the builder identity'):
+        transport._stage_is_reachable(stage, 979, 979)
+
+
+# ---------------------------------------------------------------------------
+# B3.1/B3.6 Ownership that survives between invocations
+# ---------------------------------------------------------------------------
+
+def _claim(tmp_path, **fields):
+    root = tmp_path/'task'
+    root.mkdir(exist_ok=True)
+    (root/'quarantine.json').write_bytes(
+        transport.canonical_json_bytes(dict(task='job', state='PREPARED', **fields)) + b'\n')
+    return root
+
+
+def test_an_unclaimed_task_cannot_be_probed_or_run(tmp_path):
+    # The image is what `probe` and `run` operate on, and the claim is what says one exists.
+    root = tmp_path/'task'
+    root.mkdir()
+    for operation in ('probe', 'run'):
+        with pytest.raises(TransportHeld, match='holds no claim'):
+            transport.require_task_claim(root, operation)
+
+
+def test_an_unclaimed_task_may_still_be_prepared_inspected_or_cleaned(tmp_path):
+    root = tmp_path/'task'
+    root.mkdir()
+    for operation in ('prepare', 'inspect', 'cleanup'):
+        assert transport.require_task_claim(root, operation) is None
+
+
+def test_a_claim_from_a_previous_boot_is_not_reused(tmp_path):
+    # Its loop device, its mount and its owning process all belong to a boot that is gone, so
+    # there is nothing left for a later operation to take ownership of.
+    root = _claim(tmp_path, boot_id='0' * 36)
+    for operation in ('prepare', 'probe', 'run'):
+        with pytest.raises(TransportHeld, match='claimed by a previous boot'):
+            transport.require_task_claim(root, operation)
+
+
+def test_a_claim_from_a_previous_boot_can_still_be_inspected_and_released(tmp_path):
+    root = _claim(tmp_path, boot_id='0' * 36)
+    for operation in ('inspect', 'cleanup'):
+        assert transport.require_task_claim(root, operation)['boot_id'] == '0' * 36
+
+
+def test_a_claim_from_this_boot_admits_the_operations_that_use_the_image(tmp_path):
+    root = _claim(tmp_path, boot_id=transport._host_identity()[1])
+    for operation in ('probe', 'run', 'inspect', 'cleanup'):
+        assert transport.require_task_claim(root, operation) is not None
+
+
+def test_an_unreadable_claim_stops_everything_but_inspection_and_release(tmp_path):
+    root = tmp_path/'task'
+    root.mkdir()
+    (root/'quarantine.json').write_bytes(b'{ this is not json')
+    for operation in ('prepare', 'probe', 'run'):
+        with pytest.raises(TransportHeld, match='unreadable claim'):
+            transport.require_task_claim(root, operation)
+    for operation in ('inspect', 'cleanup'):
+        assert transport.require_task_claim(root, operation) is None
