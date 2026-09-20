@@ -162,7 +162,8 @@ def test_local_gate_producer_runs_real_p2_and_retains_readable_proof(tmp_path, m
         producer.produce_local_gate(identity,binding.model_copy(update={'policy_digest':'0'*64}),store)
 
 
-@pytest.mark.parametrize('fault',[None,'profile_swap','source_drift','revoked_child','environment'])
+@pytest.mark.parametrize('fault',[None,'profile_swap','source_drift','revoked_child','environment',
+                                 'expired_child','replaced_child'])
 def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, monkeypatch, fault):
     """Exercise the custody/DAG composition; each gate's semantics has owner tests."""
     import hashlib
@@ -183,7 +184,7 @@ def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, m
     def retain(value):
         return store.put_bytes(canonical_json_bytes(value),media_type='application/json').model_dump(mode='json')
     binding['environment_ref']=retain(environment)
-    refs={}; bindings=[]; approvals={}; receipts={}
+    refs={}; bindings=[]; approvals={}; receipts={}; alternate=[]
     for gate in reader.LOCAL_PRE_P3_GATES:
         current={**binding,'gate':gate}; bindings.append(current)
         children=('P2_SOURCE_COMPLETE','P2_RUNTIME_QUALIFIED') if gate=='P2_QUALIFIED' else (
@@ -193,8 +194,16 @@ def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, m
             evidence_refs=[refs[c] for c in children] or [retain({'test':1}),retain({'native':1})],
             status='PASS',authority=dict(broker=False,live=False,network=False,production=False)))
         receipts[gate]=receipt; refs[gate]=retain(receipt)
+        if fault=='replaced_child' and gate=='P1_H_COMPLETE':
+            # A second authentic receipt for the same gate and binding: unrevoked, unexpired
+            # and structurally valid, so only comparing it against the already admitted
+            # receipt can detect the substitution.
+            alternate.append(retain(sealed({**receipt,'started_at':'2026-09-18T11:01:00Z'})))
+        # An expired prerequisite is authentic, unrevoked and still reports a zero exit in any
+        # producer sentinel; only reading the protected approval itself can reject it.
+        expires='2026-09-18T11:50:00Z' if fault=='expired_child' and gate=='P1_H_COMPLETE' else '2026-09-18T13:00:00Z'
         approvals[gate]=sealed(dict(schema_version='local-qualification-approval-v1',issuer_identity='operator-a',
-            receipt_ref=refs[gate],issued_at='2026-09-18T11:45:00Z',expires_at='2026-09-18T13:00:00Z',
+            receipt_ref=refs[gate],issued_at='2026-09-18T11:45:00Z',expires_at=expires,
             revoked=False,authority=receipt['authority']))
     profile=dict(schema_version='local-pre-p3-profile-v1',identity=identity,store_root=str(store_root),bindings=bindings)
     checked=[]
@@ -206,15 +215,22 @@ def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, m
         else:
             assert path.parent==Path('/etc/trading-agent/local-qualification/operator-a')
             value=approvals[path.stem]
-            if len(checked)==10 and fault=='revoked_child' and path.stem=='P1_H_COMPLETE':
-                value=sealed({**value,'revoked':True})
+            if len(checked)==10 and path.stem=='P1_H_COMPLETE':
+                if fault=='revoked_child':
+                    value=sealed({**value,'revoked':True})
+                elif fault=='replaced_child':
+                    value=sealed({**value,'receipt_ref':alternate[0]})
         return canonical_json_bytes(value)+b'\n',(1,2)
     monkeypatch.setattr(config,'_read_protected_file',protected)
     monkeypatch.setattr(provenance,'canonical_source_identity',lambda *_:binding['source'])
     monkeypatch.setattr(provenance,'_git',lambda *_:' M source.py' if checked and fault=='source_drift' else '')
     monkeypatch.setattr(reader,'_validate_local_gate_proof',lambda receipt,**_:checked.append(receipt.binding.gate))
+    expected={'expired_child':'local qualification approval is not current',
+              'replaced_child':'local prerequisite approval changed during admission',
+              'revoked_child':'local qualification approval is revoked'}.get(fault)
     if fault:
-        with pytest.raises(ValueError): reader.read_local_pre_p3(root)
+        with pytest.raises(ValueError) as raised: reader.read_local_pre_p3(root)
+        if expected: assert expected in str(raised.value)
     else:
         gates=reader.read_local_pre_p3(root)
         assert tuple(gates)==reader.LOCAL_PRE_P3_GATES

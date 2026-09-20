@@ -238,15 +238,123 @@ def test_github_model_cannot_represent_a_valid_local_producer():
 
 
 def test_local_run_uuid_is_never_coerced_into_a_numeric_run_id():
-    """A LOCAL UUID must not be smuggled through the numeric GitHub run-id field."""
-    from packages.alpha_lifecycle.research_custody import P3ResearchBackupReceipt
+    """A LOCAL UUID must not be smuggled through the numeric GitHub run-id field.
+
+    Origin is proven by lane and authority, never by integer magnitude. A UUID has no
+    integer form the GITHUB lane will read as a run id, and the integer that happens to
+    share its bits is an ordinary in-domain run id that still yields a GITHUB receipt
+    carrying no LOCAL identity. Rejecting it by size would narrow the accepted v1 domain
+    (see test_github_v1_accepts_run_identity_beyond_the_removed_upper_bounds).
+    """
+    from packages.alpha_lifecycle.research_custody import (
+        P3LocalResearchBackupReceipt, P3ResearchBackupReceipt, parse_research_backup_receipt)
     payload=_github_backup_payload()
     payload.pop('digest')
-    for value in (_LOCAL_IDENTITY['run_id'],_LOCAL_IDENTITY['run_id'].replace('-',''),
-                  int(_LOCAL_IDENTITY['run_id'].replace('-',''),16)):
+    for value in (_LOCAL_IDENTITY['run_id'],_LOCAL_IDENTITY['run_id'].replace('-','')):
         candidate=dict(payload,producer_run_id=value)
         with pytest.raises(ValueError):
             P3ResearchBackupReceipt.model_validate_json(canonical_json_bytes(_sealed(**candidate)))
+    numeric=dict(payload,producer_run_id=int(_LOCAL_IDENTITY['run_id'].replace('-',''),16))
+    parsed=parse_research_backup_receipt(canonical_json_bytes(_sealed(**numeric)))
+    assert isinstance(parsed,P3ResearchBackupReceipt)
+    assert not hasattr(parsed,'identity')
+    with pytest.raises(ValueError):
+        P3LocalResearchBackupReceipt.model_validate_json(canonical_json_bytes(_sealed(**numeric)))
+
+
+# Measured on the v1 baseline commit 8460e12, before the LOCAL lane existed, for the exact
+# payloads below. Reproducing them here proves the accepted GITHUB numeric domain and its
+# canonical bytes were restored rather than merely re-pinned against the current code.
+_GITHUB_COMMITMENT_BYTES='784d3c55b6a0e0e4b045d4bf70c66e3dc81d21c5d86b0cc04199ff7bbdc28a46'
+_GITHUB_COMMITMENT_DIGEST='9ed47cbe29c6a00eb277344a2a5da03f7654b4b50e06d67d842dd4b295c463aa'
+_V1_RUN_IDENTITY_VECTORS=(
+    (9999999999999+1,1001,
+     '9c5748096be00d3638ae5826a8a05a50bfbbf9ac7d1eeb9fab9781c54bdb1cd8',
+     '42756b61db11c8f0c6c9666c8c58447f3fa44b28e8965dddafda08c42b304eeb',
+     'e36bd212a731f337b19552205e3617f66ffd7edd2aca9fb1c77071c171d78b7e',
+     'a1d9827fcd12ec613bc3a0423d34ea1bb8f64c2bb15e66653e2d1ddfab48bf9f'),
+    (2**63-1,10**6,
+     '66382a438d5bf4bd3655c476fea08b3840f3b938f9c084c5a3e0471f8e6d600d',
+     '94507479e004977dd88ee341a9a34855af82f7c9215ce9ba98fca7b107715ac9',
+     '70f3dbe7f08e369900e724b88d0ea3e9b84d42d878eaa56c0fa5398c255a532d',
+     'e6a0dcb753bd3dcb98117dbed83d25b506121b2e415a7fc7fc9d216cb85492a1'),
+    (int('eb0103be3ab44f3e86e031d1c9547ed2',16),1,
+     '614a97625f4d55cf662e56e16a44f0634b1afef8f7e7f84544fa53cfb8b66c15',
+     '0bfa8eca56a20e5e1377a1f9c84edaa9f83806ab8a03d2140cc43a782171351f',
+     '83641f00b9696ae794bc5f298d7d882bf42fb31b6a5a59b773b7a2671d25e0da',
+     '80c97f6c911a3a70afbaffcb3e085eaea9bed847d762c61cd184c7c412ecbc8d'),
+)
+
+
+def _github_commitment_payload(producer_run_id=1,producer_attempt=1):
+    """Self-contained GITHUB v1 commitment; the backup ref is the store-independent
+    ArtifactRefV1 that LocalArtifactStore.put_bytes derives from _github_backup_payload."""
+    source=dict(commit_sha='1'*40,tree_sha='2'*40,closure_schema_version='fixture',
+        closure_policy_sha256='3'*64,closure_sha256='4'*64)
+    backup=canonical_json_bytes(_github_backup_payload())
+    content=hashlib.sha256(backup).hexdigest()
+    return _sealed(schema_version='p3-research-batch-commitment-v1',source=source,
+        policy_digest='5'*64,segment='RESEARCH',
+        query=dict(mode='SYSTEM_OBSERVED',valid_at='2025-09-01T00:00:00Z',
+            cutoff='2026-09-11T12:00:00Z'),
+        inventory_content_sha256='7'*64,inventory_size_bytes=1,inventory_entry_count=2800,
+        dataset_content_sha256='9'*64,dataset_digest='b'*64,snapshot_content_sha256='a'*64,
+        batch_ordinal=1,predecessor_commitment_content_sha256=None,
+        frozen_at='2026-09-11T11:59:59Z',completed_at='2026-09-11T12:00:00Z',
+        issued_at='2026-09-11T12:02:00Z',
+        backup_receipt_ref=dict(content_sha256=content,size_bytes=len(backup),
+            media_type='application/json',locator=content+'.blob'),
+        status='PASS',authority=dict(broker=False,live=False,network=False,production=False),
+        producer_repository='nam176hermes/Trading-Agent',
+        producer_workflow_ref='nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main',
+        producer_run_id=producer_run_id,producer_attempt=producer_attempt)
+
+
+def test_github_v1_commitment_canonical_bytes_and_digest_are_unchanged():
+    """The commitment lane needs the same frozen-bytes proof the backup lane already has."""
+    from packages.alpha_lifecycle.research_custody import P3ResearchBatchCommitment
+    payload=_github_commitment_payload()
+    assert hashlib.sha256(canonical_json_bytes(payload)).hexdigest()==_GITHUB_COMMITMENT_BYTES
+    commitment=P3ResearchBatchCommitment.model_validate_json(canonical_json_bytes(payload))
+    assert commitment.digest==_GITHUB_COMMITMENT_DIGEST
+
+
+@pytest.mark.parametrize(
+    'run_id,attempt,backup_bytes,backup_digest,commitment_bytes,commitment_digest',
+    _V1_RUN_IDENTITY_VECTORS)
+def test_github_v1_accepts_run_identity_beyond_the_removed_upper_bounds(
+        run_id,attempt,backup_bytes,backup_digest,commitment_bytes,commitment_digest):
+    """Run ids and attempts above the briefly-added ceilings are valid v1 receipts.
+
+    The ceilings 9999999999999 and 1000 were never part of v1. A historical receipt
+    carrying a larger value must still parse to its original canonical bytes and digest.
+    """
+    from packages.alpha_lifecycle.research_custody import (
+        P3ResearchBackupReceipt, P3ResearchBatchCommitment)
+    backup=_github_backup_payload()
+    backup.pop('digest')
+    backup=_sealed(**dict(backup,producer_run_id=run_id,producer_attempt=attempt))
+    assert hashlib.sha256(canonical_json_bytes(backup)).hexdigest()==backup_bytes
+    assert P3ResearchBackupReceipt.model_validate_json(
+        canonical_json_bytes(backup)).digest==backup_digest
+    commitment=_github_commitment_payload(run_id,attempt)
+    assert hashlib.sha256(canonical_json_bytes(commitment)).hexdigest()==commitment_bytes
+    assert P3ResearchBatchCommitment.model_validate_json(
+        canonical_json_bytes(commitment)).digest==commitment_digest
+
+
+@pytest.mark.parametrize('value', [0,-1,-9999999999999])
+def test_github_v1_still_rejects_non_positive_run_identity(value):
+    """Removing the invented ceiling must not also remove the genuine v1 positive bound."""
+    from packages.alpha_lifecycle.research_custody import (
+        P3ResearchBackupReceipt, P3ResearchBatchCommitment)
+    for payload,model in ((_github_backup_payload(),P3ResearchBackupReceipt),
+                          (_github_commitment_payload(),P3ResearchBatchCommitment)):
+        payload.pop('digest')
+        for field in ('producer_run_id','producer_attempt'):
+            with pytest.raises(ValueError):
+                model.model_validate_json(canonical_json_bytes(
+                    _sealed(**dict(payload,**{field:value}))))
 
 
 def test_local_backup_receipt_round_trips_with_its_own_schema():

@@ -14,7 +14,9 @@ from packages.alpha_lifecycle.contracts.base import Sha256,StrictModel,SourceIde
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity,InputSet
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.sandbox_policy import (
-    BWRAP_CAPABILITIES,BWRAP_VERSION,MAX_CLOSURE_BYTES,MAX_CLOSURE_FILES,SANDBOX_PROFILE_SHA256,
+    BWRAP_CAPABILITIES,BWRAP_VERSION,IMAGE_SCHEMA_VERSION,MAX_CLOSURE_BYTES,MAX_CLOSURE_FILES,
+    MAX_EXTERNAL_LIBRARIES,MAX_EXTERNAL_LIBRARY_BYTES,MAX_EXTERNAL_LIBRARY_TOTAL_BYTES,
+    MAX_IMAGE_BYTES,SANDBOX_PROFILE_SHA256,SANDBOX_PROFILE_V2_SHA256,
 )
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
@@ -58,16 +60,83 @@ class _OfficialHostProfileFields(StrictModel):
         return self
 
 
+class P3ExternalLibrary(StrictModel):
+    """One allowlisted host library delivered as a sealed snapshot, not a directory bind.
+
+    `sha256` is the digest of the sealed bytes and is the only byte authority. `source_dev`
+    and `source_ino` record where the snapshot was taken from; they are provenance, because
+    an inode number says nothing about the bytes it holds later.
+    """
+    target: Annotated[str, Field(min_length=1,max_length=256,pattern=r'^/[A-Za-z0-9._/+-]+$')]
+    mode: Literal[0o400,0o500,0o444,0o555]
+    size_bytes: Annotated[int, Field(ge=1,le=MAX_EXTERNAL_LIBRARY_BYTES)]
+    sha256: Sha256
+    source_dev: Annotated[int, Field(ge=0)]
+    source_ino: Annotated[int, Field(ge=1)]
+
+
+class P3RuntimeImageDescriptor(StrictModel):
+    """Durable identity of one LOCAL v2 runtime image.
+
+    Deliberately excludes mount identity. Backing inode, loop association, mount generation
+    and controller identity are properties of a single run and are checked at the admission
+    and replica fences; folding them into this digest would make the artifact unusable
+    across the very fences that verify it.
+    """
+    schema_version: Literal[IMAGE_SCHEMA_VERSION]
+    image_sha256: Sha256
+    image_size_bytes: Annotated[int, Field(ge=1,le=MAX_IMAGE_BYTES)]
+    entry_count: Annotated[int, Field(ge=1,le=MAX_CLOSURE_FILES)]
+    logical_bytes: Annotated[int, Field(ge=1,le=MAX_CLOSURE_BYTES)]
+    closure_fingerprint: Sha256
+    inventory_ref: ArtifactRefV1
+    toolchain_manifest_sha256: Sha256
+    worker_uid: Annotated[int, Field(ge=1,le=65533)]
+    worker_gid: Annotated[int, Field(ge=1,le=65533)]
+    release_root: Annotated[str, Field(min_length=1,max_length=64,pattern=r'^[A-Za-z0-9._-]+$')]
+    python_root: Annotated[str, Field(min_length=1,max_length=64,pattern=r'^[A-Za-z0-9._-]+$')]
+    external_libraries: tuple[P3ExternalLibrary, ...]
+
+    @model_validator(mode='after')
+    def _bounds(self) -> 'P3RuntimeImageDescriptor':
+        libraries = self.external_libraries
+        if not 0 < len(libraries) <= MAX_EXTERNAL_LIBRARIES:
+            raise ValueError('P3 image external library count is outside the accepted bound')
+        targets = [library.target for library in libraries]
+        if len(set(targets)) != len(targets) or targets != sorted(targets):
+            raise ValueError('P3 image external libraries must be unique and ordered')
+        if sum(library.size_bytes for library in libraries) > MAX_EXTERNAL_LIBRARY_TOTAL_BYTES:
+            raise ValueError('P3 image external libraries exceed the accepted aggregate bound')
+        if self.release_root == self.python_root:
+            raise ValueError('P3 image release and Python roots must differ')
+        return self
+
+
+class LocalOfficialHostProfileLane(_OfficialHostProfileFields):
+    """Everything the LOCAL lane shares, whatever transport it carries.
+
+    Lane predicates test this base, so a v2 profile answers "is this LOCAL?" the same way a
+    v1 profile does. Transport and version questions read the concrete class or the
+    discriminator instead; a lane base must never be used to answer those.
+    """
+    identity: LocalRunIdentity
+
+
 class OfficialHostProfile(_OfficialHostProfileFields):
     schema_version: Literal['p3-official-host-profile-v1']
 
 
-class LocalOfficialHostProfile(_OfficialHostProfileFields):
+class LocalOfficialHostProfile(LocalOfficialHostProfileLane):
     schema_version: Literal['p3-local-official-host-profile-v1']
-    identity: LocalRunIdentity
 
 
-OFFICIAL_PROFILE = TypeAdapter(Annotated[OfficialHostProfile | LocalOfficialHostProfile,
+class LocalOfficialHostProfileV2(LocalOfficialHostProfileLane):
+    schema_version: Literal['p3-local-official-host-profile-v2']
+    image: P3RuntimeImageDescriptor
+
+
+OFFICIAL_PROFILE = TypeAdapter(Annotated[
+    OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
     Field(discriminator='schema_version')])
 
 
@@ -107,7 +176,7 @@ def read_official_profile(
     source=SourceIdentity.model_validate(canonical_source_identity(ROOT))
     if source!=payload.expected_source:
         raise ValueError('P3 protected profile source is not current')
-    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,LocalOfficialHostProfile) else None)
+    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,LocalOfficialHostProfileLane) else None)
     store_root,output_root,python_root=map(_absolute,(profile.store_root,profile.output_root,profile.python_root))
     if (_directory_identity(store_root)==_directory_identity(output_root)
         or store_root in output_root.parents or output_root in store_root.parents):
@@ -115,8 +184,8 @@ def read_official_profile(
     store=LocalArtifactStore(store_root)
     intent=_read(store,payload.manifest_ref,P3OperationInput)
     authorization=_read(store,payload.authorization_ref,RUN_AUTHORIZATION)
-    if (isinstance(profile,LocalOfficialHostProfile) != isinstance(authorization,LocalRunAuthorization)
-        or isinstance(profile,LocalOfficialHostProfile) and profile.identity != getattr(authorization,'identity',None)):
+    if (isinstance(profile,LocalOfficialHostProfileLane) != isinstance(authorization,LocalRunAuthorization)
+        or isinstance(profile,LocalOfficialHostProfileLane) and profile.identity != getattr(authorization,'identity',None)):
         raise ValueError('P3 protected profile and operation issuer differ')
     try:
         validate_operation_issuer(authorization,source,context=context,root=ROOT)
@@ -135,9 +204,9 @@ def read_official_profile(
     integration=validate_integration_job_result(profile.integration_receipt_ref,
         job_detail_ref=profile.qualification_job_detail_ref,source=source,
         postgres_binary_sha256=profile.postgres_binary_sha256,store=store)
-    if not isinstance(profile,LocalOfficialHostProfile) and getattr(integration,'identity',None) is not None:
+    if not isinstance(profile,LocalOfficialHostProfileLane) and getattr(integration,'identity',None) is not None:
         raise ValueError('P3 GitHub profile cannot use LOCAL integration qualification')
-    if isinstance(profile,LocalOfficialHostProfile) and getattr(integration,'identity',None) != profile.identity:
+    if isinstance(profile,LocalOfficialHostProfileLane) and getattr(integration,'identity',None) != profile.identity:
         raise ValueError('P3 local profile and integration qualification issuer differ')
     raw=_bounded_bytes(profile.inventory_ref,store,media_type='application/json',max_bytes=4194304)
     inventory=_HostFiles.model_validate_json(raw)

@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 
 from packages.alpha_lifecycle.baseline_campaign import ArtifactStore
 from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
@@ -59,6 +59,11 @@ class PITAdversarialSuiteReceiptV1(_PITSuiteEvidence):
 class PITAdversarialSuiteReceiptV2(_PITSuiteEvidence):
     schema_version: Literal['p3-pit-adversarial-suite-receipt-v2']
     qualification: LocalPITQualification
+
+
+PIT_SUITE_RECEIPT = TypeAdapter(Annotated[
+    PITAdversarialSuiteReceiptV1 | PITAdversarialSuiteReceiptV2,
+    Field(discriminator='schema_version')])
 
 
 def pit_suite_cases(raw: bytes) -> tuple[PITCase, ...]:
@@ -136,8 +141,10 @@ def validate_pit_suite_receipt(ref: ArtifactRefV1, *, source: SourceIdentity,
     _json_ref(ref, 65536)
     from packages.alpha_lifecycle.local_qualification import _read_evidence
     raw = _read_evidence(store, ref)
-    contract = PITAdversarialSuiteReceiptV2 if json.loads(raw).get('schema_version') == 'p3-pit-adversarial-suite-receipt-v2' else PITAdversarialSuiteReceiptV1
-    receipt = contract.model_validate_json(raw)
+    # Resolve the version by enumeration. Selecting V2 on an exact string match and
+    # falling through to V1 picks the wrong model for any other schema, so the failure
+    # arrives as a V1 field error rather than as an unrecognised receipt version.
+    receipt = PIT_SUITE_RECEIPT.validate_json(raw)
     if canonical_json_bytes(receipt) != raw:
         raise ValueError('PIT receipt is not canonical')
     if receipt.source != source:

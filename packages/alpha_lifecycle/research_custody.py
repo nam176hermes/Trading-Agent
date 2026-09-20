@@ -50,8 +50,8 @@ class P3ResearchBackupReceipt(_BackupReceipt):
     schema_version: Literal['p3-research-backup-receipt-v1']
     producer_repository: Literal['nam176hermes/Trading-Agent']
     producer_workflow_ref: Literal['nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main']
-    producer_run_id: Annotated[int, Field(ge=1, le=9999999999999)]
-    producer_attempt: Annotated[int, Field(ge=1, le=1000)]
+    producer_run_id: Annotated[int, Field(ge=1)]
+    producer_attempt: Annotated[int, Field(ge=1)]
 
 
 class P3LocalResearchBackupReceipt(_BackupReceipt):
@@ -97,8 +97,8 @@ class P3ResearchBatchCommitment(_BatchCommitment):
     schema_version: Literal['p3-research-batch-commitment-v1']
     producer_repository: Literal['nam176hermes/Trading-Agent']
     producer_workflow_ref: Literal['nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main']
-    producer_run_id: Annotated[int, Field(ge=1, le=9999999999999)]
-    producer_attempt: Annotated[int, Field(ge=1, le=1000)]
+    producer_run_id: Annotated[int, Field(ge=1)]
+    producer_attempt: Annotated[int, Field(ge=1)]
 
 
 class P3LocalResearchBatchCommitment(_BatchCommitment):

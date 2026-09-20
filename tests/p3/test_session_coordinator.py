@@ -38,7 +38,10 @@ def test_coordinator_keeps_one_view_and_never_reclaims(session_inputs, monkeypat
         admitted.custodian_endpoint = checked.custodian_endpoint
         return admitted, closure
     monkeypatch.setattr(p3_host_profile, 'read_official_profile', host)
-    monkeypatch.setattr(p3_host_profile.OfficialHostProfile, 'model_validate_json', lambda raw: profile())
+    # The stage-transition seam resolves the lane through the shared discriminated union,
+    # not by picking a concrete model class, so the fake has to replace that adapter.
+    monkeypatch.setattr(p3_host_profile, 'OFFICIAL_PROFILE',
+        SimpleNamespace(validate_json=lambda raw: profile()))
     def no_unbounded_wait(_):
         raise AssertionError('unexpected unbounded wait')
     monkeypatch.setattr(module.time, 'sleep', no_unbounded_wait)
@@ -162,12 +165,15 @@ def test_local_session_rejects_replacement_while_constructing_preflight(tmp_path
     profile = Profile(identity=object(), store_root=str(tmp_path), output_root=str(tmp_path),
         job_id='job_'+'1'*32, environment_ref=object())
     closure = SimpleNamespace(source=object(), environment_ref=profile.environment_ref, closure_sha256='c'*64)
+    # The launcher asks "is this the LOCAL lane?" against the shared lane base that both the
+    # v1 and v2 profiles inherit, so the fake stands in for that base. Substituting the
+    # concrete LocalOfficialHostProfile would let a v2 profile answer the GITHUB branch.
+    monkeypatch.setattr(p3_host_profile, 'LocalOfficialHostProfileLane', Profile)
     class Session:
         profile = SimpleNamespace(workflow_deadline=deadline, **vars(closure))
         spawn_inputs = None
         def __enter__(self): return self
         def __exit__(self, *args): pass
-    monkeypatch.setattr(p3_host_profile, 'LocalOfficialHostProfile', Profile)
     monkeypatch.setattr(p3_official, 'local_run_directory', lambda identity: tmp_path)
     monkeypatch.setattr(p3_session, 'P3HoldoutSession', lambda *a, **k: Session())
     monkeypatch.setattr('services.job_worker.p3_spawn.P3SpawnProvider', lambda **kwargs: object())

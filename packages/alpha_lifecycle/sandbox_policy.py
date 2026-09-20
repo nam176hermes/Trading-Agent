@@ -45,8 +45,21 @@ def socket_filter_bytes() -> bytes:
         (0x15,2,0,41),(0x15,1,0,53),(0x06,0,0,0x7fff0000),(0x06,0,0,0x00050001)))
 
 
-SANDBOX_PROFILE_SHA256 = hashlib.sha256(canonical_json_bytes(dict(
-    schema_version='p3-bubblewrap-driver-profile-v1',policy_set_sha256=POLICY_SET_SHA256,
+# LOCAL v2 replaces the sealed-file transport with one read-only SquashFS image, because
+# the v1 form needs five bwrap tokens per closure file and the complete closure therefore
+# exceeds the pinned parser's 9,000-token capacity. Everything else about the topology is
+# unchanged, so the profile is one formula evaluated for each transport. The v1 digest is
+# pinned below and must never move.
+IMAGE_SCHEMA_VERSION = 'p3-local-runtime-image-v1'
+MAX_IMAGE_BYTES = 2147483648
+MAX_EXTERNAL_LIBRARIES = 64
+MAX_EXTERNAL_LIBRARY_BYTES = 16777216
+MAX_EXTERNAL_LIBRARY_TOTAL_BYTES = 268435456
+
+
+def _driver_profile(schema_version: str, runtime: str) -> dict:
+    return dict(
+    schema_version=schema_version,policy_set_sha256=POLICY_SET_SHA256,
     bwrap_version=BWRAP_VERSION,bwrap_capabilities=BWRAP_CAPABILITIES,
     platform='linux-x86_64',sandbox_args=SANDBOX_ARGS,filesystem_args=FILESYSTEM_ARGS,root_readonly_args=ROOT_READONLY_ARGS,
     environment_args=ENVIRONMENT_ARGS,driver_entry=DRIVER_ENTRY,child_entry=CHILD_ENTRY,
@@ -56,9 +69,25 @@ SANDBOX_PROFILE_SHA256 = hashlib.sha256(canonical_json_bytes(dict(
     outer=dict(namespaces='UNSHARE_ALL',environment=ENVIRONMENT_ARGS,
         inputs='READ_ONLY_DIRECTORY_DESCRIPTOR',outputs='EXCLUSIVE_ATTEMPT_DIRECTORY_DESCRIPTOR',
         replica_fence='P3_REPLICA_FENCE_V1_STDERR_STDIN',
-        runtime='SEALED_FILES',cpu_seconds=960,wall_seconds=DRIVER_WALL_SECONDS,
+        runtime=runtime,cpu_seconds=960,wall_seconds=DRIVER_WALL_SECONDS,
         memory_bytes=2147483648,open_files=256,processes=16,per_file_output_bytes=268435456,attempt_output_bytes=MAX_ATTEMPT_OUTPUT_BYTES),
     child=CHILD_POLICY,child_socket_filter_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest(),
     holdout_input_transport=dict(kind='SEALED_EXACT_CALCULATION_VIEW',mode='600',max_bytes=MAX_VIEW_BYTES),
     max_closure_files=MAX_CLOSURE_FILES,max_closure_bytes=MAX_CLOSURE_BYTES,max_argv_bytes=MAX_ARGV_BYTES,
-))).hexdigest()
+)
+
+
+def _profile_digest(schema_version: str, runtime: str) -> str:
+    return hashlib.sha256(canonical_json_bytes(_driver_profile(schema_version,runtime))).hexdigest()
+
+
+SANDBOX_PROFILE_SHA256 = _profile_digest('p3-bubblewrap-driver-profile-v1','SEALED_FILES')
+SANDBOX_PROFILE_V2_SHA256 = _profile_digest('p3-bubblewrap-driver-profile-v2','SQUASHFS_IMAGE_V1')
+
+# Pinned from before the LOCAL v2 lane existed. Introducing v2 must not move v1's identity,
+# and every v1 consumer rejects anything other than this value.
+_ACCEPTED_V1_PROFILE_SHA256 = '29c4c2c274c4ba2e8adade30ed72ecb39200ecc98a68285949660b036a13c8b8'
+if SANDBOX_PROFILE_SHA256 != _ACCEPTED_V1_PROFILE_SHA256:
+    raise RuntimeError('P3 v1 sandbox profile identity changed')
+if SANDBOX_PROFILE_V2_SHA256 == SANDBOX_PROFILE_SHA256:
+    raise RuntimeError('P3 LOCAL v2 transport must not reuse the v1 profile identity')

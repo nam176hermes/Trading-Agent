@@ -117,7 +117,9 @@ def test_local_official_refresh_precedes_database_and_reaches_worker(synthetic_p
     authority = SimpleNamespace(application_revision=closure.source.commit_sha)
     calls = []
     monkeypatch.setattr(module, 'LocalRunAuthorization', Authorization)
-    monkeypatch.setattr(module, 'LocalOfficialHostProfile', Profile)
+    # Lane predicates test the base that both the v1 and v2 LOCAL profiles inherit, so
+    # the fake stands in for that base rather than for one concrete class.
+    monkeypatch.setattr(module, 'LocalOfficialHostProfileLane', Profile)
     monkeypatch.setattr(module, 'canonical_source_identity', lambda root: closure.source)
     monkeypatch.setattr(module, 'validate_request', lambda *args: SimpleNamespace(authorization=auth))
     monkeypatch.setattr(module, 'read_enqueued_job', lambda *a, **k: (job.job_id, SimpleNamespace(payload=job.payload), 'operator'))

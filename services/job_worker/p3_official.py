@@ -13,7 +13,7 @@ from scripts.p3_authority import read_enqueued_job
 from services.job_store.config import JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
 from .command_registry import attest_worker_runtime_authority
-from .p3_host_profile import read_official_profile, LocalOfficialHostProfile
+from .p3_host_profile import read_official_profile, LocalOfficialHostProfileLane
 from .p3_spawn import P3SpawnProvider
 from .p3_startup import probe_p3_startup
 
@@ -49,7 +49,7 @@ def run_official_once(values,*,build_worker):
     path=directory/'profile.json'
     _,digest=read_protected_canonical_json_current(path)
     profile,closure=read_official_profile(path,digest,job_id=job_id,payload=body.payload,context=values)
-    if local != isinstance(profile,LocalOfficialHostProfile):
+    if local != isinstance(profile,LocalOfficialHostProfileLane):
         raise ValueError('P3 launcher and protected profile issuer lanes differ')
     if Path(profile.store_root)!=paths['P3_ARTIFACT_ROOT']:
         raise ValueError('P3 official retained store differs from enqueue')
@@ -112,15 +112,15 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
     from services.job_store.records import ClaimedJob
     from packages.engine_contracts.serialization import canonical_json_bytes
     from packages.job_contracts import JobState
-    from .p3_host_profile import OfficialHostProfile, LocalOfficialHostProfile, read_official_profile
+    from .p3_host_profile import OFFICIAL_PROFILE, LocalOfficialHostProfileLane, read_official_profile
     from .p3_spawn import P3SpawnProvider
     from .worker import WORKER_LEASE_SECONDS
-    path = (local_run_directory(profile.identity)/'session.json' if isinstance(profile,LocalOfficialHostProfile)
+    path = (local_run_directory(profile.identity)/'session.json' if isinstance(profile,LocalOfficialHostProfileLane)
         else Path(f"/run/trading-agent-p3/{values['GITHUB_RUN_ID']}-{values['GITHUB_RUN_ATTEMPT']}/session.json"))
     store = LocalArtifactStore(Path(profile.store_root))
     with P3HoldoutSession(path, store=store) as session:
         safety_preflight=None
-        if isinstance(profile,LocalOfficialHostProfile):
+        if isinstance(profile,LocalOfficialHostProfileLane):
             if runtime_guard is None:raise ValueError('LOCAL session lost runtime approval')
             # Preserve the startup digest for the whole session; stage-specific
             # approvals keep their own expiry checks in the existing fences.
@@ -147,8 +147,13 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
                     if read_protected_canonical_json_current(path)[1] != session._digest:
                         raise ValueError('session changed while waiting for next job')
                     document, digest = read_protected_canonical_json_current(path.with_name('profile.json'))
-                    model = LocalOfficialHostProfile if document.get('schema_version')=='p3-local-official-host-profile-v1' else OfficialHostProfile
-                    candidate = model.model_validate_json(canonical_json_bytes(document))
+                    # Dispatch by enumeration, exactly as read_official_profile does. The
+                    # previous ternary selected LOCAL only on an exact string match and sent
+                    # everything else to the GITHUB model. Both models pin schema_version as
+                    # a Literal, so an unknown schema still failed closed; it failed as a
+                    # GITHUB field error after the wrong model had been chosen, rather than
+                    # as an unrecognised profile version.
+                    candidate = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
                     if candidate.job_id != profile.job_id:
                         if candidate.payload.operation != operation:
                             raise ValueError('protected host selected an out-of-order job')

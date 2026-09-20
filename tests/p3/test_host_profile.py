@@ -135,7 +135,8 @@ def test_holdout_profile_requires_a_custodian_endpoint(profile_inputs):
     with pytest.raises(ValueError):OfficialHostProfile.model_validate_json(canonical_json_bytes(document))
 
 
-@pytest.mark.parametrize('fault',[None,'mixed_lane','wrong_identity','qualification_identity','revoked'])
+@pytest.mark.parametrize('fault',[None,'mixed_lane','wrong_identity','qualification_identity','revoked',
+                                 'unknown_lane'])
 def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profile_inputs,monkeypatch,fault):
     from dataclasses import replace
     from types import SimpleNamespace
@@ -152,6 +153,7 @@ def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profil
     job=replace(job,payload=job.payload.model_copy(update={'authorization_ref':auth_ref}))
     document.update(schema_version='p3-local-official-host-profile-v1',identity=identity,payload=job.payload.model_dump(mode='json'))
     if fault=='mixed_lane':document.pop('identity');document['schema_version']='p3-official-host-profile-v1'
+    elif fault=='unknown_lane':document['schema_version']='p3-local-official-host-profile-v2'
     elif fault=='wrong_identity':document['identity']={**identity,'attempt':2}
     checked=[]
     def gates(root,expected): checked.append(('gates',expected))
@@ -169,3 +171,151 @@ def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profil
         profile,actual=module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,context={})
         assert actual==replace(closure,bound_payload_fingerprint=__import__('packages.job_contracts',fromlist=['payload_fingerprint']).payload_fingerprint(job.payload)) and profile.identity==auth.identity
         assert checked==[('gates',auth.identity),('issuer',auth.identity)]
+
+
+def test_stage_transition_dispatches_by_enumeration_not_by_exclusion():
+    """An unrecognised profile schema must be rejected, never routed to the GITHUB model.
+
+    The stage-transition loop in p3_official.run_session used to choose LOCAL only on
+    an exact string match and fall through to OfficialHostProfile for everything else, so a
+    new lane or version reached the wrong model before its Literal rejected it. Both the launcher
+    seam and read_official_profile now resolve the lane through the same discriminated
+    union, which enumerates the accepted schemas and rejects the rest.
+    """
+    import inspect
+    from services.job_worker import p3_official
+    from services.job_worker.p3_host_profile import (
+        OFFICIAL_PROFILE, LocalOfficialHostProfile, OfficialHostProfile)
+    accepted={'p3-official-host-profile-v1','p3-local-official-host-profile-v1'}
+    assert {OfficialHostProfile.model_fields['schema_version'].annotation.__args__[0],
+            LocalOfficialHostProfile.model_fields['schema_version'].annotation.__args__[0]}==accepted
+    for unknown in ('p3-local-official-host-profile-v2','p3-official-host-profile-v2',
+                    'p3-local-runtime-image-v1',''):
+        with pytest.raises(ValueError):
+            OFFICIAL_PROFILE.validate_json(canonical_json_bytes({'schema_version':unknown}))
+    source=inspect.getsource(p3_official.run_session)
+    assert 'OFFICIAL_PROFILE.validate_json' in source
+    assert 'else OfficialHostProfile' not in source
+
+
+# ---------------------------------------------------------------------------
+# R03: LOCAL v2 transport lane
+# ---------------------------------------------------------------------------
+
+_V2_IDENTITY = dict(issuer_kind='LOCAL', issuer_identity='operator-a',
+    run_id='00000000-0000-4000-8000-000000000002', attempt=1, host_id='a'*64,
+    boot_id='00000000-0000-4000-8000-000000000001')
+
+
+def _ref(seed, size=32):
+    return dict(content_sha256=seed*64, size_bytes=size, media_type='application/json',
+                locator=seed*64+'.blob')
+
+
+def _image_descriptor(**overrides):
+    value = dict(schema_version='p3-local-runtime-image-v1', image_sha256='b'*64,
+        image_size_bytes=182763520, entry_count=7562, logical_bytes=678815144,
+        closure_fingerprint='c'*64, inventory_ref=_ref('3'), toolchain_manifest_sha256='d'*64,
+        worker_uid=980, worker_gid=980, release_root='release', python_root='python',
+        external_libraries=[dict(target='/lib/x86_64-linux-gnu/libc.so.6', mode=0o444,
+            size_bytes=2101224, sha256='e'*64, source_dev=2096, source_ino=17465)])
+    value.update(overrides)
+    return value
+
+
+def _campaign_payload():
+    # OOS rather than HOLDOUT: a HOLDOUT profile additionally requires a custodian
+    # endpoint, which is not what these lane and version tests are about.
+    return dict(schema_version='p3-alpha-campaign-payload-v1', operation='OOS',
+        manifest_ref=_ref('8'), authorization_ref=_ref('9'),
+        expected_source=dict(commit_sha='1'*40, tree_sha='2'*40,
+            closure_schema_version='trading-agent-source-closure-v1',
+            closure_policy_sha256='3'*64, closure_sha256='4'*64),
+        logical_trial_id='p3-oos-a0-v1')
+
+
+def _host_profile_document(schema_version, **overrides):
+    value = dict(schema_version=schema_version, job_id='job_'+'1'*32,
+        payload=_campaign_payload(), environment_ref=_ref('1'), store_root='/srv/store', output_root='/srv/out',
+        python_root='/srv/py', worker_credentials_directory='/run/creds',
+        sandbox_executable='/usr/bin/bwrap', sandbox_sha256='2'*64,
+        sandbox_version='bubblewrap 0.9.0', inventory_ref=_ref('3'), closure_sha256='4'*64,
+        integration_receipt_ref=_ref('5'), qualification_job_detail_ref=_ref('6'),
+        postgres_binary_sha256='7'*64, custodian_endpoint=None)
+    value.update(overrides)
+    return value
+
+
+def test_local_v2_resolves_to_its_own_class_and_carries_an_image():
+    """The v2 lane is a distinct concrete type, not a v1 profile with extra fields."""
+    from services.job_worker.p3_host_profile import (
+        OFFICIAL_PROFILE, LocalOfficialHostProfile, LocalOfficialHostProfileV2)
+    document = _host_profile_document('p3-local-official-host-profile-v2',
+        identity=_V2_IDENTITY, image=_image_descriptor(),
+        custodian_endpoint=None)
+    profile = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+    assert isinstance(profile, LocalOfficialHostProfileV2)
+    assert not isinstance(profile, LocalOfficialHostProfile)
+    assert profile.image.entry_count == 7562
+
+
+@pytest.mark.parametrize('schema_version,extra,reason', [
+    ('p3-local-official-host-profile-v1', {'image': _image_descriptor()}, 'v1 cannot carry an image'),
+    ('p3-local-official-host-profile-v2', {}, 'v2 cannot omit its image'),
+    ('p3-official-host-profile-v1', {'image': _image_descriptor()}, 'GITHUB cannot carry an image'),
+    ('p3-official-host-profile-v2', {}, 'GITHUB has no v2 lane'),
+    ('p3-local-official-host-profile-v3', {}, 'unknown version'),
+])
+def test_cross_lane_and_cross_version_profiles_are_rejected(schema_version, extra, reason):
+    """Neither lane may accept the other's shape, and no version may accept another's."""
+    from services.job_worker.p3_host_profile import OFFICIAL_PROFILE
+    document = _host_profile_document(schema_version, identity=_V2_IDENTITY, **extra)
+    with pytest.raises(ValueError):
+        OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+
+
+def test_lane_base_answers_for_both_local_versions_and_never_for_github():
+    """A v2 profile must answer 'is this LOCAL?' exactly as a v1 profile does."""
+    from services.job_worker.p3_host_profile import (
+        LocalOfficialHostProfile, LocalOfficialHostProfileLane, LocalOfficialHostProfileV2,
+        OfficialHostProfile)
+    assert issubclass(LocalOfficialHostProfile, LocalOfficialHostProfileLane)
+    assert issubclass(LocalOfficialHostProfileV2, LocalOfficialHostProfileLane)
+    assert not issubclass(OfficialHostProfile, LocalOfficialHostProfileLane)
+
+
+def test_v2_transport_has_its_own_policy_identity_and_v1_is_pinned():
+    """A new transport must produce a new policy digest and leave v1's untouched."""
+    from packages.alpha_lifecycle.sandbox_policy import (
+        SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256)
+    assert SANDBOX_PROFILE_SHA256 == '29c4c2c274c4ba2e8adade30ed72ecb39200ecc98a68285949660b036a13c8b8'
+    assert SANDBOX_PROFILE_V2_SHA256 != SANDBOX_PROFILE_SHA256
+    assert len(SANDBOX_PROFILE_V2_SHA256) == 64
+
+
+@pytest.mark.parametrize('overrides,reason', [
+    ({'external_libraries': []}, 'no libraries'),
+    ({'external_libraries': [dict(target='/b.so', mode=0o444, size_bytes=1, sha256='e'*64,
+        source_dev=1, source_ino=1), dict(target='/a.so', mode=0o444, size_bytes=1,
+        sha256='f'*64, source_dev=1, source_ino=2)]}, 'unordered targets'),
+    ({'external_libraries': [dict(target='/a.so', mode=0o444, size_bytes=1, sha256='e'*64,
+        source_dev=1, source_ino=1), dict(target='/a.so', mode=0o444, size_bytes=1,
+        sha256='f'*64, source_dev=1, source_ino=2)]}, 'duplicate targets'),
+    ({'release_root': 'python'}, 'release and python roots collide'),
+    ({'entry_count': 8193}, 'over the accepted file cap'),
+    ({'image_size_bytes': 2147483649}, 'over the image artifact cap'),
+])
+def test_image_descriptor_enforces_transport_bounds(overrides, reason):
+    """Transport caps are refused at the descriptor, before any host work begins."""
+    from services.job_worker.p3_host_profile import P3RuntimeImageDescriptor
+    with pytest.raises(ValueError):
+        P3RuntimeImageDescriptor.model_validate_json(
+            canonical_json_bytes(_image_descriptor(**overrides)))
+
+
+def test_image_descriptor_excludes_run_scoped_mount_identity():
+    """Image identity is durable; loop, mount and owner identity belong to one run."""
+    from services.job_worker.p3_host_profile import P3RuntimeImageDescriptor
+    fields = set(P3RuntimeImageDescriptor.model_fields)
+    assert not fields & {'backing_dev', 'backing_ino', 'loop_device', 'mount_nonce',
+                         'controller_pid', 'mount_generation', 'boot_id'}

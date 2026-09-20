@@ -15,6 +15,23 @@ from tests.p3.test_publication import _changed
 SUITE = Path(__file__).resolve().parents[2]/'docs/implementation/pre-p3/p2-pit-adversarial-suite-v1.json'
 
 
+@pytest.mark.parametrize('document,error_type', [
+    ({}, 'union_tag_not_found'),
+    ({'schema_version': 'p3-pit-adversarial-suite-receipt-v3'}, 'union_tag_invalid'),
+    ({'schema_version': 'x'}, 'union_tag_invalid'),
+    ({'schema_version': ''}, 'union_tag_invalid'),
+])
+def test_pit_reader_rejects_unknown_lane_before_concrete_model_validation(tmp_path, document, error_type):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.pit_suite import validate_pit_suite_receipt
+
+    store = LocalArtifactStore(tmp_path)
+    ref = store.put_bytes(canonical_json_bytes(document), media_type='application/json')
+    with pytest.raises(ValidationError) as raised:
+        validate_pit_suite_receipt(ref, source=None, store=store)
+    assert [error['type'] for error in raised.value.errors()] == [error_type]
+
+
 def test_local_pit_observations_keep_local_identity_without_numeric_workflow(tmp_path):
     from packages.alpha_lifecycle.pit_suite import build_pit_suite_receipt, validate_pit_suite_receipt
     store, manifest_ref, source, report, _ = suite_inputs(tmp_path)
