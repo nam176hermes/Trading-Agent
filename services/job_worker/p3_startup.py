@@ -108,6 +108,21 @@ print('P3_STARTUP_PROBE_PASS')
 '''
 
 
+def _emitted_directories(targets: tuple[PurePosixPath, ...], imaged: bool) -> set[PurePosixPath]:
+    """The directories this launch actually emits a --dir for.
+
+    One definition, used both by the capacity estimate and by the builder. They were separate,
+    and the estimate counted ancestors the builder skips on the image transport, so the two
+    disagreed about the same command.
+    """
+    directories={PurePosixPath('/p3'),PurePosixPath('/p3/store'),PurePosixPath('/p3/output')}
+    for target in targets:
+        if imaged and (target.is_relative_to(_RELEASE) or target.is_relative_to(_PYTHON)):
+            continue      # the mount supplies this tree, and a --dir would shadow it
+        directories.update(p for p in target.parents if p!=PurePosixPath('/'))
+    return directories
+
+
 _FD_INVENTORY='P3_STARTUP_FD_INVENTORY '
 _NESTED_FD_INVENTORY='P3_STARTUP_NESTED_FD_INVENTORY '
 _NATIVE_FD_INVENTORY='P3_STARTUP_NATIVE_FD_INVENTORY '
@@ -253,7 +268,11 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
     # directory or memfd. The historical failure built thousands of descriptors first and
     # then surfaced bwrap's opaque token error.
     imaged=closure.image is not None
-    directory_estimate=len({p for m in closure.mounts for p in m.target.parents if p!=PurePosixPath('/')})
+    # Only the directories this transport actually emits. Counting every target's ancestors
+    # regardless of transport is what the image form exists to avoid: the mount supplies that
+    # tree and no --dir is emitted for it, so a closure with thousands of image directories
+    # was refused here before anything was built, on a budget it would never have spent.
+    directory_estimate=len(_emitted_directories(targets,imaged))
     lower_bound=(6 if imaged else 5*len(targets))+2*directory_estimate+len(SANDBOX_ARGS)+len(FILESYSTEM_ARGS)
     if lower_bound>BWRAP_PARSER_TOKEN_CAPACITY:
         raise ValueError('P3 startup closure exceeds the pinned sandbox parser capacity')
@@ -302,11 +321,7 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
             if code or stderr or any(cap.encode() not in help_text.split() for cap in BWRAP_CAPABILITIES):
                 raise ValueError('P3 startup sandbox capabilities differ')
             argv=[executable,*SANDBOX_ARGS,*FILESYSTEM_ARGS]
-            directories={PurePosixPath('/p3'),PurePosixPath('/p3/store'),PurePosixPath('/p3/output')}
-            for target in targets:
-                if imaged and (target.is_relative_to(_RELEASE) or target.is_relative_to(_PYTHON)):
-                    continue      # the mount supplies this tree, and a --dir would shadow it
-                directories.update(p for p in target.parents if p!=PurePosixPath('/'))
+            directories=_emitted_directories(targets,imaged)
             for directory in sorted(directories,key=lambda p:(len(p.parts),str(p))):
                 argv.extend(('--dir',str(directory)))
             for mount in closure.mounts:

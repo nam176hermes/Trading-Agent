@@ -77,6 +77,7 @@ def _admit(store, **overrides):
            if k in overrides})
     arguments = dict(action='ISSUE_RUNTIME_PROFILE', gate='PRE_P3_READY', gates=GATES,
         proposal_identity=_identity(), proposal_source=SOURCE, prepare=prepare)
+    overrides.pop('expires_at', None)
     arguments.update(overrides)
     return admit(store, **arguments)
 
@@ -157,8 +158,66 @@ def test_expiry_is_checked_independently_of_token_equality(store):
 
 
 def test_an_expired_deadline_is_never_admitted(store):
-    with pytest.raises(AuthorityHeld, match='deadline has already passed'):
+    with pytest.raises(AuthorityHeld, match='deadline passed'):
         _admit(store, expires_at=PAST)
+
+
+def _moving_clock(monkeypatch, readings):
+    """Make the module's wall clock advance between reads.
+
+    `admit` reads the clock more than once on purpose, so a test about elapsed time has to
+    let it move. Patching the clock exercises the production path, where `now_ns` is None,
+    rather than an injected constant that can never change.
+    """
+    stream = iter(readings)
+    last = [readings[-1]]
+
+    def clock():
+        try:
+            last[0] = next(stream)
+        except StopIteration:
+            pass
+        return last[0]
+
+    monkeypatch.setattr('packages.local_authority.time.time_ns', clock)
+
+
+def test_a_proposal_that_outlives_its_deadline_is_not_committed(store, monkeypatch):
+    """`prepare` is unbounded, so the clock has to be read after it, not before.
+
+    Reading it before and checking the deadline against that reading admitted whatever
+    `prepare` took: an admission with two seconds left could spend five seconds preparing and
+    still be committed, with the monotonic deadline built from a later reading and the earlier
+    delta, so the elapsed time was added to the validity window instead of subtracted.
+    """
+    start = _deadline_ns('2026-09-19T00:00:00Z')
+    _moving_clock(monkeypatch, [start, start + 5_000_000_000])
+    with pytest.raises(AuthorityHeld, match='deadline passed while the proposal was prepared'):
+        _admit(store, expires_at='2026-09-19T00:00:02Z')
+    assert store.generation() == 0, 'nothing may be committed for a proposal that expired'
+
+
+def test_a_deadline_that_passes_while_the_bundle_is_staged_is_not_committed(store, monkeypatch):
+    """Staging is writes and fsyncs, so it is unbounded too.
+
+    Publishing after the deadline would record a commitment that was never valid at its own
+    linearization point.
+    """
+    start = _deadline_ns('2026-09-19T00:00:00Z')
+    _moving_clock(monkeypatch, [start, start, start + 5_000_000_000])
+    with pytest.raises(AuthorityHeld, match='deadline passed while the bundle was staged'):
+        _admit(store, expires_at='2026-09-19T00:00:02Z')
+    assert not (store.path/'current-commit.json').exists(), 'no commit may be published'
+
+
+def test_the_monotonic_deadline_does_not_absorb_the_preparation_time(store, monkeypatch):
+    """The wall and monotonic readings have to be taken together, not one on each side."""
+    start = _deadline_ns('2026-09-19T00:00:00Z')
+    _moving_clock(monkeypatch, [start, start + 1_000_000_000])
+    record = _admit(store, expires_at='2026-09-19T00:00:10Z', monotonic_ns=500)
+    # Nine seconds remain when the clock is read after prepare, so the monotonic deadline is
+    # that reading plus nine -- not plus the ten that was left before prepare started.
+    assert record['monotonic_deadline_ns'] == 500 + 9_000_000_000
 
 
 def test_a_foreign_proposal_identity_is_refused(store):

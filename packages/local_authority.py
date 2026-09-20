@@ -343,8 +343,8 @@ def _require_admitted_action(action: str) -> None:
 
 def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ...],
           proposal_identity: dict[str, Any], proposal_source: dict[str, Any],
-          prepare: Callable[[Snapshot], dict[str, Any]], now_ns: int | None = None
-          ) -> dict[str, Any]:
+          prepare: Callable[[Snapshot], dict[str, Any]], now_ns: int | None = None,
+          monotonic_ns: int | None = None) -> dict[str, Any]:
     """Admit exactly one bounded action, and publish it durably before releasing the lock.
 
     The whole decision happens inside the lock, `prepare` included. `prepare` is the caller's
@@ -372,11 +372,11 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
         # never been enrolled, or that a writer had changed out of band, was stamped valid by
         # the very call that should have held. Enrolment is a separate deliberate act.
         require_no_bypassing_writer(store, gates)
-        now = time.time_ns() if now_ns is None else now_ns
         boot_id = _boot_identity()
+        started = time.time_ns() if now_ns is None else now_ns
         # The snapshot the validator is handed is the store as it is before this admission
         # advances it, so the validator and the commitment observe the same approval bytes.
-        validated = store.snapshot(gates, now_ns=now)
+        validated = store.snapshot(gates, now_ns=started)
         proposal = prepare(validated)
         identity, source, expires_at, bundle = (proposal['identity'], proposal['source'],
                                                 proposal['expires_at'], proposal['bundle'])
@@ -388,17 +388,27 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
             raise AuthorityHeld('proposal source differs from the admitted prerequisite source')
         if identity.get('boot_id') != boot_id:
             raise AuthorityHeld('admission is for a different boot')
+        # Time is read again here, and the wall and monotonic readings are taken together.
+        # `prepare` is the caller's semantic validation and is unbounded: the earlier version
+        # checked the deadline against a reading taken before it, then built the monotonic
+        # deadline from a reading taken after it, so however long `prepare` ran was added to
+        # the validity window and an admission whose deadline passed during it could still be
+        # committed.
+        now = time.time_ns() if now_ns is None else now_ns
+        elapsed = time.monotonic_ns() if monotonic_ns is None else monotonic_ns
         deadline_ns = _deadline_ns(expires_at)
         if deadline_ns <= now:
-            raise AuthorityHeld('admission deadline has already passed')
+            raise AuthorityHeld('admission deadline passed while the proposal was prepared')
         # Advance, then re-read: the admission is recorded at a generation, and the snapshot
         # must be of the store as it stands at that same generation. Snapshotting only before
         # the advance embeds the previous generation and no consumer could ever match it.
         generation = store._advance(store.generation())
+        # Re-snapshotted at the current time, so an approval that expired during `prepare` is
+        # refused here rather than carried through on the reading taken before it.
         snapshot = store.snapshot(gates, now_ns=now)
         if (snapshot.approvals, snapshot.receipts) != (validated.approvals, validated.receipts):
             raise AuthorityHeld('issuer store changed between validation and commitment')
-        monotonic_deadline_ns = time.monotonic_ns() + (deadline_ns - now)
+        monotonic_deadline_ns = elapsed + (deadline_ns - now)
         token = admission_token(action=action, gate=gate, issuer=store.issuer,
             identity=identity, source=source, snapshot=snapshot, expires_at=expires_at,
             monotonic_deadline_ns=monotonic_deadline_ns, boot_id=boot_id)
@@ -412,6 +422,11 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
             _publish(staged / name, payload)
             manifest[name] = hashlib.sha256(payload).hexdigest()
         _fsync_directory(staged)
+        # Staging the bundle is unbounded too: these are writes and fsyncs. Publishing a
+        # commitment whose deadline has already passed would record an admission that was
+        # never valid at its own linearization point.
+        if deadline_ns <= (time.time_ns() if now_ns is None else now_ns):
+            raise AuthorityHeld('admission deadline passed while the bundle was staged')
         record = dict(schema_version=PROTOCOL_VERSION, state='COMMITTED', action=action,
             gate=gate, issuer=store.issuer, identity=identity, source=source,
             generation=generation, snapshot_digest=snapshot.digest(),

@@ -351,6 +351,8 @@ def test_a_library_nothing_in_the_closure_declares_is_refused(tmp_path, monkeypa
     shutil.copy('/lib/x86_64-linux-gnu/libz.so.1', planted)
 
     class _Result:
+        returncode = 0
+        stderr = b''
         stdout = (b'\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x1)\n'
                   b'\tlibnothing.so.9 => ' + str(planted).encode() + b' (0x2)\n')
 
@@ -361,6 +363,8 @@ def test_a_library_nothing_in_the_closure_declares_is_refused(tmp_path, monkeypa
 
 def test_a_resolved_dependency_that_cannot_be_read_is_refused(tmp_path, monkeypatch):
     class _Missing:
+        returncode = 0
+        stderr = b''
         stdout = b'\tlibghost.so.1 => /nonexistent/libghost.so.1 (0x1)\n'
 
     monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Missing())
@@ -399,6 +403,8 @@ def test_an_intermediate_inside_the_stage_still_declares_its_dependencies(tmp_pa
     assert brought_in, 'the intermediate must declare something the root does not'
 
     class _Result:
+        returncode = 0
+        stderr = b''
         stdout = (f'\tlibc.so.6 => {intermediate} (0x1)\n'
                   + ''.join(f'\t{name} => /lib/x86_64-linux-gnu/{name} (0x2)\n'
                             for name in brought_in)).encode()
@@ -432,6 +438,8 @@ def test_a_path_form_dependency_is_parsed_and_counted(tmp_path, monkeypatch):
     assert brought_in, 'the intermediate must declare something the root does not'
 
     class _Result:
+        returncode = 0
+        stderr = b''
         # The intermediate appears in path form, exactly as the loader prints it.
         stdout = (f'\tlinux-vdso.so.1 (0x1)\n'
                   f'\t{intermediate} (0x2)\n'
@@ -460,3 +468,45 @@ def _verified_loader() -> int:
     fd, _ = transport.open_verified_tool(
         transport.LOADER, _hashlib.sha256(transport.LOADER.read_bytes()).hexdigest())
     return fd
+
+
+def test_a_loader_that_fails_is_not_treated_as_an_empty_closure(tmp_path, monkeypatch):
+    """A non-zero exit means the listing is incomplete, not that there is nothing to seal."""
+    class _Failed:
+        returncode = 1
+        stdout = b''
+        stderr = b'object file has no dynamic section'
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Failed())
+    with pytest.raises(TransportHeld, match='the loader could not resolve'):
+        transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage', loader_fd=-1)
+
+
+def test_the_resolver_runs_with_an_explicit_environment(tmp_path, monkeypatch):
+    """Inheriting the ambient environment let LD_PRELOAD steer the resolution being sealed."""
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = b''
+        stderr = b''
+
+    def record(*args, **kwargs):
+        seen.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(transport.subprocess, 'run', record)
+    monkeypatch.setenv('LD_PRELOAD', '/tmp/evil.so')
+    transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage', loader_fd=-1)
+    assert 'env' in seen, 'the resolver must not inherit the ambient environment'
+    assert not any(key.startswith('LD_') for key in seen['env'])
+
+
+def test_a_sibling_directory_is_not_inside_the_stage(tmp_path):
+    """String prefixes say /stage-other is inside /stage; path containment does not."""
+    stage = tmp_path/'stage'
+    stage.mkdir()
+    sibling = tmp_path/'stage-other'
+    sibling.mkdir()
+    assert transport._within(str(stage/'lib.so'), stage)
+    assert not transport._within(str(sibling/'lib.so'), stage)

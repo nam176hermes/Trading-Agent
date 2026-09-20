@@ -84,7 +84,9 @@ class P3RuntimeImageDescriptor(StrictModel):
     and replica fences; folding them into this digest would make the artifact unusable
     across the very fences that verify it.
     """
-    schema_version: Literal[IMAGE_SCHEMA_VERSION]
+    # Spelled out because a Literal parameterised by a name is not a literal type. The
+    # constant is still the authority: the assertion below refuses to load if they part.
+    schema_version: Literal['p3-local-runtime-image-v1']
     image_sha256: Sha256
     image_size_bytes: Annotated[int, Field(ge=1,le=MAX_IMAGE_BYTES)]
     entry_count: Annotated[int, Field(ge=1,le=MAX_CLOSURE_FILES)]
@@ -136,9 +138,13 @@ class LocalOfficialHostProfileV2(LocalOfficialHostProfileLane):
     image: P3RuntimeImageDescriptor
 
 
+if P3RuntimeImageDescriptor.model_fields['schema_version'].annotation != Literal[IMAGE_SCHEMA_VERSION]:
+    raise RuntimeError('P3 image descriptor schema version differs from the pinned constant')
+
 OFFICIAL_PROFILE = TypeAdapter(Annotated[
     OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
     Field(discriminator='schema_version')])
+ANY_OFFICIAL_PROFILE = OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2
 
 
 class _HostFile(StrictModel):
@@ -223,7 +229,8 @@ def _verify_image_transport(profile, python_root: Path, mounts):
 def read_official_profile(
     path: Path, expected_digest: str, *, job_id: str, payload: object,
     context: Mapping[str, str],
-) -> tuple[OfficialHostProfile | LocalOfficialHostProfile, CompleteP3Closure]:
+) -> tuple[OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
+           CompleteP3Closure]:
     """Recheck root custody, current source/gates, qualified inputs and exact file bytes.
 
     The producer must authenticate the retained Job API observation. A real pinned
@@ -236,6 +243,11 @@ def read_official_profile(
     if digest!=expected_digest:
         raise ValueError('P3 protected profile digest changed')
     profile=OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+    # The discriminated union admits exactly these three, and the transport and lane
+    # questions below read the concrete class. Stating that here keeps the returned type
+    # the one the union defines rather than the shared lane base a reader could assume.
+    if type(profile) not in (OfficialHostProfile,LocalOfficialHostProfile,LocalOfficialHostProfileV2):
+        raise ValueError('P3 protected profile is not one of the admitted profile versions')
     _absolute(profile.worker_credentials_directory)
     validate_p3_job_id(job_id)
     if profile.job_id!=job_id or type(payload) is not AlphaCampaignPayload or profile.payload!=payload:

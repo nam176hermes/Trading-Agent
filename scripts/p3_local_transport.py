@@ -356,6 +356,18 @@ def seal_library(path: Path, expected_sha256: str | None = None) -> tuple[int, d
                     source_dev=info.st_dev, source_ino=info.st_ino)
 
 
+def _within(target: str, root: Path) -> bool:
+    """Path containment, not a string prefix.
+
+    `startswith(str(stage))` says /stage-other is inside /stage, so a sibling directory was
+    treated as part of the image and the libraries under it were never sealed.
+    """
+    try:
+        return Path(target).resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _elf_needed(path: Path) -> set[str]:
     """The DT_NEEDED entries this ELF object declares, read from the file itself.
 
@@ -436,9 +448,19 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
         # was refused.
         paths: set[str] = set()
         names: dict[str, str] = {}
+        # An explicit environment. Inheriting the ambient one let LD_PRELOAD, LD_LIBRARY_PATH
+        # and the rest steer the very resolution whose output is then sealed and delivered.
         result = subprocess.run([f'/proc/self/fd/{loader_fd}', '--list', str(path)],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                timeout=30, pass_fds=(loader_fd,))
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=30, pass_fds=(loader_fd,),
+                                env=dict(PATH='/usr/bin:/bin', LC_ALL='C'))
+        # A non-zero exit means the listing is incomplete, and an incomplete listing that is
+        # accepted becomes a closure missing libraries the object needs. Discarding stderr and
+        # ignoring the status turned that into a silent partial result.
+        if result.returncode != 0:
+            raise TransportHeld(
+                f'the loader could not resolve {path}: exit {result.returncode}; '
+                f'{result.stderr.decode()[-300:]}')
         for line in result.stdout.decode().splitlines():
             entry = line.strip()
             if not entry:
@@ -475,7 +497,7 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
                 f'{path} resolved libraries nothing in the closure declares: {sorted(undeclared)}')
         # Libraries bundled inside the stage already travel in the image; only the host
         # libraries the closure reaches outside it are external and need sealing.
-        needed.update(target for target in paths if not target.startswith(str(stage)))
+        needed.update(target for target in paths if not _within(target, stage))
     loader = '/lib64/ld-linux-x86-64.so.2'
     if os.path.exists(loader):
         needed.add(loader)
@@ -1078,6 +1100,14 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
         sources = library_closure(_closure_objects(stage, inventory), stage, loader_fd)
         # A durable record of the attempt, written before the artifact exists. Without it a
         # crash between creation and the PREPARED record leaves a file nothing identifies.
+        #
+        # It must never overwrite an existing record. Writing it unconditionally destroyed a
+        # previous PREPARED claim on a task that already held an image: build_image then
+        # refused, and the surviving record described an artifact it could not identify, so a
+        # later cleanup had nothing to check the older image against.
+        if (root / 'quarantine.json').exists():
+            raise TransportHeld('this task already holds a quarantine record; '
+                                'reclaiming it is a separate recovery decision')
         _durable_write(root / 'quarantine.json', canonical_json_bytes(dict(
             task=request['job_id'], owner_pid=os.getpid(),
             owner_start_time=_process_start_time(os.getpid()), boot_id=_host_identity()[1],
@@ -1141,6 +1171,7 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
         os.chown(mount, 0, 0)
         os.chmod(mount, 0o555)
         loop_fd, device, number = attach_loop(image_fd, descriptor['image_size_bytes'], deadline)
+        reaped = None
         try:
             backing_fence(descriptor, image_fd, loop_fd)
             mount_image(device, mount)
@@ -1166,17 +1197,15 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                     os.close(loop_fd)
                     os.close(image_fd)
                     drop_to_worker(descriptor['worker_uid'], descriptor['worker_gid'], controller)
-                    direct = subprocess.run([str(BWRAP), '--unshare-all', '--die-with-parent',
-                        '--ro-bind', str(mount / descriptor['python_root']), '/p3/python',
-                        '--ro-bind', str(mount / descriptor['release_root']), '/p3/release',
-                        '--proc', '/proc', '--dev', '/dev', '--',
-                        '/p3/python/bin/python3.11', '-I', '-B', '-c', 'import sys;print(sys.version.split()[0])'],
-                        capture_output=True, timeout=60)
-                    diagnostics = dict(direct_exit=direct.returncode,
-                        direct_stdout=direct.stdout.decode()[:200],
-                        direct_stderr=direct.stderr.decode()[:300],
-                        interpreter_mode=oct(os.stat(mount / descriptor['python_root'] / 'bin/python3.11').st_mode & 0o7777),
-                        can_execute=os.access(mount / descriptor['python_root'] / 'bin/python3.11', os.X_OK))
+                    # The diagnostic used to run bubblewrap directly from /usr/bin/bwrap.
+                    # That was an execution straight from a path, with no seal and no digest
+                    # check at the moment it ran, inside the one operation whose whole point
+                    # is that nothing executes unverified. It is removed rather than sealed:
+                    # the verified launch below already covers what it reported.
+                    interpreter = mount / descriptor['python_root'] / 'bin/python3.11'
+                    diagnostics = dict(
+                        interpreter_mode=oct(os.stat(interpreter).st_mode & 0o7777),
+                        can_execute=os.access(interpreter, os.X_OK))
                     closure = build_v2_closure(mount, descriptor, descriptor['external_libraries'],
                         inventory, request['source'], request['environment_ref'],
                         request['job_id'], request['bwrap_sha256'])
@@ -1197,11 +1226,25 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
             os.close(write)
             payload, truncated = _read_bounded(read, deadline)
             os.close(read)
-            observed = json.loads(payload) if payload else dict(error='worker produced no output')
-            observed['output_truncated'] = truncated
+            # Reaping comes before the payload is parsed, and parsing cannot raise past it.
+            # The earlier order put json.loads first: a truncated payload -- which is exactly
+            # what the output cap produces -- or any malformed output raised before `reaped`
+            # was ever assigned, and the cleanup below then defaulted to believing the worker
+            # had been reaped and released the mount and the loop. That is the error path the
+            # cap exists to create, not a hypothetical one.
             reaped = reap_with_escalation(child, deadline)
+            try:
+                observed = json.loads(payload) if payload else dict(error='worker produced no output')
+                if not isinstance(observed, dict):
+                    raise ValueError('worker payload is not a JSON object')
+            except ValueError as error:
+                observed = dict(error=f'worker payload could not be parsed: {error}',
+                                payload_bytes=len(payload))
+            observed['output_truncated'] = truncated
             observed['worker_status'] = reaped['status']
             observed['worker_reaping'] = reaped
+            if truncated:
+                raise TransportHeld('worker output exceeded its bound before the deadline')
             if not reaped['reaped']:
                 raise TransportHeld('worker did not reap within the deadline')
             # Fence once more after the worker finishes, and require the challenge the
@@ -1216,7 +1259,10 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                 raise TransportHeld('mount readback challenge did not match this generation'
                                     + (f'; the worker reported: {reported}' if reported else ''))
         finally:
-            if locals().get('reaped', {}).get('reaped', True):
+            # Unknown is unreaped. Reading this through locals() with a default of True meant
+            # any exception raised before the assignment released the mount and the loop while
+            # reporting a cleanup that had not been established.
+            if reaped is not None and reaped.get('reaped'):
                 if _libc.umount(str(mount).encode()) != 0:
                     _libc.umount2(str(mount).encode(), MNT_DETACH)
                 fcntl.ioctl(loop_fd, LOOP_CLR_FD, 0)
@@ -1257,23 +1303,26 @@ def command_cleanup(root: Path) -> dict:
         return dict(quarantined=True, reason='quarantine record is absent or unreadable',
                     removed=[], root_exists=root.exists())
     if record.get('state') == 'PREPARING':
-        # A build that did not reach its PREPARED record. The artifact is identified by the
-        # path this owner wrote before creating it, on this boot, so it is accountable and
-        # can be reclaimed. Without the PREPARING record it would be an unidentified file and
-        # the only safe answer would be to retain it.
+        # A build that did not reach its PREPARED record. The record was written *before* the
+        # artifact existed, so it carries no inode claim and cannot identify what is on disk
+        # now: a name is not ownership. An earlier version removed by path, which is the one
+        # thing the contract forbids here -- an artifact with no durable claim is retained,
+        # not reclaimed.
+        #
+        # The only safe removal is the record itself, and only when there is no artifact for
+        # it to be ambiguous about.
+        image = root / 'runtime.squashfs'
+        if image.exists() or image.is_symlink():
+            return dict(quarantined=True,
+                        reason='an incomplete build left an artifact with no inode claim; '
+                               'retained for inspection because nothing identifies it',
+                        removed=[], root_exists=root.exists())
         if record.get('boot_id') != _host_identity()[1]:
             return dict(quarantined=True, reason='incomplete build is from another boot',
                         removed=[], root_exists=root.exists())
-        removed = []
-        image = Path(record.get('image_path', ''))
-        if image == root / 'runtime.squashfs' and image.exists():
-            os.chmod(image, 0o600)
-            image.unlink()
-            removed.append('runtime.squashfs: incomplete build reclaimed')
         record_path.unlink(missing_ok=True)
-        removed.append('quarantine.json')
-        return dict(quarantined=False, reason='incomplete build', removed=removed,
-                    root_exists=root.exists())
+        return dict(quarantined=False, reason='incomplete build left no artifact',
+                    removed=['quarantine.json'], root_exists=root.exists())
     try:
         expected = (record['image_dev'], record['image_ino'])
     except KeyError:

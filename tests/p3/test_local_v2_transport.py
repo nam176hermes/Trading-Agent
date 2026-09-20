@@ -200,12 +200,17 @@ def test_the_same_inventory_is_within_capacity_on_the_image_transport(tmp_path):
     assert 'parser capacity' not in str(raised.value)
 
 
-# Measured boundary for this fixture shape: two distinct parent directories plus the fixed
-# sandbox and filesystem arguments cost 13 tokens, so 1797 files reach 8998 and 1798 reach
-# 9003. The exact crossover is asserted rather than approximated.
+# Measured boundary for this fixture shape, against the directory set the builder actually
+# emits: the two distinct parents of the fixture targets, the three fixed roots /p3,
+# /p3/store and /p3/output, and the fixed sandbox and filesystem arguments. 1796 files reach
+# 8999 and 1797 reach 9004.
+#
+# It moved by one entry when the estimate and the builder were made to share one definition.
+# The estimate used to omit the three fixed roots, so it under-counted by six tokens and
+# disagreed with the command it was estimating.
 @pytest.mark.parametrize('entry_count,imaged,rejected', [
-    (1797, False, False),      # 8998 tokens, the last inventory that fits
-    (1798, False, True),       # 9003 tokens, the first that does not
+    (1796, False, False),      # 8999 tokens, the last inventory that fits
+    (1797, False, True),       # 9004 tokens, the first that does not
     (4306, False, True),       # the accepted CPython core alone
     (8192, False, True),       # the accepted closure file cap
     (8192, True, False),       # the same cap, delivered as one image
@@ -252,3 +257,24 @@ def test_spawn_has_a_final_parser_token_guard():
 
     source = inspect.getsource(p3_spawn.P3SpawnProvider._consume)
     assert 'len(argv)-1 > BWRAP_PARSER_TOKEN_CAPACITY' in source.replace('  ', ' ')
+
+
+def test_the_capacity_estimate_matches_the_directory_set_the_builder_emits(tmp_path):
+    """One definition, or the gate rejects commands it has mis-measured.
+
+    On the image transport the mount supplies the release and Python trees and no --dir is
+    emitted for them. The estimate counted their ancestors anyway, so a closure with a few
+    thousand image directories was refused before anything was built, on a budget the launch
+    would never have spent.
+    """
+    from services.job_worker.p3_startup import _emitted_directories
+
+    imaged_targets = tuple(sorted(
+        [PurePosixPath(f'/p3/release/d{i:04d}/file.py') for i in range(500)]
+        + [PurePosixPath(f'/p3/python/lib/d{i:04d}/mod.py') for i in range(500)]))
+    emitted = _emitted_directories(imaged_targets, True)
+    assert emitted == {PurePosixPath('/p3'), PurePosixPath('/p3/store'),
+                       PurePosixPath('/p3/output')}, \
+        'the image transport emits no directory for the tree the mount supplies'
+    assert len(_emitted_directories(imaged_targets, False)) > 1000, \
+        'the sealed-file transport does emit them, and must still be charged for them'
