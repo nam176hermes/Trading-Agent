@@ -9,13 +9,15 @@ admission and durable publication leaves nothing consumable.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.local_authority import (
-    AuthorityHeld, AuthorityStore, BUNDLE_MEMBERS, admit, consume, enrol, recover)
+    AuthorityHeld, AuthorityStore, BUNDLE_MEMBERS, _deadline_ns, admit, consume,
+    consumed_generation, enrol, recover)
 
 GATES = ('P1_H_COMPLETE', 'PRE_P3_READY')
 IDENTITY = dict(issuer_kind='LOCAL', issuer_identity='operator-a',
@@ -57,10 +59,24 @@ def _bundle():
     return {name: canonical_json_bytes(dict(member=name)) + b'\n' for name in BUNDLE_MEMBERS}
 
 
+def _prepare(identity=None, source=None, expires_at=FUTURE, bundle=None, hook=None):
+    """Stand in for the caller's semantic validator, which `admit` runs under the lock."""
+    def prepare(snapshot):
+        if hook is not None:
+            hook(snapshot)
+        return dict(identity=_identity() if identity is None else identity,
+                    source=SOURCE if source is None else source,
+                    expires_at=expires_at,
+                    bundle=_bundle() if bundle is None else bundle)
+    return prepare
+
+
 def _admit(store, **overrides):
+    prepare = overrides.pop('prepare', None) or _prepare(
+        **{k: overrides.pop(k) for k in ('identity', 'source', 'expires_at', 'bundle', 'hook')
+           if k in overrides})
     arguments = dict(action='ISSUE_RUNTIME_PROFILE', gate='PRE_P3_READY', gates=GATES,
-        identity=_identity(), source=SOURCE, proposal_identity=_identity(),
-        expires_at=FUTURE, bundle=_bundle())
+        proposal_identity=_identity(), proposal_source=SOURCE, prepare=prepare)
     arguments.update(overrides)
     return admit(store, **arguments)
 
@@ -289,3 +305,132 @@ def test_consuming_refuses_a_store_that_left_the_protocol(store):
     (store.path/'P1_H_COMPLETE.json').write_bytes(_approval(marker='out-of-band'))
     with pytest.raises(AuthorityHeld, match='outside the authority protocol'):
         _consume(store)
+
+
+# ---------------------------------------------------------------------------
+# The semantic decision has to happen inside the transaction, not before it
+# ---------------------------------------------------------------------------
+
+def test_an_approval_replaced_during_validation_is_refused(store):
+    """Validating before the lock admits one generation's prerequisites with another's bytes.
+
+    The validator now runs inside the critical section, and what it observed is compared
+    with what is committed. A write that lands in between is the exact case the earlier
+    ordering could not see: the semantic check had already passed on bytes that were gone by
+    the time the commit recorded them as admitted.
+    """
+    def replace(_snapshot):
+        target = store.path/'PRE_P3_READY.json'
+        os.chmod(target, 0o600)
+        target.write_bytes(_approval(marker='replaced-mid-validation'))
+        os.chmod(target, 0o444)
+
+    with pytest.raises(AuthorityHeld, match='changed between validation and commitment'):
+        _admit(store, hook=replace)
+
+
+def test_an_identity_the_prerequisites_do_not_carry_is_refused(store):
+    """The proposal is checked against the validator's identity, not against itself.
+
+    Passing the request's own identity as both sides compared a value with itself and bound
+    nothing. Here the validator returns the identity the receipts carry and the request asks
+    for a different one.
+    """
+    with pytest.raises(AuthorityHeld, match='proposal identity differs'):
+        _admit(store, identity=dict(_identity(), run_id='00000000-0000-4000-8000-00000000dead'))
+
+
+def test_a_source_the_prerequisites_do_not_carry_is_refused(store):
+    with pytest.raises(AuthorityHeld, match='proposal source differs'):
+        _admit(store, source=dict(SOURCE, commit_sha='9'*40))
+
+
+def test_an_expired_approval_is_never_snapshotted(store):
+    """Validity belongs to the approval. Bounding the admission more tightly is not a cure."""
+    store.replace_approval('P1_H_COMPLETE', canonical_json_bytes(dict(
+        schema_version='local-qualification-approval-v1', issuer_identity='operator-a',
+        receipt_ref=dict(content_sha256='a'*64, size_bytes=10,
+                         media_type='application/json', locator='a'*64+'.blob'),
+        issued_at='2026-09-19T00:00:00Z', expires_at=PAST, revoked=False,
+        marker='first')) + b'\n', GATES)
+    with pytest.raises(AuthorityHeld, match='approval has expired'):
+        _admit(store)
+
+
+# ---------------------------------------------------------------------------
+# One admission, one action
+# ---------------------------------------------------------------------------
+
+def test_an_admission_is_consumable_exactly_once(store):
+    """Without a durable record of the spend, every re-read returns the same admission."""
+    record = _admit(store)
+    assert consumed_generation(store) == 0
+    assert _consume(store)['token'] == record['token']
+    assert consumed_generation(store) == record['generation']
+    with pytest.raises(AuthorityHeld, match='already been consumed'):
+        _consume(store)
+
+
+def test_the_admitted_effect_runs_inside_the_consumption(store):
+    """The effect is applied under the same lock that spends the admission."""
+    seen = []
+    _admit(store)
+    _consume(store, apply=lambda record, bundle: seen.append((record['generation'], bundle)))
+    assert len(seen) == 1
+    generation, bundle = seen[0]
+    assert (bundle/'descriptor.json').is_file()
+    assert consumed_generation(store) == generation
+
+
+def test_a_failed_effect_still_spends_the_admission(store):
+    """Recording the spend first is what makes the effect at-most-once.
+
+    A crash between the spend and the effect leaves nothing published and needs a fresh
+    admission, which fails closed. Applying first and recording afterwards would leave the
+    same effect repeatable.
+    """
+    def failing(record, bundle):
+        raise RuntimeError('the effect failed after the admission was spent')
+
+    record = _admit(store)
+    with pytest.raises(RuntimeError):
+        _consume(store, apply=failing)
+    assert consumed_generation(store) == record['generation']
+    with pytest.raises(AuthorityHeld, match='already been consumed'):
+        _consume(store)
+
+
+def test_recover_reports_a_spent_commit_as_not_consumable(store):
+    _admit(store)
+    assert recover(store)['published_commit_consumable'] is True
+    _consume(store)
+    state = recover(store)
+    assert state['published_commit_consumable'] is False
+    assert state['consumed_generation'] == state['published_generation']
+    assert state['replayable'] is False
+
+
+# ---------------------------------------------------------------------------
+# A settable clock is not a deadline
+# ---------------------------------------------------------------------------
+
+def test_a_wall_clock_rollback_does_not_extend_the_monotonic_deadline(store):
+    """The wall clock can be set backwards; the monotonic deadline cannot be.
+
+    The boot identity checked above is what makes the monotonic reading comparable at all --
+    a monotonic value from another boot would mean nothing.
+    """
+    now = _deadline_ns('2026-09-19T00:00:00Z')
+    record = _admit(store, expires_at='2026-09-19T00:00:02Z', now_ns=now)
+    rolled_back = now - 3_600_000_000_000
+    assert _deadline_ns(record['expires_at']) > rolled_back, 'the wall check alone would pass'
+    with pytest.raises(AuthorityHeld, match='monotonic deadline'):
+        _consume(store, now_ns=rolled_back,
+                 monotonic_ns=record['monotonic_deadline_ns'] + 1)
+
+
+def test_the_monotonic_deadline_tracks_the_admitted_window(store):
+    now = time.time_ns()
+    record = _admit(store, expires_at='2099-01-01T00:00:00Z', now_ns=now)
+    remaining = _deadline_ns('2099-01-01T00:00:00Z') - now
+    assert record['monotonic_deadline_ns'] - time.monotonic_ns() <= remaining

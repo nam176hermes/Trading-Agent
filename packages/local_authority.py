@@ -27,7 +27,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Callable, Iterator
 
 from packages.engine_contracts.serialization import canonical_json_bytes
 
@@ -37,6 +37,9 @@ STORE_ROOT = Path('/etc/trading-agent/local-qualification')
 MAX_GENERATION = 2**63 - 1
 MAX_BUNDLE_BYTES = 4 * 1024 * 1024
 BUNDLE_MEMBERS = ('request.json', 'prerequisites.json', 'descriptor.json')
+ATTESTATION_NAME = 'store-attestation.json'
+CONSUMPTION_NAME = 'consumed.json'
+ADMITTED_ACTIONS = ('ISSUE_RUNTIME_PROFILE', 'ISSUE_QUALIFICATION_DECISION')
 
 
 class AuthorityHeld(ValueError):
@@ -91,6 +94,20 @@ def _protected_bytes(path: Path, *, max_bytes: int = MAX_BUNDLE_BYTES) -> bytes:
         os.close(fd)
 
 
+def _deadline_ns(expires_at: str) -> int:
+    """Canonical UTC only. A local-time or offset-bearing string is refused rather than
+    normalised, because two readers disagreeing on a deadline is the failure this prevents.
+    """
+    from datetime import datetime
+    if not isinstance(expires_at, str) or not expires_at.endswith('Z'):
+        raise AuthorityHeld('admission expiry must be canonical UTC')
+    try:
+        moment = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    except ValueError as error:
+        raise AuthorityHeld('admission expiry is not a timestamp') from error
+    return int(moment.timestamp() * 1_000_000_000)
+
+
 def _fsync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
@@ -105,6 +122,9 @@ def _publish(path: Path, payload: bytes, mode: int = 0o444) -> None:
     fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
     try:
         with os.fdopen(fd, 'wb') as handle:
+            # Explicit, because the creation mode is masked by the caller's umask and the
+            # protected readers check for an exact mode rather than a permissive one.
+            os.fchmod(handle.fileno(), mode)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -198,18 +218,27 @@ class AuthorityStore:
 
     # -- snapshot --------------------------------------------------------
 
-    def snapshot(self, gates: tuple[str, ...]) -> Snapshot:
+    def snapshot(self, gates: tuple[str, ...], *, now_ns: int | None = None) -> Snapshot:
         """One immutable read of every gate, taken while the lock is held.
 
         The approval bytes are digested, not their metadata, so an approval replaced by a
         different but equally valid one for the same receipt changes the snapshot.
+
+        An approval that carries its own expiry is checked here, at the moment the snapshot
+        is taken. Validity is a property of the approval, not of the admission built on top
+        of it: reading an expired approval and then bounding the admission by a shorter
+        deadline would still be admitting authority that its issuer had already withdrawn.
         """
+        now = time.time_ns() if now_ns is None else now_ns
         approvals, receipts = [], []
         for gate in sorted(gates):
             approval_raw = _protected_bytes(self.path / f'{gate}.json')
             approval = json.loads(approval_raw)
             if approval.get('revoked') is not False:
                 raise AuthorityHeld(f'{gate} approval is revoked')
+            expires_at = approval.get('expires_at')
+            if expires_at is not None and _deadline_ns(str(expires_at)) <= now:
+                raise AuthorityHeld(f'{gate} approval has expired')
             approvals.append((gate, hashlib.sha256(approval_raw).hexdigest()))
             reference = approval.get('receipt_ref', {})
             receipts.append((gate, str(reference.get('content_sha256', ''))))
@@ -218,9 +247,6 @@ class AuthorityStore:
             receipts=[list(p) for p in receipts]))).hexdigest()
         return Snapshot(self.generation(), self.issuer, tuple(approvals), tuple(receipts),
                         prerequisite)
-
-
-ATTESTATION_NAME = 'store-attestation.json'
 
 
 def store_digest(store: 'AuthorityStore', gates: tuple[str, ...], read=None) -> str:
@@ -238,7 +264,7 @@ def store_digest(store: 'AuthorityStore', gates: tuple[str, ...], read=None) -> 
         dict(issuer=store.issuer, approvals=members))).hexdigest()
 
 
-def enrol(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
+def enrol(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict[str, Any]:
     """Place a store under the protocol for the first time. A deliberate act, not a default.
 
     Admission never does this implicitly: a store nobody enrolled is indistinguishable from
@@ -248,7 +274,7 @@ def enrol(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
         return attest(store, gates)
 
 
-def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
+def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict[str, Any]:
     """Publish what the store contains at the current generation.
 
     This is what makes a bypassing writer detectable. The writers that install approvals are
@@ -263,7 +289,7 @@ def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
 
 
 def require_no_bypassing_writer(store: 'AuthorityStore', gates: tuple[str, ...],
-                                read=None) -> dict:
+                                read: Callable[[Path], bytes] | None = None) -> dict[str, Any]:
     """Hold when the store changed outside the protocol. There is no unlocked fallback.
 
     An absent attestation means the store has never been placed under the protocol, which is
@@ -287,7 +313,8 @@ def require_no_bypassing_writer(store: 'AuthorityStore', gates: tuple[str, ...],
     return record
 
 
-def admission_token(*, action: str, gate: str, issuer: str, identity: dict, source: dict,
+def admission_token(*, action: str, gate: str, issuer: str, identity: dict[str, Any],
+                    source: dict[str, Any],
                     snapshot: Snapshot, expires_at: str, monotonic_deadline_ns: int,
                     boot_id: str) -> str:
     """Canonical, domain-separated envelope binding everything the admission depends on.
@@ -309,40 +336,68 @@ def _boot_identity() -> str:
     return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 
 
+def _require_admitted_action(action: str) -> None:
+    if action not in ADMITTED_ACTIONS:
+        raise AuthorityHeld(f'action {action} is not an admitted bounded action')
+
+
 def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ...],
-          identity: dict, source: dict, proposal_identity: dict, expires_at: str,
-          bundle: dict[str, bytes], now_ns: int | None = None) -> dict:
+          proposal_identity: dict[str, Any], proposal_source: dict[str, Any],
+          prepare: Callable[[Snapshot], dict[str, Any]], now_ns: int | None = None
+          ) -> dict[str, Any]:
     """Admit exactly one bounded action, and publish it durably before releasing the lock.
 
-    The whole decision happens inside the lock: read the generation, take the snapshot,
-    check revocation, identity and deadline, stage the bundle, then publish one commit
-    record. A concurrent revocation must take the same lock, so it either precedes this
-    point and prevents the commitment, or follows it and prevents the next admission.
+    The whole decision happens inside the lock, `prepare` included. `prepare` is the caller's
+    semantic validator: it re-derives the prerequisites, the identity, the source and the
+    bundle from the protected store as it stands at this instant, and everything committed
+    here is what it returned. Running that validation before the lock, as the earlier version
+    did, admitted the prerequisites of one generation alongside the snapshot of another --
+    the approvals could be replaced in between, and the commit would record them as admitted
+    anyway.
+
+    The identity is taken from `prepare`, never from the caller's request. Comparing a
+    request field with itself, which is what passing the same value as both the identity and
+    the proposal amounted to, binds nothing; the proposal is accepted only when it equals the
+    identity the prerequisite receipts actually carry.
+
+    A concurrent revocation must take the same lock, so it either precedes this point and
+    prevents the commitment, or follows it and prevents the next admission.
     """
-    if action not in ('ISSUE_RUNTIME_PROFILE', 'ISSUE_QUALIFICATION_DECISION'):
-        raise AuthorityHeld(f'action {action} is not an admitted bounded action')
-    if set(bundle) != set(BUNDLE_MEMBERS):
-        raise AuthorityHeld('admission bundle must contain exactly the accepted members')
-    if proposal_identity != identity:
-        raise AuthorityHeld('proposal identity differs from the admitted prerequisite identity')
+    _require_admitted_action(action)
+    if not callable(prepare):
+        raise AuthorityHeld('admission requires a semantic validator to run under the lock')
     with store.locked():
         # Refuse a store that is not under the protocol before touching the generation. The
         # earlier order advanced first and re-attested after publishing, so a store that had
         # never been enrolled, or that a writer had changed out of band, was stamped valid by
         # the very call that should have held. Enrolment is a separate deliberate act.
         require_no_bypassing_writer(store, gates)
-        # Advance first, then snapshot: the admission is recorded at a generation, and the
-        # snapshot must be of the store as it stands at that same generation. Snapshotting
-        # first embeds the previous generation and no consumer could ever match it.
-        generation = store._advance(store.generation())
-        snapshot = store.snapshot(gates)
+        now = time.time_ns() if now_ns is None else now_ns
         boot_id = _boot_identity()
+        # The snapshot the validator is handed is the store as it is before this admission
+        # advances it, so the validator and the commitment observe the same approval bytes.
+        validated = store.snapshot(gates, now_ns=now)
+        proposal = prepare(validated)
+        identity, source, expires_at, bundle = (proposal['identity'], proposal['source'],
+                                                proposal['expires_at'], proposal['bundle'])
+        if set(bundle) != set(BUNDLE_MEMBERS):
+            raise AuthorityHeld('admission bundle must contain exactly the accepted members')
+        if proposal_identity != identity:
+            raise AuthorityHeld('proposal identity differs from the admitted prerequisite identity')
+        if proposal_source != source:
+            raise AuthorityHeld('proposal source differs from the admitted prerequisite source')
         if identity.get('boot_id') != boot_id:
             raise AuthorityHeld('admission is for a different boot')
-        now = time.time_ns() if now_ns is None else now_ns
         deadline_ns = _deadline_ns(expires_at)
         if deadline_ns <= now:
             raise AuthorityHeld('admission deadline has already passed')
+        # Advance, then re-read: the admission is recorded at a generation, and the snapshot
+        # must be of the store as it stands at that same generation. Snapshotting only before
+        # the advance embeds the previous generation and no consumer could ever match it.
+        generation = store._advance(store.generation())
+        snapshot = store.snapshot(gates, now_ns=now)
+        if (snapshot.approvals, snapshot.receipts) != (validated.approvals, validated.receipts):
+            raise AuthorityHeld('issuer store changed between validation and commitment')
         monotonic_deadline_ns = time.monotonic_ns() + (deadline_ns - now)
         token = admission_token(action=action, gate=gate, issuer=store.issuer,
             identity=identity, source=source, snapshot=snapshot, expires_at=expires_at,
@@ -370,22 +425,43 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
         return record
 
 
-def _deadline_ns(expires_at: str) -> int:
-    from datetime import datetime
-    if not expires_at.endswith('Z'):
-        raise AuthorityHeld('admission expiry must be canonical UTC')
-    moment = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-    return int(moment.timestamp() * 1_000_000_000)
+def consumed_generation(store: AuthorityStore) -> int:
+    """The highest generation whose admission has been spent.
+
+    An admission authorises one action. Without a durable record of that, the published
+    commit stays readable and every re-read returns the same COMMITTED record, so the one
+    action it authorised can be performed again for as long as the deadline holds.
+    """
+    try:
+        value = json.loads(_protected_bytes(store.path / CONSUMPTION_NAME))
+    except FileNotFoundError:
+        return 0
+    generation = value.get('generation')
+    if value.get('schema_version') != PROTOCOL_VERSION or value.get('issuer') != store.issuer:
+        raise AuthorityHeld('consumption ledger does not belong to this issuer protocol')
+    if type(generation) is not int or not 0 <= generation <= MAX_GENERATION:
+        raise AuthorityHeld('consumption ledger is not a bounded generation')
+    return generation
 
 
-def consume(store: AuthorityStore, *, action: str, gate: str, identity: dict, source: dict,
-            gates: tuple[str, ...], now_ns: int | None = None) -> dict:
-    """Obtain admission for one action, verifying it against the live store under the lock.
+def consume(store: AuthorityStore, *, action: str, gate: str, identity: dict[str, Any],
+            source: dict[str, Any], gates: tuple[str, ...],
+            apply: Callable[[dict[str, Any], Path], object] | None = None,
+            now_ns: int | None = None, monotonic_ns: int | None = None) -> dict[str, Any]:
+    """Spend one admission, verifying it against the live store under the lock.
 
     A consumer never trusts a token it was handed. It re-derives the snapshot itself and
     requires the published commit to match the store as it is now, so a revocation that
     landed after the commit prevents this admission rather than being discovered later.
+
+    `apply` is the effect the admission authorises, and it runs inside this same critical
+    section. The consumption is recorded *before* the effect is applied: a crash in between
+    leaves the admission spent with nothing published, which fails closed and needs a fresh
+    admission, whereas applying first would let the same effect land twice.
     """
+    _require_admitted_action(action)
+    if apply is not None and not callable(apply):
+        raise AuthorityHeld('an admitted effect must be callable')
     with store.locked():
         try:
             record = json.loads(_protected_bytes(store._commit_path))
@@ -404,28 +480,47 @@ def consume(store: AuthorityStore, *, action: str, gate: str, identity: dict, so
             raise AuthorityHeld('published admission is for a different identity or source')
         if record['boot_id'] != _boot_identity():
             raise AuthorityHeld('published admission is from a different boot')
+        # Protocol integrity is checked before anything else about this store is trusted,
+        # the consumption ledger included: a store that left the protocol tells you nothing
+        # reliable about what has already been spent.
         require_no_bypassing_writer(store, gates)
-        snapshot = store.snapshot(gates)
+        spent = consumed_generation(store)
+        if record['generation'] <= spent:
+            raise AuthorityHeld('this admission has already been consumed')
+        now = time.time_ns() if now_ns is None else now_ns
+        snapshot = store.snapshot(gates, now_ns=now)
         if snapshot.generation != record['generation']:
             raise AuthorityHeld('authority generation moved after this admission was published')
         if snapshot.digest() != record['snapshot_digest']:
             raise AuthorityHeld('issuer store no longer matches the admitted snapshot')
-        now = time.time_ns() if now_ns is None else now_ns
         if _deadline_ns(record['expires_at']) <= now:
             raise AuthorityHeld('admitted action has expired')
-        bundle = bundle_path
+        # The wall clock alone is settable, so a rollback would extend a deadline that has
+        # already passed. The monotonic deadline is not settable, and the boot check above is
+        # what makes it comparable: a monotonic reading from another boot means nothing.
+        elapsed = time.monotonic_ns() if monotonic_ns is None else monotonic_ns
+        if record['monotonic_deadline_ns'] <= elapsed:
+            raise AuthorityHeld('admitted action has expired on the monotonic deadline')
         for name, digest in sorted(record['bundle'].items()):
-            if hashlib.sha256(_protected_bytes(bundle / name)).hexdigest() != digest:
+            if hashlib.sha256(_protected_bytes(bundle_path / name)).hexdigest() != digest:
                 raise AuthorityHeld(f'bundle member {name} differs from the committed manifest')
+        _publish(store.path / CONSUMPTION_NAME, canonical_json_bytes(dict(
+            schema_version=PROTOCOL_VERSION, issuer=store.issuer,
+            generation=record['generation'], action=action, gate=gate,
+            token=record['token'], consumed_at_ns=now)) + b'\n')
+        if apply is not None:
+            apply(record, bundle_path)
         return record
 
 
-def recover(store: AuthorityStore) -> dict:
+def recover(store: AuthorityStore) -> dict[str, Any]:
     """Report what a crash left behind. A recovered commit is never replayed here.
 
     Staged generations above the published commit are the signature of a crash between
     admission and durable publication. They are retained for inspection and are not
-    consumable: a new effect requires a fresh admission.
+    consumable: a new effect requires a fresh admission. A published commit at or below the
+    consumption ledger is equally not consumable, which is what makes `replayable=False` a
+    property of the store rather than a note in this report.
     """
     published = 0
     try:
@@ -438,6 +533,8 @@ def recover(store: AuthorityStore) -> dict:
         for entry in sorted(staging.iterdir()):
             if entry.is_dir() and int(entry.name) > published:
                 orphaned.append(entry.name)
+    spent = consumed_generation(store)
     return dict(published_generation=published, store_generation=store.generation(),
-                orphaned_generations=orphaned, replayable=False,
+                consumed_generation=spent, orphaned_generations=orphaned,
+                published_commit_consumable=published > spent, replayable=False,
                 note='A recovered commit requires a fresh admission before any new effect.')

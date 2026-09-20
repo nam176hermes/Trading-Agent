@@ -33,15 +33,24 @@ import errno,os,socket,sys
 # sealed-file transport happened to allocate high ones, but a transport that seals only a
 # handful leaves low numbers free for the sandboxed interpreter to reopen for itself, and a
 # numeric test then reports a leak that did not happen.
-def leaked():
+# A substring denylist only names the leaks somebody thought of. Measured outside the
+# sandbox, matching 'memfd:p3-' or '/p3-transport/' let a differently named memfd, a mount
+# namespace handle, a directory reference and a unix socket through untouched -- four of
+# five inherited descriptors. The sandboxed process is supposed to hold nothing beyond its
+# standard streams, so the set it holds is enumerated and anything outside that is a
+# finding, whatever it is called.
+def held():
  found=[]
  for entry in os.listdir('/proc/self/fd'):
   try: link=os.readlink('/proc/self/fd/'+entry)
   except OSError: continue
-  if 'memfd:p3-' in link or '/p3-transport/' in link: found.append(link)
- return found
-carried=leaked()
-if carried: raise AssertionError('transport descriptor survived exec: '+carried[0])
+  found.append((int(entry),link))
+ return sorted(found)
+def findings(permitted):
+ return ['%d:%s'%(n,t) for n,t in held() if n not in permitted]
+print('P3_STARTUP_FD_INVENTORY '+repr(held()))
+carried=findings({0,1,2})
+if carried: raise AssertionError('descriptor survived exec: '+','.join(carried))
 # The boundary has to hold for what the driver spawns as well, not only for the process
 # bwrap exec'd. A descriptor that crossed into a nested child would be just as reachable by
 # research code, and nothing above this point would have noticed.
@@ -49,14 +58,15 @@ nested_read,nested_write=os.pipe()
 nested=os.fork()
 if nested==0:
  os.close(nested_read)
- os.write(nested_write,repr(leaked()).encode())
+ os.write(nested_write,repr((held(),findings({0,1,2,nested_write}))).encode())
  os.close(nested_write)
  os._exit(0)
 os.close(nested_write)
-inherited=os.read(nested_read,4096).decode()
+inherited=os.read(nested_read,65536).decode()
 os.close(nested_read)
 if os.waitpid(nested,0)[1]!=0: raise AssertionError('nested descriptor probe did not complete')
-if inherited!='[]': raise AssertionError('transport descriptor reached a nested child: '+inherited)
+print('P3_STARTUP_NESTED_FD_INVENTORY '+inherited)
+if not inherited.endswith(', [])'): raise AssertionError('descriptor reached a nested child: '+inherited)
 for create in (socket.socket,socket.socketpair):
  try: create()
  except OSError as error: assert error.errno==errno.EPERM

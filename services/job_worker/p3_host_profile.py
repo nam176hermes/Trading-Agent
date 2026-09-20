@@ -30,6 +30,7 @@ from .engine_profiles import P1_REAL_BACKTEST_POLICY
 from .p3_holdout_release import CustodianEndpoint
 from .p3_qualification_readback import validate_integration_job_result,_read as _bounded_bytes
 from .p3_spawn import (
+    verify_image_mount,
     ROOT,CompleteP3Closure,P3ClosureMount,P3Sandbox,_digest,_directory_identity,_file_bytes,
     _release_files,inspect_python_runtime,
 )
@@ -179,20 +180,43 @@ def _verify_image_transport(profile, python_root: Path, mounts):
     if python_root.name!=image.python_root:
         raise ValueError('P3 image Python root does not match the descriptor')
     mount=python_root.parent
+    # The mount capability is checked here, not only at spawn. Without it the readback would
+    # authenticate bytes that happened to sit in an ordinary directory and hand the launcher
+    # a root nobody had shown to be the verified read-only image.
+    verify_image_mount(mount)
     release_root=mount/image.release_root
     if not release_root.is_dir() or release_root==python_root:
         raise ValueError('P3 image release root is missing or collides with the Python root')
+    device=mount.stat().st_dev
     imaged=[m for m in mounts
             if m.target.is_relative_to(_RELEASE_ROOT) or m.target.is_relative_to(_PYTHON_ROOT)]
     if len(imaged)!=image.entry_count or sum(m.size for m in imaged)!=image.logical_bytes:
         raise ValueError('P3 image descriptor does not match the declared closure inventory')
+    # Every imaged entry has to have been read back from the aggregate root that will be
+    # bound, and from the device that root sits on. Otherwise the bytes could be verified
+    # from one place and a different release directory bound in their name.
+    for item in imaged:
+        root=release_root if item.target.is_relative_to(_RELEASE_ROOT) else python_root
+        if not item.source.is_relative_to(root) or item.source.stat().st_dev!=device:
+            raise ValueError('P3 image closure entry was not read back from the bound image root')
     fingerprint=_digest(dict(schema_version=IMAGE_SCHEMA_VERSION,
         files=[dict(target=str(m.target),sha256=m.sha256,size=m.size,mode=m.mode) for m in imaged]))
     if fingerprint!=image.closure_fingerprint:
         raise ValueError('P3 image closure fingerprint differs from the declared inventory')
-    external={m.target for m in mounts} - {m.target for m in imaged}
-    if {PurePosixPath(library.target) for library in image.external_libraries}!=external:
+    imaged_targets={m.target for m in imaged}
+    external={m.target:m for m in mounts if m.target not in imaged_targets}
+    declared={PurePosixPath(library.target):library for library in image.external_libraries}
+    if set(declared)!=set(external):
         raise ValueError('P3 image external library set differs from the declared inventory')
+    # The target set alone says which libraries are delivered, not which bytes. Each declared
+    # field is compared with the entry that was actually read back, so a library whose digest,
+    # size, mode or snapshot inode differs from the descriptor cannot be carried along under
+    # an accepted name.
+    for target,library in declared.items():
+        item=external[target]
+        if (library.sha256!=item.sha256 or library.size_bytes!=item.size
+            or library.mode!=item.mode or (library.source_dev,library.source_ino)!=item.identity):
+            raise ValueError(f'P3 external library {target} differs from the declared descriptor')
     return image,mount
 
 

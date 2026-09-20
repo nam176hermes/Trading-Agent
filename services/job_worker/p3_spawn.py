@@ -57,19 +57,59 @@ _RELEASE = PurePosixPath('/p3/release')
 _PYTHON = PurePosixPath('/p3/python')
 
 
+def verify_image_mount(mount: Path | None) -> dict[str, str | list[str]]:
+    """Require a real read-only image mount, not merely a directory that exists.
+
+    Two directories that are present and distinct is what an ordinary writable directory
+    also satisfies, so on its own it would make an ordinary directory the fallback transport
+    for a mechanism whose entire premise is a read-only image. What is checked here is the
+    capability: this path is a mount point in this namespace, it carries a squashfs, it is
+    read-only, nodev and nosuid, it exposes the whole image rather than a subtree, and the
+    device serving it is the device the mount root actually sits on.
+    """
+    if mount is None or not isinstance(mount,Path) or not mount.is_absolute() or not mount.is_dir():
+        raise ValueError('P3 image transport requires an absolute mount root')
+    record=None
+    with open('/proc/self/mountinfo','rb') as handle:
+        for line in handle.read().decode().splitlines():
+            fields=line.split()
+            separator=fields.index('-')
+            if fields[4]==str(mount):
+                record=dict(device=fields[2],root=fields[3],options=fields[5].split(','),
+                            filesystem=fields[separator+1])
+    if record is None:
+        raise ValueError('P3 image mount is not a mount point in this namespace')
+    if record['filesystem']!='squashfs':
+        raise ValueError('P3 image mount is not a squashfs')
+    if not {'ro','nodev','nosuid'}.issubset(set(record['options'])):
+        raise ValueError('P3 image mount is not read-only, nodev and nosuid')
+    if record['root']!='/':
+        raise ValueError('P3 image mount exposes a subtree rather than the whole image')
+    if not os.statvfs(mount).f_flag & os.ST_RDONLY:
+        raise ValueError('P3 image mount is writable')
+    device=os.stat(mount).st_dev
+    if record['device']!=f'{os.major(device)}:{os.minor(device)}':
+        raise ValueError('P3 image mount root is not on the device serving it')
+    return record
+
+
 def _image_root_args(closure) -> tuple[str, ...]:
     """Deliver the two verified image roots as aggregate read-only binds.
 
     The number of closure files does not appear here, which is the whole point: the v1
     form needed five tokens per file. The bytes behind these roots were already read back
-    and compared against the inventory, so this binds what was verified, not a fresh path.
+    and compared against the inventory, and the mount they sit on is verified here, so this
+    binds what was verified rather than any path that happens to hold two directories.
     """
     mount = closure.image_mount
-    if mount is None or not isinstance(mount,Path) or not mount.is_absolute():
-        raise ValueError('P3 image transport requires an absolute mount root')
+    record = verify_image_mount(mount)
     release,python = mount/closure.image.release_root, mount/closure.image.python_root
     if release == python or not release.is_dir() or not python.is_dir():
         raise ValueError('P3 image roots are missing or collide')
+    device = os.stat(mount).st_dev
+    if release.stat().st_dev != device or python.stat().st_dev != device:
+        raise ValueError('P3 image roots are not on the verified image mount')
+    assert record['filesystem'] == 'squashfs'
     return (RO_PATH_FLAG,str(release),str(_RELEASE),RO_PATH_FLAG,str(python),str(_PYTHON))
 
 

@@ -309,3 +309,77 @@ def test_site_packages_manifest_canonicalizes_records_and_rejects_implant(
             site_packages,
             dependency_manifest,
         )
+
+
+# ---------------------------------------------------------------------------
+# Licence resolution: compatibility vectors for metadata the previous build accepted
+# ---------------------------------------------------------------------------
+
+def _metadata_wheel(tmp_path: Path, *lines: str) -> Path:
+    """One wheel whose METADATA carries exactly the supplied licence-bearing headers."""
+    from io import BytesIO
+
+    output = BytesIO()
+    dist_info = "demo_package-1.2.3.dist-info"
+    metadata = "\n".join(("Metadata-Version: 2.4", "Name: demo-package", "Version: 1.2.3",
+                          *lines, "")).encode()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{dist_info}/METADATA", metadata)
+        archive.writestr(f"{dist_info}/WHEEL", b"Wheel-Version: 1.0\nTag: py3-none-any\n")
+    path = tmp_path / f"demo_package-1.2.3-{abs(hash(lines)) % 10**9}-py3-none-any.whl"
+    path.write_bytes(output.getvalue())
+    return path
+
+
+def test_absent_licence_still_resolves_to_unknown(tmp_path: Path) -> None:
+    """A wheel with no licence field and an OSI classifier kept UNKNOWN, and still does.
+
+    This is the compatibility vector the review asked for. Taking the classifier here would
+    have changed annotated-types and duckdb from UNKNOWN to "MIT License", and
+    verify_offline_wheelhouse rebuilds the expected manifest and compares it against the
+    retained one -- so it would have rejected manifests whose wheels and lock never moved.
+    """
+    from packages.runtime_release.offline_wheelhouse import _wheel_metadata
+
+    wheel = _metadata_wheel(tmp_path, "Classifier: License :: OSI Approved :: MIT License")
+    assert _wheel_metadata(wheel) == ("demo-package", "1.2.3", "UNKNOWN")
+
+
+def test_a_short_legacy_licence_is_preserved_over_the_classifier(tmp_path: Path) -> None:
+    from packages.runtime_release.offline_wheelhouse import _wheel_metadata
+
+    wheel = _metadata_wheel(tmp_path, "License: BSD-3-Clause",
+                            "Classifier: License :: OSI Approved :: MIT License")
+    assert _wheel_metadata(wheel)[2] == "BSD-3-Clause"
+
+
+def test_the_canonical_expression_wins_over_both(tmp_path: Path) -> None:
+    from packages.runtime_release.offline_wheelhouse import _wheel_metadata
+
+    wheel = _metadata_wheel(tmp_path, "License-Expression: Apache-2.0",
+                            "License: BSD-3-Clause",
+                            "Classifier: License :: OSI Approved :: MIT License")
+    assert _wheel_metadata(wheel)[2] == "Apache-2.0"
+
+
+def test_an_overlong_legacy_licence_document_falls_back_to_the_classifier(tmp_path: Path) -> None:
+    """The one input the previous resolution had no answer for: it failed the build.
+
+    polars 1.44.1 ships 1141 characters of licence text in the legacy field and carries no
+    License-Expression, which made the wheelhouse for this lock impossible to build at all.
+    """
+    from packages.runtime_release.offline_wheelhouse import _wheel_metadata
+
+    document = "Permission is hereby granted free of charge to any person " * 24
+    wheel = _metadata_wheel(tmp_path, f"License: {document}",
+                            "Classifier: License :: OSI Approved :: MIT License")
+    assert len(" ".join(document.split())) > 512
+    assert _wheel_metadata(wheel)[2] == "MIT License"
+
+
+def test_an_overlong_legacy_licence_without_a_classifier_still_fails(tmp_path: Path) -> None:
+    from packages.runtime_release.offline_wheelhouse import _wheel_metadata
+
+    wheel = _metadata_wheel(tmp_path, "License: " + "text " * 200)
+    with pytest.raises(ValueError):
+        _wheel_metadata(wheel)

@@ -29,10 +29,71 @@ class _Closure:
 
 
 @pytest.fixture
-def mounted(tmp_path):
+def mounted(tmp_path, monkeypatch):
+    """Two roots on a stand-in for the verified mount.
+
+    The mount capability itself cannot be created in this suite: building a squashfs,
+    attaching a loop device and mounting it need root and a mount namespace. So the
+    capability check is replaced here and the argument shape is what these tests hold.
+    What the real check refuses is held separately, unpatched, by
+    test_an_ordinary_directory_is_not_an_image_mount; the controller's own fences are
+    exercised on a real mount by the host probe, not here.
+    """
     for name in ('release', 'python'):
         (tmp_path/name).mkdir()
+    monkeypatch.setattr('services.job_worker.p3_spawn.verify_image_mount',
+                        lambda mount: dict(filesystem='squashfs', root='/', device='7:0',
+                                           options=['ro', 'nodev', 'nosuid']))
     return tmp_path
+
+
+def test_an_ordinary_directory_is_not_an_image_mount(tmp_path):
+    """The v2 transport must not fall back to a directory that merely holds two roots.
+
+    Present-and-distinct is what an ordinary writable directory also satisfies, so accepting
+    it would make an ordinary directory the fallback for a transport whose whole premise is
+    a read-only image.
+    """
+    for name in ('release', 'python'):
+        (tmp_path/name).mkdir()
+    with pytest.raises(ValueError, match='not a mount point'):
+        _image_root_args(_Closure(tmp_path))
+
+
+def test_the_mount_capability_is_what_is_checked(tmp_path, monkeypatch):
+    """Each property of the mount is required, not merely the presence of a mount entry."""
+    from services.job_worker.p3_spawn import verify_image_mount
+
+    for name in ('release', 'python'):
+        (tmp_path/name).mkdir()
+    accepted = dict(device='7:0', root='/', options=['ro', 'nodev', 'nosuid'],
+                    filesystem='squashfs')
+    faults = {
+        'not a squashfs': dict(accepted, filesystem='ext4'),
+        'read-only, nodev and nosuid': dict(accepted, options=['rw', 'nodev', 'nosuid']),
+        'subtree rather than the whole image': dict(accepted, root='/release'),
+    }
+    for expected, record in faults.items():
+        fields = (f"29 1 {record['device']} {record['root']} {tmp_path} "
+                  f"{','.join(record['options'])} - {record['filesystem']} /dev/loop0 ro")
+        monkeypatch.setattr('builtins.open', _mountinfo_reader(fields))
+        with pytest.raises(ValueError, match=expected):
+            verify_image_mount(tmp_path)
+        monkeypatch.undo()
+
+
+def _mountinfo_reader(line):
+    """Return a stand-in for open() that serves one synthetic /proc/self/mountinfo line."""
+    import builtins
+    import io
+
+    real = builtins.open
+
+    def opener(path, *args, **kwargs):
+        if str(path) == '/proc/self/mountinfo':
+            return io.BytesIO(line.encode())
+        return real(path, *args, **kwargs)
+    return opener
 
 
 def test_image_roots_become_two_aggregate_binds(mounted):

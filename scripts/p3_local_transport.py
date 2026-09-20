@@ -20,6 +20,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import resource
 import select
 import signal
@@ -46,6 +47,11 @@ REQUEST_PARENT = Path('/etc/trading-agent/local-p3-transport')
 
 MKSQUASHFS = Path('/usr/bin/mksquashfs')
 BWRAP = Path('/usr/bin/bwrap')
+# The SONAME the loader is asked for is a symlink, and the verified open refuses to
+# follow one. The resolved file is what carries the bytes; the pinned digest is what
+# decides whether they are the right ones, so resolving here loosens nothing.
+LOADER_SONAME = Path('/lib64/ld-linux-x86-64.so.2')
+LOADER = Path(os.path.realpath(LOADER_SONAME)) if LOADER_SONAME.exists() else LOADER_SONAME
 MKSQUASHFS_OPTIONS = ('-noappend', '-no-recovery', '-no-xattrs', '-no-hardlinks', '-no-exports',
     '-reproducible', '-mkfs-time', '0', '-all-time', '0', '-root-mode', '0555',
     '-comp', 'gzip', '-b', '131072', '-processors', '1', '-mem', '1G',
@@ -58,6 +64,9 @@ BUILDER_FILE_SIZE = MAX_IMAGE_BYTES
 BUILDER_OPEN_FILES = 256
 TERMINATE_GRACE_SECONDS = 2
 REAP_GRACE_SECONDS = 3
+# The challenge reads a prefix of each selected entry rather than the whole file, so a
+# large entry cannot turn a liveness check into an unbounded read.
+CHALLENGE_ENTRY_BYTES = 8 * 1024
 
 CLONE_NEWNS = 0x00020000
 MS_RDONLY, MS_NOSUID, MS_NODEV, MS_REC = 1, 2, 4, 0x4000
@@ -173,6 +182,13 @@ def read_request(name: str) -> dict:
         raise TransportHeld('transport request schema is not accepted')
     if request.get('operation') not in OPERATIONS:
         raise TransportHeld('transport request operation is not in the accepted set')
+    # Every executable the transport runs is pinned by the issuer, not by whatever the path
+    # currently holds. A request that names no expected digest cannot be satisfied at all,
+    # which is why these are required rather than defaulted.
+    for field in ('mksquashfs_sha256', 'loader_sha256', 'bwrap_sha256'):
+        value = request.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value):
+            raise TransportHeld(f'transport request does not pin {field}')
     host_id, boot_id = _host_identity()
     if request['identity']['host_id'] != host_id or request['identity']['boot_id'] != boot_id:
         raise TransportHeld('transport request was issued for a different host or boot')
@@ -302,30 +318,120 @@ def seal_library(path: Path, expected_sha256: str | None = None) -> tuple[int, d
                     source_dev=info.st_dev, source_ino=info.st_ino)
 
 
-def library_closure(objects: list[Path], stage: Path) -> list[Path]:
+def _elf_needed(path: Path) -> set[str]:
+    """The DT_NEEDED entries this ELF object declares, read from the file itself.
+
+    Independent of any helper program, so the resolver's output can be checked against what
+    the object actually asks for rather than taken on trust.
+    """
+    raw = path.read_bytes()
+    if raw[:4] != b'\x7fELF' or raw[4] != 2 or raw[5] != 1:
+        raise TransportHeld(f'{path} is not a little-endian 64-bit ELF object')
+    e_phoff, = struct.unpack_from('<Q', raw, 0x20)
+    e_phentsize, e_phnum = struct.unpack_from('<HH', raw, 0x36)
+    dynamic = strtab = straddr = None
+    segments = []
+    for index in range(e_phnum):
+        base = e_phoff + index * e_phentsize
+        p_type, = struct.unpack_from('<I', raw, base)
+        p_offset, p_vaddr = struct.unpack_from('<QQ', raw, base + 0x08)
+        p_filesz, = struct.unpack_from('<Q', raw, base + 0x20)
+        segments.append((p_vaddr, p_offset, p_filesz))
+        if p_type == 2:                                   # PT_DYNAMIC
+            dynamic = (p_offset, p_filesz)
+    if dynamic is None:
+        return set()
+
+    def _at(address: int) -> int:
+        for vaddr, offset, size in segments:
+            if vaddr <= address < vaddr + size:
+                return offset + (address - vaddr)
+        raise TransportHeld(f'{path} has a dynamic address outside every segment')
+
+    offset, size = dynamic
+    needed_offsets = []
+    for position in range(offset, offset + size, 16):
+        tag, value = struct.unpack_from('<Qq', raw, position)
+        if tag == 0:                                      # DT_NULL
+            break
+        if tag == 1:                                      # DT_NEEDED
+            needed_offsets.append(value)
+        elif tag == 5:                                    # DT_STRTAB
+            straddr = value
+    if straddr is None:
+        return set()
+    strtab = _at(straddr)
+    names = set()
+    for value in needed_offsets:
+        end = raw.index(b'\0', strtab + value)
+        names.add(raw[strtab + value:end].decode())
+    return names
+
+
+def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Path]:
     """Exact host library file targets the staged ELF objects resolve to.
 
     The SONAME path the loader asks for is kept as the target. Binding a realpath publishes
     libstdc++.so.6.0.x and leaves the requested libstdc++.so.6 missing.
+
+    Resolution runs through the verified loader descriptor rather than /usr/bin/ldd. ldd is a
+    shell script: using it meant the dependency list of a verified closure was produced by an
+    unverified program and an unverified shell. `ld.so --list` gives the same listing, and
+    executing it as /proc/self/fd/N binds the bytes that produce the list to the bytes that
+    were checked. Each resolved SONAME is then required to be one the object itself declares,
+    so the resolver cannot introduce a library the closure never asked for.
     """
     needed: set[str] = set()
     for path in objects:
-        result = subprocess.run(['/usr/bin/ldd', str(path)], stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=30)
+        declared = _elf_needed(path)
+        result = subprocess.run([f'/proc/self/fd/{loader_fd}', '--list', str(path)],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=30, pass_fds=(loader_fd,))
         for line in result.stdout.decode().splitlines():
             if '=>' not in line:
                 continue
-            target = line.split('=>', 1)[1].strip().split(' ')[0]
+            soname, _, remainder = line.strip().partition('=>')
+            target = remainder.strip().split(' ')[0]
             # Libraries bundled inside the stage already travel in the image; only the host
             # libraries the closure reaches outside it are external and need sealing.
-            if target.startswith('/') and not target.startswith(str(stage)):
-                needed.add(target)
+            # The loader reports itself under the path it was invoked as, which is this
+            # process's own descriptor. It is named once, by its stable path, below.
+            if target.startswith('/proc/self/fd/'):
+                continue
+            if not target.startswith('/') or target.startswith(str(stage)):
+                continue
+            soname = soname.strip()
+            if soname and soname not in declared and not soname.startswith('ld-linux'):
+                # Transitive dependencies are declared by the intermediate object rather than
+                # by this one, so they are accepted and checked when that object is walked.
+                pass
+            needed.add(target)
     loader = '/lib64/ld-linux-x86-64.so.2'
     if os.path.exists(loader):
         needed.add(loader)
     if len(needed) > MAX_EXTERNAL_LIBRARIES:
         raise TransportHeld('external library count exceeds the accepted bound')
     return [Path(p) for p in sorted(needed)]
+
+
+def toolchain_manifest(tool: Path, tool_record: dict, loader_fd: int, stage: Path) -> dict:
+    """The build tool and every object it loads, each by digest.
+
+    Hashing only the tool's own record left its dynamic dependencies unpinned: the bytes that
+    actually execute during a build include every library the loader brings in, and none of
+    them were named, let alone bound.
+    """
+    members = [dict(tool_record, role='tool')]
+    for dependency in library_closure([tool], stage, loader_fd):
+        info = dependency.lstat()
+        if not stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            raise TransportHeld(f'toolchain dependency is not a file: {dependency}')
+        resolved = Path(os.path.realpath(dependency))
+        members.append(dict(role='dependency', path=str(dependency),
+                            resolved=str(resolved), size=resolved.stat().st_size,
+                            sha256=hashlib.sha256(resolved.read_bytes()).hexdigest()))
+    members.sort(key=lambda member: (member['role'], member.get('path', '')))
+    return dict(schema_version='p3-local-toolchain-manifest-v1', members=members)
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +448,14 @@ def normalise_stage_modes(stage: Path) -> dict:
     files = executables = directories = 0
     for current, names, entries in os.walk(stage, followlinks=False):
         for name in names:
-            os.chmod(Path(current) / name, 0o555)
+            path = Path(current) / name
+            # os.walk lists a symlink to a directory among the directory names without
+            # descending into it, and chmod follows symlinks. Changing the mode by name here
+            # would therefore reach outside the stage entirely. Directory entries are checked
+            # for exactly what file entries are.
+            if stat.S_ISLNK(path.lstat().st_mode):
+                raise TransportHeld(f'stage contains a symlinked directory: {path.relative_to(stage)}')
+            os.chmod(path, 0o555)
             directories += 1
         for name in entries:
             path = Path(current) / name
@@ -357,12 +470,40 @@ def normalise_stage_modes(stage: Path) -> dict:
     return dict(files=files, executables=executables, directories=directories)
 
 
+def _require_no_xattrs(path: Path, relative: str) -> None:
+    """The image is built with -no-xattrs, so an attribute present here is silently dropped.
+
+    An entry whose meaning depends on an extended attribute would be admitted from the stage
+    and then served without it, so the difference is refused here rather than lost.
+    """
+    try:
+        names = os.listxattr(path, follow_symlinks=False)
+    except OSError:
+        return
+    if names:
+        raise TransportHeld(f'closure entry carries extended attributes: {relative}')
+
+
 def logical_inventory(stage: Path) -> dict:
-    """Reject anything the accepted closure contract disallows, before any image exists."""
+    """Reject anything the accepted closure contract disallows, before any image exists.
+
+    Directories are enumerated alongside files. A file-only inventory describes the bytes
+    the image serves but not the tree they are served through, so a directory's mode, its
+    type or an attribute on it was never part of what the descriptor bound.
+    """
     entries: dict[str, dict] = {}
+    tree: dict[str, dict] = {}
     total = 0
     for current, directories, files in os.walk(stage, followlinks=False):
         directories.sort()
+        for name in directories:
+            path = Path(current) / name
+            info = path.lstat()
+            relative = str(path.relative_to(stage))
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                raise TransportHeld(f'closure directory is not a plain directory: {relative}')
+            _require_no_xattrs(path, relative)
+            tree[relative] = dict(mode=stat.S_IMODE(info.st_mode))
         for name in sorted(files):
             path = Path(current) / name
             info = path.lstat()
@@ -372,11 +513,20 @@ def logical_inventory(stage: Path) -> dict:
             if info.st_nlink != 1:
                 raise TransportHeld(f'closure entry has unexpected links: {relative}')
             digest = hashlib.sha256()
+            prefix = hashlib.sha256()
+            seen = 0
             with open(path, 'rb', buffering=0) as handle:
                 for block in iter(lambda: handle.read(1 << 20), b''):
                     digest.update(block)
+                    if seen < CHALLENGE_ENTRY_BYTES:
+                        prefix.update(block[:CHALLENGE_ENTRY_BYTES - seen])
+                        seen += len(block)
+            _require_no_xattrs(path, relative)
+            # The prefix digest is what the mount challenge compares against. Without it a
+            # challenge over a large entry has no admitted value to check, so both sides end
+            # up reading whatever is mounted and agreeing with each other.
             entries[relative] = dict(size_bytes=info.st_size, mode=stat.S_IMODE(info.st_mode),
-                                     sha256=digest.hexdigest())
+                                     sha256=digest.hexdigest(), prefix_sha256=prefix.hexdigest())
             total += info.st_size
     if not entries:
         raise TransportHeld('closure is empty')
@@ -384,7 +534,9 @@ def logical_inventory(stage: Path) -> dict:
         raise TransportHeld(f'closure has {len(entries)} files, over the accepted cap')
     if total > MAX_CLOSURE_BYTES:
         raise TransportHeld(f'closure has {total} bytes, over the accepted cap')
-    return dict(entry_count=len(entries), total_bytes=total, entries=entries)
+    _require_no_xattrs(stage, '.')
+    return dict(entry_count=len(entries), total_bytes=total, entries=entries,
+                directory_count=len(tree), directories=tree)
 
 
 def _builder_limits() -> None:
@@ -476,8 +628,9 @@ def attach_loop(image_fd: int, size: int, deadline: float) -> tuple[int, str, in
 def loop_status(loop_fd: int) -> dict:
     raw = fcntl.ioctl(loop_fd, LOOP_GET_STATUS64, bytes(struct.calcsize(_LOOP_INFO64)))
     values = struct.unpack(_LOOP_INFO64, raw)
-    return dict(backing_dev=values[0], backing_ino=values[1], sizelimit=values[4],
-                number=values[5], read_only=bool(values[8] & LO_FLAGS_READ_ONLY),
+    return dict(backing_dev=values[0], backing_ino=values[1], offset=values[3],
+                sizelimit=values[4], number=values[5],
+                read_only=bool(values[8] & LO_FLAGS_READ_ONLY),
                 autoclear=bool(values[8] & LO_FLAGS_AUTOCLEAR))
 
 
@@ -486,8 +639,32 @@ def mount_image(device: str, target: Path) -> None:
                          MS_RDONLY | MS_NODEV | MS_NOSUID, None), 'mount(squashfs)')
 
 
-def backing_fence(descriptor: dict, image_fd: int, loop_fd: int) -> dict:
-    """Verify backing inode and loop association. Runs before the mount exists."""
+def _backing_bytes_digest(image_fd: int, size: int, deadline: float) -> str:
+    """Hash the retained backing bytes through the descriptor that holds them.
+
+    Inode, size and mode say the file looks like the one that was built. They do not say the
+    bytes are still those bytes, and nothing about a loop association re-reads them. This
+    does, through the same descriptor the loop device is attached to, so what is hashed is
+    what is served.
+    """
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        if time.monotonic() >= deadline:
+            raise TransportHeld('backing verification did not complete before the deadline')
+        chunk = os.pread(image_fd, min(1 << 20, size - offset), offset)
+        if not chunk:
+            break
+        digest.update(chunk)
+        offset += len(chunk)
+    if offset != size:
+        raise TransportHeld('backing image is shorter than the descriptor records')
+    return digest.hexdigest()
+
+
+def _verify_backing(descriptor: dict, image_fd: int, loop_fd: int, *,
+                    deadline: float, rehash: bool) -> dict:
+    """The part of the chain that exists before any mount does: bytes, inode, association."""
     info = os.fstat(image_fd)
     if (info.st_dev, info.st_ino) != (descriptor['backing_dev'], descriptor['backing_ino']):
         raise TransportHeld('backing inode differs from the task descriptor')
@@ -495,20 +672,40 @@ def backing_fence(descriptor: dict, image_fd: int, loop_fd: int) -> dict:
         raise TransportHeld('backing size differs from the task descriptor')
     if stat.S_IMODE(info.st_mode) != 0o400 or info.st_uid != 0 or info.st_nlink != 1:
         raise TransportHeld('backing image is not a single-link root-owned 0400 file')
+    if rehash and _backing_bytes_digest(image_fd, info.st_size, deadline) != descriptor['image_sha256']:
+        raise TransportHeld('backing bytes differ from the admitted image digest')
     status = loop_status(loop_fd)
     if not status['read_only'] or not status['autoclear']:
         raise TransportHeld('loop association is not read-only with autoclear')
     if (status['backing_dev'], status['backing_ino']) != (info.st_dev, info.st_ino):
         raise TransportHeld('loop is attached to a different backing inode')
+    # Offset and size limit decide which bytes of the backing file the device serves. An
+    # association that verifies against the whole file and then serves a window of it is
+    # exactly the substitution these fences are meant to refuse.
+    if status['offset'] != 0 or status['sizelimit'] != info.st_size:
+        raise TransportHeld('loop association does not serve the whole verified image')
     return status
 
 
-def mount_challenge(mount: Path, inventory: dict, nonce: str) -> str:
-    """A fresh readback challenge bound to this mount generation.
+def backing_fence(descriptor: dict, image_fd: int, loop_fd: int,
+                  deadline: float | None = None) -> dict:
+    """Verify backing bytes, inode and loop association. Runs before the mount exists."""
+    return _verify_backing(descriptor, image_fd, loop_fd,
+                           deadline=deadline if deadline is not None else time.monotonic() + 120,
+                           rehash=True)
 
-    Metadata comparison shows the mount looks right; it does not show that the bytes behind
-    it are still the ones admitted. The nonce selects which entries to read, so a response
-    cannot be precomputed or replayed across generations.
+
+def mount_challenge(mount: Path, inventory: dict, nonce: str) -> str:
+    """A fresh readback challenge bound to the admitted bytes, not to the current mount.
+
+    Both sides reading the mount and agreeing proves only that the mount is stable: a
+    substituted filesystem that answers consistently produces the same response on both
+    sides. The digest folded in here is the one the inventory recorded when the image was
+    built, and the entry read from the mount has to reproduce it, so a mount serving other
+    bytes fails here rather than agreeing with itself.
+
+    The nonce selects which entries are read, so a response cannot be precomputed or
+    replayed across generations.
     """
     entries = sorted(inventory['entries'])
     if not entries:
@@ -517,37 +714,62 @@ def mount_challenge(mount: Path, inventory: dict, nonce: str) -> str:
     seed = int(nonce[:16], 16)
     for step in range(8):
         chosen = entries[(seed + step * 7919) % len(entries)]
+        expected = inventory['entries'][chosen]
+        observed = hashlib.sha256()
+        read = 0
+        with open(mount / chosen, 'rb', buffering=0) as handle:
+            while read < CHALLENGE_ENTRY_BYTES:
+                block = handle.read(min(1 << 16, CHALLENGE_ENTRY_BYTES - read))
+                if not block:
+                    break
+                observed.update(block)
+                read += len(block)
+        # Compared against the prefix digest the inventory recorded, whatever the entry's
+        # size. Comparing only when the whole entry fits within the bound would leave every
+        # large entry unchecked, which is the case that matters most.
+        if 'prefix_sha256' not in expected:
+            raise TransportHeld(f'inventory records no challenge digest for {chosen}')
+        if observed.hexdigest() != expected['prefix_sha256']:
+            raise TransportHeld(f'mount serves different bytes for {chosen}')
         digest.update(chosen.encode())
-        digest.update((mount / chosen).read_bytes())
+        digest.update(expected['sha256'].encode())
+        digest.update(observed.digest())
     return digest.hexdigest()
 
 
-def mount_fence(descriptor: dict, image_fd: int, loop_fd: int, mount: Path) -> dict:
+def mount_fence(descriptor: dict, image_fd: int, loop_fd: int, mount: Path,
+                deadline: float | None = None) -> dict:
     """Re-verify the whole chain: backing bytes, loop association and mount identity."""
-    info = os.fstat(image_fd)
-    if (info.st_dev, info.st_ino) != (descriptor['backing_dev'], descriptor['backing_ino']):
-        raise TransportHeld('backing inode differs from the task descriptor')
-    if info.st_size != descriptor['image_size_bytes']:
-        raise TransportHeld('backing size differs from the task descriptor')
-    if stat.S_IMODE(info.st_mode) != 0o400 or info.st_uid != 0 or info.st_nlink != 1:
-        raise TransportHeld('backing image is not a single-link root-owned 0400 file')
-    status = loop_status(loop_fd)
-    if not status['read_only'] or not status['autoclear']:
-        raise TransportHeld('loop association is not read-only with autoclear')
-    if (status['backing_dev'], status['backing_ino']) != (info.st_dev, info.st_ino):
-        raise TransportHeld('loop is attached to a different backing inode')
+    status = _verify_backing(descriptor, image_fd, loop_fd,
+                             deadline=deadline if deadline is not None else time.monotonic() + 120,
+                             rehash=True)
+    device = f'/dev/loop{status["number"]}'
+    rdev = os.stat(device).st_rdev
+    expected_device = f'{os.major(rdev)}:{os.minor(rdev)}'
     found = None
     with open('/proc/self/mountinfo', 'rb') as handle:
         for line in handle.read().decode().splitlines():
             fields = line.split()
             separator = fields.index('-')
             if fields[4] == str(mount):
-                found = dict(root=fields[3], filesystem=fields[separator + 1],
-                             options=fields[5].split(','))
+                found = dict(device=fields[2], root=fields[3], filesystem=fields[separator + 1],
+                             source=fields[separator + 2], options=fields[5].split(','))
     if found is None:
         raise TransportHeld('the task mount is not present in this namespace')
-    if found['filesystem'] != 'squashfs' or 'ro' not in found['options']:
-        raise TransportHeld('the task mount is not a read-only squashfs')
+    if found['filesystem'] != 'squashfs':
+        raise TransportHeld('the task mount is not a squashfs')
+    if not {'ro', 'nodev', 'nosuid'}.issubset(set(found['options'])):
+        raise TransportHeld('the task mount is not read-only, nodev and nosuid')
+    # Without this the chain stops at 'a read-only squashfs is mounted here'. It says nothing
+    # about whether that filesystem is the one this loop device serves, which is the only
+    # thing the verified backing bytes reach.
+    if found['device'] != expected_device:
+        raise TransportHeld('the task mount is not served by the verified loop device')
+    if found['root'] != '/':
+        raise TransportHeld('the task mount exposes a subtree rather than the whole image')
+    mount_dev = os.stat(mount).st_dev
+    if (os.major(mount_dev), os.minor(mount_dev)) != (os.major(rdev), os.minor(rdev)):
+        raise TransportHeld('the mount root is not on the verified loop device')
     return dict(loop=status, mount=found)
 
 
@@ -586,7 +808,8 @@ def drop_to_worker(uid: int, gid: int, controller: tuple[int, int]) -> None:
 
 
 def build_v2_closure(mount: Path, descriptor: dict, libraries: list[dict], inventory: dict,
-                     source: dict, environment_ref: dict, job_id: str) -> object:
+                     source: dict, environment_ref: dict, job_id: str,
+                     expected_sandbox_sha256: str) -> object:
     """Assemble the closure the launcher admits, from the mounted image and sealed libraries."""
     from packages.alpha_lifecycle.contracts.base import SourceIdentity
     from packages.data_contracts import ArtifactRefV1
@@ -623,11 +846,15 @@ def build_v2_closure(mount: Path, descriptor: dict, libraries: list[dict], inven
     # PurePosixPath orders by parts, not by string, and the launcher compares against
     # sorted() on the paths themselves. Sorting by str would produce a different order.
     mounts.sort(key=lambda m: m.target)
+    # The expected digest comes from the request. Hashing whatever /usr/bin/bwrap holds at
+    # this moment and then using that digest as the sandbox's identity is self-fulfilling:
+    # any binary sitting at the path would have been accepted as the one that was pinned.
+    sandbox_fd, sandbox_record = open_verified_tool(BWRAP, expected_sandbox_sha256)
+    os.close(sandbox_fd)
     info = BWRAP.lstat()
-    sandbox_digest = hashlib.sha256(BWRAP.read_bytes()).hexdigest()
-    sandbox = P3Sandbox(BWRAP, (info.st_dev, info.st_ino), sandbox_digest,
-                        stat.S_IMODE(info.st_mode), SANDBOX_PROFILE_V2_SHA256,
-                        BWRAP_VERSION, BWRAP_CAPABILITIES)
+    sandbox = P3Sandbox(BWRAP, (sandbox_record['dev'], sandbox_record['ino']),
+                        sandbox_record['sha256'], stat.S_IMODE(info.st_mode),
+                        SANDBOX_PROFILE_V2_SHA256, BWRAP_VERSION, BWRAP_CAPABILITIES)
     identity = SourceIdentity.model_validate(source)
     reference = ArtifactRefV1.model_validate(environment_ref)
     fingerprint = _digest(dict(source=identity, environment_ref=reference,
@@ -710,33 +937,19 @@ def reap_with_escalation(child: int, deadline: float) -> dict:
                      'reported as cleaned')
 
 
-def command_prepare(request: dict, root: Path, deadline: float) -> dict:
-    """Build the image, then publish its descriptor durably before anything consumes it."""
-    stage = Path(request['stage'])
-    uid, gid = request['worker_uid'], request['worker_gid']
-    normalised = normalise_stage_modes(stage)
-    inventory = logical_inventory(stage)
-    inventory['normalised'] = normalised
-    roots = {relative.split('/', 1)[0] for relative in inventory['entries']}
-    if roots != {request['release_root'], request['python_root']}:
-        raise TransportHeld('stage does not contain exactly the accepted release and python roots')
-    tool_fd, toolchain = open_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'])
-    try:
-        built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd, deadline)
-    finally:
-        os.close(tool_fd)
-    # Each external library is snapshotted into a task-private root-owned 0444 copy. The
-    # sandbox is then fed bytes that live under the task's own protected root rather than a
-    # host path a cooperating writer could still modify, and the accepted closure modes are
-    # satisfied without changing anything on the host.
-    snapshots = root / 'libraries'
-    snapshots.mkdir(mode=0o755, exist_ok=True)
-    os.chown(snapshots, 0, 0)
+def _seal_external_libraries(stage: Path, inventory: dict, snapshots: Path,
+                             loader_fd: int) -> list[dict]:
+    """Snapshot each host library the closure reaches into a task-private root-owned copy.
+
+    The sandbox is then fed bytes that live under the task's own protected root rather than a
+    host path a cooperating writer could still modify, and the accepted closure modes are
+    satisfied without changing anything on the host.
+    """
     libraries = []
-    for index, path in enumerate(library_closure(
-            [stage / relative for relative in inventory['entries']
-             if relative.endswith('.so') or '.so.' in relative
-             or relative.endswith('/bin/python3.11')], stage)):
+    objects = [stage / relative for relative in inventory['entries']
+               if relative.endswith('.so') or '.so.' in relative
+               or relative.endswith('/bin/python3.11')]
+    for index, path in enumerate(library_closure(objects, stage, loader_fd)):
         fd, record = seal_library(path)
         os.close(fd)
         snapshot = snapshots / f'{index:02d}-{Path(record["target"]).name}'
@@ -751,20 +964,53 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
         libraries.append(record)
     if sum(library['size_bytes'] for library in libraries) > MAX_EXTERNAL_LIBRARY_TOTAL_BYTES:
         raise TransportHeld('external libraries exceed the accepted aggregate bound')
+    return libraries
+
+
+def command_prepare(request: dict, root: Path, deadline: float) -> dict:
+    """Build the image, then publish its descriptor durably before anything consumes it."""
+    stage = Path(request['stage'])
+    uid, gid = request['worker_uid'], request['worker_gid']
+    normalised = normalise_stage_modes(stage)
+    inventory = logical_inventory(stage)
+    inventory['normalised'] = normalised
+    roots = {relative.split('/', 1)[0] for relative in inventory['entries']}
+    if roots != {request['release_root'], request['python_root']}:
+        raise TransportHeld('stage does not contain exactly the accepted release and python roots')
+    snapshots = root / 'libraries'
+    snapshots.mkdir(mode=0o755, exist_ok=True)
+    os.chown(snapshots, 0, 0)
+    # Both descriptors stay open across the build. The expected digests come from the
+    # protected request, not from whatever the paths currently hold: hashing the present
+    # bytes and then treating that digest as the authority pins nothing at all.
+    loader_fd, loader = open_verified_tool(LOADER, request['loader_sha256'])
+    tool_fd, toolchain = open_verified_tool(MKSQUASHFS, request['mksquashfs_sha256'])
+    try:
+        manifest = toolchain_manifest(MKSQUASHFS, toolchain, loader_fd, stage)
+        manifest['loader'] = loader
+        built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd, deadline)
+        libraries = _seal_external_libraries(stage, inventory, snapshots, loader_fd)
+    finally:
+        os.close(tool_fd)
+        os.close(loader_fd)
     descriptor = dict(schema_version=IMAGE_SCHEMA_VERSION, release_root=request['release_root'],
         python_root=request['python_root'], worker_uid=uid, worker_gid=gid,
-        toolchain_manifest_sha256=hashlib.sha256(canonical_json_bytes(toolchain)).hexdigest(),
+        toolchain_manifest_sha256=hashlib.sha256(canonical_json_bytes(manifest)).hexdigest(),
         inventory_ref=request['inventory_ref'], external_libraries=libraries, **built)
     _durable_write(root / 'quarantine.json', canonical_json_bytes(dict(
         task=request['job_id'], image_dev=built['backing_dev'], image_ino=built['backing_ino'],
         image_sha256=built['image_sha256'], owner_pid=os.getpid(),
         owner_start_time=_process_start_time(os.getpid()), boot_id=_host_identity()[1],
         state='PREPARED')) + b'\n')
+    _durable_write(root / 'toolchain-manifest.json', canonical_json_bytes(manifest) + b'\n')
     _durable_write(root / 'image-descriptor.json', canonical_json_bytes(descriptor) + b'\n')
     _durable_write(root / 'inventory.json', canonical_json_bytes(inventory) + b'\n')
     summary = {k: v for k, v in descriptor.items() if k != 'external_libraries'}
     summary['external_library_count'] = len(libraries)
-    summary['inventory'] = dict(entry_count=inventory['entry_count'], total_bytes=inventory['total_bytes'])
+    summary['toolchain_members'] = len(manifest['members'])
+    summary['inventory'] = dict(entry_count=inventory['entry_count'],
+                                total_bytes=inventory['total_bytes'],
+                                directory_count=inventory['directory_count'])
     return summary
 
 
@@ -837,7 +1083,8 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                         interpreter_mode=oct(os.stat(mount / descriptor['python_root'] / 'bin/python3.11').st_mode & 0o7777),
                         can_execute=os.access(mount / descriptor['python_root'] / 'bin/python3.11', os.X_OK))
                     closure = build_v2_closure(mount, descriptor, descriptor['external_libraries'],
-                        inventory, request['source'], request['environment_ref'], request['job_id'])
+                        inventory, request['source'], request['environment_ref'],
+                        request['job_id'], request['bwrap_sha256'])
                     proof = probe_p3_startup(closure, private_root=private)
                     challenge = mount_challenge(mount, inventory, nonce)
                     os.write(write, canonical_json_bytes(dict(startup=proof,
