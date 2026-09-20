@@ -383,44 +383,61 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
     """
     needed: set[str] = set()
     for path in objects:
-        resolved: dict[str, str] = {}
+        # Three things are tracked, and they are not the same set.
+        #
+        # `paths` is every real file the loader pulled in, and it is what the declared union
+        # is computed over. `names` is only the entries listed in SONAME form, which are the
+        # ones the undeclared check can speak about. `external` is the host files that have
+        # to be sealed.
+        #
+        # Two line shapes matter, measured on this host. `name => /path` is the familiar one.
+        # A DT_NEEDED written as a path has no arrow at all: CPython's libpython3.so declares
+        # `$ORIGIN/../lib/libpython3.11.so.1.0`, and the loader lists the resolved file on its
+        # own. Parsing only the arrow form dropped that object, so the four libraries it
+        # brings in -- libdl, librt, libm, libutil -- looked undeclared and a correct closure
+        # was refused.
+        paths: set[str] = set()
+        names: dict[str, str] = {}
         result = subprocess.run([f'/proc/self/fd/{loader_fd}', '--list', str(path)],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=30, pass_fds=(loader_fd,))
         for line in result.stdout.decode().splitlines():
-            if '=>' not in line:
+            entry = line.strip()
+            if not entry:
                 continue
-            soname, _, remainder = line.strip().partition('=>')
-            target = remainder.strip().split(' ')[0]
+            if '=>' in entry:
+                soname, _, remainder = entry.partition('=>')
+                name, target = soname.strip(), remainder.strip().split(' ')[0]
+            else:
+                # The loader itself and any path-form dependency. linux-vdso has no file.
+                name, target = '', entry.split(' ')[0]
             # The loader reports itself under the path it was invoked as, which is this
             # process's own descriptor. It is named once, by its stable path, below.
-            if target.startswith('/proc/self/fd/'):
+            if not target.startswith('/') or target.startswith('/proc/self/fd/'):
                 continue
-            # Libraries bundled inside the stage already travel in the image; only the host
-            # libraries the closure reaches outside it are external and need sealing.
-            if not target.startswith('/') or target.startswith(str(stage)):
-                continue
-            if soname.strip():
-                resolved[soname.strip()] = target
-        # Every name the loader resolved has to be declared by the object itself or by
-        # something else in the same closure. A transitive dependency is declared by the
-        # intermediate library, so the declared set is the union over everything resolved --
-        # which is why it is computed here rather than from the root object alone. Without
-        # this the resolver's output is taken on trust, and it could introduce a library that
-        # nothing in the closure ever asked for.
+            paths.add(target)
+            if name:
+                names[name] = target
+        # Every SONAME the loader resolved has to be declared by the object itself or by
+        # something else in the same closure, because a transitive dependency is declared by
+        # the intermediate library rather than by the root object. Without this the
+        # resolver's output is taken on trust, and it could introduce a library that nothing
+        # in the closure ever asked for.
         declared = set(_elf_needed(path))
-        for target in resolved.values():
+        for target in paths:
             try:
                 declared |= _elf_needed(Path(os.path.realpath(target)))
             except OSError as error:
                 raise TransportHeld(
                     f'resolved dependency {target} could not be read') from error
-        undeclared = {name for name in resolved
+        undeclared = {name for name in names
                       if name not in declared and not name.startswith('ld-linux')}
         if undeclared:
             raise TransportHeld(
                 f'{path} resolved libraries nothing in the closure declares: {sorted(undeclared)}')
-        needed.update(resolved.values())
+        # Libraries bundled inside the stage already travel in the image; only the host
+        # libraries the closure reaches outside it are external and need sealing.
+        needed.update(target for target in paths if not target.startswith(str(stage)))
     loader = '/lib64/ld-linux-x86-64.so.2'
     if os.path.exists(loader):
         needed.add(loader)
@@ -952,8 +969,13 @@ def reap_with_escalation(child: int, deadline: float) -> dict:
                      'reported as cleaned')
 
 
-def _seal_external_libraries(stage: Path, inventory: dict, snapshots: Path,
-                             loader_fd: int) -> list[dict]:
+def _closure_objects(stage: Path, inventory: dict) -> list[Path]:
+    return [stage / relative for relative in inventory['entries']
+            if relative.endswith('.so') or '.so.' in relative
+            or relative.endswith('/bin/python3.11')]
+
+
+def _seal_external_libraries(sources: list[Path], snapshots: Path) -> list[dict]:
     """Snapshot each host library the closure reaches into a task-private root-owned copy.
 
     The sandbox is then fed bytes that live under the task's own protected root rather than a
@@ -961,10 +983,7 @@ def _seal_external_libraries(stage: Path, inventory: dict, snapshots: Path,
     satisfied without changing anything on the host.
     """
     libraries = []
-    objects = [stage / relative for relative in inventory['entries']
-               if relative.endswith('.so') or '.so.' in relative
-               or relative.endswith('/bin/python3.11')]
-    for index, path in enumerate(library_closure(objects, stage, loader_fd)):
+    for index, path in enumerate(sources):
         fd, record = seal_library(path)
         os.close(fd)
         snapshot = snapshots / f'{index:02d}-{Path(record["target"]).name}'
@@ -1003,8 +1022,19 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     try:
         manifest = toolchain_manifest(MKSQUASHFS, toolchain, loader_fd, stage)
         manifest['loader'] = loader
+        # Resolved before the image is built, not after. The library closure does not depend
+        # on the image, and building first meant a closure this refuses left a 180 MB
+        # artifact behind with no descriptor -- which cleanup then rightly declines to remove,
+        # because it cannot account for it. Failing before anything is created costs nothing.
+        sources = library_closure(_closure_objects(stage, inventory), stage, loader_fd)
+        # A durable record of the attempt, written before the artifact exists. Without it a
+        # crash between creation and the PREPARED record leaves a file nothing identifies.
+        _durable_write(root / 'quarantine.json', canonical_json_bytes(dict(
+            task=request['job_id'], owner_pid=os.getpid(),
+            owner_start_time=_process_start_time(os.getpid()), boot_id=_host_identity()[1],
+            image_path=str(root / 'runtime.squashfs'), state='PREPARING')) + b'\n')
         built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd, deadline)
-        libraries = _seal_external_libraries(stage, inventory, snapshots, loader_fd)
+        libraries = _seal_external_libraries(sources, snapshots)
     finally:
         os.close(tool_fd)
         os.close(loader_fd)
@@ -1129,7 +1159,12 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
             fences.append(dict(point='after-worker', nonce=nonce,
                                **mount_fence(descriptor, image_fd, loop_fd, mount)))
             if observed.get('challenge') != expected_challenge:
-                raise TransportHeld('mount readback challenge did not match this generation')
+                # The worker catches everything and reports it in its payload, so a failure
+                # inside the worker reaches here as a missing challenge. Reporting only the
+                # mismatch hid the actual cause behind a message about something else.
+                reported = observed.get('error')
+                raise TransportHeld('mount readback challenge did not match this generation'
+                                    + (f'; the worker reported: {reported}' if reported else ''))
         finally:
             if locals().get('reaped', {}).get('reaped', True):
                 if _libc.umount(str(mount).encode()) != 0:
@@ -1168,8 +1203,30 @@ def command_cleanup(root: Path) -> dict:
     record_path = root / 'quarantine.json'
     try:
         record = json.loads(record_path.read_bytes())
+    except (OSError, ValueError):
+        return dict(quarantined=True, reason='quarantine record is absent or unreadable',
+                    removed=[], root_exists=root.exists())
+    if record.get('state') == 'PREPARING':
+        # A build that did not reach its PREPARED record. The artifact is identified by the
+        # path this owner wrote before creating it, on this boot, so it is accountable and
+        # can be reclaimed. Without the PREPARING record it would be an unidentified file and
+        # the only safe answer would be to retain it.
+        if record.get('boot_id') != _host_identity()[1]:
+            return dict(quarantined=True, reason='incomplete build is from another boot',
+                        removed=[], root_exists=root.exists())
+        removed = []
+        image = Path(record.get('image_path', ''))
+        if image == root / 'runtime.squashfs' and image.exists():
+            os.chmod(image, 0o600)
+            image.unlink()
+            removed.append('runtime.squashfs: incomplete build reclaimed')
+        record_path.unlink(missing_ok=True)
+        removed.append('quarantine.json')
+        return dict(quarantined=False, reason='incomplete build', removed=removed,
+                    root_exists=root.exists())
+    try:
         expected = (record['image_dev'], record['image_ino'])
-    except (OSError, ValueError, KeyError):
+    except KeyError:
         return dict(quarantined=True, reason='quarantine record is absent or unreadable',
                     removed=[], root_exists=root.exists())
     removed, retained = [], False

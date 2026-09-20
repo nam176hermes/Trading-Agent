@@ -329,6 +329,83 @@ def test_a_resolved_dependency_that_cannot_be_read_is_refused(tmp_path, monkeypa
         transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage', loader_fd=-1)
 
 
+def test_an_intermediate_inside_the_stage_still_declares_its_dependencies(tmp_path, monkeypatch):
+    """A stage-internal library is skipped for sealing, not for the declared union.
+
+    Found by running `prepare` on the real stage: `libpython3.so` declares one name, and the
+    loader resolves libdl, libm, librt and libutil through the in-stage
+    `libpython3.11.so.1.0`. Computing the union over the external set alone made all four
+    look undeclared and refused a correct closure.
+
+    The graph here is that shape, built from real ELF files: the root declares the
+    intermediate, the intermediate sits inside the stage, and the name it brings in is
+    resolved outside the stage. Take the in-stage object out of the union and the last one
+    is undeclared, which is exactly the refusal that was wrong.
+    """
+    import shutil
+
+    stage = tmp_path/'stage'
+    stage.mkdir()
+    root = stage/'root.so'
+    shutil.copy('/lib/x86_64-linux-gnu/liblzma.so.5', root)
+    declared_by_root = transport._elf_needed(root)
+    assert declared_by_root == {'libc.so.6'}, declared_by_root
+
+    # A real ELF, placed inside the stage under a name the root declares. What matters is
+    # that it declares names the root does not.
+    intermediate = stage/'libc.so.6'
+    shutil.copy(transport.MKSQUASHFS, intermediate)
+    brought_in = sorted(transport._elf_needed(intermediate) - declared_by_root
+                        - {'ld-linux-x86-64.so.2'})
+    assert brought_in, 'the intermediate must declare something the root does not'
+
+    class _Result:
+        stdout = (f'\tlibc.so.6 => {intermediate} (0x1)\n'
+                  + ''.join(f'\t{name} => /lib/x86_64-linux-gnu/{name} (0x2)\n'
+                            for name in brought_in)).encode()
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Result())
+    resolved = transport.library_closure([root], stage, loader_fd=-1)
+    assert not any(str(item).startswith(str(stage)) for item in resolved), \
+        'a stage-internal library must not be sealed as an external one'
+    assert {Path(item).name for item in resolved} >= set(brought_in)
+
+
+def test_a_path_form_dependency_is_parsed_and_counted(tmp_path, monkeypatch):
+    """A DT_NEEDED written as a path is listed by the loader with no `=>` at all.
+
+    Found by running `prepare`: CPython's libpython3.so declares
+    `$ORIGIN/../lib/libpython3.11.so.1.0`, and the loader prints the resolved file on its own
+    line. Parsing only the arrow form dropped that object from the closure, so the four
+    libraries it brings in -- libdl, librt, libm, libutil -- looked undeclared and a correct
+    closure was refused.
+    """
+    import shutil
+
+    stage = tmp_path/'stage'
+    stage.mkdir()
+    root = stage/'root.so'
+    shutil.copy('/lib/x86_64-linux-gnu/liblzma.so.5', root)
+    intermediate = stage/'libintermediate.so.1'
+    shutil.copy(transport.MKSQUASHFS, intermediate)
+    brought_in = sorted(transport._elf_needed(intermediate)
+                        - transport._elf_needed(root) - {'ld-linux-x86-64.so.2'})
+    assert brought_in, 'the intermediate must declare something the root does not'
+
+    class _Result:
+        # The intermediate appears in path form, exactly as the loader prints it.
+        stdout = (f'\tlinux-vdso.so.1 (0x1)\n'
+                  f'\t{intermediate} (0x2)\n'
+                  + ''.join(f'\t{name} => /lib/x86_64-linux-gnu/{name} (0x3)\n'
+                            for name in brought_in)).encode()
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Result())
+    resolved = transport.library_closure([root], stage, loader_fd=-1)
+    assert {Path(item).name for item in resolved} >= set(brought_in)
+    assert not any(str(item).startswith(str(stage)) for item in resolved)
+    assert not any('vdso' in str(item) for item in resolved), 'the vdso has no file to seal'
+
+
 def test_the_resolved_set_is_accepted_when_every_name_is_declared(tmp_path, monkeypatch):
     real = transport.subprocess.run
     resolved = transport.library_closure([transport.MKSQUASHFS], tmp_path,

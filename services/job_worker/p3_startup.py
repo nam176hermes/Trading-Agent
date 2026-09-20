@@ -81,6 +81,10 @@ print('P3_STARTUP_PROBE_PASS')
 '''
 
 
+_FD_INVENTORY='P3_STARTUP_FD_INVENTORY '
+_NESTED_FD_INVENTORY='P3_STARTUP_NESTED_FD_INVENTORY '
+
+
 def _close_on_exec(descriptors: tuple[int, ...]) -> None:
     """Mark descriptors close-on-exec in the child, after fork and before exec.
 
@@ -301,13 +305,23 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                 if not (imaged and (m.target.is_relative_to(_RELEASE)
                                     or m.target.is_relative_to(_PYTHON)))),default=0)
             code,stdout,stderr=_run_probe(tuple(argv),tuple(descriptors),sealed_bytes+65536,(fd_sandbox,))
-            if (code or stdout!=b'P3_STARTUP_PROBE_PASS\n' or stderr
+            # Three lines, in this order: the descriptor set the sandboxed process holds,
+            # the set its nested child inherits with the findings against the allowlist, and
+            # the pass marker. Matching one fixed byte string was enough while the program
+            # printed only the marker; it is not a reason to stop recording what the boundary
+            # actually held, so the shape is checked and the inventories are kept.
+            lines=stdout.decode('utf-8','replace').splitlines()
+            shaped=(len(lines)==3 and lines[0].startswith(_FD_INVENTORY)
+                and lines[1].startswith(_NESTED_FD_INVENTORY)
+                and lines[2]=='P3_STARTUP_PROBE_PASS')
+            if (code or stderr or not shaped
                 or os.listdir(inputs.descriptor) or os.listdir(output.descriptor)!=['probe-output']):
                 # Report what the probe actually produced. The historical message named no
                 # cause, so a transport failure and a kernel failure looked identical.
                 raise ValueError('P3 startup kernel/transport probe failed: '
                     f'exit={code} stdout={stdout[:400]!r} stderr={stderr[:400]!r} '
                     f'argv_tokens={len(argv)-1}')
+            held,nested=lines[0][len(_FD_INVENTORY):],lines[1][len(_NESTED_FD_INVENTORY):]
             _read_probe_output(output)
         finally:
             for descriptor in reversed(descriptors):
@@ -315,4 +329,5 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
     return dict(schema_version='p3-startup-probe-v1',closure_sha256=closure.closure_sha256,
         bound_job_id=closure.bound_job_id,bound_payload_fingerprint=closure.bound_payload_fingerprint,
         sandbox_sha256=sandbox.executable_sha256,program_sha256=hashlib.sha256(_PROGRAM.encode()).hexdigest(),
-        stdout_sha256=hashlib.sha256(stdout).hexdigest(),root_absent=True)
+        stdout_sha256=hashlib.sha256(stdout).hexdigest(),root_absent=True,
+        fd_inventory=held,nested_fd_inventory=nested)
