@@ -33,11 +33,30 @@ import errno,os,socket,sys
 # sealed-file transport happened to allocate high ones, but a transport that seals only a
 # handful leaves low numbers free for the sandboxed interpreter to reopen for itself, and a
 # numeric test then reports a leak that did not happen.
-for entry in os.listdir('/proc/self/fd'):
- try: link=os.readlink('/proc/self/fd/'+entry)
- except OSError: continue
- if 'memfd:p3-' in link or '/p3-transport/' in link:
-  raise AssertionError('transport descriptor survived exec: '+link)
+def leaked():
+ found=[]
+ for entry in os.listdir('/proc/self/fd'):
+  try: link=os.readlink('/proc/self/fd/'+entry)
+  except OSError: continue
+  if 'memfd:p3-' in link or '/p3-transport/' in link: found.append(link)
+ return found
+carried=leaked()
+if carried: raise AssertionError('transport descriptor survived exec: '+carried[0])
+# The boundary has to hold for what the driver spawns as well, not only for the process
+# bwrap exec'd. A descriptor that crossed into a nested child would be just as reachable by
+# research code, and nothing above this point would have noticed.
+nested_read,nested_write=os.pipe()
+nested=os.fork()
+if nested==0:
+ os.close(nested_read)
+ os.write(nested_write,repr(leaked()).encode())
+ os.close(nested_write)
+ os._exit(0)
+os.close(nested_write)
+inherited=os.read(nested_read,4096).decode()
+os.close(nested_read)
+if os.waitpid(nested,0)[1]!=0: raise AssertionError('nested descriptor probe did not complete')
+if inherited!='[]': raise AssertionError('transport descriptor reached a nested child: '+inherited)
 for create in (socket.socket,socket.socketpair):
  try: create()
  except OSError as error: assert error.errno==errno.EPERM
