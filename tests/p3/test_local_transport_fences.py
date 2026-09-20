@@ -293,3 +293,54 @@ def test_the_toolchain_manifest_covers_the_whole_dependency_closure(tmp_path):
     assert declared.issubset(named), f'unpinned declared dependencies: {declared - named}'
     assert not any(member.get('path', '').startswith('/proc/self/fd/')
                    for member in manifest['members'])
+
+
+def test_a_library_nothing_in_the_closure_declares_is_refused(tmp_path, monkeypatch):
+    """The resolver's output is checked against DT_NEEDED, not taken on trust.
+
+    Running the listing through the verified loader binds the bytes that produce it. It does
+    not bind the answer, so a resolver that named a library the closure never asked for would
+    otherwise have it sealed and delivered.
+    """
+    import shutil
+
+    outside = tmp_path/'outside'
+    outside.mkdir()
+    # A real ELF object, so the refusal is about the name nothing declares rather than about
+    # the file being unreadable.
+    planted = outside/'libnothing.so.9'
+    shutil.copy('/lib/x86_64-linux-gnu/libz.so.1', planted)
+
+    class _Result:
+        stdout = (b'\tlibc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x1)\n'
+                  b'\tlibnothing.so.9 => ' + str(planted).encode() + b' (0x2)\n')
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Result())
+    with pytest.raises(TransportHeld, match='nothing in the closure declares'):
+        transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage', loader_fd=-1)
+
+
+def test_a_resolved_dependency_that_cannot_be_read_is_refused(tmp_path, monkeypatch):
+    class _Missing:
+        stdout = b'\tlibghost.so.1 => /nonexistent/libghost.so.1 (0x1)\n'
+
+    monkeypatch.setattr(transport.subprocess, 'run', lambda *a, **k: _Missing())
+    with pytest.raises(TransportHeld, match='could not be read'):
+        transport.library_closure([transport.MKSQUASHFS], tmp_path/'stage', loader_fd=-1)
+
+
+def test_the_resolved_set_is_accepted_when_every_name_is_declared(tmp_path, monkeypatch):
+    real = transport.subprocess.run
+    resolved = transport.library_closure([transport.MKSQUASHFS], tmp_path,
+                                         loader_fd=_verified_loader())
+    assert any(Path(item).name == 'libc.so.6' for item in resolved)
+    assert transport.LOADER_SONAME.as_posix() in [str(item) for item in resolved]
+    del real
+
+
+def _verified_loader() -> int:
+    import hashlib as _hashlib
+
+    fd, _ = transport.open_verified_tool(
+        transport.LOADER, _hashlib.sha256(transport.LOADER.read_bytes()).hexdigest())
+    return fd

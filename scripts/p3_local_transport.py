@@ -383,7 +383,7 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
     """
     needed: set[str] = set()
     for path in objects:
-        declared = _elf_needed(path)
+        resolved: dict[str, str] = {}
         result = subprocess.run([f'/proc/self/fd/{loader_fd}', '--list', str(path)],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=30, pass_fds=(loader_fd,))
@@ -392,20 +392,35 @@ def library_closure(objects: list[Path], stage: Path, loader_fd: int) -> list[Pa
                 continue
             soname, _, remainder = line.strip().partition('=>')
             target = remainder.strip().split(' ')[0]
-            # Libraries bundled inside the stage already travel in the image; only the host
-            # libraries the closure reaches outside it are external and need sealing.
             # The loader reports itself under the path it was invoked as, which is this
             # process's own descriptor. It is named once, by its stable path, below.
             if target.startswith('/proc/self/fd/'):
                 continue
+            # Libraries bundled inside the stage already travel in the image; only the host
+            # libraries the closure reaches outside it are external and need sealing.
             if not target.startswith('/') or target.startswith(str(stage)):
                 continue
-            soname = soname.strip()
-            if soname and soname not in declared and not soname.startswith('ld-linux'):
-                # Transitive dependencies are declared by the intermediate object rather than
-                # by this one, so they are accepted and checked when that object is walked.
-                pass
-            needed.add(target)
+            if soname.strip():
+                resolved[soname.strip()] = target
+        # Every name the loader resolved has to be declared by the object itself or by
+        # something else in the same closure. A transitive dependency is declared by the
+        # intermediate library, so the declared set is the union over everything resolved --
+        # which is why it is computed here rather than from the root object alone. Without
+        # this the resolver's output is taken on trust, and it could introduce a library that
+        # nothing in the closure ever asked for.
+        declared = set(_elf_needed(path))
+        for target in resolved.values():
+            try:
+                declared |= _elf_needed(Path(os.path.realpath(target)))
+            except OSError as error:
+                raise TransportHeld(
+                    f'resolved dependency {target} could not be read') from error
+        undeclared = {name for name in resolved
+                      if name not in declared and not name.startswith('ld-linux')}
+        if undeclared:
+            raise TransportHeld(
+                f'{path} resolved libraries nothing in the closure declares: {sorted(undeclared)}')
+        needed.update(resolved.values())
     loader = '/lib64/ld-linux-x86-64.so.2'
     if os.path.exists(loader):
         needed.add(loader)
