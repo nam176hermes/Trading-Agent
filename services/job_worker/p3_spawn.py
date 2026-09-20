@@ -34,9 +34,9 @@ from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, In
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.sandbox_policy import (
     BWRAP_CAPABILITIES, BWRAP_VERSION, MAX_ARGV_BYTES,
-    MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES, SANDBOX_PROFILE_SHA256,
+    MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES, SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256,
     SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, DRIVER_ENTRY, ROOT_READONLY_ARGS,
-    RO_FILE_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG,
+    RO_FILE_FLAG, RO_PATH_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG,
 )
 from packages.data_contracts import ArtifactRefV1
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -55,6 +55,22 @@ ROOT = Path(__file__).resolve().parents[2]
 _TTL_NS = 5 * 60 * 1_000_000_000
 _RELEASE = PurePosixPath('/p3/release')
 _PYTHON = PurePosixPath('/p3/python')
+
+
+def _image_root_args(closure) -> tuple[str, ...]:
+    """Deliver the two verified image roots as aggregate read-only binds.
+
+    The number of closure files does not appear here, which is the whole point: the v1
+    form needed five tokens per file. The bytes behind these roots were already read back
+    and compared against the inventory, so this binds what was verified, not a fresh path.
+    """
+    mount = closure.image_mount
+    if mount is None or not isinstance(mount,Path) or not mount.is_absolute():
+        raise ValueError('P3 image transport requires an absolute mount root')
+    release,python = mount/closure.image.release_root, mount/closure.image.python_root
+    if release == python or not release.is_dir() or not python.is_dir():
+        raise ValueError('P3 image roots are missing or collide')
+    return (RO_PATH_FLAG,str(release),str(_RELEASE),RO_PATH_FLAG,str(python),str(_PYTHON))
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +104,12 @@ class CompleteP3Closure:
     closure_sha256: str
     bound_job_id: str
     bound_payload_fingerprint: str
+    # LOCAL v2 only. `image` is the durable descriptor and `image_mount` is where this run
+    # mounted it read-only. Both stay None on the v1 sealed-file transport, and the logical
+    # inventory validator and closure fingerprint above are shared by both transports: only
+    # how the verified bytes reach the sandbox differs.
+    image: object | None = None
+    image_mount: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,9 +241,14 @@ class P3SpawnProvider:
             or closure.bound_job_id != job.job_id
             or closure.bound_payload_fingerprint != payload_fingerprint(job.payload)
             or type(closure.sandbox) is not P3Sandbox
-            or closure.sandbox.profile_sha256 != SANDBOX_PROFILE_SHA256
             or closure.sandbox.version != BWRAP_VERSION or closure.sandbox.capabilities != BWRAP_CAPABILITIES):
             raise ValueError('complete P3 source attestation is required')
+        # The transport and its policy identity must agree in both directions. A closure
+        # carrying an image may only present the v2 policy, and a sealed-file closure may
+        # only present v1, so neither transport can borrow the other's accepted identity.
+        expected_policy = SANDBOX_PROFILE_V2_SHA256 if closure.image is not None else SANDBOX_PROFILE_SHA256
+        if closure.sandbox.profile_sha256 != expected_policy:
+            raise ValueError('P3 sandbox policy identity does not match the closure transport')
         intent = _read(self._store, job.payload.manifest_ref, P3OperationInput)
         authorization = _read(self._store, job.payload.authorization_ref, RUN_AUTHORIZATION)
         payload = stage_alpha_campaign_payload(ReadbackStore(self._store,self._store), authorization,
@@ -309,6 +336,14 @@ class P3SpawnProvider:
                 raise ValueError('P3 closure exceeds argv or descriptor limits')
             for directory in sorted(directories,key=lambda p:(len(p.parts),str(p))):
                 argv.extend(('--dir',str(directory)))
+            # Transport seam. Every closure file is read back and verified on both paths;
+            # only the delivery differs. v1 seals each file into its own memfd, which costs
+            # five parser tokens per file and puts the complete closure past the pinned
+            # bwrap parser's capacity. v2 verifies the same bytes through the read-only
+            # image mount and then delivers the two roots as aggregate binds, so the file
+            # count leaves the token budget entirely. System libraries stay sealed per file
+            # on both paths; they are not in the image and must not widen to a directory.
+            imaged = closure.image is not None
             for mount in closure.mounts:
                 if (not mount.target.is_absolute()
                     or '..' in mount.target.parts or mount.mode not in {0o400,0o500,0o444,0o555}
@@ -320,9 +355,13 @@ class P3SpawnProvider:
                     or bool(mount.mode & 0o111) != (release[mount.target][0] == '100755'))
                     or mount.target in runtime and mount.source != runtime[mount.target]):
                     raise ValueError('P3 mounted bytes differ from source or runtime')
+                if imaged and (mount.target.is_relative_to(_RELEASE) or mount.target.is_relative_to(_PYTHON)):
+                    continue
                 fd = _sealed_memfd('p3-closure',raw,mode=mount.mode)
                 descriptors.append(fd)
                 argv.extend(('--perms',f'{mount.mode:o}',RO_FILE_FLAG,str(fd),str(mount.target)))
+            if imaged:
+                argv.extend(_image_root_args(closure))
             argv.extend(('--perms','500',RO_FILE_FLAG,str(sandbox_fd),'/p3/bin/bwrap'))
             references = {'manifest-ref':payload.manifest_ref,'source':closure.source,
                 'environment-ref':closure.environment_ref,'authorization-ref':payload.authorization_ref}
