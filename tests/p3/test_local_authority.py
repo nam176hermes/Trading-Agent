@@ -81,13 +81,13 @@ def test_admission_commits_and_is_consumable(store):
 def test_revocation_after_commitment_prevents_the_next_admission(store):
     """The commitment stands, and the revocation stops what has not been admitted yet."""
     _admit(store)
-    (store.path/'PRE_P3_READY.json').write_bytes(_approval(revoked=True))
+    store.replace_approval('PRE_P3_READY', _approval(revoked=True), GATES)
     with pytest.raises(AuthorityHeld, match='revoked'):
         _consume(store)
 
 
 def test_revocation_before_commitment_prevents_it(store):
-    (store.path/'P1_H_COMPLETE.json').write_bytes(_approval(revoked=True))
+    store.replace_approval('P1_H_COMPLETE', _approval(revoked=True), GATES)
     with pytest.raises(AuthorityHeld, match='revoked'):
         _admit(store)
 
@@ -98,8 +98,8 @@ def test_same_receipt_approval_replacement_is_detected(store):
     Binding receipt digests alone would miss this: the receipt never changes.
     """
     _admit(store)
-    (store.path/'PRE_P3_READY.json').write_bytes(_approval(marker='second'))
-    with pytest.raises(AuthorityHeld, match='no longer matches the admitted snapshot'):
+    store.replace_approval('PRE_P3_READY', _approval(marker='second'), GATES)
+    with pytest.raises(AuthorityHeld, match='generation moved|no longer matches'):
         _consume(store)
 
 
@@ -107,9 +107,9 @@ def test_aba_replacement_is_detected_by_the_generation(store):
     """Restoring the original bytes does not restore the admission."""
     original = (store.path/'PRE_P3_READY.json').read_bytes()
     _admit(store)
-    (store.path/'PRE_P3_READY.json').write_bytes(_approval(marker='second'))
+    store.replace_approval('PRE_P3_READY', _approval(marker='second'), GATES)
     _admit(store)
-    (store.path/'PRE_P3_READY.json').write_bytes(original)
+    store.replace_approval('PRE_P3_READY', original, GATES)
     with pytest.raises(AuthorityHeld):
         _consume(store)
 
@@ -124,7 +124,9 @@ def test_generation_rollback_is_refused(store):
     (store.path/'generation.json').write_bytes(canonical_json_bytes(
         dict(schema_version='p3-local-authority-transaction-v1', generation=1,
              issuer='operator-a')) + b'\n')
-    with pytest.raises(AuthorityHeld, match='generation moved'):
+    # A rolled-back counter no longer matches the attestation published with it, which is
+    # the same evidence a bypassing write leaves behind.
+    with pytest.raises(AuthorityHeld, match='not current for this generation'):
         _consume(store)
 
 
@@ -224,3 +226,51 @@ def test_a_writer_cannot_interleave_with_a_held_admission(store):
         assert waited >= 0.3, f'the writer did not actually block, it waited {waited:.3f}s'
     finally:
         process.join(5)
+
+
+# ---------------------------------------------------------------------------
+# A writer that skips the protocol must be detected, not tolerated
+# ---------------------------------------------------------------------------
+
+def test_a_store_never_placed_under_the_protocol_is_refused(store):
+    """No attestation means no protocol, and there is no unlocked revalidation path."""
+    from packages.local_authority import require_no_bypassing_writer
+    with pytest.raises(AuthorityHeld, match='not under the authority protocol'):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_a_write_that_skipped_the_lock_is_detected(store):
+    """The signature of a bypass is bytes moving while the generation stands still.
+
+    The helpers that install approvals are root processes outside this repository, so they
+    cannot be forced to take the lock by changing consumers. They can be caught.
+    """
+    from packages.local_authority import require_no_bypassing_writer
+    _admit(store)
+    require_no_bypassing_writer(store, GATES)
+    os.chmod(store.path/'PRE_P3_READY.json', 0o600)
+    (store.path/'PRE_P3_READY.json').write_bytes(_approval(marker='installed-out-of-band'))
+    with pytest.raises(AuthorityHeld, match='changed outside the authority protocol'):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_a_stale_attestation_is_refused(store):
+    """An attestation from an earlier generation cannot vouch for the current store."""
+    from packages.local_authority import ATTESTATION_NAME, require_no_bypassing_writer
+    _admit(store)
+    stale = json.loads((store.path/ATTESTATION_NAME).read_bytes())
+    stale['generation'] -= 1
+    os.chmod(store.path/ATTESTATION_NAME, 0o600)
+    (store.path/ATTESTATION_NAME).write_bytes(canonical_json_bytes(stale) + b'\n')
+    with pytest.raises(AuthorityHeld, match='not current for this generation'):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_consuming_refuses_a_store_that_left_the_protocol(store):
+    """The bypass check guards admission itself, not only a separate helper."""
+    _admit(store)
+    assert _consume(store)['state'] == 'COMMITTED'
+    os.chmod(store.path/'P1_H_COMPLETE.json', 0o600)
+    (store.path/'P1_H_COMPLETE.json').write_bytes(_approval(marker='out-of-band'))
+    with pytest.raises(AuthorityHeld, match='outside the authority protocol'):
+        _consume(store)

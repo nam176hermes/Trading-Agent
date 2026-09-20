@@ -39,8 +39,13 @@ MAX_BUNDLE_BYTES = 4 * 1024 * 1024
 BUNDLE_MEMBERS = ('request.json', 'prerequisites.json', 'descriptor.json')
 
 
-class AuthorityHeld(Exception):
-    """Fail closed. There is no unlocked revalidation path to fall back to."""
+class AuthorityHeld(ValueError):
+    """Fail closed. There is no unlocked revalidation path to fall back to.
+
+    A ValueError deliberately: every existing consumer of the protected store already treats
+    ValueError as a safety block, so an admission refusal reaches those handlers instead of
+    escaping them as an unhandled exception.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +177,25 @@ class AuthorityStore:
         finally:
             os.close(fd)
 
+    # -- writer path -----------------------------------------------------
+
+    def replace_approval(self, gate: str, payload: bytes, gates: tuple[str, ...]) -> int:
+        """Install, replace or revoke one approval through the protocol.
+
+        This is the writer half of the contract. A writer that takes this path advances the
+        generation and refreshes the attestation in the same critical section, so consumers
+        see a coherent store. A writer that does not take it is caught by that attestation.
+        """
+        if gate not in gates:
+            raise AuthorityHeld(f'{gate} is not in the admitted gate set')
+        with self.locked():
+            generation = self._advance(self.generation())
+            _publish(self.path / f'{gate}.json', payload)
+            record = dict(schema_version=PROTOCOL_VERSION, issuer=self.issuer,
+                          generation=generation, store_digest=store_digest(self, gates))
+            _publish(self.path / ATTESTATION_NAME, canonical_json_bytes(record) + b'\n')
+            return generation
+
     # -- snapshot --------------------------------------------------------
 
     def snapshot(self, gates: tuple[str, ...]) -> Snapshot:
@@ -194,6 +218,63 @@ class AuthorityStore:
             receipts=[list(p) for p in receipts]))).hexdigest()
         return Snapshot(self.generation(), self.issuer, tuple(approvals), tuple(receipts),
                         prerequisite)
+
+
+ATTESTATION_NAME = 'store-attestation.json'
+
+
+def store_digest(store: 'AuthorityStore', gates: tuple[str, ...], read=None) -> str:
+    """Digest of every gate approval's exact bytes, in gate order.
+
+    `read` lets a caller supply the protected reader its own layer already authenticates
+    through, so the store is not read twice by two different mechanisms.
+    """
+    read = read or _protected_bytes
+    members = []
+    for gate in sorted(gates):
+        members.append([gate, hashlib.sha256(
+            read(store.path / f'{gate}.json')).hexdigest()])
+    return hashlib.sha256(canonical_json_bytes(
+        dict(issuer=store.issuer, approvals=members))).hexdigest()
+
+
+def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
+    """Publish what the store contains at the current generation.
+
+    This is what makes a bypassing writer detectable. The writers that install approvals are
+    root helpers outside this repository, so they cannot be made to take the lock by editing
+    consumers. What consumers can do is refuse when the bytes moved without the generation
+    moving with them, which is the observable signature of a write that skipped the protocol.
+    """
+    record = dict(schema_version=PROTOCOL_VERSION, issuer=store.issuer,
+                  generation=store.generation(), store_digest=store_digest(store, gates))
+    _publish(store.path / ATTESTATION_NAME, canonical_json_bytes(record) + b'\n')
+    return record
+
+
+def require_no_bypassing_writer(store: 'AuthorityStore', gates: tuple[str, ...],
+                                read=None) -> dict:
+    """Hold when the store changed outside the protocol. There is no unlocked fallback.
+
+    An absent attestation means the store has never been placed under the protocol, which is
+    indistinguishable from one that left it. Both are refused rather than admitted on trust.
+    """
+    read = read or _protected_bytes
+    try:
+        raw = read(store.path / ATTESTATION_NAME)
+    except (FileNotFoundError, OSError) as error:
+        raise AuthorityHeld(
+            'issuer store is not under the authority protocol; no unlocked revalidation') from error
+    record = json.loads(raw)
+    if record.get('schema_version') != PROTOCOL_VERSION or record.get('issuer') != store.issuer:
+        raise AuthorityHeld('store attestation does not belong to this issuer protocol')
+    generation = json.loads(read(store._generation_path)).get('generation', 0) \
+        if read is not _protected_bytes else store.generation()
+    if record.get('generation') != generation:
+        raise AuthorityHeld('store attestation is not current for this generation')
+    if record.get('store_digest') != store_digest(store, gates, read):
+        raise AuthorityHeld('issuer store changed outside the authority protocol')
+    return record
 
 
 def admission_token(*, action: str, gate: str, issuer: str, identity: dict, source: dict,
@@ -270,6 +351,7 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
         # One rename activates the whole bundle. Publishing each artifact separately would
         # expose a half-active state that a reader could consume.
         _publish(store._commit_path, canonical_json_bytes(record) + b'\n')
+        attest(store, gates)
         return record
 
 
@@ -307,6 +389,7 @@ def consume(store: AuthorityStore, *, action: str, gate: str, identity: dict, so
             raise AuthorityHeld('published admission is for a different identity or source')
         if record['boot_id'] != _boot_identity():
             raise AuthorityHeld('published admission is from a different boot')
+        require_no_bypassing_writer(store, gates)
         snapshot = store.snapshot(gates)
         if snapshot.generation != record['generation']:
             raise AuthorityHeld('authority generation moved after this admission was published')

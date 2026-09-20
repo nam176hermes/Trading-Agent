@@ -120,6 +120,8 @@ def read_local_pre_p3(root: Path) -> dict[str, QualificationReceipt]:
     """Fresh admission from fixed protected expectations, never a generated status."""
     from packages.pre_p3_provenance import _git, canonical_source_identity
     from packages.alpha_lifecycle.local_qualification import ProtectedQualificationStore
+    from packages.local_authority import AuthorityStore, require_no_bypassing_writer
+    from packages.runtime_release.config import read_protected_file_current
     if _git(root,'status','--porcelain'):
         raise ValueError('local qualification requires a clean source checkout')
     source = SourceIdentity.model_validate(canonical_source_identity(root))
@@ -128,6 +130,14 @@ def read_local_pre_p3(root: Path) -> dict[str, QualificationReceipt]:
     policy = hashlib.sha256((root/POLICY_PATH).read_bytes()).hexdigest()
     if any(binding.source != source or binding.policy_digest != policy for binding in profile.bindings):
         raise ValueError('local protected prerequisite source or policy differs')
+    # Every LOCAL consumer reaches the issuer store through here, so this is where a write
+    # that skipped the authority protocol has to be refused. Detection rather than
+    # prevention is the honest mechanism: the helpers that install approvals are root
+    # processes outside this repository and cannot be made to take the lock by editing a
+    # consumer, but a store whose bytes moved without its generation moving with them is
+    # observable, and there is no unlocked revalidation to fall back to.
+    require_no_bypassing_writer(AuthorityStore(profile.identity.issuer_identity),
+        LOCAL_PRE_P3_GATES, read=read_protected_file_current)
     store = ProtectedQualificationStore(_absolute(profile.store_root))
     validate_local_environment(root,profile.bindings[0].environment_ref,store=store)
     receipts = []

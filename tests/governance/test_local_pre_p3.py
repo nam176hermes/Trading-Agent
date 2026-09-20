@@ -163,7 +163,8 @@ def test_local_gate_producer_runs_real_p2_and_retains_readable_proof(tmp_path, m
 
 
 @pytest.mark.parametrize('fault',[None,'profile_swap','source_drift','revoked_child','environment',
-                                 'expired_child','replaced_child'])
+                                 'expired_child','replaced_child','bypassing_writer',
+                                 'absent_attestation'])
 def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, monkeypatch, fault):
     """Exercise the custody/DAG composition; each gate's semantics has owner tests."""
     import hashlib
@@ -207,9 +208,33 @@ def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, m
             revoked=False,authority=receipt['authority']))
     profile=dict(schema_version='local-pre-p3-profile-v1',identity=identity,store_root=str(store_root),bindings=bindings)
     checked=[]
+    # The store now carries the authority protocol's own records, and admission refuses a
+    # store whose approval bytes moved without its generation moving with them.
+    from packages.local_authority import PROTOCOL_VERSION
+    generation=7
+    def approval_bytes(gate):
+        return canonical_json_bytes(approvals[gate])+b'\n'
+    def attestation():
+        members=[[gate,hashlib.sha256(approval_bytes(gate)).hexdigest()]
+                 for gate in sorted(reader.LOCAL_PRE_P3_GATES)]
+        return dict(schema_version=PROTOCOL_VERSION,issuer='operator-a',generation=generation,
+            store_digest=hashlib.sha256(canonical_json_bytes(
+                dict(issuer='operator-a',approvals=members))).hexdigest())
     def protected(path,**kwargs):
         if path.parent==store_root and path.suffix=='.blob':
             return path.read_bytes(),(1,2)
+        if path.name=='generation.json':
+            return canonical_json_bytes(dict(schema_version=PROTOCOL_VERSION,
+                generation=generation,issuer='operator-a'))+b'\n',(1,2)
+        if path.name=='store-attestation.json':
+            if fault=='absent_attestation':
+                raise FileNotFoundError(str(path))
+            value=attestation()
+            if fault=='bypassing_writer':
+                # An approval installed without the protocol leaves the attestation
+                # describing bytes that are no longer there.
+                value=dict(value,store_digest='0'*64)
+            return canonical_json_bytes(value)+b'\n',(1,2)
         if path==reader.LOCAL_PRE_P3_PROFILE:
             value={**profile,'store_root':str(store_root.parent)} if checked and fault=='profile_swap' else profile
         else:
@@ -225,7 +250,9 @@ def test_local_admission_rechecks_protected_dag_after_semantic_readback(local, m
     monkeypatch.setattr(provenance,'canonical_source_identity',lambda *_:binding['source'])
     monkeypatch.setattr(provenance,'_git',lambda *_:' M source.py' if checked and fault=='source_drift' else '')
     monkeypatch.setattr(reader,'_validate_local_gate_proof',lambda receipt,**_:checked.append(receipt.binding.gate))
-    expected={'expired_child':'local qualification approval is not current',
+    expected={'bypassing_writer':'changed outside the authority protocol',
+              'absent_attestation':'not under the authority protocol',
+              'expired_child':'local qualification approval is not current',
               'replaced_child':'local prerequisite approval changed during admission',
               'revoked_child':'local qualification approval is revoked'}.get(fault)
     if fault:
