@@ -15,7 +15,7 @@ import pytest
 
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.local_authority import (
-    AuthorityHeld, AuthorityStore, BUNDLE_MEMBERS, admit, consume, recover)
+    AuthorityHeld, AuthorityStore, BUNDLE_MEMBERS, admit, consume, enrol, recover)
 
 GATES = ('P1_H_COMPLETE', 'PRE_P3_READY')
 IDENTITY = dict(issuer_kind='LOCAL', issuer_identity='operator-a',
@@ -44,6 +44,8 @@ def store(tmp_path, monkeypatch):
     for gate in GATES:
         (value.path/f'{gate}.json').write_bytes(_approval())
     monkeypatch.setattr('packages.local_authority._boot_identity', lambda: 'b'*36)
+    # Enrolment is explicit. Admission refuses a store nobody placed under the protocol.
+    enrol(value, GATES)
     return value
 
 
@@ -232,11 +234,24 @@ def test_a_writer_cannot_interleave_with_a_held_admission(store):
 # A writer that skips the protocol must be detected, not tolerated
 # ---------------------------------------------------------------------------
 
-def test_a_store_never_placed_under_the_protocol_is_refused(store):
-    """No attestation means no protocol, and there is no unlocked revalidation path."""
+def test_a_store_never_placed_under_the_protocol_is_refused(tmp_path, monkeypatch):
+    """No attestation means no protocol, and admission must not enrol one implicitly.
+
+    The fixture store is enrolled, so this builds an unenrolled one. Admission used to
+    advance the generation and attest afterwards, which stamped exactly this store valid.
+    """
     from packages.local_authority import require_no_bypassing_writer
+    root = tmp_path/'unenrolled'
+    (root/'operator-a').mkdir(parents=True)
+    bare = AuthorityStore('operator-a', root=root)
+    for gate in GATES:
+        (bare.path/f'{gate}.json').write_bytes(_approval())
+    monkeypatch.setattr('packages.local_authority._boot_identity', lambda: 'b'*36)
     with pytest.raises(AuthorityHeld, match='not under the authority protocol'):
-        require_no_bypassing_writer(store, GATES)
+        require_no_bypassing_writer(bare, GATES)
+    with pytest.raises(AuthorityHeld, match='not under the authority protocol'):
+        _admit(bare)
+    assert not (bare.path/'generation.json').exists(), 'a refused admission advanced the store'
 
 
 def test_a_write_that_skipped_the_lock_is_detected(store):

@@ -157,3 +157,37 @@ def test_capacity_gate_tracks_the_transport_not_the_operator(tmp_path, entry_cou
     with pytest.raises(ValueError) as raised:
         p3_startup.probe_p3_startup(closure, private_root=tmp_path)
     assert ('parser capacity' in str(raised.value)) is rejected
+
+
+# ---------------------------------------------------------------------------
+# The production spawn path must follow the transport too
+# ---------------------------------------------------------------------------
+
+def test_spawn_charges_only_the_targets_it_actually_seals():
+    """Spawn kept the v1 inventory in its directory, argv and descriptor budgets.
+
+    Startup was corrected first and spawn was not, so the production path still refused a
+    launch that needs a dozen descriptors whenever the inventory was larger than
+    RLIMIT_NOFILE. The seam is the same on both paths or it is not a seam.
+    """
+    import inspect
+
+    from services.job_worker import p3_spawn
+
+    source = inspect.getsource(p3_spawn.P3SpawnProvider._consume)
+    assert 'sealed_targets' in source
+    assert 'len(sealed_targets)+16' in source.replace(' ', '')
+    assert 'for target in sealed_targets' in source
+    # The transport decision has to be made before any budget that depends on it.
+    assert source.index('imaged = closure.image is not None') < source.index('sealed_targets')
+    assert 'BWRAP_PARSER_TOKEN_CAPACITY' in source
+
+
+def test_spawn_has_a_final_parser_token_guard():
+    """The exact count, after every argument has been added, on both paths."""
+    import inspect
+
+    from services.job_worker import p3_spawn
+
+    source = inspect.getsource(p3_spawn.P3SpawnProvider._consume)
+    assert 'len(argv)-1 > BWRAP_PARSER_TOKEN_CAPACITY' in source.replace('  ', ' ')

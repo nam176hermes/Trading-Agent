@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import resource
+import select
 import signal
 import stat
 import struct
@@ -653,6 +654,33 @@ def build_v2_closure(mount: Path, descriptor: dict, libraries: list[dict], inven
 # Operations
 # ---------------------------------------------------------------------------
 
+MAX_WORKER_OUTPUT_BYTES = 1024 * 1024
+
+
+def _read_bounded(descriptor: int, deadline: float) -> tuple[bytes, bool]:
+    """Read the worker's result under the deadline and an output cap.
+
+    An unbounded read meant the escalation below only ran after EOF, so a worker that hung
+    while holding the pipe open never reached its own deadline handler. Polling here is what
+    makes that handler reachable.
+    """
+    payload = bytearray()
+    poller = select.poll()
+    poller.register(descriptor, select.POLLIN)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return bytes(payload), True
+        if not poller.poll(min(remaining, 1.0) * 1000):
+            continue
+        block = os.read(descriptor, 1 << 16)
+        if not block:
+            return bytes(payload), False
+        payload += block
+        if len(payload) > MAX_WORKER_OUTPUT_BYTES:
+            return bytes(payload[:MAX_WORKER_OUTPUT_BYTES]), True
+
+
 def reap_with_escalation(child: int, deadline: float) -> dict:
     """Wait for the worker, then escalate. An unbounded wait is not a deadline.
 
@@ -825,11 +853,10 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
                     os.close(write)
                 os._exit(status)
             os.close(write)
-            payload = b''
-            while block := os.read(read, 1 << 16):
-                payload += block
+            payload, truncated = _read_bounded(read, deadline)
             os.close(read)
             observed = json.loads(payload) if payload else dict(error='worker produced no output')
+            observed['output_truncated'] = truncated
             reaped = reap_with_escalation(child, deadline)
             observed['worker_status'] = reaped['status']
             observed['worker_reaping'] = reaped
@@ -842,10 +869,18 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
             if observed.get('challenge') != expected_challenge:
                 raise TransportHeld('mount readback challenge did not match this generation')
         finally:
-            if _libc.umount(str(mount).encode()) != 0:
-                _libc.umount2(str(mount).encode(), MNT_DETACH)
-            fcntl.ioctl(loop_fd, LOOP_CLR_FD, 0)
-            os.close(loop_fd)
+            if locals().get('reaped', {}).get('reaped', True):
+                if _libc.umount(str(mount).encode()) != 0:
+                    _libc.umount2(str(mount).encode(), MNT_DETACH)
+                fcntl.ioctl(loop_fd, LOOP_CLR_FD, 0)
+                os.close(loop_fd)
+            else:
+                _durable_write(root / 'quarantine.json', canonical_json_bytes(dict(
+                    task=request['job_id'], state='UNREAPED_WORKER',
+                    loop_device=device, mount=str(mount),
+                    note='mount and loop deliberately retained; an unreaped worker may still '
+                         'hold them, and releasing them here would report a cleanup that did '
+                         'not happen')) + b'\n', mode=0o600)
     finally:
         os.close(image_fd)
         os.chmod(root, 0o700)
@@ -889,7 +924,11 @@ def command_cleanup(root: Path) -> dict:
             os.chmod(image, 0o600)
             image.unlink()
             removed.append('runtime.squashfs')
-    for name in ('image-descriptor.json', 'inventory.json', 'task.lock'):
+    # task.lock is deliberately absent from this list. Unlinking the entry while this
+    # controller still holds it lets another controller create a fresh lock file and enter
+    # the critical section while cleanup is still running, which is the one thing the lock
+    # exists to prevent. The lock is released by closing the descriptor, not by deletion.
+    for name in ('image-descriptor.json', 'inventory.json'):
         path = root / name
         if path.exists() and not retained:
             os.chmod(path, 0o600)
@@ -901,10 +940,17 @@ def command_cleanup(root: Path) -> dict:
         record_path.unlink(missing_ok=True)
         removed.append('quarantine.json')
     for directory in (root / 'mnt', root / 'worker', root):
+        # The task root keeps its lock entry, so it is never empty and never removed here.
+        # Reclaiming it belongs to a recovery path that can first establish no owner holds it.
+        if directory == root:
+            continue
         if directory.exists() and not any(directory.iterdir()):
             directory.rmdir()
             removed.append(str(directory))
-    return dict(quarantined=False, removed=removed, root_exists=root.exists())
+    # A retained artifact means the task is not finished with, so the outcome is quarantine
+    # rather than a clean cleanup. Reporting quarantined=False beside a RETAINED line was
+    # contradictory.
+    return dict(quarantined=retained, removed=removed, root_exists=root.exists())
 
 
 def main(argv: list[str]) -> int:

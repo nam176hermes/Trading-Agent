@@ -33,7 +33,7 @@ from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.sandbox_policy import (
-    BWRAP_CAPABILITIES, BWRAP_VERSION, MAX_ARGV_BYTES,
+    BWRAP_CAPABILITIES, BWRAP_VERSION, BWRAP_PARSER_TOKEN_CAPACITY, MAX_ARGV_BYTES,
     MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES, SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256,
     SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, DRIVER_ENTRY, ROOT_READONLY_ARGS,
     RO_FILE_FLAG, RO_PATH_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG,
@@ -326,14 +326,24 @@ class P3SpawnProvider:
             sandbox_fd = _sealed_memfd('p3-sandbox',raw,mode=0o500)
             descriptors.append(sandbox_fd)
             argv = [f'/proc/self/fd/{sandbox_fd}',*SANDBOX_ARGS,*FILESYSTEM_ARGS]
+            imaged = closure.image is not None
+            # Only the targets this transport actually seals cost a descriptor, an argument
+            # or a parent directory. On v2 the image supplies the release and Python trees,
+            # and pre-creating their directories would shadow the mount as well as charging
+            # a budget the launch never spends.
+            sealed_targets = tuple(t for t in targets if not (imaged and (
+                t.is_relative_to(_RELEASE) or t.is_relative_to(_PYTHON))))
             directories = {PurePosixPath('/p3'),PurePosixPath('/p3/bin'),PurePosixPath('/p3/inputs'),
                 PurePosixPath('/p3/store'),PurePosixPath('/p3/output')}
-            for target in targets:
+            for target in sealed_targets:
                 directories.update(p for p in target.parents if p != PurePosixPath('/'))
             soft,_ = resource.getrlimit(resource.RLIMIT_NOFILE)
-            if (sum(len(str(t).encode())+80 for t in targets)+sum(len(str(p).encode())+12 for p in directories)+8192 > MAX_ARGV_BYTES
-                or (soft != resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(targets)+16 >= soft)):
+            if (sum(len(str(t).encode())+80 for t in sealed_targets)+sum(len(str(p).encode())+12 for p in directories)+8192 > MAX_ARGV_BYTES
+                or (soft != resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(sealed_targets)+16 >= soft)):
                 raise ValueError('P3 closure exceeds argv or descriptor limits')
+            lower_bound = (6 if imaged else 5*len(sealed_targets))+2*len(directories)+len(SANDBOX_ARGS)+len(FILESYSTEM_ARGS)
+            if lower_bound > BWRAP_PARSER_TOKEN_CAPACITY:
+                raise ValueError('P3 closure exceeds the pinned sandbox parser capacity')
             for directory in sorted(directories,key=lambda p:(len(p.parts),str(p))):
                 argv.extend(('--dir',str(directory)))
             # Transport seam. Every closure file is read back and verified on both paths;
@@ -343,7 +353,6 @@ class P3SpawnProvider:
             # image mount and then delivers the two roots as aggregate binds, so the file
             # count leaves the token budget entirely. System libraries stay sealed per file
             # on both paths; they are not in the image and must not widen to a directory.
-            imaged = closure.image is not None
             for mount in closure.mounts:
                 if (not mount.target.is_absolute()
                     or '..' in mount.target.parts or mount.mode not in {0o400,0o500,0o444,0o555}
@@ -407,6 +416,8 @@ class P3SpawnProvider:
                 '--sandbox-policy-digest',environment.sandbox_policy_digest,'--logical-trial-id',payload.logical_trial_id,
                 '--job-id',job.job_id,'--output','/p3/output','--sandbox','/p3/bin/bwrap',
                 '--runtime-mounts-ref','/p3/inputs/runtime-mounts.json'))
+            if len(argv)-1 > BWRAP_PARSER_TOKEN_CAPACITY:
+                raise ValueError('P3 spawn argument count exceeds the pinned sandbox parser capacity')
             if time.monotonic_ns() >= deadline or sum(len(a.encode())+1 for a in argv) > MAX_ARGV_BYTES:
                 raise ValueError('P3 capability expired during verification')
             self._inputs(job, closure)

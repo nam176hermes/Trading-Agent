@@ -238,6 +238,16 @@ def store_digest(store: 'AuthorityStore', gates: tuple[str, ...], read=None) -> 
         dict(issuer=store.issuer, approvals=members))).hexdigest()
 
 
+def enrol(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
+    """Place a store under the protocol for the first time. A deliberate act, not a default.
+
+    Admission never does this implicitly: a store nobody enrolled is indistinguishable from
+    one a bypassing writer left, and both are refused.
+    """
+    with store.locked():
+        return attest(store, gates)
+
+
 def attest(store: 'AuthorityStore', gates: tuple[str, ...]) -> dict:
     """Publish what the store contains at the current generation.
 
@@ -316,6 +326,11 @@ def admit(store: AuthorityStore, *, action: str, gate: str, gates: tuple[str, ..
     if proposal_identity != identity:
         raise AuthorityHeld('proposal identity differs from the admitted prerequisite identity')
     with store.locked():
+        # Refuse a store that is not under the protocol before touching the generation. The
+        # earlier order advanced first and re-attested after publishing, so a store that had
+        # never been enrolled, or that a writer had changed out of band, was stamped valid by
+        # the very call that should have held. Enrolment is a separate deliberate act.
+        require_no_bypassing_writer(store, gates)
         # Advance first, then snapshot: the admission is recorded at a generation, and the
         # snapshot must be of the store as it stands at that same generation. Snapshotting
         # first embeds the previous generation and no consumer could ever match it.
