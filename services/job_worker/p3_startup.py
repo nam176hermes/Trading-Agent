@@ -7,6 +7,7 @@ from pathlib import Path,PurePosixPath
 import re
 import resource
 import selectors
+import fcntl
 import signal
 import subprocess
 import time
@@ -28,10 +29,15 @@ from .p3_output import _identity
 
 _PROGRAM='''
 import errno,os,socket,sys
-for descriptor in map(int,sys.argv[1:]):
- try: os.fstat(descriptor)
- except OSError as error: assert error.errno==errno.EBADF
- else: raise AssertionError('transport descriptor survived exec')
+# Assert on what each descriptor refers to, not on its number. Numbers are reused: the
+# sealed-file transport happened to allocate high ones, but a transport that seals only a
+# handful leaves low numbers free for the sandboxed interpreter to reopen for itself, and a
+# numeric test then reports a leak that did not happen.
+for entry in os.listdir('/proc/self/fd'):
+ try: link=os.readlink('/proc/self/fd/'+entry)
+ except OSError: continue
+ if 'memfd:p3-' in link or '/p3-transport/' in link:
+  raise AssertionError('transport descriptor survived exec: '+link)
 for create in (socket.socket,socket.socketpair):
  try: create()
  except OSError as error: assert error.errno==errno.EPERM
@@ -46,12 +52,34 @@ print('P3_STARTUP_PROBE_PASS')
 '''
 
 
-def _probe_limits() -> None:
-    for kind,value in ((resource.RLIMIT_CPU,5),(resource.RLIMIT_AS,2147483648),(resource.RLIMIT_FSIZE,65536)):
+def _close_on_exec(descriptors: tuple[int, ...]) -> None:
+    """Mark descriptors close-on-exec in the child, after fork and before exec.
+
+    The sandbox binary is executed as /proc/self/fd/N so that the bytes that run are the
+    bytes that were verified. subprocess must therefore inherit that descriptor, which
+    clears close-on-exec, and bwrap does not close it, so it reaches the sandboxed process.
+    execve resolves and loads the image before closing close-on-exec descriptors, so
+    restoring the flag here keeps verified-descriptor execution and still closes the tool.
+    """
+    for descriptor in descriptors:
+        fcntl.fcntl(descriptor, fcntl.F_SETFD,
+                    fcntl.fcntl(descriptor, fcntl.F_GETFD) | fcntl.FD_CLOEXEC)
+
+
+def _probe_limits(file_size: int = 65536) -> None:
+    """File size must cover the largest sealed payload bwrap materialises.
+
+    --ro-bind-data writes each sealed file's content through the sandbox, so a fixed 64 KiB
+    budget only ever suited a synthetic closure: one real shared library is larger than that
+    and the launch fails with 'Can't write data to file ... File too large'.
+    """
+    for kind,value in ((resource.RLIMIT_CPU,5),(resource.RLIMIT_AS,2147483648),
+                       (resource.RLIMIT_FSIZE,max(65536,file_size))):
         resource.setrlimit(kind,(value,value))
 
 
-def _run_probe(argv: tuple[str, ...], passed: tuple[int, ...]) -> tuple[int | None, bytes, bytes]:
+def _run_probe(argv: tuple[str, ...], passed: tuple[int, ...],
+    file_size: int = 65536, cloexec: tuple[int, ...] = ()) -> tuple[int | None, bytes, bytes]:
     """After Popen returns, allow 5s execution and 2s reaping; 64 KiB per stream.
 
     An enclosing host startup deadline must also cover preexec/exec and I/O.
@@ -60,7 +88,8 @@ def _run_probe(argv: tuple[str, ...], passed: tuple[int, ...]) -> tuple[int | No
         raise ValueError('P3 startup probe requires exclusive child reaping')
     process=subprocess.Popen(argv,cwd='/',env={},stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True,pass_fds=passed,
-        start_new_session=True,preexec_fn=_probe_limits)
+        start_new_session=True,
+        preexec_fn=lambda:(_probe_limits(file_size),_close_on_exec(cloexec)))
     captured={'stdout':bytearray(),'stderr':bytearray()}
     deadline=time.monotonic()+5
     try:
@@ -187,8 +216,14 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
         sandbox_sha256=sandbox.executable_sha256,sandbox_policy_sha256=sandbox.profile_sha256))
     if fingerprint!=closure.closure_sha256:
         raise ValueError('P3 startup closure digest differs')
+    # Count the descriptors this transport will actually open. On v1 that is one per closure
+    # file; on v2 the image-backed files arrive through the mount and only the external
+    # libraries are sealed, so charging the full inventory would refuse a launch that needs
+    # a dozen descriptors.
+    sealed=tuple(t for t in targets
+                 if not (imaged and (t.is_relative_to(_RELEASE) or t.is_relative_to(_PYTHON))))
     soft,_=resource.getrlimit(resource.RLIMIT_NOFILE)
-    if soft!=resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(targets)+20>=soft:
+    if soft!=resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(sealed)+20>=soft:
         raise ValueError('P3 startup descriptor bound is insufficient')
     descriptors=[]
     started=time.monotonic()
@@ -197,6 +232,7 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
             raw=_file_bytes(sandbox.executable,sandbox.identity,sandbox.executable.stat(follow_symlinks=False).st_size,
                 sandbox.mode,sandbox.executable_sha256)
             fd=_sealed_memfd('p3-startup-bwrap',raw,mode=0o500);descriptors.append(fd)
+            fd_sandbox=fd
             executable=f'/proc/self/fd/{fd}'
             code,version,stderr=_run_probe((executable,'--version'),(fd,))
             if code or stderr or version!=BWRAP_VERSION.encode()+b'\n':
@@ -207,6 +243,8 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
             argv=[executable,*SANDBOX_ARGS,*FILESYSTEM_ARGS]
             directories={PurePosixPath('/p3'),PurePosixPath('/p3/store'),PurePosixPath('/p3/output')}
             for target in targets:
+                if imaged and (target.is_relative_to(_RELEASE) or target.is_relative_to(_PYTHON)):
+                    continue      # the mount supplies this tree, and a --dir would shadow it
                 directories.update(p for p in target.parents if p!=PurePosixPath('/'))
             for directory in sorted(directories,key=lambda p:(len(p.parts),str(p))):
                 argv.extend(('--dir',str(directory)))
@@ -230,10 +268,17 @@ def probe_p3_startup(closure: CompleteP3Closure, *, private_root: Path) -> dict[
                 raise ValueError('P3 startup argument bound exceeded')
             if len(argv)-1>BWRAP_PARSER_TOKEN_CAPACITY:
                 raise ValueError('P3 startup argument count exceeds the pinned sandbox parser capacity')
-            code,stdout,stderr=_run_probe(tuple(argv),tuple(descriptors))
+            sealed_bytes=max((m.size for m in closure.mounts
+                if not (imaged and (m.target.is_relative_to(_RELEASE)
+                                    or m.target.is_relative_to(_PYTHON)))),default=0)
+            code,stdout,stderr=_run_probe(tuple(argv),tuple(descriptors),sealed_bytes+65536,(fd_sandbox,))
             if (code or stdout!=b'P3_STARTUP_PROBE_PASS\n' or stderr
                 or os.listdir(inputs.descriptor) or os.listdir(output.descriptor)!=['probe-output']):
-                raise ValueError('P3 startup kernel/transport probe failed')
+                # Report what the probe actually produced. The historical message named no
+                # cause, so a transport failure and a kernel failure looked identical.
+                raise ValueError('P3 startup kernel/transport probe failed: '
+                    f'exit={code} stdout={stdout[:400]!r} stderr={stderr[:400]!r} '
+                    f'argv_tokens={len(argv)-1}')
             _read_probe_output(output)
         finally:
             for descriptor in reversed(descriptors):

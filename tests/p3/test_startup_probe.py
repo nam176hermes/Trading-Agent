@@ -46,8 +46,10 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
     root=closure.python_root.parent/'probe-parent';root.mkdir(mode=0o700)
     preserved=root/'keep';preserved.write_bytes(b'user data')
     calls=[]
-    def execute(argv,passed):
-        calls.append((argv,passed))
+    def execute(argv,passed,file_size=65536,cloexec=()):
+        # The launch call now also carries the sealed-payload file-size budget and the
+        # descriptors to close at exec, so the fake records them rather than refusing them.
+        calls.append((argv,passed,file_size,cloexec))
         assert argv[0]==f'/proc/self/fd/{passed[0]}'
         assert all(not os.get_inheritable(fd) for fd in passed)
         if argv[-1]=='--version':
