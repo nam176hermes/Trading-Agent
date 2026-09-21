@@ -742,3 +742,62 @@ def test_an_unreadable_claim_stops_everything_but_inspection_and_release(tmp_pat
             transport.require_task_claim(root, operation)
     for operation in ('inspect', 'cleanup'):
         assert transport.require_task_claim(root, operation) is None
+
+
+# ---------------------------------------------------------------------------
+# B3.2 The library snapshot comes from the seal, not from a second read
+# ---------------------------------------------------------------------------
+
+def test_a_library_changed_after_sealing_does_not_reach_the_snapshot(tmp_path, monkeypatch):
+    """The race the previous implementation detected but did not exclude.
+
+    It sealed the library, closed the seal, read the host path a second time and compared the
+    two digests. A writer between those reads was caught, so nothing wrong was ever admitted --
+    but the bytes that landed in the snapshot came from the second read, and the sealed copy
+    that could not be changed was thrown away. Here the host file is rewritten in exactly that
+    window. The snapshot has to carry the sealed bytes, and the run has to succeed, because
+    nothing raced anything: there is no second read.
+    """
+    original, substituted = b'\x7fELF' + b'original' * 64, b'\x7fELF' + b'SUBSTITUTED' * 64
+    library = tmp_path/'libexample.so.1'
+    library.write_bytes(original)
+    snapshots = tmp_path/'libraries'
+    snapshots.mkdir()
+
+    real_seal = transport.seal_library
+
+    def seal_then_overwrite(path, expected_sha256=None):
+        fd, record = real_seal(path, expected_sha256)
+        # The window. Same path, same name, different bytes, after the seal was taken.
+        Path(path).write_bytes(substituted)
+        return fd, record
+
+    monkeypatch.setattr(transport, 'seal_library', seal_then_overwrite)
+    monkeypatch.setattr(transport.os, 'chown', lambda *a, **k: None)
+    libraries = transport._seal_external_libraries([library], snapshots)
+
+    assert len(libraries) == 1
+    snapshot = Path(libraries[0]['source'])
+    assert snapshot.read_bytes() == original
+    assert snapshot.read_bytes() != substituted
+    assert library.read_bytes() == substituted, 'the host file really was changed'
+    assert libraries[0]['sha256'] == hashlib.sha256(original).hexdigest()
+
+
+def test_the_snapshot_digest_is_the_sealed_digest_not_the_host_path(tmp_path, monkeypatch):
+    # The record a consumer binds to must describe the sealed bytes. If it described the host
+    # path, a substitution would travel under an accepted digest.
+    payload = b'\x7fELF' + b'pinned' * 100
+    library = tmp_path/'libpinned.so.2'
+    library.write_bytes(payload)
+    snapshots = tmp_path/'libraries'
+    snapshots.mkdir()
+    monkeypatch.setattr(transport.os, 'chown', lambda *a, **k: None)
+    libraries = transport._seal_external_libraries([library], snapshots)
+    record = libraries[0]
+    assert record['sha256'] == hashlib.sha256(payload).hexdigest()
+    assert record['size_bytes'] == len(payload)
+    snapshot = Path(record['source'])
+    assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == record['sha256']
+    # Provenance, not authority: the snapshot is a task-owned file, not the host library.
+    assert snapshot != library and snapshots in snapshot.parents
