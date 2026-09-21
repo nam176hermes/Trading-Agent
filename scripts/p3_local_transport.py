@@ -254,36 +254,34 @@ def open_task_root(digest: str) -> Path:
 
 
 def require_task_claim(root: Path, operation: str) -> dict | None:
-    """The ownership that spans the image lifetime, checked before the operation runs.
+    """A claimed task root is a recovery subject, never a session to resume.
 
-    B3.1 asks for the lock to be held across the whole prepare-to-run lifetime rather than one
-    operation. `flock` cannot express that on its own and saying otherwise would be false: it
-    lives on an open descriptor, so it is released when the invocation exits, and a prepared
-    image outlives the call that built it by design. So the two are separated. The lock
-    serialises concurrent invocations; this durable claim is what says the task is owned
-    between them, written by `prepare` and released only by `cleanup`.
+    B3.1 is explicit: "A prepared session cannot outlive its owner unless a separately
+    specified handoff transfers both ownership and descriptors; v2 does not implement such a
+    handoff." An earlier version of this function did the opposite -- it carried ownership
+    across invocations so a later controller could probe an image some earlier one had left,
+    and its docstring called that "what has to survive between them". That is the handoff the
+    contract excludes, and formalising it made the deviation harder to see rather than fixing
+    it.
 
-    A claim from a previous boot is refused rather than reused. Everything it records -- the
-    loop device, the mount, the owning process -- belongs to a boot that is gone, so there is
-    nothing left for a later operation to take ownership of.
+    So a claim is never continued. `prepare` and `probe` each open their own session and build
+    their own image under their own lock, and a claim they did not write belongs to a session
+    that is over. What the contract does allow a later invocation to do with it is look at it
+    and release it, which is `inspect` and `cleanup`.
     """
     path = root / 'quarantine.json'
     if not path.exists():
-        if operation in ('probe', 'run'):
-            raise TransportHeld(f'{operation} requires a prepared image; this task holds no claim')
         return None
+    if operation not in ('inspect', 'cleanup'):
+        raise TransportHeld(
+            'this task root is already claimed; a prepared session cannot be resumed, so '
+            'inspect it or release it with cleanup before opening a new one')
     try:
-        claim = json.loads(path.read_bytes())
-    except (OSError, ValueError) as error:
+        return json.loads(path.read_bytes())
+    except (OSError, ValueError):
         # `cleanup` already treats an unreadable record as a reason to retain rather than
-        # remove, and `inspect` exists to look at exactly this. Everything else stops.
-        if operation not in ('inspect', 'cleanup'):
-            raise TransportHeld('this task holds an unreadable claim') from error
+        # remove, and `inspect` exists to look at exactly this.
         return None
-    if claim.get('boot_id') != _host_identity()[1] and operation not in ('inspect', 'cleanup'):
-        raise TransportHeld('this task is claimed by a previous boot; '
-                            'release it with cleanup before preparing again')
-    return claim
 
 
 class TaskLock:
@@ -1308,7 +1306,7 @@ def _seal_external_libraries(sources: list[Path], snapshots: Path) -> list[dict]
     return libraries
 
 
-def command_prepare(request: dict, root: Path, deadline: float) -> dict:
+def _prepare_image(request: dict, root: Path, deadline: float) -> dict:
     """Build the image, then publish its descriptor durably before anything consumes it."""
     stage = Path(request['stage'])
     uid, gid = request['worker_uid'], request['worker_gid']
@@ -1395,17 +1393,71 @@ def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     summary['inventory'] = dict(entry_count=inventory['entry_count'],
                                 total_bytes=inventory['total_bytes'],
                                 directory_count=inventory['directory_count'])
-    return summary
+    return dict(summary=summary, descriptor=descriptor, inventory=inventory)
+
+
+def command_prepare(request: dict, root: Path, deadline: float) -> dict:
+    """Build the image and stop. The session ends with this process.
+
+    Building without running is admitted because a build is worth inspecting on its own, but
+    what it leaves behind is not a session anyone can pick up: the next `probe` builds its own
+    image under its own lock. An image left here is a recovery subject for `inspect` and
+    `cleanup`, which is the only thing B3.1 lets a later invocation do with it.
+    """
+    return _prepare_image(request, root, deadline)['summary']
 
 
 def command_probe(request: dict, root: Path, deadline: float) -> dict:
-    """Mount the image and run the unmodified startup probe as the worker.
+    """Build, mount, launch, reap and release in one lock hold.
+
+    B3.1: "No unlocked gap between prepare and run." The two used to be separate invocations,
+    so the lock was released in between and the image was picked up by a second controller
+    reading the descriptor off disk. That is the handoff the contract says v2 does not
+    implement, and this closes it by never releasing the lock in the first place.
+    """
+    prepared = _prepare_image(request, root, deadline)
+    session = run_session(request, root, deadline,
+                          prepared['descriptor'], prepared['inventory'])
+    session['prepared'] = prepared['summary']
+    return session
+
+
+def command_run(request: dict, root: Path, deadline: float) -> dict:
+    """Refused here, and the reason is not that it is unwritten.
+
+    `run` launches the admitted campaign driver, and the policy pins exactly what that is:
+    DRIVER_ENTRY execs `run_p3_driver_entry.py`, which applies the admitted bounds and execs
+    `run_p3_alpha_campaign.py`. What the CLI cannot supply is the authority around it.
+    `P3SpawnProvider` requires a ClaimedJob of type ALPHA_CAMPAIGN carrying an unexpired lease,
+    an AlphaCampaignPayload whose operation is one of the admitted set, a WorkerRepository
+    against the protected job store, and worker runtime authority from systemd credentials.
+    Those come from `services/job_worker/p3_official.py`, which reads an enqueued job and the
+    protected official profile.
+
+    A controller invoked from a command line holds none of that, and manufacturing a claim or
+    a lease to satisfy the signature would be fabricating official research authority rather
+    than exercising it. So the session owner for `run` is the job worker, not this process, and
+    the honest thing here is to say so and stop.
+    """
+    raise TransportHeld(
+        'run requires a session owner holding an ALPHA_CAMPAIGN claim with a live lease, the '
+        'protected official profile and worker runtime authority; the transport controller is '
+        'not that owner and will not fabricate one')
+
+
+def run_session(request: dict, root: Path, deadline: float,
+                descriptor: dict, inventory: dict) -> dict:
+    """Mount the image this session just built and run the startup probe as the worker.
 
     This is the acceptance the whole transport exists for: the complete closure reaching an
     actual bubblewrap launch instead of being refused at the parser's token capacity.
+
+    The descriptor and inventory are handed in by the prepare that ran moments ago in this
+    same process, under this same lock. They used to be read back off disk, which is what made
+    a probe look like something you could run against an image some earlier, now-dead
+    controller had left behind. B3.1 says a prepared session cannot outlive its owner and that
+    v2 implements no handoff, so there is no such thing to read back.
     """
-    descriptor = json.loads((root / 'image-descriptor.json').read_bytes())
-    inventory = json.loads((root / 'inventory.json').read_bytes())
     # Load the launcher and every model the closure needs while still privileged. The
     # worker cannot traverse the source tree after dropping to its own uid, and importing
     # application code before the drop is also the order the contract requires.
@@ -1649,12 +1701,14 @@ def main(argv: list[str]) -> int:
                 result = command_prepare(request, root, deadline)
             elif operation == 'probe':
                 result = command_probe(request, root, deadline)
+            elif operation == 'run':
+                result = command_run(request, root, deadline)
             elif operation == 'inspect':
                 result = command_inspect(root)
             elif operation == 'cleanup':
                 result = command_cleanup(root)
             else:
-                raise TransportHeld(f'operation {operation} is accepted but not implemented')
+                raise TransportHeld(f'operation {operation} is not in the accepted set')
     except TransportHeld as held:
         print(json.dumps(dict(status='HELD', reason=str(held))))
         return 1

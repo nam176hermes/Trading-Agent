@@ -685,63 +685,68 @@ def test_a_stage_under_a_private_home_is_refused_for_another_identity(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# B3.1/B3.6 Ownership that survives between invocations
+# B3.1 A prepared session cannot outlive its owner
 # ---------------------------------------------------------------------------
+#
+# The contract is explicit that v2 implements no handoff, so a claim is never continued. An
+# earlier version of these tests asserted the opposite -- that a claim from this boot admitted
+# probe and run -- which held the handoff in place rather than catching it.
+
 
 def _claim(tmp_path, **fields):
     root = tmp_path/'task'
-    root.mkdir(exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     (root/'quarantine.json').write_bytes(
         transport.canonical_json_bytes(dict(task='job', state='PREPARED', **fields)) + b'\n')
     return root
 
 
-def test_an_unclaimed_task_cannot_be_probed_or_run(tmp_path):
-    # The image is what `probe` and `run` operate on, and the claim is what says one exists.
+def test_an_unclaimed_task_root_admits_every_operation(tmp_path):
+    # Nothing to resume and nothing to refuse: prepare and probe each build their own image.
     root = tmp_path/'task'
     root.mkdir()
-    for operation in ('probe', 'run'):
-        with pytest.raises(TransportHeld, match='holds no claim'):
-            transport.require_task_claim(root, operation)
-
-
-def test_an_unclaimed_task_may_still_be_prepared_inspected_or_cleaned(tmp_path):
-    root = tmp_path/'task'
-    root.mkdir()
-    for operation in ('prepare', 'inspect', 'cleanup'):
+    for operation in ('prepare', 'probe', 'run', 'inspect', 'cleanup'):
         assert transport.require_task_claim(root, operation) is None
 
 
-def test_a_claim_from_a_previous_boot_is_not_reused(tmp_path):
-    # Its loop device, its mount and its owning process all belong to a boot that is gone, so
-    # there is nothing left for a later operation to take ownership of.
-    root = _claim(tmp_path, boot_id='0' * 36)
+def test_a_claimed_task_root_refuses_a_new_session(tmp_path):
+    root = _claim(tmp_path, boot_id=transport._host_identity()[1])
     for operation in ('prepare', 'probe', 'run'):
-        with pytest.raises(TransportHeld, match='claimed by a previous boot'):
+        with pytest.raises(TransportHeld, match='cannot be resumed'):
             transport.require_task_claim(root, operation)
 
 
-def test_a_claim_from_a_previous_boot_can_still_be_inspected_and_released(tmp_path):
+def test_a_claim_from_this_boot_is_refused_exactly_like_one_from_another(tmp_path):
+    # The owner being on this boot is not what makes a session resumable. Nothing does.
+    here = _claim(tmp_path/'a', boot_id=transport._host_identity()[1])
+    there = _claim(tmp_path/'b', boot_id='0' * 36)
+    for root in (here, there):
+        with pytest.raises(TransportHeld, match='cannot be resumed'):
+            transport.require_task_claim(root, 'probe')
+
+
+def test_a_claim_can_always_be_inspected_and_released(tmp_path):
     root = _claim(tmp_path, boot_id='0' * 36)
     for operation in ('inspect', 'cleanup'):
         assert transport.require_task_claim(root, operation)['boot_id'] == '0' * 36
 
 
-def test_a_claim_from_this_boot_admits_the_operations_that_use_the_image(tmp_path):
-    root = _claim(tmp_path, boot_id=transport._host_identity()[1])
-    for operation in ('probe', 'run', 'inspect', 'cleanup'):
-        assert transport.require_task_claim(root, operation) is not None
-
-
-def test_an_unreadable_claim_stops_everything_but_inspection_and_release(tmp_path):
+def test_an_unreadable_claim_still_refuses_a_new_session(tmp_path):
     root = tmp_path/'task'
     root.mkdir()
     (root/'quarantine.json').write_bytes(b'{ this is not json')
     for operation in ('prepare', 'probe', 'run'):
-        with pytest.raises(TransportHeld, match='unreadable claim'):
+        with pytest.raises(TransportHeld, match='cannot be resumed'):
             transport.require_task_claim(root, operation)
     for operation in ('inspect', 'cleanup'):
         assert transport.require_task_claim(root, operation) is None
+
+
+def test_run_refuses_because_the_controller_is_not_the_session_owner(tmp_path):
+    # Not "unimplemented". The policy pins the driver entry; what a command line cannot supply
+    # is the campaign claim, the live lease and the worker runtime authority around it.
+    with pytest.raises(TransportHeld, match='not that owner and will not fabricate one'):
+        transport.command_run({'job_id': 'job'}, tmp_path, 0.0)
 
 
 # ---------------------------------------------------------------------------
