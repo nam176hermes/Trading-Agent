@@ -559,3 +559,81 @@ def test_an_empty_writer_transaction_is_refused(tmp_path):
     with pytest.raises(AuthorityHeld, match='at least one approval'):
         value.replace_approvals({}, GATES)
     assert value.generation() == 0
+
+
+# -- the writer transaction under interruption ------------------------------
+#
+# Several renames are not a transaction. What the protocol actually promises is that a
+# consumer refuses any state the writer did not finish, so an interruption is visible rather
+# than silently half-applied.
+
+
+def _crash_after(monkeypatch, calls):
+    """Let `_publish` run `calls` times, then fail the way a killed process would."""
+    import packages.local_authority as authority
+    real = authority._publish
+    remaining = {'left': calls}
+
+    def publish(path, payload, mode=0o444):
+        if remaining['left'] <= 0:
+            raise OSError('writer interrupted')
+        remaining['left'] -= 1
+        return real(path, payload, mode)
+
+    monkeypatch.setattr(authority, '_publish', publish)
+
+
+def test_a_writer_killed_after_the_generation_moved_is_refused(store, monkeypatch):
+    # The generation advance is itself a publish. Failing immediately after it leaves the
+    # store one generation ahead of the approvals it describes.
+    _crash_after(monkeypatch, 1)
+    with pytest.raises(OSError):
+        store.replace_approval('PRE_P3_READY', _approval(marker='second'), GATES)
+    monkeypatch.undo()
+    with pytest.raises(AuthorityHeld, match='not current for this generation'):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_a_writer_killed_between_approvals_is_refused(store, monkeypatch):
+    # Two gates, one advance: fail after the advance and the first approval so the store
+    # holds a mixture of the old and the new.
+    _crash_after(monkeypatch, 2)
+    with pytest.raises(OSError):
+        store.replace_approvals({gate: _approval(marker='second') for gate in GATES}, GATES)
+    monkeypatch.undo()
+    with pytest.raises(AuthorityHeld):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_a_writer_killed_before_the_attestation_is_refused(store, monkeypatch):
+    # Everything is written except the statement that says so. The attestation is what a
+    # consumer reads, so an absent one is an unfinished write, not a cosmetic gap.
+    _crash_after(monkeypatch, 3)
+    with pytest.raises(OSError):
+        store.replace_approvals({gate: _approval(marker='second') for gate in GATES}, GATES)
+    monkeypatch.undo()
+    with pytest.raises(AuthorityHeld, match='not current for this generation'):
+        require_no_bypassing_writer(store, GATES)
+
+
+def test_an_interrupted_writer_is_repaired_by_a_new_transaction_not_by_hand(store, monkeypatch):
+    # The repair is another replacement through the same protocol. Editing the generation or
+    # putting the old approval back would be the writer deciding its own history.
+    _crash_after(monkeypatch, 1)
+    with pytest.raises(OSError):
+        store.replace_approval('PRE_P3_READY', _approval(marker='second'), GATES)
+    monkeypatch.undo()
+    interrupted = store.generation()
+    generation = store.replace_approvals({gate: _approval(marker='third') for gate in GATES},
+                                         GATES)
+    record = require_no_bypassing_writer(store, GATES)
+    assert record['generation'] == generation
+    # The interrupted attempt spent its generation and keeps it. The repair takes the next
+    # one rather than reusing or rewinding it, so the failure stays visible in the counter.
+    assert generation == interrupted + 1
+
+
+# Concurrency between a writer and a held admission is already covered by
+# `test_a_writer_cannot_interleave_with_a_held_admission`, which uses a real second process.
+# Attempting it in-process would deadlock on the store's own lock rather than test it: flock
+# on a second descriptor of the same file blocks the holder against itself.

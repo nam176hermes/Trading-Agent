@@ -31,8 +31,9 @@ import struct
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -48,6 +49,9 @@ OPERATIONS = ('prepare', 'probe', 'run', 'inspect', 'cleanup')
 TASK_PARENT = Path('/run/trading-agent-local/p3-transport')
 BUILD_PARENT = Path('/run/trading-agent-local/p3-transport-build')
 REQUEST_PARENT = Path('/etc/trading-agent/local-p3-transport')
+# The issuer store the LOCAL runtime profile is installed into, owned by the authority
+# protocol. Named here so the controller reads the same place the installer writes.
+STORE_ROOT = Path('/etc/trading-agent/local-qualification')
 
 # The builder's own identity, reserved for it and shared with no other role. It is resolved by
 # name rather than by a number in the request, because a uid a caller could choose is not a
@@ -76,6 +80,9 @@ BUILDER_ADDRESS_SPACE = 2 * 1024**3
 BUILDER_FILE_SIZE = MAX_IMAGE_BYTES
 BUILDER_OPEN_FILES = 256
 BUILDER_PROCESSES = 32
+# How often the mount/backing fence runs while the worker is alive. Short enough that a
+# substitution has nowhere quiet to sit, long enough not to become the workload.
+FENCE_INTERVAL_SECONDS = 1.0
 TERMINATE_GRACE_SECONDS = 2
 REAP_GRACE_SECONDS = 3
 # The challenge reads a prefix of each selected entry rather than the whole file, so a
@@ -792,7 +799,10 @@ def builder_identity(worker: tuple[int, int]) -> tuple[int, int]:
             'the transport does not build as root') from error
     if entry.pw_uid == 0 or entry.pw_gid == 0:
         raise TransportHeld('builder identity is privileged')
-    if (entry.pw_uid, entry.pw_gid) == worker:
+    if entry.pw_uid == worker[0]:
+        # Compared on the uid alone. RLIMIT_NPROC counts against the real uid, so a builder
+        # that shares the worker's uid shares its process budget however the groups differ;
+        # comparing the whole tuple let exactly that through.
         raise TransportHeld('builder identity is shared with the worker')
     return entry.pw_uid, entry.pw_gid
 
@@ -820,6 +830,32 @@ def _builder_limits(uid: int, gid: int) -> Callable[[], None]:
         resource.setrlimit(resource.RLIMIT_FSIZE, (BUILDER_FILE_SIZE, BUILDER_FILE_SIZE))
         resource.setrlimit(resource.RLIMIT_NOFILE, (BUILDER_OPEN_FILES, BUILDER_OPEN_FILES))
     return apply
+
+
+@contextmanager
+def builder_lock(uid: int) -> Iterator[int]:
+    """One build at a time for the reserved builder identity, across tasks.
+
+    The identity is reserved and its `RLIMIT_NPROC` is one budget. Two tasks building at once
+    would spend each other's processes, and the bound would stop meaning what it says. This is
+    the existing `flock` primitive on a stable root-owned entry, not a scheduler.
+    """
+    BUILD_PARENT.mkdir(mode=0o755, parents=True, exist_ok=True)
+    path = BUILD_PARENT / f'builder-{uid}.lock'
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise TransportHeld(
+                f'another task is building as the reserved builder identity {uid}') from error
+        held = os.fstat(fd)
+        named = os.stat(path, follow_symlinks=False)
+        if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+            raise TransportHeld('builder lock entry was replaced while held')
+        yield fd
+    finally:
+        os.close(fd)
 
 
 def _builder_workspace(image: Path, uid: int, gid: int) -> Path:
@@ -874,6 +910,14 @@ def build_image(stage: Path, image: Path, uid: int, gid: int, tool_fd: int, dead
         raise TransportHeld('image already exists for this task')
     builder_uid, builder_gid = builder
     _stage_is_reachable(stage, builder_uid, builder_gid)
+    with builder_lock(builder_uid):
+        return _build_locked(stage, image, uid, gid, tool_fd, deadline, builder)
+
+
+def _build_locked(stage: Path, image: Path, uid: int, gid: int, tool_fd: int, deadline: float,
+                  builder: tuple[int, int]) -> dict:
+    """The build itself, with the reserved identity's lock already held."""
+    builder_uid, builder_gid = builder
     workspace = _builder_workspace(image, builder_uid, builder_gid)
     target = workspace / image.name
     command = [f'/proc/self/fd/{tool_fd}', str(stage), str(target), *MKSQUASHFS_OPTIONS,
@@ -1065,11 +1109,18 @@ def mount_challenge(mount: Path, inventory: dict, nonce: str) -> str:
 
 
 def mount_fence(descriptor: dict, image_fd: int, loop_fd: int, mount: Path,
-                deadline: float | None = None) -> dict:
-    """Re-verify the whole chain: backing bytes, loop association and mount identity."""
+                deadline: float | None = None, rehash: bool = True) -> dict:
+    """Re-verify the whole chain: backing bytes, loop association and mount identity.
+
+    `rehash` is the expensive half. The three fences around the launch take it, because that
+    is where a substituted image would have to be caught. The fence that runs on an interval
+    for the worker's whole life leaves it out: re-reading 173 MB every second would be the
+    workload rather than a check on it, and the association and mount identity it does verify
+    are what a swap has to move.
+    """
     status = _verify_backing(descriptor, image_fd, loop_fd,
                              deadline=deadline if deadline is not None else time.monotonic() + 120,
-                             rehash=True)
+                             rehash=rehash)
     device = f'/dev/loop{status["number"]}'
     rdev = os.stat(device).st_rdev
     expected_device = f'{os.major(rdev)}:{os.minor(rdev)}'
@@ -1233,6 +1284,100 @@ def _read_bounded(descriptor: int, deadline: float) -> tuple[bytes, bool]:
         payload += block
         if len(payload) > MAX_WORKER_OUTPUT_BYTES:
             return bytes(payload[:MAX_WORKER_OUTPUT_BYTES]), True
+
+
+def _read_streams(descriptors: dict[str, int], deadline: float,
+                  fence: Callable[[], object] | None = None,
+                  fence_interval: float = FENCE_INTERVAL_SECONDS) -> dict[str, tuple[bytes, bool]]:
+    """Poll every stream together, each bounded by the contract's 1 MiB, fencing as it goes.
+
+    Draining one stream to EOF before touching the next deadlocks as soon as the worker fills
+    another pipe: it blocks writing, so it never closes the one being read. The bound is per
+    stream and overflow stops that stream rather than the whole read, so the others still
+    report what they saw.
+
+    `fence` is the existing mount/backing check, run on an interval for as long as the worker
+    lives. Three checks around the launch describe three moments; the execution between them
+    is where a substitution would land, and this is the loop that is already awake to notice.
+    A fence that refuses stops the read and propagates, so the caller's cleanup path decides
+    what to release.
+    """
+    poller = select.poll()
+    next_fence = time.monotonic()
+    payloads = {name: bytearray() for name in descriptors}
+    truncated = {name: False for name in descriptors}
+    by_descriptor = {descriptor: name for name, descriptor in descriptors.items()}
+    live = set(descriptors)
+    for descriptor in descriptors.values():
+        poller.register(descriptor, select.POLLIN)
+    while live:
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            for name in live:
+                truncated[name] = True
+            break
+        if fence is not None and now >= next_fence:
+            fence()
+            next_fence = now + fence_interval
+        wait = min(remaining, fence_interval if fence is not None else 1.0)
+        for descriptor, _ in poller.poll(max(wait, 0.0) * 1000):
+            name = by_descriptor[descriptor]
+            block = os.read(descriptor, 1 << 16)
+            if not block:
+                poller.unregister(descriptor)
+                live.discard(name)
+                continue
+            payloads[name] += block
+            if len(payloads[name]) > MAX_WORKER_OUTPUT_BYTES:
+                del payloads[name][MAX_WORKER_OUTPUT_BYTES:]
+                truncated[name] = True
+                poller.unregister(descriptor)
+                live.discard(name)
+    return {name: (bytes(payloads[name]), truncated[name]) for name in descriptors}
+
+
+def _exec_reporting_failure(descriptor: int, argv: list[str], environment: dict) -> None:
+    """Exec, and say so through a channel that lives exactly until the exec succeeds.
+
+    The report pipe is closed before the exec, because exec leaves no afterwards in which to
+    write -- which also means an exec failure has no way home through it. This channel is
+    marked close-on-exec: a successful exec closes it and the controller reads EOF, and a
+    failure writes the reason before the child exits. It never returns.
+    """
+    os.set_inheritable(descriptor, False)
+    try:
+        os.execve(argv[0], argv, environment)
+    except BaseException as error:                                   # noqa: BLE001
+        message = f'{type(error).__name__}: {error}'.encode()[:MAX_WORKER_OUTPUT_BYTES]
+        try:
+            os.write(descriptor, message)
+            os.close(descriptor)
+        except OSError:
+            pass
+        os._exit(127)
+    os._exit(127)
+
+
+def _official_deadline(bound: float, expires_at: str) -> float:
+    """The run's deadline is the admitting authority's, not a fresh allowance.
+
+    `bound` is the admitted workflow maximum measured from this invocation's start, so a
+    build that takes four minutes spends four of them. The authority's expiry can only
+    shorten that: a run must not outlive the approval that admitted it, and a retry must not
+    restart the clock.
+    """
+    from datetime import datetime                                    # noqa: PLC0415
+    if not isinstance(expires_at, str) or not expires_at.endswith('Z'):
+        raise TransportHeld('admitting authority expiry must be canonical UTC')
+    try:
+        moment = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
+    except ValueError as error:
+        raise TransportHeld('admitting authority expiry is not a timestamp') from error
+    remaining = moment.timestamp() - time.time()
+    if remaining <= 0:
+        raise TransportHeld('the admitting authority has expired; no run deadline is granted')
+    return min(bound, time.monotonic() + remaining)
 
 
 def reap_with_escalation(child: int, deadline: float) -> dict:
@@ -1400,6 +1545,29 @@ def _prepare_image(request: dict, root: Path, deadline: float) -> dict:
     return dict(summary=summary, descriptor=descriptor, inventory=inventory)
 
 
+def _durable_terminal(root: Path, request: dict, outcome: str, detail: str | None) -> Path:
+    """Record what this invocation concluded, durably, before the task lock is released.
+
+    B4 asks for a terminal record that survives the process. Without one, a reader arriving
+    after a crash sees artifacts and no verdict, and cannot tell a refusal from an invocation
+    that never finished. A superseded record is kept beside the new one rather than
+    overwritten: a failure that a later retry replaced is still what happened.
+    """
+    path = root / 'terminal.json'
+    if path.exists():
+        previous = path.read_bytes()
+        kept = path.with_name(f'{path.name}.{hashlib.sha256(previous).hexdigest()[:16]}')
+        if not kept.exists():
+            _durable_write(kept, previous, mode=0o400)
+    pid = os.getpid()
+    _durable_write(path, canonical_json_bytes(dict(
+        schema_version='p3-local-transport-terminal-v1', task=request.get('job_id'),
+        operation=request.get('operation'), outcome=outcome, detail=detail,
+        owner_pid=pid, owner_start_time=_process_start_time(pid),
+        boot_id=_host_identity()[1], recorded_at_ns=time.time_ns())) + b'\n', mode=0o400)
+    return path
+
+
 def command_prepare(request: dict, root: Path, deadline: float) -> dict:
     """Build the image and stop. The session ends with this process.
 
@@ -1446,37 +1614,99 @@ def _official_run_directory(request: dict) -> Path:
         LocalRunIdentity.model_validate_json(canonical_json_bytes(identity)))
 
 
+def _admitted_official_operation(request: dict) -> str:
+    """The operation the worker will accept, checked before an image is built.
+
+    `run_official_once` refuses anything outside its implemented set, and it refuses it after
+    the controller would have built a 170 MB image and mounted it. The same closed set is
+    checked here so the refusal costs nothing.
+    """
+    from packages.alpha_lifecycle.authority import WORKFLOW_OPERATIONS   # noqa: PLC0415
+    official = request.get('official')
+    if not isinstance(official, dict):
+        raise TransportHeld('run requires the closed official launch fields')
+    operation = official.get('operation')
+    if WORKFLOW_OPERATIONS.get(operation) not in {'BASELINES', 'REGISTER_FAMILY', 'OOS', 'HOLDOUT'}:
+        raise TransportHeld(f'{operation} is not an admitted official operation for run')
+    return operation
+
+
+def _runtime_authority(request: dict) -> dict:
+    """The protected LOCAL runtime profile for this issuer, read fresh each time it is used."""
+    from packages.runtime_release.config import (                        # noqa: PLC0415
+        ProtectedAuthorityError, read_protected_canonical_json_current)
+    path = STORE_ROOT / request['identity']['issuer_identity'] / 'runtime.json'
+    try:
+        document, _ = read_protected_canonical_json_current(path)
+    except (FileNotFoundError, OSError, ProtectedAuthorityError) as error:
+        raise TransportHeld(
+            f'run requires the protected LOCAL runtime profile at {path}; it is installed by '
+            'the owner protocol, not by this controller') from error
+    if document.get('revoked') is not False:
+        raise TransportHeld('the LOCAL runtime profile is revoked')
+    return document
+
+
 def _worker_environment(request: dict, mount: Path, release_root: str, private: Path) -> dict:
     """The closed environment the existing worker entrypoint reads. Nothing is inherited.
 
-    `CREDENTIALS_DIRECTORY` is taken from the protected host profile rather than chosen here;
-    `p3_official.py` refuses when the two disagree, which is the check that makes routing it
-    through this process safe. The controller reads that one field and validates nothing else:
-    the worker re-reads the whole profile and owns every authority decision in it.
+    Every authority-bearing value comes from protected owner material: the LOCAL runtime
+    profile supplies the qualified control-plane stage and the Package6 approval digest, and
+    the protected host profile supplies the credential directory and artifact root that
+    `p3_official.py` rechecks against the profile it reads itself. The controller routes them;
+    it validates none of them, because the worker owns those decisions.
+
+    The two staging paths are the exception: no profile carries them, so they arrive in the
+    closed `official` field the request is required to carry for `run`. That field admits an
+    operation and two absolute paths and nothing else -- no shell text, no argv.
     """
     from packages.runtime_release.config import (                        # noqa: PLC0415
         ProtectedAuthorityError, read_protected_canonical_json_current)
+    from packages.runtime_release.staging_v2 import (                    # noqa: PLC0415
+        PACKAGE6_APPROVAL_SHA256_ENV, STAGING_ACTIVATION_PATH_ENV, STAGING_AUTHORITY_PATH_ENV,
+        STAGING_SCOPE, STAGING_SCOPE_ENV)
+    operation = _admitted_official_operation(request)
+    official = request['official']
     directory = _official_run_directory(request)
-    profile_path = directory / 'profile.json'
-    try:
-        document, _ = read_protected_canonical_json_current(profile_path)
-    except (FileNotFoundError, OSError, ProtectedAuthorityError) as error:
-        raise TransportHeld(
-            f'run requires the protected host profile at {profile_path}; the session it '
-            'describes is installed by the owner protocol, not by this controller') from error
-    credentials = document.get('worker_credentials_directory')
-    if not isinstance(credentials, str) or not credentials.startswith('/'):
-        raise TransportHeld('protected host profile does not name a worker credential directory')
-    release = mount / release_root
-    # PYTHONPATH is two derived paths inside the read-only mount, not an ambient search path:
-    # the image carries no .pth, and `-I` would make the staged source unimportable.
+
+    def protected(path: Path, what: str) -> dict:
+        try:
+            document, _ = read_protected_canonical_json_current(path)
+        except (FileNotFoundError, OSError, ProtectedAuthorityError) as error:
+            raise TransportHeld(
+                f'run requires the {what} at {path}; it is installed by the owner protocol, '
+                'not by this controller') from error
+        return document
+
+    host = protected(directory / 'profile.json', 'protected host profile')
+    runtime = _runtime_authority(request)
+
+    def absolute(source: dict, field: str, what: str) -> str:
+        value = source.get(field)
+        if not isinstance(value, str) or not value.startswith('/'):
+            raise TransportHeld(f'{what} does not name an absolute {field}')
+        return value
+
+    # The interpreter and working directory are the qualified control-plane stage's, never the
+    # research image's. The image carries the closure the sandbox mounts; it is not a Git
+    # checkout, and the worker derives its own source identity from where its module lives.
+    application_root = absolute(runtime, 'application_root', 'runtime profile')
+    application_python = absolute(runtime, 'application_python', 'runtime profile')
     return dict(
         PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
         HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
-        PYTHONPATH=f'{release}:{release / "site-packages"}',
-        TRADING_WORKER_PROFILE='p3-official-v1', P3_ISSUER_KIND='LOCAL',
-        CREDENTIALS_DIRECTORY=credentials,
-        P3_AUTHORITY_REQUEST_FILE=str(directory / 'authority-request.json'))
+        P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL',
+        P3_AUTHORITY_REQUEST_FILE=str(directory / 'authority-request.json'),
+        P3_PREFLIGHT_DIRECTORY=str(directory / 'preflight'),
+        P3_ARTIFACT_ROOT=absolute(host, 'store_root', 'host profile'),
+        P3_MANIFEST_FILE=str(directory / 'manifest.json'),
+        P3_REVIEW_FILE=str(directory / 'review.json'),
+        CREDENTIALS_DIRECTORY=absolute(host, 'worker_credentials_directory', 'host profile'),
+        **{STAGING_SCOPE_ENV: STAGING_SCOPE,
+           STAGING_AUTHORITY_PATH_ENV: absolute(official, 'staging_authority_path', 'run request'),
+           STAGING_ACTIVATION_PATH_ENV: absolute(official, 'staging_activation_path', 'run request'),
+           PACKAGE6_APPROVAL_SHA256_ENV: str(runtime['package6_approval_sha256'])},
+        P3_APPLICATION_ROOT=application_root, P3_APPLICATION_PYTHON=application_python)
 
 
 def command_run(request: dict, root: Path, deadline: float) -> dict:
@@ -1498,14 +1728,54 @@ def command_run(request: dict, root: Path, deadline: float) -> dict:
     # same ordering the builder identity needed.
     mount, private = root / 'mnt', root / 'worker'
     environment = _worker_environment(request, mount, request['release_root'], private)
-    argv = [str(mount / request['python_root'] / 'bin/python3.11'),
-            '-B', '-s', '-m', 'services.job_worker']
-    prepared = _prepare_image(request, root, deadline)
-    session = run_session(request, root, time.monotonic() + WORKFLOW_DEADLINE_SECONDS,
-                          prepared['descriptor'], prepared['inventory'],
+    # Re-read at admission rather than carried from the environment build: the contract wants
+    # the authority revalidated at the moment it is used, not at the moment it was found.
+    granted = _official_deadline(deadline, _runtime_authority(request).get('expires_at'))
+    # The qualified control-plane stage runs the worker; the research image stays mounted in
+    # this namespace for the profile and the spawn provider to read. Running the worker out of
+    # the image would point its source identity at a tree with no Git metadata and bypass the
+    # Package6-qualified stage the runtime validator requires.
+    argv = [environment['P3_APPLICATION_PYTHON'], '-I', '-B', '-m', 'services.job_worker']
+    prepared = _prepare_image(request, root, granted)
+    session = run_session(request, root, granted, prepared['descriptor'], prepared['inventory'],
                           launch=_worker_launch, environment=environment, argv=argv)
     session['prepared'] = prepared['summary']
     return session
+
+
+def _worker_verdict(observed: dict, reaped: dict, truncated: bool,
+                    expected_challenge: object) -> int:
+    """The transport's verdict on the worker. A clean exit is not an economic result.
+
+    `run_session` recorded the wait status and then never looked at it, so a worker that
+    exited non-zero while answering the challenge correctly still produced `status: OK`. The
+    recorded value is also a raw wait status rather than an exit code -- exit 1 is 256 and a
+    signal hides in the low bits -- so it is decoded through the standard API instead of being
+    compared against zero.
+
+    What this establishes is that the transport delivered the closure and the worker ran to a
+    normal end. What the worker concluded is a separate question answered by the terminal Job
+    API result, never by this exit code.
+    """
+    # The child reports an exec or setup failure through its own channel. Blaming the exit
+    # code first would hide the cause behind a number.
+    reported = observed.get('error')
+    if reported:
+        raise TransportHeld(f'the worker reported: {reported}')
+    if truncated:
+        raise TransportHeld('worker output exceeded its bound before the deadline')
+    if not reaped.get('reaped'):
+        raise TransportHeld('worker did not reap within the deadline')
+    if reaped.get('escalation'):
+        raise TransportHeld('worker required escalation: ' + ', '.join(reaped['escalation']))
+    code = os.waitstatus_to_exitcode(reaped['status'])
+    if code < 0:
+        raise TransportHeld(f'worker was killed by signal {-code}')
+    if code != 0:
+        raise TransportHeld(f'worker exited {code}')
+    if observed.get('challenge') != expected_challenge:
+        raise TransportHeld('mount readback challenge did not match this generation')
+    return code
 
 
 def _probe_launch(context: dict) -> dict:
@@ -1538,13 +1808,12 @@ def _worker_launch(context: dict) -> dict:
     The readback is written and the pipe closed before the exec, because exec replaces this
     process: there is no "afterwards" in which to report.
     """
-    mount, descriptor = context['mount'], context['descriptor']
     write = context['write']
     os.write(write, canonical_json_bytes(dict(
         challenge=context['challenge'], launch='WORKER_ENTRYPOINT',
         argv=context['argv'], open_fds=sorted(os.listdir('/proc/self/fd')))))
     os.close(write)
-    os.execve(context['argv'][0], context['argv'], context['environment'])
+    _exec_reporting_failure(context['exec_channel'], context['argv'], context['environment'])
     raise TransportHeld('worker entrypoint did not replace the process')   # unreachable
 
 
@@ -1604,20 +1873,29 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
             fences.append(dict(point='before-worker', nonce=nonce,
                                **mount_fence(descriptor, image_fd, loop_fd, mount)))
             read, write = os.pipe()
+            # The worker's own streams, and a channel that survives exactly until its exec
+            # succeeds. Captured rather than inherited: the contract bounds logs at 1 MiB and
+            # an inherited terminal is neither bounded nor attributable.
+            out_read, out_write = os.pipe()
+            err_read, err_write = os.pipe()
+            exec_read, exec_write = os.pipe()
             child = os.fork()
             if child == 0:
                 status = 0
                 try:
-                    os.close(read)
-                    os.close(loop_fd)
-                    os.close(image_fd)
+                    for closing in (read, out_read, err_read, exec_read, loop_fd, image_fd):
+                        os.close(closing)
+                    os.dup2(out_write, 1)
+                    os.dup2(err_write, 2)
+                    os.close(out_write)
+                    os.close(err_write)
                     drop_to_worker(descriptor['worker_uid'], descriptor['worker_gid'], controller)
                     # The challenge is computed before the launch because a launch that execs
                     # has no afterwards in which to answer.
                     context = dict(mount=mount, descriptor=descriptor, inventory=inventory,
                                    request=request, private=private, nonce=nonce, write=write,
                                    challenge=mount_challenge(mount, inventory, nonce),
-                                   environment=environment, argv=argv)
+                                   environment=environment, argv=argv, exec_channel=exec_write)
                     observed = launch(context)
                     os.write(write, canonical_json_bytes(dict(
                         observed, challenge=context['challenge'],
@@ -1630,9 +1908,14 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
                 finally:
                     os.close(write)
                 os._exit(status)
-            os.close(write)
-            payload, truncated = _read_bounded(read, deadline)
-            os.close(read)
+            for closing in (write, out_write, err_write, exec_write):
+                os.close(closing)
+            streams = _read_streams(
+                dict(report=read, stdout=out_read, stderr=err_read, exec=exec_read), deadline,
+                fence=lambda: mount_fence(descriptor, image_fd, loop_fd, mount, rehash=False))
+            for closing in (read, out_read, err_read, exec_read):
+                os.close(closing)
+            payload, truncated = streams['report']
             # Reaping comes before the payload is parsed, and parsing cannot raise past it.
             # The earlier order put json.loads first: a truncated payload -- which is exactly
             # what the output cap produces -- or any malformed output raised before `reaped`
@@ -1650,21 +1933,19 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
             observed['output_truncated'] = truncated
             observed['worker_status'] = reaped['status']
             observed['worker_reaping'] = reaped
-            if truncated:
-                raise TransportHeld('worker output exceeded its bound before the deadline')
-            if not reaped['reaped']:
-                raise TransportHeld('worker did not reap within the deadline')
-            # Fence once more after the worker finishes, and require the challenge the
-            # worker computed to match what the controller computed for this generation.
+            # An exec that never happened is the cause; the exit code is only its shadow.
+            exec_failure = streams['exec'][0].decode(errors='replace').strip()
+            if exec_failure:
+                observed.setdefault('error', f'worker exec failed: {exec_failure}')
+            observed['streams'] = {name: dict(bytes=len(value), truncated=flag)
+                                   for name, (value, flag) in streams.items()}
+            observed['worker_stderr'] = streams['stderr'][0].decode(errors='replace')[-4096:]
+            # Fenced before the verdict, so a refusal still records what the mount looked like
+            # when the worker stopped rather than discarding that evidence.
             fences.append(dict(point='after-worker', nonce=nonce,
                                **mount_fence(descriptor, image_fd, loop_fd, mount)))
-            if observed.get('challenge') != expected_challenge:
-                # The worker catches everything and reports it in its payload, so a failure
-                # inside the worker reaches here as a missing challenge. Reporting only the
-                # mismatch hid the actual cause behind a message about something else.
-                reported = observed.get('error')
-                raise TransportHeld('mount readback challenge did not match this generation'
-                                    + (f'; the worker reported: {reported}' if reported else ''))
+            observed['worker_exit_code'] = _worker_verdict(
+                observed, reaped, truncated, expected_challenge)
         finally:
             # Unknown is unreaped. Reading this through locals() with a default of True meant
             # any exception raised before the assignment released the mount and the loop while
@@ -1789,22 +2070,36 @@ def main(argv: list[str]) -> int:
         request = read_request(argv[1])
         digest, identity = task_identity(request)
         root = open_task_root(digest)
-        deadline = time.monotonic() + PREPARE_WALL_SECONDS
+        # Measured from the invocation, so a build that takes four minutes spends four of
+        # them. `run` carries the admitted workflow maximum; everything else carries the
+        # prepare/probe total the contract sets.
+        started = time.monotonic()
+        deadline = started + (WORKFLOW_DEADLINE_SECONDS
+                              if request['operation'] == 'run' else PREPARE_WALL_SECONDS)
         with TaskLock(root):
             operation = request['operation']
+            # Before the claim check, so a refusal to take a task someone else owns does not
+            # write a verdict into their task root.
             require_task_claim(root, operation)
-            if operation == 'prepare':
-                result = command_prepare(request, root, deadline)
-            elif operation == 'probe':
-                result = command_probe(request, root, deadline)
-            elif operation == 'run':
-                result = command_run(request, root, deadline)
-            elif operation == 'inspect':
-                result = command_inspect(root)
-            elif operation == 'cleanup':
-                result = command_cleanup(root)
-            else:
-                raise TransportHeld(f'operation {operation} is not in the accepted set')
+            try:
+                if operation == 'prepare':
+                    result = command_prepare(request, root, deadline)
+                elif operation == 'probe':
+                    result = command_probe(request, root, deadline)
+                elif operation == 'run':
+                    result = command_run(request, root, deadline)
+                elif operation == 'inspect':
+                    result = command_inspect(root)
+                elif operation == 'cleanup':
+                    result = command_cleanup(root)
+                else:
+                    raise TransportHeld(f'operation {operation} is not in the accepted set')
+            except BaseException as error:
+                # Durable before the lock goes. A reader arriving after this process cannot
+                # otherwise tell a refusal from an invocation that never finished.
+                _durable_terminal(root, request, 'HELD', f'{type(error).__name__}: {error}')
+                raise
+            _durable_terminal(root, request, 'OK', None)
     except TransportHeld as held:
         print(json.dumps(dict(status='HELD', reason=str(held))))
         return 1

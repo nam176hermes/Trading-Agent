@@ -12,6 +12,7 @@ against what the inventory recorded rather than against whatever is mounted now.
 """
 import hashlib
 import importlib.util
+import json
 import os
 import stat
 from pathlib import Path
@@ -747,6 +748,37 @@ def test_an_unreadable_claim_still_refuses_a_new_session(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _host_profile(**overrides):
+    return dict({'worker_credentials_directory': '/run/creds',
+                 'store_root': '/var/lib/artifacts'}, **overrides)
+
+
+def _runtime_profile(**overrides):
+    return dict({'application_root': '/opt/stage/application',
+                 'application_python': '/opt/stage/application/.venv/bin/python3.11',
+                 'package6_approval_sha256': 'c' * 64, 'revoked': False,
+                 'expires_at': '2099-01-01T00:00:00Z'}, **overrides)
+
+
+def _protected(**by_name):
+    """Stand in for the protected reader, answering per path the way the owner store does."""
+    def read(path):
+        for suffix, document in by_name.items():
+            if str(path).endswith(suffix):
+                return document, 'digest'
+        raise FileNotFoundError(path)
+    return read
+
+
+def _run_request(operation='p3-baselines-v1', **overrides):
+    return dict(identity=_identity(), operation='run', release_root='release',
+                python_root='python',
+                official=dict(operation=operation,
+                              staging_authority_path='/run/authority.json',
+                              staging_activation_path='/run/activation.json'),
+                **overrides)
+
+
 def _identity(**overrides):
     return dict(issuer_kind='LOCAL', issuer_identity='operator-a',
                 run_id='00000000-0000-4000-8000-000000000002', attempt=1,
@@ -774,54 +806,83 @@ def test_run_refuses_without_the_protected_host_profile(tmp_path, monkeypatch):
     monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
                         missing)
     with pytest.raises(TransportHeld, match='requires the protected host profile'):
-        transport._worker_environment({'identity': _identity()}, tmp_path,
-                                      'release', tmp_path/'worker')
+        transport._worker_environment(_run_request(), tmp_path, 'release', tmp_path/'worker')
 
 
 def test_a_profile_without_a_credential_directory_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
-                        lambda path: ({'worker_credentials_directory': 'relative/path'}, 'd'))
-    with pytest.raises(TransportHeld, match='does not name a worker credential directory'):
-        transport._worker_environment({'identity': _identity()}, tmp_path,
-                                      'release', tmp_path/'worker')
+                        _protected(**{'profile.json': _host_profile(
+                                          worker_credentials_directory='relative/path'),
+                                      'runtime.json': _runtime_profile()}))
+    with pytest.raises(TransportHeld, match='absolute worker_credentials_directory'):
+        transport._worker_environment(_run_request(), tmp_path, 'release', tmp_path/'worker')
 
 
-def test_the_worker_environment_is_closed_and_carries_the_profile_credentials(tmp_path,
-                                                                             monkeypatch):
+# Every name `services/job_worker/p3_official.py::run_official_once` reads before it can
+# reach its own authority checks. Asserting the set the controller happens to emit proves
+# nothing; this is the consumer's list, and the controller has to satisfy it.
+WORKER_REQUIRED = (
+    'P3_OPERATION', 'P3_ISSUER_KIND', 'CREDENTIALS_DIRECTORY',
+    'P3_AUTHORITY_REQUEST_FILE', 'P3_PREFLIGHT_DIRECTORY', 'P3_ARTIFACT_ROOT',
+    'P3_MANIFEST_FILE', 'P3_REVIEW_FILE',
+    'TRADING_PACKAGE6_STAGING_SCOPE', 'TRADING_PACKAGE6_STAGING_AUTHORITY_PATH',
+    'TRADING_PACKAGE6_STAGING_ACTIVATION_PATH', 'TRADING_PACKAGE6_APPROVAL_SHA256')
+
+
+def test_the_worker_environment_satisfies_every_name_the_consumer_reads(tmp_path, monkeypatch):
     monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
-                        lambda path: ({'worker_credentials_directory': '/run/creds'}, 'd'))
-    mount, private = tmp_path/'mnt', tmp_path/'worker'
-    environment = transport._worker_environment({'identity': _identity()}, mount,
-                                                'release', private)
-    # Nothing is inherited: the whole environment is derived, and the credential directory is
-    # the profile's, which p3_official.py rechecks against the profile it reads itself.
-    assert environment['CREDENTIALS_DIRECTORY'] == '/run/creds'
+                        _protected(**{'profile.json': _host_profile(),
+                                      'runtime.json': _runtime_profile()}))
+    environment = transport._worker_environment(_run_request(), tmp_path/'mnt', 'release',
+                                                tmp_path/'worker')
+    missing = [name for name in WORKER_REQUIRED if name not in environment]
+    assert not missing, f'the worker reads these and the controller does not supply them: {missing}'
     assert environment['P3_ISSUER_KIND'] == 'LOCAL'
-    assert environment['TRADING_WORKER_PROFILE'] == 'p3-official-v1'
-    assert environment['PYTHONPATH'] == f'{mount/"release"}:{mount/"release"/"site-packages"}'
-    assert 'LD_PRELOAD' not in environment and 'LD_LIBRARY_PATH' not in environment
-    assert set(environment) == {
-        'PATH', 'LANG', 'LC_ALL', 'TZ', 'HOME', 'PYTHONHASHSEED', 'PYTHONDONTWRITEBYTECODE',
-        'PYTHONPATH', 'TRADING_WORKER_PROFILE', 'P3_ISSUER_KIND', 'CREDENTIALS_DIRECTORY',
-        'P3_AUTHORITY_REQUEST_FILE'}
+    # Nothing ambient: no loader injection and no inherited search path.
+    assert not any(name.startswith('LD_') for name in environment)
+
+
+def test_a_revoked_runtime_profile_admits_no_run(tmp_path, monkeypatch):
+    # Revocation is the owner withdrawing the stage. It is checked where the profile is read,
+    # not left for the worker to discover after an image was built for it.
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        _protected(**{'profile.json': _host_profile(),
+                                      'runtime.json': _runtime_profile(revoked=True)}))
+    with pytest.raises(TransportHeld, match='runtime profile is revoked'):
+        transport._worker_environment(_run_request(), tmp_path/'mnt', 'release',
+                                      tmp_path/'worker')
+
+
+def test_an_operation_the_worker_does_not_implement_is_refused(tmp_path, monkeypatch):
+    # `run_official_once` rejects anything outside BASELINES/REGISTER_FAMILY/OOS/HOLDOUT. The
+    # controller must not build a 170 MB image and mount it to discover that.
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        _protected(**{'profile.json': _host_profile(),
+                                      'runtime.json': _runtime_profile()}))
+    request = _run_request(operation='p3-phase-exit-v1')
+    with pytest.raises(TransportHeld, match='not an admitted official operation'):
+        transport._worker_environment(request, tmp_path/'mnt', 'release', tmp_path/'worker')
 
 
 def test_the_worker_launch_execs_the_existing_entrypoint(tmp_path, monkeypatch):
     # "no second launcher or execution engine is needed": the launch must exec the module that
     # already exists, after reporting, and must not return.
     calls = {}
-    monkeypatch.setattr(transport.os, 'execve',
-                        lambda path, argv, env: calls.update(path=path, argv=argv, env=env))
+    monkeypatch.setattr(transport, '_exec_reporting_failure',
+                        lambda fd, argv, env: calls.update(fd=fd, argv=argv, env=env))
     written = []
     monkeypatch.setattr(transport.os, 'write', lambda fd, data: written.append(data))
     monkeypatch.setattr(transport.os, 'close', lambda fd: None)
     monkeypatch.setattr(transport.os, 'listdir', lambda path: ['0', '1', '2'])
-    argv = ['/mnt/python/bin/python3.11', '-B', '-s', '-m', 'services.job_worker']
+    argv = ['/opt/stage/application/.venv/bin/python3.11', '-I', '-B',
+            '-m', 'services.job_worker']
     with pytest.raises(TransportHeld, match='did not replace the process'):
-        transport._worker_launch(dict(mount=tmp_path, descriptor={}, write=7,
+        transport._worker_launch(dict(mount=tmp_path, descriptor={}, write=7, exec_channel=9,
                                       challenge={'x': 'y'}, argv=argv,
                                       environment={'P3_ISSUER_KIND': 'LOCAL'}))
     assert calls['argv'][-2:] == ['-m', 'services.job_worker']
+    # The exec goes through the channel that reports its own failure, not a bare execve.
+    assert calls['fd'] == 9
     # Reported before the exec, because exec leaves no afterwards in which to answer.
     assert written and b'WORKER_ENTRYPOINT' in written[0]
 
@@ -883,3 +944,279 @@ def test_the_snapshot_digest_is_the_sealed_digest_not_the_host_path(tmp_path, mo
     assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == record['sha256']
     # Provenance, not authority: the snapshot is a task-owned file, not the host library.
     assert snapshot != library and snapshots in snapshot.parents
+
+
+# ---------------------------------------------------------------------------
+# The worker's outcome has to reach the transport verdict
+# ---------------------------------------------------------------------------
+#
+# `run_session` recorded `worker_status` and then never looked at it, so a worker that exited
+# non-zero with a valid challenge produced `status: OK`. The status is also the raw wait
+# status, not an exit code: exit 1 is 256 and a signal hides in the low bits.
+
+
+def _reaped(status, escalation=(), reaped=True):
+    return dict(status=status, escalation=list(escalation), reaped=reaped)
+
+
+def test_a_worker_that_exits_non_zero_is_not_a_successful_transport(tmp_path):
+    with pytest.raises(TransportHeld, match='worker exited 1'):
+        transport._worker_verdict(dict(challenge='c'), _reaped(1 << 8), False, 'c')
+
+
+def test_a_worker_killed_by_a_signal_is_not_a_successful_transport(tmp_path):
+    # SIGKILL leaves 9 in the low bits; waitstatus_to_exitcode reports it as -9.
+    with pytest.raises(TransportHeld, match='worker was killed by signal 9'):
+        transport._worker_verdict(dict(challenge='c'), _reaped(9), False, 'c')
+
+
+def test_a_worker_that_needed_escalation_is_not_a_successful_transport(tmp_path):
+    with pytest.raises(TransportHeld, match='escalation'):
+        transport._worker_verdict(dict(challenge='c'), _reaped(0, escalation=['TERM']), False, 'c')
+
+
+def test_an_unreaped_worker_is_not_a_successful_transport(tmp_path):
+    with pytest.raises(TransportHeld, match='did not reap'):
+        transport._worker_verdict(dict(challenge='c'), _reaped(None, reaped=False), False, 'c')
+
+
+def test_truncated_worker_output_is_not_a_successful_transport(tmp_path):
+    with pytest.raises(TransportHeld, match='exceeded its bound'):
+        transport._worker_verdict(dict(challenge='c'), _reaped(0), True, 'c')
+
+
+def test_a_worker_that_exited_cleanly_and_answered_the_challenge_is_accepted(tmp_path):
+    assert transport._worker_verdict(dict(challenge='c'), _reaped(0), False, 'c') == 0
+
+
+def test_a_clean_exit_with_the_wrong_challenge_is_still_refused(tmp_path):
+    with pytest.raises(TransportHeld, match='challenge did not match'):
+        transport._worker_verdict(dict(challenge='other'), _reaped(0), False, 'c')
+
+
+def test_an_exec_failure_is_reported_before_the_exit_status_is_blamed(tmp_path):
+    # The child reports an exec failure through its own channel. Blaming the exit code would
+    # hide the cause behind a number.
+    observed = dict(challenge='c', error='FileNotFoundError: interpreter')
+    with pytest.raises(TransportHeld, match='FileNotFoundError'):
+        transport._worker_verdict(observed, _reaped(1 << 8), False, 'c')
+
+
+# ---------------------------------------------------------------------------
+# B3.5 Builder isolation is per UID, and one at a time
+# ---------------------------------------------------------------------------
+
+
+def test_a_builder_sharing_the_worker_uid_is_refused_whatever_the_gid(monkeypatch):
+    # RLIMIT_NPROC counts against the real uid, so a shared uid shares the budget however the
+    # groups differ. Comparing the whole tuple let that through.
+    monkeypatch.setattr(transport.pwd, 'getpwnam', lambda name: _Entry(980, 12345))
+    with pytest.raises(TransportHeld, match='shared with the worker'):
+        transport.builder_identity((980, 980))
+
+
+def test_two_tasks_cannot_build_under_the_same_builder_uid_at_once(tmp_path, monkeypatch):
+    # One reserved identity, one RLIMIT_NPROC budget. A second concurrent build would spend
+    # the first one's processes.
+    monkeypatch.setattr(transport, 'BUILD_PARENT', tmp_path/'build')
+    with transport.builder_lock(979):
+        with pytest.raises(TransportHeld, match='another task is building'):
+            with transport.builder_lock(979):
+                pass
+
+
+def test_the_builder_lock_is_released_for_the_next_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(transport, 'BUILD_PARENT', tmp_path/'build')
+    with transport.builder_lock(979):
+        pass
+    with transport.builder_lock(979):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# B3.4/B4 Streams, exec failure and the deadline the authority actually grants
+# ---------------------------------------------------------------------------
+
+
+def test_several_streams_are_polled_together_rather_than_in_turn(tmp_path):
+    # Reading the report to EOF before touching stderr deadlocks as soon as the worker fills
+    # the stderr pipe: it blocks writing, so it never closes the report.
+    reads, writes = zip(*(os.pipe() for _ in range(3)))
+    for index, write in enumerate(writes):
+        os.write(write, f'stream-{index}'.encode())
+        os.close(write)
+    streams = transport._read_streams(dict(report=reads[0], stdout=reads[1], stderr=reads[2]),
+                                      transport.time.monotonic() + 5)
+    assert streams['report'][0] == b'stream-0'
+    assert streams['stdout'][0] == b'stream-1'
+    assert streams['stderr'][0] == b'stream-2'
+    assert not any(truncated for _, truncated in streams.values())
+
+
+def test_a_stream_over_the_contract_bound_is_truncated_and_flagged(tmp_path):
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        # The child must never return into pytest: an exception here would run the session's
+        # atexit cleanup a second time and corrupt the trusted temp directory.
+        status = 0
+        try:
+            os.close(read)
+            os.write(write, b'x' * (transport.MAX_WORKER_OUTPUT_BYTES + 4096))
+            os.close(write)
+        except BaseException:
+            status = 1
+        os._exit(status)
+    os.close(write)
+    streams = transport._read_streams(dict(stdout=read), transport.time.monotonic() + 10)
+    os.waitpid(pid, 0)
+    payload, truncated = streams['stdout']
+    assert truncated is True
+    assert len(payload) == transport.MAX_WORKER_OUTPUT_BYTES
+
+
+def test_a_failed_exec_reaches_the_controller_after_the_report_is_closed(tmp_path):
+    # The report pipe is closed before exec, so an exec failure has no way home through it.
+    # A separate close-on-exec channel is silent when exec succeeds and carries the error when
+    # it does not.
+    read, write = os.pipe()
+    os.set_inheritable(write, True)
+    pid = os.fork()
+    if pid == 0:
+        status = 0
+        try:
+            os.close(read)
+            transport._exec_reporting_failure(write, ['/nonexistent/interpreter', '-c', ''], {})
+        except BaseException:
+            status = 1
+        os._exit(status)
+    os.close(write)
+    payload, _ = transport._read_streams(dict(exec=read),
+                                         transport.time.monotonic() + 5)['exec']
+    os.waitpid(pid, 0)
+    assert b'FileNotFoundError' in payload or b'No such file' in payload
+
+
+def test_the_run_deadline_is_bounded_by_the_authority_that_grants_it(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    soon = (datetime.now(UTC) + timedelta(minutes=5)).isoformat().replace('+00:00', 'Z')
+    # The controller must not hand itself 37 fresh minutes when the authority expires in five.
+    granted = transport._official_deadline(transport.time.monotonic() + 37 * 60, soon)
+    assert granted < transport.time.monotonic() + 37 * 60
+    assert granted > transport.time.monotonic() + 4 * 60
+
+
+def test_an_expired_authority_grants_no_run_deadline(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
+    with pytest.raises(TransportHeld, match='authority has expired'):
+        transport._official_deadline(transport.time.monotonic() + 37 * 60, past)
+
+
+def test_the_invocation_bound_still_applies_when_the_authority_outlives_it(tmp_path):
+    from datetime import UTC, datetime, timedelta
+    far = (datetime.now(UTC) + timedelta(hours=9)).isoformat().replace('+00:00', 'Z')
+    bound = transport.time.monotonic() + 37 * 60
+    assert transport._official_deadline(bound, far) == bound
+
+
+# ---------------------------------------------------------------------------
+# B3.4 The fence has to cover the run, not three moments in it
+# ---------------------------------------------------------------------------
+
+
+def test_the_fence_runs_while_the_worker_does(tmp_path):
+    # Three point-in-time fences leave the whole execution unfenced between them.
+    read, write = os.pipe()
+    calls = []
+    pid = os.fork()
+    if pid == 0:
+        status = 0
+        try:
+            os.close(read)
+            transport.time.sleep(0.6)
+            os.write(write, b'done')
+            os.close(write)
+        except BaseException:
+            status = 1
+        os._exit(status)
+    os.close(write)
+    transport._read_streams(dict(report=read), transport.time.monotonic() + 10,
+                            fence=lambda: calls.append(transport.time.monotonic()),
+                            fence_interval=0.1)
+    os.close(read)
+    os.waitpid(pid, 0)
+    assert len(calls) >= 3, f'the fence ran {len(calls)} times during a 0.6s run'
+
+
+def test_a_fence_that_breaks_mid_run_stops_the_read(tmp_path):
+    read, write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        status = 0
+        try:
+            os.close(read)
+            transport.time.sleep(2)
+            os.close(write)
+        except BaseException:
+            status = 1
+        os._exit(status)
+    os.close(write)
+
+    def broken():
+        raise TransportHeld('backing image changed under the mount')
+
+    with pytest.raises(TransportHeld, match='backing image changed'):
+        transport._read_streams(dict(report=read), transport.time.monotonic() + 10,
+                                fence=broken, fence_interval=0.05)
+    os.close(read)
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+
+
+def test_without_a_fence_the_read_behaves_as_before(tmp_path):
+    read, write = os.pipe()
+    os.write(write, b'payload')
+    os.close(write)
+    streams = transport._read_streams(dict(report=read), transport.time.monotonic() + 5)
+    os.close(read)
+    assert streams['report'] == (b'payload', False)
+
+
+# ---------------------------------------------------------------------------
+# B4 What the invocation concluded is durable before the lock is released
+# ---------------------------------------------------------------------------
+
+
+def test_a_terminal_record_is_written_for_an_outcome(tmp_path):
+    root = tmp_path/'task'
+    root.mkdir()
+    transport._durable_terminal(root, dict(job_id='job', operation='probe'), 'OK', None)
+    record = json.loads((root/'terminal.json').read_bytes())
+    assert record['outcome'] == 'OK'
+    assert record['operation'] == 'probe'
+    assert record['schema_version'] == 'p3-local-transport-terminal-v1'
+    # Root-owned identity so a later reader can tell which invocation concluded it.
+    assert record['owner_pid'] == os.getpid()
+    assert (root/'terminal.json').stat().st_mode & 0o777 == 0o400
+
+
+def test_a_refusal_records_its_reason_rather_than_vanishing(tmp_path):
+    root = tmp_path/'task'
+    root.mkdir()
+    transport._durable_terminal(root, dict(job_id='job', operation='run'), 'HELD',
+                                'the admitting authority has expired')
+    record = json.loads((root/'terminal.json').read_bytes())
+    assert record['outcome'] == 'HELD'
+    assert 'authority has expired' in record['detail']
+
+
+def test_a_later_invocation_does_not_silently_overwrite_a_terminal_record(tmp_path):
+    root = tmp_path/'task'
+    root.mkdir()
+    transport._durable_terminal(root, dict(job_id='job', operation='probe'), 'OK', None)
+    first = (root/'terminal.json').read_bytes()
+    transport._durable_terminal(root, dict(job_id='job', operation='probe'), 'HELD', 'later')
+    assert (root/'terminal.json').read_bytes() != first
+    kept = sorted(p.name for p in root.glob('terminal.json.*'))
+    assert kept, 'the superseded record has to remain; a failure is not erased by a retry'
