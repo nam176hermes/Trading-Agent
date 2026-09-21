@@ -67,6 +67,10 @@ MKSQUASHFS_OPTIONS = ('-noappend', '-no-recovery', '-no-xattrs', '-no-hardlinks'
     '-exit-on-error', '-no-progress')
 
 PREPARE_WALL_SECONDS = 300
+# The admitted workflow maximum the session profile already enforces. The controller does not
+# own the run's deadline -- the session does, and B3.5's limits say run keeps the existing
+# admitted policy limits -- so this only refuses to outlive it.
+WORKFLOW_DEADLINE_SECONDS = 37 * 60
 BUILDER_CPU_SECONDS = 120
 BUILDER_ADDRESS_SPACE = 2 * 1024**3
 BUILDER_FILE_SIZE = MAX_IMAGE_BYTES
@@ -1422,31 +1426,131 @@ def command_probe(request: dict, root: Path, deadline: float) -> dict:
     return session
 
 
-def command_run(request: dict, root: Path, deadline: float) -> dict:
-    """Refused here, and the reason is not that it is unwritten.
+def _official_run_directory(request: dict) -> Path:
+    """The protected run directory this identity already owns.
 
-    `run` launches the admitted campaign driver, and the policy pins exactly what that is:
-    DRIVER_ENTRY execs `run_p3_driver_entry.py`, which applies the admitted bounds and execs
-    `run_p3_alpha_campaign.py`. What the CLI cannot supply is the authority around it.
-    `P3SpawnProvider` requires a ClaimedJob of type ALPHA_CAMPAIGN carrying an unexpired lease,
-    an AlphaCampaignPayload whose operation is one of the admitted set, a WorkerRepository
-    against the protected job store, and worker runtime authority from systemd credentials.
-    Those come from `services/job_worker/p3_official.py`, which reads an enqueued job and the
-    protected official profile.
-
-    A controller invoked from a command line holds none of that, and manufacturing a claim or
-    a lease to satisfy the signature would be fabricating official research authority rather
-    than exercising it. So the session owner for `run` is the job worker, not this process, and
-    the honest thing here is to say so and stop.
+    B3.1 says root paths are derived from the protected run identity, never taken from a
+    caller. `local_run_directory` is the owner of that derivation and is reused rather than
+    re-spelled here, so the controller and the worker cannot disagree about where the session
+    lives.
     """
-    raise TransportHeld(
-        'run requires a session owner holding an ALPHA_CAMPAIGN claim with a live lease, the '
-        'protected official profile and worker runtime authority; the transport controller is '
-        'not that owner and will not fabricate one')
+    from packages.alpha_lifecycle.authority import local_run_directory   # noqa: PLC0415
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity  # noqa: PLC0415
+    identity = request['identity']
+    if identity.get('issuer_kind') != 'LOCAL':
+        raise TransportHeld('run is a LOCAL lane operation')
+    # Parsed from JSON, not from the dict: the identity model is strict, so a run_id that
+    # arrived as the string every protected request actually carries is not a UUID instance
+    # and `model_validate` rejects it.
+    return local_run_directory(
+        LocalRunIdentity.model_validate_json(canonical_json_bytes(identity)))
 
 
-def run_session(request: dict, root: Path, deadline: float,
-                descriptor: dict, inventory: dict) -> dict:
+def _worker_environment(request: dict, mount: Path, release_root: str, private: Path) -> dict:
+    """The closed environment the existing worker entrypoint reads. Nothing is inherited.
+
+    `CREDENTIALS_DIRECTORY` is taken from the protected host profile rather than chosen here;
+    `p3_official.py` refuses when the two disagree, which is the check that makes routing it
+    through this process safe. The controller reads that one field and validates nothing else:
+    the worker re-reads the whole profile and owns every authority decision in it.
+    """
+    from packages.runtime_release.config import (                        # noqa: PLC0415
+        ProtectedAuthorityError, read_protected_canonical_json_current)
+    directory = _official_run_directory(request)
+    profile_path = directory / 'profile.json'
+    try:
+        document, _ = read_protected_canonical_json_current(profile_path)
+    except (FileNotFoundError, OSError, ProtectedAuthorityError) as error:
+        raise TransportHeld(
+            f'run requires the protected host profile at {profile_path}; the session it '
+            'describes is installed by the owner protocol, not by this controller') from error
+    credentials = document.get('worker_credentials_directory')
+    if not isinstance(credentials, str) or not credentials.startswith('/'):
+        raise TransportHeld('protected host profile does not name a worker credential directory')
+    release = mount / release_root
+    # PYTHONPATH is two derived paths inside the read-only mount, not an ambient search path:
+    # the image carries no .pth, and `-I` would make the staged source unimportable.
+    return dict(
+        PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
+        HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
+        PYTHONPATH=f'{release}:{release / "site-packages"}',
+        TRADING_WORKER_PROFILE='p3-official-v1', P3_ISSUER_KIND='LOCAL',
+        CREDENTIALS_DIRECTORY=credentials,
+        P3_AUTHORITY_REQUEST_FILE=str(directory / 'authority-request.json'))
+
+
+def command_run(request: dict, root: Path, deadline: float) -> dict:
+    """Build, mount, then become the worker entrypoint that already exists.
+
+    Plan section 3.4 step 7: "start the existing worker entrypoint in that namespace, using
+    the qualified control-plane stage". The official runbook is blunter -- "no second launcher
+    or execution engine is needed" -- and the phase workflow repeats it as a rule. So this
+    mounts the image, drops to the worker, and execs `python -m services.job_worker`.
+
+    What it deliberately does not do is assemble the worker's authority. The campaign claim,
+    the lease, the protected profile and the job store are the worker's to obtain; a
+    controller that produced them would be manufacturing research authority rather than
+    exercising it.
+    """
+    # Resolved before anything is built. `_prepare_image` writes a durable claim and a
+    # 170 MB artifact; discovering an absent protected profile afterwards would leave the task
+    # claimed for a session that never started, and the next run would refuse it. This is the
+    # same ordering the builder identity needed.
+    mount, private = root / 'mnt', root / 'worker'
+    environment = _worker_environment(request, mount, request['release_root'], private)
+    argv = [str(mount / request['python_root'] / 'bin/python3.11'),
+            '-B', '-s', '-m', 'services.job_worker']
+    prepared = _prepare_image(request, root, deadline)
+    session = run_session(request, root, time.monotonic() + WORKFLOW_DEADLINE_SECONDS,
+                          prepared['descriptor'], prepared['inventory'],
+                          launch=_worker_launch, environment=environment, argv=argv)
+    session['prepared'] = prepared['summary']
+    return session
+
+
+def _probe_launch(context: dict) -> dict:
+    """Run the unmodified startup probe and report what it observed."""
+    from services.job_worker.p3_startup import probe_p3_startup      # noqa: PLC0415
+    mount, descriptor, request = context['mount'], context['descriptor'], context['request']
+    # The diagnostic used to run bubblewrap directly from /usr/bin/bwrap. That was an
+    # execution straight from a path, with no seal and no digest check at the moment it ran,
+    # inside the one operation whose whole point is that nothing executes unverified.
+    interpreter = mount / descriptor['python_root'] / 'bin/python3.11'
+    diagnostics = dict(interpreter_mode=oct(os.stat(interpreter).st_mode & 0o7777),
+                       can_execute=os.access(interpreter, os.X_OK))
+    closure = build_v2_closure(mount, descriptor, descriptor['external_libraries'],
+        context['inventory'], request['source'], request['environment_ref'],
+        request['job_id'], request['bwrap_sha256'])
+    return dict(startup=probe_p3_startup(closure, private_root=context['private']),
+                diagnostics=diagnostics)
+
+
+def _worker_launch(context: dict) -> dict:
+    """Report the readback, then become the existing worker entrypoint. Does not return.
+
+    Plan section 3.4 step 7 says the controller starts the worker entrypoint that already
+    exists, and the official runbook says it plainly: "no second launcher or execution engine
+    is needed". So this execs `python -m services.job_worker` inside the mount and stops being
+    the controller's business. Everything the worker needs authority for -- claiming a job,
+    its lease, the protected profile, the job store -- the worker obtains itself. A controller
+    that assembled a claim here would be manufacturing research authority, not exercising it.
+
+    The readback is written and the pipe closed before the exec, because exec replaces this
+    process: there is no "afterwards" in which to report.
+    """
+    mount, descriptor = context['mount'], context['descriptor']
+    write = context['write']
+    os.write(write, canonical_json_bytes(dict(
+        challenge=context['challenge'], launch='WORKER_ENTRYPOINT',
+        argv=context['argv'], open_fds=sorted(os.listdir('/proc/self/fd')))))
+    os.close(write)
+    os.execve(context['argv'][0], context['argv'], context['environment'])
+    raise TransportHeld('worker entrypoint did not replace the process')   # unreachable
+
+
+def run_session(request: dict, root: Path, deadline: float, descriptor: dict, inventory: dict,
+                launch=_probe_launch, environment: dict | None = None,
+                argv: list[str] | None = None) -> dict:
     """Mount the image this session just built and run the startup probe as the worker.
 
     This is the acceptance the whole transport exists for: the complete closure reaching an
@@ -1461,7 +1565,7 @@ def run_session(request: dict, root: Path, deadline: float,
     # Load the launcher and every model the closure needs while still privileged. The
     # worker cannot traverse the source tree after dropping to its own uid, and importing
     # application code before the drop is also the order the contract requires.
-    from services.job_worker.p3_startup import probe_p3_startup
+    import services.job_worker.p3_startup                      # noqa: F401
     import packages.alpha_lifecycle.contracts.base            # noqa: F401
     import packages.data_contracts                            # noqa: F401
     import services.job_worker.p3_host_profile                # noqa: F401
@@ -1508,23 +1612,15 @@ def run_session(request: dict, root: Path, deadline: float,
                     os.close(loop_fd)
                     os.close(image_fd)
                     drop_to_worker(descriptor['worker_uid'], descriptor['worker_gid'], controller)
-                    # The diagnostic used to run bubblewrap directly from /usr/bin/bwrap.
-                    # That was an execution straight from a path, with no seal and no digest
-                    # check at the moment it ran, inside the one operation whose whole point
-                    # is that nothing executes unverified. It is removed rather than sealed:
-                    # the verified launch below already covers what it reported.
-                    interpreter = mount / descriptor['python_root'] / 'bin/python3.11'
-                    diagnostics = dict(
-                        interpreter_mode=oct(os.stat(interpreter).st_mode & 0o7777),
-                        can_execute=os.access(interpreter, os.X_OK))
-                    closure = build_v2_closure(mount, descriptor, descriptor['external_libraries'],
-                        inventory, request['source'], request['environment_ref'],
-                        request['job_id'], request['bwrap_sha256'])
-                    proof = probe_p3_startup(closure, private_root=private)
-                    challenge = mount_challenge(mount, inventory, nonce)
-                    os.write(write, canonical_json_bytes(dict(startup=proof,
-                        challenge=challenge,
-                        diagnostics=diagnostics,
+                    # The challenge is computed before the launch because a launch that execs
+                    # has no afterwards in which to answer.
+                    context = dict(mount=mount, descriptor=descriptor, inventory=inventory,
+                                   request=request, private=private, nonce=nonce, write=write,
+                                   challenge=mount_challenge(mount, inventory, nonce),
+                                   environment=environment, argv=argv)
+                    observed = launch(context)
+                    os.write(write, canonical_json_bytes(dict(
+                        observed, challenge=context['challenge'],
                         open_fds=sorted(os.listdir('/proc/self/fd')))))
                 except BaseException as error:
                     os.write(write, canonical_json_bytes(dict(

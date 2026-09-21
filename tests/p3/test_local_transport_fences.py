@@ -742,11 +742,88 @@ def test_an_unreadable_claim_still_refuses_a_new_session(tmp_path):
         assert transport.require_task_claim(root, operation) is None
 
 
-def test_run_refuses_because_the_controller_is_not_the_session_owner(tmp_path):
-    # Not "unimplemented". The policy pins the driver entry; what a command line cannot supply
-    # is the campaign claim, the live lease and the worker runtime authority around it.
-    with pytest.raises(TransportHeld, match='not that owner and will not fabricate one'):
-        transport.command_run({'job_id': 'job'}, tmp_path, 0.0)
+# ---------------------------------------------------------------------------
+# B3.1 run starts the worker entrypoint that already exists
+# ---------------------------------------------------------------------------
+
+
+def _identity(**overrides):
+    return dict(issuer_kind='LOCAL', issuer_identity='operator-a',
+                run_id='00000000-0000-4000-8000-000000000002', attempt=1,
+                host_id='a' * 64, boot_id='b' * 8 + '-0000-4000-8000-000000000003', **overrides)
+
+
+def test_the_run_directory_is_derived_from_the_protected_identity(monkeypatch):
+    # B3.1: root paths come from the protected run identity, never from a caller. The
+    # derivation is the existing owner's, so controller and worker cannot disagree.
+    directory = transport._official_run_directory({'identity': _identity()})
+    assert directory == Path('/run/trading-agent-p3/local/operator-a'
+                             '/00000000-0000-4000-8000-000000000002-1')
+
+
+def test_a_github_identity_is_not_admitted_to_the_local_run(monkeypatch):
+    with pytest.raises(TransportHeld, match='LOCAL lane operation'):
+        transport._official_run_directory({'identity': dict(_identity(), issuer_kind='GITHUB')})
+
+
+def test_run_refuses_without_the_protected_host_profile(tmp_path, monkeypatch):
+    # The session the profile describes is installed by the owner protocol. Absent, the run
+    # stops here rather than launching a worker with nothing to authenticate against.
+    def missing(path):
+        raise FileNotFoundError(path)
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        missing)
+    with pytest.raises(TransportHeld, match='requires the protected host profile'):
+        transport._worker_environment({'identity': _identity()}, tmp_path,
+                                      'release', tmp_path/'worker')
+
+
+def test_a_profile_without_a_credential_directory_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        lambda path: ({'worker_credentials_directory': 'relative/path'}, 'd'))
+    with pytest.raises(TransportHeld, match='does not name a worker credential directory'):
+        transport._worker_environment({'identity': _identity()}, tmp_path,
+                                      'release', tmp_path/'worker')
+
+
+def test_the_worker_environment_is_closed_and_carries_the_profile_credentials(tmp_path,
+                                                                             monkeypatch):
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        lambda path: ({'worker_credentials_directory': '/run/creds'}, 'd'))
+    mount, private = tmp_path/'mnt', tmp_path/'worker'
+    environment = transport._worker_environment({'identity': _identity()}, mount,
+                                                'release', private)
+    # Nothing is inherited: the whole environment is derived, and the credential directory is
+    # the profile's, which p3_official.py rechecks against the profile it reads itself.
+    assert environment['CREDENTIALS_DIRECTORY'] == '/run/creds'
+    assert environment['P3_ISSUER_KIND'] == 'LOCAL'
+    assert environment['TRADING_WORKER_PROFILE'] == 'p3-official-v1'
+    assert environment['PYTHONPATH'] == f'{mount/"release"}:{mount/"release"/"site-packages"}'
+    assert 'LD_PRELOAD' not in environment and 'LD_LIBRARY_PATH' not in environment
+    assert set(environment) == {
+        'PATH', 'LANG', 'LC_ALL', 'TZ', 'HOME', 'PYTHONHASHSEED', 'PYTHONDONTWRITEBYTECODE',
+        'PYTHONPATH', 'TRADING_WORKER_PROFILE', 'P3_ISSUER_KIND', 'CREDENTIALS_DIRECTORY',
+        'P3_AUTHORITY_REQUEST_FILE'}
+
+
+def test_the_worker_launch_execs_the_existing_entrypoint(tmp_path, monkeypatch):
+    # "no second launcher or execution engine is needed": the launch must exec the module that
+    # already exists, after reporting, and must not return.
+    calls = {}
+    monkeypatch.setattr(transport.os, 'execve',
+                        lambda path, argv, env: calls.update(path=path, argv=argv, env=env))
+    written = []
+    monkeypatch.setattr(transport.os, 'write', lambda fd, data: written.append(data))
+    monkeypatch.setattr(transport.os, 'close', lambda fd: None)
+    monkeypatch.setattr(transport.os, 'listdir', lambda path: ['0', '1', '2'])
+    argv = ['/mnt/python/bin/python3.11', '-B', '-s', '-m', 'services.job_worker']
+    with pytest.raises(TransportHeld, match='did not replace the process'):
+        transport._worker_launch(dict(mount=tmp_path, descriptor={}, write=7,
+                                      challenge={'x': 'y'}, argv=argv,
+                                      environment={'P3_ISSUER_KIND': 'LOCAL'}))
+    assert calls['argv'][-2:] == ['-m', 'services.job_worker']
+    # Reported before the exec, because exec leaves no afterwards in which to answer.
+    assert written and b'WORKER_ENTRYPOINT' in written[0]
 
 
 # ---------------------------------------------------------------------------
