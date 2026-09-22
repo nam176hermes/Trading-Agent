@@ -30,6 +30,7 @@ from packages.local_authority import (                                     # noq
     AuthorityHeld, AuthorityStore, admit)
 from packages.local_pre_p3 import LOCAL_PRE_P3_GATES, read_local_pre_p3    # noqa: E402
 from packages.pre_p3_provenance import canonical_source_identity           # noqa: E402
+from packages.runtime_release.staging_v2 import _validate_validity          # noqa: E402
 
 REQUEST_PARENT = Path('/etc/trading-agent/local-p3-issuance')
 ACTION = 'ISSUE_RUNTIME_PROFILE'
@@ -70,14 +71,16 @@ def _staged_material(request: dict) -> dict:
         raise AuthorityHeld(f'staged authority material is absent: {authority_path}')
     raw = authority_path.read_bytes()
     material = json.loads(raw)
+    validity = material.get('validity')
+    _validate_validity(validity, now=datetime.now(UTC))
     application_root = Path(request['application_root'])
     application_python = Path(request['application_python'])
     for path in (application_root, application_python):
         if not path.exists():
             raise AuthorityHeld(f'staged application path is absent: {path}')
     return dict(static_authority_sha256=hashlib.sha256(raw).hexdigest(),
-                authority_generated_at=material.get('generated_at'),
-                authority_expires_at=material.get('expires_at'),
+                authority_generated_at=validity['generated_at_utc'],
+                authority_expires_at=validity['expires_at_utc'],
                 application_root=str(application_root),
                 application_python=str(application_python))
 

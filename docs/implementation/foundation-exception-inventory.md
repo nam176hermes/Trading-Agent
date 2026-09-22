@@ -688,7 +688,7 @@ scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATIO
 scripts/p3_authority.py|208|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_authority.py|256|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_local_install_approval.py|93|Exception|TOOLING_MIGRATION|RETURN
-scripts/p3_local_issue_runtime.py|149|Exception|TOOLING_MIGRATION|RETURN
+scripts/p3_local_issue_runtime.py|152|Exception|TOOLING_MIGRATION|RETURN
 scripts/p3_local_publish_runtime.py|83|Exception|TOOLING_MIGRATION|RETURN
 scripts/p3_local_transport.py|143|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|367|BaseException|TOOLING_MIGRATION|RAISE
