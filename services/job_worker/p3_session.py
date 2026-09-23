@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from packages.alpha_lifecycle.contracts.results import ParityResult
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
-    from .p3_host_profile import OfficialHostProfile, LocalOfficialHostProfile
+    from .p3_host_profile import ANY_OFFICIAL_PROFILE
     from .p3_native_spawn import P3NativeSpawnProvider
     from .p3_native_runner import NativeReplica
     from .process_runner import HeartbeatDecision, HeartbeatInstruction
@@ -198,7 +198,7 @@ class P3HoldoutSession:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> 'OfficialHostProfile | LocalOfficialHostProfile':
+    def _host(self, claim: ClaimedJob, digest: str) -> 'ANY_OFFICIAL_PROFILE':
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
             job_id=claim.job_id, payload=claim.payload, context=os.environ)

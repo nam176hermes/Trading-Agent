@@ -61,7 +61,7 @@ MAX_EXTERNAL_LIBRARY_BYTES = 16777216
 MAX_EXTERNAL_LIBRARY_TOTAL_BYTES = 268435456
 
 
-def _driver_profile(schema_version: str, runtime: str) -> dict:
+def _driver_profile(schema_version: str, runtime: str) -> dict[str, object]:
     return dict(
     schema_version=schema_version,policy_set_sha256=POLICY_SET_SHA256,
     bwrap_version=BWRAP_VERSION,bwrap_capabilities=BWRAP_CAPABILITIES,

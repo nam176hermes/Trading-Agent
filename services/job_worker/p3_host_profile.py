@@ -141,10 +141,11 @@ class LocalOfficialHostProfileV2(LocalOfficialHostProfileLane):
 if P3RuntimeImageDescriptor.model_fields['schema_version'].annotation != Literal[IMAGE_SCHEMA_VERSION]:
     raise RuntimeError('P3 image descriptor schema version differs from the pinned constant')
 
-OFFICIAL_PROFILE = TypeAdapter(Annotated[
-    OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
-    Field(discriminator='schema_version')])
 ANY_OFFICIAL_PROFILE = OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2
+# Typed explicitly: inferred through Annotated, validate_json loses the union and every
+# isinstance narrowing downstream degrades to Unknown.
+OFFICIAL_PROFILE: TypeAdapter[ANY_OFFICIAL_PROFILE] = TypeAdapter(Annotated[
+    ANY_OFFICIAL_PROFILE, Field(discriminator='schema_version')])
 
 
 class _HostFile(StrictModel):
