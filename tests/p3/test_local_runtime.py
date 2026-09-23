@@ -42,6 +42,24 @@ def test_local_runtime_binding_rejects_mismatches(tmp_path,monkeypatch,fault):
     else:module.validate_runtime_binding(profile,runtime,auth,source)
 
 
+def test_stage_carries_the_dashboard_build_the_hwc_proof_binds(tmp_path):
+    """A git-clone stage has no ignored .next; the LOCAL HWC readback hashes it there."""
+    from scripts.prepare_p3_local_runtime import _install_dashboard_build
+    from scripts.qualify_hwc_headless import _tree_sha
+    build=tmp_path/'build';(build/'static').mkdir(parents=True)
+    (build/'BUILD_ID').write_bytes(b'qualified\n');(build/'static/app.js').write_bytes(b'x'*257)
+    application=tmp_path/'application';(application/'apps/dashboard').mkdir(parents=True)
+    assert _install_dashboard_build(build,application)==_tree_sha(build)
+    assert (application/'apps/dashboard/.next/BUILD_ID').read_bytes()==b'qualified\n'
+    with pytest.raises(ValueError,match='must be new'):_install_dashboard_build(build,application)
+    with pytest.raises(ValueError,match='absolute'):_install_dashboard_build(Path('build'),application)
+    # A link is copied as a link, so the stage seal refuses it instead of following it.
+    other=tmp_path/'other';(other/'apps/dashboard').mkdir(parents=True)
+    (build/'escape').symlink_to('/etc/passwd')
+    _install_dashboard_build(build,other)
+    assert (other/'apps/dashboard/.next/escape').is_symlink()
+
+
 def test_local_stage_builder_requires_a_clean_committed_source(tmp_path):
     from scripts.prepare_p3_local_runtime import prepare_stage
     with pytest.raises(ValueError,match='clean|source'):

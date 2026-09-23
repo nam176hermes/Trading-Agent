@@ -143,8 +143,19 @@ uv run python scripts/prepare_p3_local_runtime.py \
   --source /absolute/clean/candidate \
   --stage /tmp/approved-private-slot/stage \
   --python-runtime /absolute/pinned-cpython-archive.tar.gz \
-  --uv /absolute/pinned/uv
+  --uv /absolute/pinned/uv \
+  --dashboard-build /tmp/approved-private-slot/dashboard-build
 ```
+
+`--dashboard-build` is the exact `apps/dashboard/.next` that the
+`HWC_PORTABLE_QUALIFIED` producer built. The LOCAL HWC proof binds its tree hash and
+every consumer re-validates it against the stage it reads, but a Git clone never
+contains that ignored directory, so a stage without it cannot pass
+`read_local_pre_p3`. Copy it from the producer checkout into the private slot as the
+service UID can read it (the builder runs as that UID and must not be given the
+operator's home), then pass that copy. The builder copies it verbatim before sealing,
+refuses links through the seal, and reports `dashboard_build_sha256`; confirm it equals
+`evidence.dashboard_build_sha256` in the HWC receipt before building authority bytes.
 
 `--python-runtime` is the archive pinned by `PAPER_PYTHON_RUNTIME_PROVENANCE`,
 not an arbitrary interpreter having the same version. The builder verifies it,

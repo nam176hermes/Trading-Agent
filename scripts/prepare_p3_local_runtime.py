@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,9 +21,29 @@ from packages.runtime_release.v2 import (
     PAPER_UV_PROVENANCE,construct_python_runtime_archive,construct_paper_backend_artifact,
     verify_python_runtime_execution,
 )
+from scripts.qualify_hwc_headless import _tree_sha
 
 
-def prepare_stage(source: Path,stage: Path,python_runtime: Path,uv: Path):
+def _install_dashboard_build(build: Path,application: Path) -> str:
+    """Carry the exact dashboard build into the stage before it is sealed.
+
+    The LOCAL HWC proof binds the tree hash of apps/dashboard/.next and is re-validated
+    against whatever root reads it. A git clone never contains that ignored build, so a
+    stage without it fails read_local_pre_p3 for every consumer. The copy is verbatim;
+    whether it is the qualified build is decided where the proof is checked, not here.
+    Links are copied as links so the seal below refuses them rather than following them.
+    """
+    if not build.is_absolute() or build.is_symlink() or not build.is_dir():
+        raise ValueError('dashboard build must be an absolute real directory')
+    target=application/'apps/dashboard/.next'
+    if target.exists() or target.is_symlink():raise ValueError('dashboard build destination must be new')
+    shutil.copytree(build,target,symlinks=True)
+    digest=_tree_sha(target)
+    if digest!=_tree_sha(build):raise ValueError('dashboard build changed while it was copied')
+    return digest
+
+
+def prepare_stage(source: Path,stage: Path,python_runtime: Path,uv: Path,dashboard_build: Path|None=None):
     try:
         if not (source/'.git').is_dir() or _git(source,'status','--porcelain','--untracked-files=all'):
             raise ValueError
@@ -66,6 +87,7 @@ def prepare_stage(source: Path,stage: Path,python_runtime: Path,uv: Path):
     (site/'p3_source.pth').write_text('../../../..\n../../../../apps/control_api\n')
     verify_python_runtime_execution(application/'.venv')
     verify_python_runtime_execution(stage/'backend/.venv')
+    dashboard=None if dashboard_build is None else _install_dashboard_build(dashboard_build,application)
     for path in sorted(stage.rglob('*'),key=lambda p:len(p.parts),reverse=True):
         info=path.lstat()
         if path.is_symlink() or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
@@ -76,15 +98,18 @@ def prepare_stage(source: Path,stage: Path,python_runtime: Path,uv: Path):
     if _git(application,'status','--porcelain','--untracked-files=all'):
         raise ValueError('sealed source differs')
     return {'source':identity,'application_root':str(application),'application_python':str(interpreter),
-        'scope':'PACKAGE6_STAGING_ONLY','status':'PREPARED_NOT_APPROVED'}
+        'dashboard_build_sha256':dashboard,'scope':'PACKAGE6_STAGING_ONLY','status':'PREPARED_NOT_APPROVED'}
 
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    for name in ('source','stage','python-runtime','uv'):parser.add_argument('--'+name,type=Path,required=True)
+    # A LOCAL runtime stage without the dashboard build can never pass the HWC readback,
+    # so the operator entrypoint requires it; prepare_stage keeps it optional for tests.
+    for name in ('source','stage','python-runtime','uv','dashboard-build'):
+        parser.add_argument('--'+name,type=Path,required=True)
     args=parser.parse_args()
     try:
-        result=prepare_stage(args.source,args.stage,args.python_runtime,args.uv)
+        result=prepare_stage(args.source,args.stage,args.python_runtime,args.uv,args.dashboard_build)
     except (OSError,ValueError,RuntimeError,subprocess.SubprocessError):
         print(json.dumps({'status':'HELD','reason':'LOCAL_STAGE_PREPARATION_FAILED'}));return 2
     print(json.dumps(result,sort_keys=True));return 0
