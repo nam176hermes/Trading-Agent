@@ -777,7 +777,7 @@ services/job_worker/p1_engine_spawn.py|417|BaseException|PRODUCTION_CRITICAL|RAI
 services/job_worker/p3_fixture_native.py|107|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_fixture_sql.py|751|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_holdout_release.py|155|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_host_profile.py|241|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_host_profile.py|242|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_integration.py|240|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_local_runtime.py|145|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_native_runner.py|126|Exception|PRODUCTION_CRITICAL|RAISE
