@@ -58,7 +58,7 @@ def test_fixture_failure_uses_the_actual_durable_state(started, storage_availabl
     def fail(_job, *, heartbeat, **kwargs):
         if started:
             heartbeat(actual.identity)
-        raise IntegrationExecutionError('postgresql://secret:password@private/fixture failed',outcome=actual)
+        raise IntegrationExecutionError('PRIVATE_FAILURE_DETAIL',outcome=actual)
 
     monkeypatch.setattr(executor,'run',fail)
     repository = P3Repository(job)
@@ -88,7 +88,7 @@ def test_fixture_failure_uses_the_actual_durable_state(started, storage_availabl
     assert diagnostic['attempt_id'] == job.attempt_id
     assert diagnostic['started'] is started
     assert diagnostic['reason_code'] == 'P3_INTEGRATION_FAILED'
-    assert b'password' not in raw and b'postgresql' not in raw
+    assert b'PRIVATE_FAILURE_DETAIL' not in raw
 
 
 def test_fixed_native_inputs_match_the_existing_approved_fixture(tmp_path):
