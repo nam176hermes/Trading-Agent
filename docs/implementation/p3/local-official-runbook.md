@@ -153,14 +153,47 @@ result refs for the next operation; never substitute fixture publication entries
    --proof-root <protected-compact-cas>`. The command checks payload scope,
    current source/research qualification and independent review before installing
    `/etc/trading-agent/local-qualification/<issuer>/operations/<nonce>.json`.
-4. Reuse `scripts/p3_authority.py enqueue` for exact SQL acceptance and Job API
-   enqueue; retain its canonical response. Use the installed request path,
-   original manifest/review files and existing role credentials. Prepare the
-   official runtime/profile for that returned job with the existing helpers.
-5. The authorized root controller invokes `run-operation --transport-request
-   <protected-request>`; this delegates to the existing transport, requiring its
+4. Stage the exact installed request with `stage-operation --request
+   <installed-request> --review <protected-review>`. It uses the qualified runtime
+   UID and its primary group, publishes canonical manifest/review bytes as
+   root:worker-group `0440`, and returns their immutable nonce-specific paths.
+   Partial staging is retained and cannot be replayed. Its parent run directory
+   and `host-inputs.json` must already be protected by the existing root protocol.
+5. As the configured worker UID, reuse `scripts/p3_authority.py enqueue` with
+   the returned request/manifest/review/preflight paths and existing acceptance
+   credentials. Enqueue creates the new `0700` preflight directory and retains
+   its `0600` canonical response. Each nonce has a different directory; do not
+   overwrite old enqueue evidence or use a root-owned preflight copy for the worker.
+6. The authorized root controller invokes `run-operation --transport-request
+   REQUEST_NAME.json`; this delegates to the existing transport, requiring its
    request operation to be `run`. It does not enqueue, retry or reset a database.
    Use `scripts/p3_authority.py wait` for the original enqueue's terminal readback.
+
+`REQUEST_NAME.json` is a **bare filename** within the transport's protected
+`REQUEST_PARENT`, not an absolute path. Pin the exact returned job ID, current
+source, environment, worker UID/GID and tools in that reviewed transport request.
+
+The root operator installs `host-inputs.json` (root:root `0444`, protected
+ancestors) in `local_run_directory(identity)`. Its strict schema is
+`p3-local-host-inputs-v1`, with `store_root`, `output_root`,
+`worker_credentials_directory`, `job_api_token_file`,
+`qualification_job_detail_ref`, `postgres_binary_sha256` and optional
+`custodian_endpoint`. Values must be actual configured paths and retained
+qualification references. The token file contains the existing Job API token,
+never an inline token in JSON. Store/output are distinct worker-owned private
+directories. Custody endpoint is consumed only for HOLDOUT.
+
+`scripts/p3_local_host.py` checks the exact enqueue under that worker UID using
+the qualified application's interpreter and source, then authenticates a fresh
+read-only Job API observation as root. After mounting, it derives the profile
+from the actual mounted closure, retains the separate host inventory in the
+worker CAS, and publishes `LocalOfficialHostProfileV2`. Full consumer readback
+runs in the same mount namespace before the existing worker starts. Image
+inventory and host inventory are distinct references. All helper work spends
+the original deadline. A per-run lock excludes concurrent research transports;
+replacement requires the next operation and authenticated success of its predecessor.
+`p3_local_publish_runtime.py` publishes only `runtime.json`; it does not produce
+these per-job profiles.
 
 For HOLDOUT, keep the transport running while the root issuer completes the
 handshake. Root records the actual fork child and the original pre-image deadline
@@ -185,15 +218,20 @@ connection to the same database, hashes the current lease token in SQL, and
 publishes only the next exact claim. Never use worker credentials for owner
 observation or print lease tokens.
 
-After each committed result, review/admit the next exact PARITY or PHASE_EXIT
-intent, publish its protected host profile through the existing runtime helper,
-enqueue and install its actual stage claim. Keep the original worker and released
+After each committed result, review/admit and `stage-operation` the next exact
+PARITY or PHASE_EXIT intent, then enqueue with the returned paths. Run
+`install-next-host --request <installed-request> --preflight <returned-preflight>
+--manifest <returned-manifest> --review <returned-review>` before installing the
+actual stage claim. It requires the original live session, previous stage record,
+authenticated prior success and next queued job; it changes only job ID, payload
+and custody endpoint. The continuing worker rechecks the mounted profile before
+claiming. Keep the original worker and released
 view; do not start another worker or another transport invocation for these stages.
 The deadline never restarts. Do not retry a failed admission/claim automatically;
 inspect authority and durable SQL state first. A session death or uncertain
 disclosure cannot authorize a second holdout.
 
-`cleanup --transport-request <protected-cleanup-request>` delegates to the
+`cleanup --transport-request CLEANUP_REQUEST_NAME.json` delegates to the
 existing transport cleanup; the request must explicitly specify `cleanup`.
 Retain the original failure, terminal SQL/readback, cleanup result, source,
 digests, identities, commands, timings and expiry in the external ledger.

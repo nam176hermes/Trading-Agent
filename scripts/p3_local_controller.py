@@ -190,6 +190,80 @@ def _document(path):
     return json.loads(raw)
 
 
+def stage_operation(request_path, review_path):
+    """Stage exact reviewed bytes; the existing enqueue creates its private nonce directory."""
+    import pwd
+    import stat
+    from contextlib import nullcontext
+    from packages.alpha_lifecycle.authority import (
+        _LocalRequestFile, local_run_directory, validate_local_operation_authority,
+    )
+    from scripts.p3_local_host import HostInputs
+    from scripts.p3_local_transport import TaskLock, _runtime_authority
+    from packages.local_authority import _fsync_directory
+    if os.geteuid() != 0:
+        raise PermissionError('operation staging requires root')
+    request = _protected_model(request_path, _LocalRequestFile)
+    auth = request.authorization
+    source = SourceIdentity.model_validate(_committed_source())
+    if (not isinstance(auth, LocalRunAuthorization) or request.operation_input is None
+        or validate_local_operation_authority(auth, source) != request):
+        raise ValueError('staging requires an installed current reviewed operation')
+    review = _protected_model(review_path, ReviewApproval)
+    raw_review = canonical_json_bytes(review)
+    if (len(raw_review) != auth.review_ref.size_bytes
+        or hashlib.sha256(raw_review).hexdigest() != auth.review_ref.content_sha256):
+        raise ValueError('staged review differs from admitted reference')
+    directory = local_run_directory(auth.identity)
+    _protected_model(directory/'host-inputs.json', HostInputs)
+    runtime = _runtime_authority(dict(identity=auth.identity.model_dump(mode='json')))
+    uid = runtime['uid']
+    if type(uid) is not int or uid <= 0:
+        raise ValueError('runtime worker UID is invalid')
+    gid = pwd.getpwuid(uid).pw_gid
+    if gid <= 0:
+        raise ValueError('runtime worker group is invalid')
+    late = auth.operation in {'PARITY', 'PHASE_EXIT'}
+    with (nullcontext() if late else TaskLock(directory)), AuthorityStore(auth.identity.issuer_identity).locked():
+        operations = directory/'operations'
+        if not operations.exists():
+            operations.mkdir(mode=0o755)
+            os.chmod(operations, 0o755)
+        info = operations.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o755:
+            raise ValueError('operation staging parent is unprotected')
+        destination = operations/str(auth.nonce)
+        destination.mkdir(mode=0o700)  # Exclusive; a partial prior attempt is retained.
+        os.chown(destination, 0, gid)
+        os.chmod(destination, 0o750)
+        for name, value in (('manifest.json', request.operation_input), ('review.json', review)):
+            fd = os.open(destination/name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o400)
+            with os.fdopen(fd, 'wb') as stream:
+                os.fchown(stream.fileno(), 0, gid)
+                os.fchmod(stream.fileno(), 0o440)
+                stream.write(canonical_json_bytes(value))
+                stream.flush()
+                os.fsync(stream.fileno())
+        private = directory/'preflight'
+        if not private.exists():
+            private.mkdir(mode=0o700)
+            os.chown(private, uid, gid)
+            os.chmod(private, 0o700)
+        info = private.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid
+            or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('preflight parent differs from the private worker role')
+        if validate_local_operation_authority(auth, source) != request:
+            raise ValueError('operation authority changed during staging')
+        for folder in (destination, operations, private, directory):
+            _fsync_directory(folder)
+        if not late:
+            path = directory/'authority-request.json'
+            publish_protected(path, canonical_json_bytes(request)+b'\n', replace=path.exists())
+    return dict(manifest=str(destination/'manifest.json'), review=str(destination/'review.json'),
+                preflight=str(private/str(auth.nonce)), request=str(request_path))
+
+
 def _session_context(request_path):
     from packages.alpha_lifecycle.authority import _LocalRequestFile, local_run_directory, validate_local_operation_authority
     from services.job_worker.p3_host_profile import OFFICIAL_PROFILE
@@ -367,6 +441,12 @@ def main(argv=None):
     stage = commands.add_parser('install-stage')
     stage.add_argument('--request', type=Path, required=True)
     stage.add_argument('--owner-credentials', type=Path, required=True)
+    next_host = commands.add_parser('install-next-host')
+    for arg in ('request', 'preflight', 'manifest', 'review'):
+        next_host.add_argument('--'+arg, type=Path, required=True)
+    staged = commands.add_parser('stage-operation')
+    for arg in ('request', 'review'):
+        staged.add_argument('--'+arg, type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == 'install-research':
         result = install_research(args.profile, args.review, minutes=args.minutes)
@@ -376,6 +456,11 @@ def main(argv=None):
         result = install_session(args.request, args.proof_root)
     elif args.command == 'install-stage':
         result = install_stage(args.request, args.owner_credentials)
+    elif args.command == 'install-next-host':
+        from scripts.p3_local_host import install_next_host
+        result = install_next_host(args.request, args.preflight, args.manifest, args.review)
+    elif args.command == 'stage-operation':
+        result = stage_operation(args.request, args.review)
     elif args.command in {'run-operation', 'cleanup'}:
         from scripts import p3_local_transport
         request = p3_local_transport.read_request(args.transport_request)

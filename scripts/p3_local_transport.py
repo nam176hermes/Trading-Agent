@@ -1648,7 +1648,8 @@ def _runtime_authority(request: dict) -> dict:
     return document
 
 
-def _worker_environment(request: dict, mount: Path, release_root: str, private: Path) -> dict:
+def _worker_environment(request: dict, mount: Path, release_root: str, private: Path,
+                        *, host: dict | None = None) -> dict:
     """The closed environment the existing worker entrypoint reads. Nothing is inherited.
 
     Every authority-bearing value comes from protected owner material: the LOCAL runtime
@@ -1679,7 +1680,8 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
                 'not by this controller') from error
         return document
 
-    host = protected(directory / 'profile.json', 'protected host profile')
+    if host is None:
+        host = protected(directory / 'profile.json', 'protected host profile')
     runtime = _runtime_authority(request)
 
     def absolute(source: dict, field: str, what: str) -> str:
@@ -1708,15 +1710,20 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
     authority_path = STORE_ROOT/request['identity']['issuer_identity']/'operations'/f'{nonce}.json'
     if protected(authority_path, 'current operation request') != staged:
         raise TransportHeld('staged operation differs from current protected authority')
+    operation_directory = directory
+    preflight = directory/'preflight'
+    if (directory/'host-inputs.json').exists():
+        operation_directory = directory/'operations'/nonce
+        preflight = preflight/nonce
     return dict(
         PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
         HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
         P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL',
         P3_AUTHORITY_REQUEST_FILE=str(authority_path),
-        P3_PREFLIGHT_DIRECTORY=str(directory / 'preflight'),
+        P3_PREFLIGHT_DIRECTORY=str(preflight),
         P3_ARTIFACT_ROOT=absolute(host, 'store_root', 'host profile'),
-        P3_MANIFEST_FILE=str(directory / 'manifest.json'),
-        P3_REVIEW_FILE=str(directory / 'review.json'),
+        P3_MANIFEST_FILE=str(operation_directory / 'manifest.json'),
+        P3_REVIEW_FILE=str(operation_directory / 'review.json'),
         CREDENTIALS_DIRECTORY=absolute(host, 'worker_credentials_directory', 'host profile'),
         **{STAGING_SCOPE_ENV: STAGING_SCOPE,
            STAGING_AUTHORITY_PATH_ENV: absolute(official, 'staging_authority_path', 'run request'),
@@ -1726,6 +1733,17 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
 
 
 def command_run(request: dict, root: Path, deadline: float) -> dict:
+    # Research jobs share a run profile: serialize their complete transport lifetimes.
+    directory = _official_run_directory(request)
+    if (directory/'host-inputs.json').exists():
+        from packages.runtime_release.config import read_protected_canonical_json_current
+        read_protected_canonical_json_current(directory/'host-inputs.json')
+        with TaskLock(directory):
+            return _command_run(request, root, deadline)
+    return _command_run(request, root, deadline)
+
+
+def _command_run(request: dict, root: Path, deadline: float) -> dict:
     """Build, mount, then become the worker entrypoint that already exists.
 
     Plan section 3.4 step 7: "start the existing worker entrypoint in that namespace, using
@@ -1733,17 +1751,21 @@ def command_run(request: dict, root: Path, deadline: float) -> dict:
     or execution engine is needed" -- and the phase workflow repeats it as a rule. So this
     mounts the image, drops to the worker, and execs `python -m services.job_worker`.
 
-    What it deliberately does not do is assemble the worker's authority. The campaign claim,
-    the lease, the protected profile and the job store are the worker's to obtain; a
-    controller that produced them would be manufacturing research authority rather than
-    exercising it.
+    The optional host producer binds the mounted bytes to the reviewed, already enqueued
+    job. Claims, leases and durable results remain the existing worker's responsibility.
     """
     # Resolved before anything is built. `_prepare_image` writes a durable claim and a
     # 170 MB artifact; discovering an absent protected profile afterwards would leave the task
     # claimed for a session that never started, and the next run would refuse it. This is the
     # same ordering the builder identity needed.
     mount, private = root / 'mnt', root / 'worker'
-    environment = _worker_environment(request, mount, request['release_root'], private)
+    host_preparation = None
+    if (_official_run_directory(request)/'host-inputs.json').exists():
+        from scripts.p3_local_host import prepare_host
+        host_preparation = prepare_host(request, root, deadline)
+        environment = host_preparation[3]
+    else:
+        environment = _worker_environment(request, mount, request['release_root'], private)
     # Re-read at admission rather than carried from the environment build: the contract wants
     # the authority revalidated at the moment it is used, not at the moment it was found.
     granted = _official_deadline(deadline, _runtime_authority(request).get('expires_at'))
@@ -1755,7 +1777,7 @@ def command_run(request: dict, root: Path, deadline: float) -> dict:
     prepared = _prepare_image(request, root, granted)
     session = run_session(request, root, granted, prepared['descriptor'], prepared['inventory'],
                           launch=_worker_launch, environment=environment, argv=argv,
-                          invocation_deadline=deadline)
+                          invocation_deadline=deadline, host_preparation=host_preparation)
     session['prepared'] = prepared['summary']
     return session
 
@@ -1862,7 +1884,8 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
 
 def run_session(request: dict, root: Path, deadline: float, descriptor: dict, inventory: dict,
                 launch=_probe_launch, environment: dict | None = None,
-                argv: list[str] | None = None, invocation_deadline: float | None = None) -> dict:
+                argv: list[str] | None = None, invocation_deadline: float | None = None,
+                host_preparation=None) -> dict:
     """Mount the image this session just built and run the startup probe as the worker.
 
     This is the acceptance the whole transport exists for: the complete closure reaching an
@@ -1911,6 +1934,10 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
             private = root / 'worker'
             private.mkdir(mode=0o700, exist_ok=True)
             os.chown(private, descriptor['worker_uid'], descriptor['worker_gid'])
+            if host_preparation is not None:
+                from scripts.p3_local_host import activate_mounted_host
+                environment = activate_mounted_host(request, root, descriptor, inventory,
+                                                    deadline, host_preparation)
             # Fence again immediately before the worker is admitted, so the window between
             # setup and use is covered rather than assumed.
             fences.append(dict(point='before-worker', nonce=nonce,
