@@ -696,9 +696,9 @@ scripts/p3_local_transport.py|368|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|412|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|456|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|1352|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_local_transport.py|1975|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_local_transport.py|2171|BaseException|TOOLING_MIGRATION|RAISE
-scripts/p3_local_transport.py|2180|Exception|TOOLING_MIGRATION|RETURN
+scripts/p3_local_transport.py|1989|BaseException|TOOLING_MIGRATION|OTHER
+scripts/p3_local_transport.py|2185|BaseException|TOOLING_MIGRATION|RAISE
+scripts/p3_local_transport.py|2194|Exception|TOOLING_MIGRATION|RETURN
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
 scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
@@ -916,10 +916,10 @@ tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5251|BaseException|TESTS|OTHER
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5681|BaseException|TESTS|OTHER
 tests/p3/test_holdout_disclosure_client.py|55|BaseException|TESTS|RAISE
-tests/p3/test_local_transport_fences.py|1092|BaseException|TESTS|OTHER
-tests/p3/test_local_transport_fences.py|1115|BaseException|TESTS|OTHER
-tests/p3/test_local_transport_fences.py|1165|BaseException|TESTS|OTHER
-tests/p3/test_local_transport_fences.py|1186|BaseException|TESTS|OTHER
+tests/p3/test_local_transport_fences.py|1146|BaseException|TESTS|OTHER
+tests/p3/test_local_transport_fences.py|1169|BaseException|TESTS|OTHER
+tests/p3/test_local_transport_fences.py|1219|BaseException|TESTS|OTHER
+tests/p3/test_local_transport_fences.py|1240|BaseException|TESTS|OTHER
 tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
 tests/security_master/test_postgres_repository.py|50|BaseException|TESTS|RAISE
 ```
