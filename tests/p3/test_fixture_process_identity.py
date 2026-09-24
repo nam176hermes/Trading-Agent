@@ -6,7 +6,7 @@ import pytest
 
 from packages.job_contracts import JobType
 from services.job_worker.process_runner import HeartbeatDecision
-from services.job_worker.results import ResultValidationError
+from services.job_worker.results import ResultValidator
 from services.job_worker.worker import JobWorker
 from tests.jobs.test_worker_lifecycle import claim, outcome, safety_evidence
 from tests.p3.test_job_api import _alpha_request
@@ -15,7 +15,7 @@ from tests.jobs.test_repository_transition_capabilities import _Connection, _wor
 
 
 @pytest.mark.parametrize("accepted", [False, True])
-def test_fixture_rebinds_each_child_before_extending_its_lease(accepted, monkeypatch):
+def test_fixture_rebinds_each_child_before_extending_its_lease(accepted, monkeypatch, tmp_path):
     payload = _alpha_request().payload.model_copy(update={
         "operation": "PARITY", "logical_trial_id": "p3-integration-fixture-v1",
     })
@@ -36,10 +36,6 @@ def test_fixture_rebinds_each_child_before_extending_its_lease(accepted, monkeyp
             self.decisions = [heartbeat(first), heartbeat(first), heartbeat(second)]
             return outcome()
 
-    class Validator:
-        def validate_p3(self, *args, **kwargs):
-            raise ResultValidationError("synthetic test has no qualification receipt")
-
     repository, runner = Repository(claimed), Runner()
     from services.job_worker.p3_integration import P3IntegrationFixtureExecutor, IntegrationExecutionError
     executor = object.__new__(P3IntegrationFixtureExecutor)
@@ -51,7 +47,8 @@ def test_fixture_rebinds_each_child_before_extending_its_lease(accepted, monkeyp
     monkeypatch.setattr(executor,"run",execute)
 
     worker = JobWorker(
-        repository, runner, Validator(), worker_id="worker-1", code_commit="e" * 40,
+        repository, runner, ResultValidator(tmp_path, tmp_path, tmp_path),
+        worker_id="worker-1", code_commit="e" * 40,
         environment=object(), safety_preflight=lambda: safety_evidence("4" * 64),
         prepare_spawn=lambda _: object(), p3_profile=True, p3_publisher=object(),
         p3_fixture_executor=executor,
