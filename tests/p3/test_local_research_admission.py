@@ -285,6 +285,40 @@ def test_official_compact_admission_binds_proof_without_private_dataset_access(
     if fault:
         with pytest.raises(ValueError):
             module.read_local_research_inputs(identity, **kwargs)
+        if fault == 'backup_subject':
+            # The issuer must run the same semantic checks BEFORE replacing active authority.
+            from contextlib import nullcontext
+            from types import SimpleNamespace
+            from scripts import p3_local_controller as controller
+            from packages.alpha_lifecycle.contracts.authority import ReviewApproval
+            class Clock(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return NOW
+            review = ReviewApproval.model_validate_json(canonical_json_bytes(sealed(dict(
+                schema_version='p3-review-approval-v1', source=source,
+                subject_digests=[json.loads(store.read_bytes(input_ref))['digest'], proof['digest']],
+                operator_identity='operator', reviewer_identity='independent-agent', review_execution_id='review-1',
+                verdict='APPROVED', issued_at='2026-09-18T11:59:00Z', expires_at='2026-09-18T13:00:00Z',
+                evidence_ref=placeholder, authority=SAFE))))
+            typed_profile = module.LocalResearchProfile.model_validate_json(canonical_json_bytes(profile))
+            monkeypatch.setattr(controller, 'datetime', Clock)
+            monkeypatch.setattr(controller.os, 'geteuid', lambda:0)
+            monkeypatch.setattr(controller, '_committed_source', lambda:source)
+            monkeypatch.setattr(controller, '_host_identity', lambda:(identity.host_id, identity.boot_id))
+            monkeypatch.setattr(controller, 'protected_backup_identity', lambda _:(1,2,3,4))
+            monkeypatch.setattr(controller, 'ProtectedQualificationStore', lambda _:CompactStore())
+            monkeypatch.setattr(controller, '_protected_model',
+                lambda path, model:review if model is ReviewApproval else typed_profile)
+            monkeypatch.setattr(controller, '_protected_put', lambda _, value:retain(value))
+            monkeypatch.setattr(controller, 'read_protected_canonical_json_current', lambda _:({}, 'a'*64))
+            monkeypatch.setattr(controller, 'AuthorityStore',
+                lambda _:SimpleNamespace(path=Path('/etc/synthetic'), locked=nullcontext))
+            def publish(*args, **kwargs):
+                pytest.fail('invalid research graph reached active authority publication')
+            monkeypatch.setattr(controller, 'publish_protected', publish)
+            with pytest.raises(ValueError, match='proof subject'):
+                controller.install_research(Path('/synthetic/profile'), Path('/synthetic/review'), minutes=30)
     else:
         result = module.read_local_research_inputs(identity, **kwargs)
         assert result.binding.input_ref == input_ref

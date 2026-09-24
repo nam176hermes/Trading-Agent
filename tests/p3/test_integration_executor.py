@@ -42,7 +42,8 @@ def test_sql_executor_is_owned_by_worker_and_does_not_import_tests():
 
 
 @pytest.mark.parametrize('started', [False, True])
-def test_fixture_failure_uses_the_actual_durable_state(started, monkeypatch):
+@pytest.mark.parametrize('storage_available', [False, True])
+def test_fixture_failure_uses_the_actual_durable_state(started, storage_available, monkeypatch, tmp_path):
     from services.job_worker.p3_integration import P3IntegrationFixtureExecutor, IntegrationExecutionError
     from services.job_worker.worker import JobWorker
     from tests.p3.test_worker_profile import P3Repository
@@ -57,11 +58,16 @@ def test_fixture_failure_uses_the_actual_durable_state(started, monkeypatch):
     def fail(_job, *, heartbeat, **kwargs):
         if started:
             heartbeat(actual.identity)
-        raise IntegrationExecutionError('fixture failed',outcome=actual)
+        raise IntegrationExecutionError('postgresql://secret:password@private/fixture failed',outcome=actual)
 
     monkeypatch.setattr(executor,'run',fail)
     repository = P3Repository(job)
-    worker = JobWorker(repository,object(),object(),worker_id='worker-1',code_commit='e'*40,
+    artifact_root = tmp_path
+    if not storage_available:
+        # A regular file where ArtifactWriter needs a directory raises ValueError.
+        artifact_root = tmp_path/'unavailable'
+        artifact_root.write_text('unavailable')
+    worker = JobWorker(repository,object(),ResultValidator(tmp_path,tmp_path,artifact_root),worker_id='worker-1',code_commit='e'*40,
         environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
         prepare_spawn=lambda _:None,p3_profile=True,p3_publisher=object(),p3_fixture_executor=executor)
     assert worker.run_once()
@@ -69,6 +75,20 @@ def test_fixture_failure_uses_the_actual_durable_state(started, monkeypatch):
     assert final['expected_state'] == ('RUNNING' if started else 'CLAIMED')
     assert final['final_state'] == ('FAILED' if started else 'BLOCKED')
     assert final['outcome'] is actual
+    import json
+    artifacts = final['stream_artifacts']
+    if not storage_available:
+        assert artifacts == ()
+        return
+    assert len(artifacts) == 1
+    raw = (tmp_path / artifacts[0].relative_ref).read_bytes()
+    diagnostic = json.loads(raw)
+    assert diagnostic['exception_type'] == 'IntegrationExecutionError'
+    assert diagnostic['job_id'] == job.job_id
+    assert diagnostic['attempt_id'] == job.attempt_id
+    assert diagnostic['started'] is started
+    assert diagnostic['reason_code'] == 'P3_INTEGRATION_FAILED'
+    assert b'password' not in raw and b'postgresql' not in raw
 
 
 def test_fixed_native_inputs_match_the_existing_approved_fixture(tmp_path):
@@ -188,7 +208,7 @@ def test_alpha_recovery_uses_its_sql_capability():
     assert 'worker_recover_expired_alpha_campaign' in connection.calls[0][0]
 
 
-def test_unverified_sql_cleanup_blocks_attempt_without_retry(monkeypatch):
+def test_unverified_sql_cleanup_blocks_attempt_without_retry(monkeypatch, tmp_path):
     from services.job_worker.p3_integration import P3IntegrationFixtureExecutor, IntegrationExecutionError
     from services.job_worker.worker import JobWorker
     from tests.p3.test_worker_profile import P3Repository
@@ -202,7 +222,7 @@ def test_unverified_sql_cleanup_blocks_attempt_without_retry(monkeypatch):
         raise IntegrationExecutionError('SQL cleanup unverified',cleanup_unverified=True)
     monkeypatch.setattr(executor,'run',fail)
     repository = P3Repository(job)
-    worker = JobWorker(repository,object(),object(),worker_id='worker-1',code_commit='e'*40,
+    worker = JobWorker(repository,object(),ResultValidator(tmp_path,tmp_path,tmp_path),worker_id='worker-1',code_commit='e'*40,
         environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
         prepare_spawn=lambda _:None,p3_profile=True,p3_publisher=object(),p3_fixture_executor=executor)
     assert worker.run_once()
@@ -233,7 +253,7 @@ def test_fixture_worker_entrypoint_composes_the_exact_executor(tmp_path, monkeyp
     ({'blocked':True},'P3_AUTHORITY_HELD'),
     ({'control':'SAFETY_DRIFT','reason_code':'SAFETY_EXPIRED'},'SAFETY_EXPIRED'),
 ])
-def test_post_native_authority_failure_blocks_and_retains_lineage(details, reason, monkeypatch):
+def test_post_native_authority_failure_blocks_and_retains_lineage(details, reason, monkeypatch, tmp_path):
     from services.job_worker.p3_integration import P3IntegrationFixtureExecutor, IntegrationExecutionError
     from services.job_worker.worker import JobWorker
     from tests.p3.test_worker_profile import P3Repository
@@ -248,7 +268,7 @@ def test_post_native_authority_failure_blocks_and_retains_lineage(details, reaso
         raise IntegrationExecutionError('authority changed',outcome=actual,**details)
     monkeypatch.setattr(executor,'run',fail)
     repository = P3Repository(job)
-    worker = JobWorker(repository,object(),object(),worker_id='worker-1',code_commit='e'*40,
+    worker = JobWorker(repository,object(),ResultValidator(tmp_path,tmp_path,tmp_path),worker_id='worker-1',code_commit='e'*40,
         environment=object(),safety_preflight=lambda:safety_evidence('4'*64),
         prepare_spawn=lambda _:None,p3_profile=True,p3_publisher=object(),p3_fixture_executor=executor)
     assert worker.run_once()

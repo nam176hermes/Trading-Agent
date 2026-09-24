@@ -57,7 +57,7 @@ class IntegrationExecution:
 
 
 class IntegrationExecutionError(RuntimeError):
-    def __init__(self, message, *, outcome=None, native_runs=(), cleanup_unverified=False, control=None, blocked=False, reason_code=None):
+    def __init__(self, message, *, outcome=None, native_runs=(), cleanup_unverified=False, control=None, blocked=False, reason_code=None, stage='UNKNOWN', last_check=None):
         super().__init__(message)
         self.outcome = outcome
         self.native_runs = tuple(native_runs)
@@ -65,6 +65,8 @@ class IntegrationExecutionError(RuntimeError):
         self.control = control
         self.blocked = blocked
         self.reason_code = reason_code
+        self.stage = stage
+        self.last_check = last_check
 
 
 def _read_authority_bytes(path: Path) -> bytes:
@@ -157,6 +159,7 @@ class P3IntegrationFixtureExecutor:
     def run(self, job, *, heartbeat, preflight, progress) -> IntegrationExecution:
         runs = ()
         root = None
+        stage = 'AUTHORITY'
         try:
             source, authorization, plan = self._attest(job)
             fd = _open_directory_chain(self.private_root)
@@ -175,6 +178,7 @@ class P3IntegrationFixtureExecutor:
             if payload_digest(command) != plan.native_request_digest:
                 raise AuthorityHeld('HELD E_NATIVE_INPUT: approved fixed fixture differs')
             provider = build_p1_engine_spawn_provider(self.closure_config,transport,bindings)
+            stage = 'NATIVE'
             runs = run_native_fixture(job,command,provider,artifact_root=root/'runs',
                                       heartbeat=heartbeat,preflight=preflight)
             if (len(runs) != 3 or len({run.request.engine_run_id for run in runs}) != 3
@@ -196,6 +200,7 @@ class P3IntegrationFixtureExecutor:
             native_ref = self.store.put_bytes(canonical_json_bytes({
                 'schema_version':'p3-native-fixture-proof-v1','source':source,'runs':native_records,
             }),media_type='application/json')
+            stage = 'SQL'
             sql = run_sql_fixture(source,progress=progress,heartbeat=heartbeat,
                                   local_identity_source_checks=isinstance(authorization,_LocalFixtureAuthorization),
                                   owned_root=self.private_root/("sql-"+hashlib.sha256(
@@ -216,6 +221,7 @@ class P3IntegrationFixtureExecutor:
                 validate_local_sql_fixture_checks(sql)
             sql_ref = self.store.put_bytes(canonical_json_bytes(sql),media_type='application/json')
             progress()
+            stage = 'CLEANUP'
             shutil.rmtree(root)
             if root.exists():
                 raise RuntimeError('native fixture cleanup incomplete')
@@ -225,6 +231,7 @@ class P3IntegrationFixtureExecutor:
                 'sql_cleanup':sql['cleanup'],
             }),media_type='application/json')
             progress()
+            stage = 'RECEIPT'
             preflight()
             if self._attest(job) != (source, authorization, plan):
                 raise AuthorityHeld('HELD E_AUTHORITY: fixture authority changed during execution')
@@ -249,4 +256,5 @@ class P3IntegrationFixtureExecutor:
                     raise IntegrationExecutionError(f'fixture failed and cleanup failed; retained {root}',outcome=outcome,native_runs=completed) from ExceptionGroup('fixture and cleanup failed',[error,cleanup_error])
             raise IntegrationExecutionError(str(error),outcome=outcome,native_runs=completed,
                 cleanup_unverified=getattr(error,"cleanup_unverified",False),control=getattr(error,"control",None),
-                blocked=isinstance(error,AuthorityHeld),reason_code=getattr(error,"reason_code",None)) from error
+                blocked=isinstance(error,AuthorityHeld),reason_code=getattr(error,"reason_code",None),
+                stage=stage,last_check=getattr(error,'last_check',None)) from error

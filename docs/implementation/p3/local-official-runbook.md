@@ -7,9 +7,9 @@ This local execution does not authorize push, PR, merge or hosted publication.
 
 ## Checkpoint and source
 
-Continue the standalone `codex/p3-official-completion` clone descended from
-`ee1aa3f91f44497fd833a408c61e51b8e96ae42d`. Preserve the canonical checkout,
-the earlier candidate and every historical receipt. The external execution
+Continue the standalone candidate identified in the external execution ledger;
+the R06–R11 follow-up starts from `4a1b7226e96a966cfcbf9fe1276d8cd22eb4e5b7`.
+Preserve the canonical checkout, the earlier candidate and every historical receipt. The external execution
 `STATE.json` records the current source, remaining tasks, expiry and disclosure
 history. Unknown disclosure history blocks a real holdout.
 
@@ -69,16 +69,46 @@ backup objects. It rechecks root custody and protected approval after semantic
 readback. `P3_RESEARCH_INPUTS` is an operation admission gate, not an additional
 fixed Pre-P3 prerequisite. Other gates retain their existing policy-file hash.
 
+The bounded controller reuses these producers and validators:
+
+```bash
+uv run python scripts/p3_local_controller.py prepare-inputs \
+  --request /absolute/evidence/input-refs.json \
+  --store /absolute/private/research-cas --output /absolute/evidence/input-set-ref.json
+```
+
+`input-refs.json` has exactly `dataset_ref`, `commitment_ref`, `pit_suite_ref`,
+`environment_ref` and `integration_receipt_ref`. All are retained ArtifactRefV1
+objects from the same candidate. The producer enforces the ordered 2,800-day
+window, builds the frozen folds and computes regimes from training data only.
+Synthetic receipts in tests grant no authority to this command.
+
+After the existing root custody step, place the exact proposed
+`LocalResearchProfile`, compact proof copies, independent `ReviewApproval` and
+its retained evidence under protected root directories. The review subjects
+must be exactly the InputSet digest and LocalResearchProof digest. Then the
+authorized root operator uses the frozen interpreter/controller:
+
+```bash
+python scripts/p3_local_controller.py install-research \
+  --profile /absolute/protected/research-profile-proposal.json \
+  --review /absolute/protected/research-review.json --minutes 60
+```
+
+This command does not seal caller-owned directories. It rejects unprotected
+ancestors, validates the compact graph before replacing active authority,
+publishes under the existing issuer lock and reads back through the admission
+consumer. Validity is at most two hours and cannot exceed the review. The
+receipt remains subject to independent producer/full-backup-readback review.
+
 ## Official launcher
 
-Official execution is currently **HELD** by the accepted runtime transport.
-The pinned CPython core contains 4,306 files. Mounting each sealed file requires
-five arguments, exceeding bubblewrap 0.9.0's 9,000-argument limit before adding
-dependencies. The actual host startup probe rejects this closure. Removing dev
-dependencies fixes the separate argv byte limit but cannot fix the token limit;
-`--args FD` is subject to the same counter. A reviewed immutable-transport plan
-delta and fresh qualification are required. Do not change the pinned core,
-weaken sealing, or treat the commands below as an operational PASS.
+LOCAL v2 uses the accepted SquashFS transport implemented in
+`scripts/p3_local_transport.py`; the earlier per-file bubblewrap argument limit
+is historical. The controller owns image construction, loop/mount identity,
+generation checks and cleanup. The current external ledger, exact-candidate
+qualification and actual rehearsal determine operational readiness. Source or
+unit-test completion alone does not establish an operational PASS.
 
 Use the existing `python -m services.job_worker` entry with
 `TRADING_WORKER_PROFILE=p3-official-v1` and `P3_ISSUER_KIND=LOCAL`, the protected
@@ -101,6 +131,72 @@ The preflight retains the original startup approval guard in addition to its
 own checks, including construction and both sides of dynamic refresh. A valid
 replacement approval cannot silently replace the digest pinned at startup.
 PARITY and PHASE_EXIT remain available only through the existing holdout session.
+
+## Reviewed operation and session sequence
+
+Run research operations in this order: `p3-baselines-v1`,
+`p3-register-family-v1`, `p3-oos-a0-v1` through `p3-oos-a3-v1`, then
+`p3-select-primary-v1`. Reuse existing manifest/registry producers and committed
+result refs for the next operation; never substitute fixture publication entries.
+
+1. `p3_local_controller.py propose-operation --request <proposal> --store <cas>
+   --output <new-intent>` accepts `workflow_operation`, `input_set_ref`, typed
+   `body`, and `primary_alpha_id` only for primary stages. Body references must
+   already exist. This grants no execution authority.
+2. Obtain independent review of those exact bytes and retain its report. Run
+   `prepare-authorization` with the same CLI flags; its request contains `intent`,
+   `identity`, `review_ref` and `expires_at`. It emits a bounded proposal with a
+   fresh nonce. Never invent reviewer identities or preapprove future output.
+3. The root operator stages a protected `p3-local-authority-request-v1` containing
+   `execution_source`, `authorization` and `operation_input`, then runs
+   `install-reviewed --request <protected-proposal> --review <protected-review>
+   --proof-root <protected-compact-cas>`. The command checks payload scope,
+   current source/research qualification and independent review before installing
+   `/etc/trading-agent/local-qualification/<issuer>/operations/<nonce>.json`.
+4. Reuse `scripts/p3_authority.py enqueue` for exact SQL acceptance and Job API
+   enqueue; retain its canonical response. Use the installed request path,
+   original manifest/review files and existing role credentials. Prepare the
+   official runtime/profile for that returned job with the existing helpers.
+5. The authorized root controller invokes `run-operation --transport-request
+   <protected-request>`; this delegates to the existing transport, requiring its
+   request operation to be `run`. It does not enqueue, retry or reset a database.
+   Use `scripts/p3_authority.py wait` for the original enqueue's terminal readback.
+
+For HOLDOUT, keep the transport running while the root issuer completes the
+handshake. Root records the actual fork child and the original pre-image deadline
+in `session-launch.json`. After exec, the worker writes a private observation
+before opening SQL and waits for protected admission. Run:
+
+```bash
+python scripts/p3_local_controller.py install-session \
+  --request /absolute/protected/installed-operation.json \
+  --proof-root /absolute/protected/compact-cas
+python scripts/p3_local_controller.py install-stage \
+  --request /absolute/protected/installed-operation.json \
+  --owner-credentials /absolute/protected/owner-credentials
+```
+
+`install-session` verifies PID, start ticks, process fingerprint, UID, parent,
+host profile and deadline against `/proc` and the root launch record. It derives
+the session's primary/custody refs from the admitted HOLDOUT intent. It refuses
+an existing session; there is no automatic replay. `install-stage` must run
+after the worker's actual claim is visible. It uses a read-only `trading_owner`
+connection to the same database, hashes the current lease token in SQL, and
+publishes only the next exact claim. Never use worker credentials for owner
+observation or print lease tokens.
+
+After each committed result, review/admit the next exact PARITY or PHASE_EXIT
+intent, publish its protected host profile through the existing runtime helper,
+enqueue and install its actual stage claim. Keep the original worker and released
+view; do not start another worker or another transport invocation for these stages.
+The deadline never restarts. Do not retry a failed admission/claim automatically;
+inspect authority and durable SQL state first. A session death or uncertain
+disclosure cannot authorize a second holdout.
+
+`cleanup --transport-request <protected-cleanup-request>` delegates to the
+existing transport cleanup; the request must explicitly specify `cleanup`.
+Retain the original failure, terminal SQL/readback, cleanup result, source,
+digests, identities, commands, timings and expiry in the external ledger.
 
 ## Custodian producer and serving
 

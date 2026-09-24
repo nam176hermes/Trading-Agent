@@ -240,6 +240,25 @@ def read_local_research_inputs(
     receipt = require_research_inputs_qualified(identity, source=source,
         policy_digest=policy_digest, input_set_ref=input_set_ref,
         environment_ref=inputs.environment_ref, store=store)
+    validate_local_research_graph(profile, inputs, receipt, store)
+    # Recheck the approval after semantic reads, including a withdrawal in the last read.
+    if protected_backup_identity(Path(profile.backup_store_root)) != profile.backup_root_identity:
+        raise ValueError('local research backup custody root changed during admission')
+    if require_research_inputs_qualified(identity, source=source, policy_digest=policy_digest,
+        input_set_ref=input_set_ref, environment_ref=inputs.environment_ref, store=store) != receipt:
+        raise ValueError('local research approval changed during semantic validation')
+    try:
+        if read_protected_canonical_json_current(path)[1] != digest:
+            raise ValueError('local research profile changed during admission')
+    except ProtectedAuthorityError as error:
+        raise ValueError('local research profile was withdrawn during admission') from error
+    return receipt
+
+
+def validate_local_research_graph(profile, inputs, receipt, store):
+    """One compact semantic validator shared by issuer preflight and admission."""
+    identity = profile.identity
+    policy_digest = inputs.policy_digest
     _read(store, inputs.environment_ref, EnvironmentIdentity)
     pit = _read(store, inputs.pit_proof_ref, PITProof)
     commitment = _read(store, profile.commitment_ref, P3LocalResearchBatchCommitment)
@@ -274,15 +293,3 @@ def read_local_research_inputs(
         or backup.total_bytes < commitment.inventory_size_bytes + inputs.dataset_evidence_ref.size_bytes
         or not commitment.completed_at <= backup.verified_at <= commitment.issued_at <= receipt.completed_at):
         raise ValueError('local research proof subject, producer, backup or timing differs')
-    # Recheck the approval after semantic reads, including a withdrawal in the last read.
-    if protected_backup_identity(Path(profile.backup_store_root)) != profile.backup_root_identity:
-        raise ValueError('local research backup custody root changed during admission')
-    if require_research_inputs_qualified(identity, source=source, policy_digest=policy_digest,
-        input_set_ref=input_set_ref, environment_ref=inputs.environment_ref, store=store) != receipt:
-        raise ValueError('local research approval changed during semantic validation')
-    try:
-        if read_protected_canonical_json_current(path)[1] != digest:
-            raise ValueError('local research profile changed during admission')
-    except ProtectedAuthorityError as error:
-        raise ValueError('local research profile was withdrawn during admission') from error
-    return receipt

@@ -137,6 +137,7 @@ def _durable_write(path: Path, payload: bytes, mode: int = 0o400) -> str:
     fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
     try:
         with os.fdopen(fd, 'wb') as handle:
+            os.fchmod(handle.fileno(), mode)
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
@@ -1692,11 +1693,26 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
     # checkout, and the worker derives its own source identity from where its module lives.
     application_root = absolute(runtime, 'application_root', 'runtime profile')
     application_python = absolute(runtime, 'application_python', 'runtime profile')
+    # The LOCAL consumer dispatches by the protected operation path. A copy under
+    # /run is a staging record, not a second authority path (and selects GITHUB).
+    from uuid import UUID
+    staged = protected(directory/'authority-request.json', 'staged operation request')
+    authorization = staged.get('authorization', {})
+    if (authorization.get('schema_version') != 'p3-local-run-authorization-v1'
+        or authorization.get('identity') != request['identity']):
+        raise TransportHeld('staged operation identity or lane differs')
+    try:
+        nonce = str(UUID(authorization['nonce']))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        raise TransportHeld('staged operation nonce is invalid') from None
+    authority_path = STORE_ROOT/request['identity']['issuer_identity']/'operations'/f'{nonce}.json'
+    if protected(authority_path, 'current operation request') != staged:
+        raise TransportHeld('staged operation differs from current protected authority')
     return dict(
         PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
         HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
         P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL',
-        P3_AUTHORITY_REQUEST_FILE=str(directory / 'authority-request.json'),
+        P3_AUTHORITY_REQUEST_FILE=str(authority_path),
         P3_PREFLIGHT_DIRECTORY=str(directory / 'preflight'),
         P3_ARTIFACT_ROOT=absolute(host, 'store_root', 'host profile'),
         P3_MANIFEST_FILE=str(directory / 'manifest.json'),
@@ -1738,7 +1754,8 @@ def command_run(request: dict, root: Path, deadline: float) -> dict:
     argv = [environment['P3_APPLICATION_PYTHON'], '-I', '-B', '-m', 'services.job_worker']
     prepared = _prepare_image(request, root, granted)
     session = run_session(request, root, granted, prepared['descriptor'], prepared['inventory'],
-                          launch=_worker_launch, environment=environment, argv=argv)
+                          launch=_worker_launch, environment=environment, argv=argv,
+                          invocation_deadline=deadline)
     session['prepared'] = prepared['summary']
     return session
 
@@ -1817,9 +1834,35 @@ def _worker_launch(context: dict) -> dict:
     raise TransportHeld('worker entrypoint did not replace the process')   # unreachable
 
 
+def _publish_session_launch(request, descriptor, child, deadline, invocation_deadline):
+    """Bind the actual fork child and the original pre-build budget for the worker."""
+    from datetime import UTC, datetime, timedelta
+    from packages.runtime_release.config import read_protected_canonical_json_current
+    from services.job_worker.p3_session import LocalSessionLaunch
+    if invocation_deadline is None:
+        raise TransportHeld('official holdout lost its original transport deadline')
+    directory = _official_run_directory(request)
+    host, digest = read_protected_canonical_json_current(directory/'profile.json')
+    now, observed = datetime.now(UTC), time.monotonic()
+    started = now-timedelta(seconds=WORKFLOW_DEADLINE_SECONDS-(invocation_deadline-observed))
+    expires = now+timedelta(seconds=deadline-observed)
+    if not started <= now < expires <= started+timedelta(seconds=WORKFLOW_DEADLINE_SECONDS):
+        raise TransportHeld('official holdout transport deadline invalid')
+    value = LocalSessionLaunch.model_validate_json(canonical_json_bytes(dict(
+        schema_version='p3-local-session-launch-v1', identity=request['identity'],
+        source=host['payload']['expected_source'], job_id=host['job_id'], host_profile_sha256=digest,
+        worker_pid=child, worker_start_ticks=_process_start_time(child), worker_uid=descriptor['worker_uid'],
+        controller_pid=os.getpid(), issued_at=started.isoformat().replace('+00:00','Z'),
+        workflow_deadline=expires.isoformat().replace('+00:00','Z'))))
+    destination = directory/'session-launch.json'
+    if destination.exists():
+        raise TransportHeld('holdout launch observation already exists; no automatic retry')
+    _durable_write(destination, canonical_json_bytes(value)+b'\n', mode=0o444)
+
+
 def run_session(request: dict, root: Path, deadline: float, descriptor: dict, inventory: dict,
                 launch=_probe_launch, environment: dict | None = None,
-                argv: list[str] | None = None) -> dict:
+                argv: list[str] | None = None, invocation_deadline: float | None = None) -> dict:
     """Mount the image this session just built and run the startup probe as the worker.
 
     This is the acceptance the whole transport exists for: the complete closure reaching an
@@ -1910,6 +1953,8 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
                 os._exit(status)
             for closing in (write, out_write, err_write, exec_write):
                 os.close(closing)
+            if environment is not None and environment.get('P3_OPERATION') == 'p3-holdout-primary-v1':
+                _publish_session_launch(request, descriptor, child, deadline, invocation_deadline)
             streams = _read_streams(
                 dict(report=read, stdout=out_read, stderr=err_read, exec=exec_read), deadline,
                 fence=lambda: mount_fence(descriptor, image_fd, loop_fd, mount, rehash=False))

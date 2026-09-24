@@ -107,6 +107,120 @@ class LocalSessionProfile(_SessionProfileFields):
 SESSION_PROFILE = TypeAdapter(Annotated[SessionProfile | LocalSessionProfile,Field(discriminator='schema_version')])
 
 
+class LocalSessionOwnerObservation(StrictModel):
+    """Untrusted worker observation; the root controller must inspect the process."""
+    schema_version: Literal['p3-local-session-owner-observation-v1']
+    identity: LocalRunIdentity
+    source: SourceIdentity
+    job_id: str
+    host_profile_sha256: Sha256
+    parent: ProcessIdentity
+    issued_at: CanonicalUtcDateTime
+    workflow_deadline: CanonicalUtcDateTime
+
+    @model_validator(mode='after')
+    def _bounds(self):
+        validate_p3_job_id(self.job_id)
+        if not self.issued_at < self.workflow_deadline <= self.issued_at + timedelta(minutes=37):
+            raise ValueError('owner observation deadline is invalid')
+        return self
+
+
+class LocalSessionLaunch(StrictModel):
+    schema_version: Literal['p3-local-session-launch-v1']
+    identity: LocalRunIdentity
+    source: SourceIdentity
+    job_id: str
+    host_profile_sha256: Sha256
+    worker_pid: Annotated[int, Field(gt=0)]
+    worker_start_ticks: Annotated[int, Field(ge=0)]
+    worker_uid: Annotated[int, Field(gt=0)]
+    controller_pid: Annotated[int, Field(gt=0)]
+    issued_at: CanonicalUtcDateTime
+    workflow_deadline: CanonicalUtcDateTime
+
+
+def await_local_session_owner(profile, closure, *, host_profile_digest, expires_at, guard):
+    """Observe the post-exec worker before SQL, then await exact root admission."""
+    from io import BytesIO
+    from .artifacts import ArtifactWriter
+    from packages.runtime_release.config import ProtectedAuthorityError
+    now = datetime.now(UTC)
+    if expires_at <= now:
+        raise ValueError('session authority already expired')
+    path = local_run_directory(profile.identity)/'session.json'
+    launch_path = path.with_name('session-launch.json')
+    # Root may still be publishing immediately after fork; no SQL or observation yet.
+    publish_deadline = time.monotonic() + min(60, (expires_at-now).total_seconds())
+    while True:
+        guard()
+        try:
+            launch_document, _ = read_protected_canonical_json_current(launch_path)
+            break
+        except ProtectedAuthorityError:
+            try:
+                launch_path.lstat()
+            except FileNotFoundError:
+                if time.monotonic() >= publish_deadline:
+                    raise ValueError('protected transport launch observation absent') from None
+                time.sleep(0.25)
+                continue
+            raise
+    launch = LocalSessionLaunch.model_validate_json(canonical_json_bytes(launch_document))
+    deadline = launch.workflow_deadline
+    parent = ProcProcessInspector().inspect(os.getpid())
+    if (parent is None or launch.identity != profile.identity or launch.source != closure.source
+        or launch.job_id != profile.job_id or launch.host_profile_sha256 != host_profile_digest
+        or launch.worker_pid != os.getpid() or launch.worker_start_ticks != parent.start_ticks
+        or launch.worker_uid != os.geteuid() or launch.controller_pid != os.getppid()
+        or not launch.issued_at <= datetime.now(UTC) < deadline <= expires_at
+        or deadline > launch.issued_at + timedelta(minutes=37)):
+        raise ValueError('session owner differs from protected transport launch')
+    observation = LocalSessionOwnerObservation.model_validate_json(canonical_json_bytes(dict(
+        schema_version='p3-local-session-owner-observation-v1', identity=profile.identity,
+        source=closure.source, job_id=profile.job_id, host_profile_sha256=host_profile_digest,
+        parent=dict(pid=parent.pid, process_group=parent.process_group, start_ticks=parent.start_ticks,
+                    command_fingerprint=parent.command_fingerprint),
+        issued_at=launch.issued_at.isoformat().replace('+00:00','Z'),
+        workflow_deadline=deadline.isoformat().replace('+00:00','Z'))))
+    guard()
+    # O_EXCL intentionally prevents restarting this logical owner handshake.
+    writer = ArtifactWriter(Path(profile.output_root))
+    writer.capture_stream(profile.job_id, 'session-owner', 'observation-claim', BytesIO(b''))
+    pending = writer.capture_stream(profile.job_id, 'session-owner',
+        'observation-pending', BytesIO(canonical_json_bytes(observation)))
+    temporary = writer.root/pending.relative_ref
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, temporary.with_name('observation.log'))
+    monotonic_deadline = time.monotonic() + (deadline-datetime.now(UTC)).total_seconds()
+    while time.monotonic() < monotonic_deadline and datetime.now(UTC) < deadline:
+        guard()
+        if read_protected_canonical_json_current(launch_path)[0] != launch_document:
+            raise ValueError('protected transport launch changed')
+        if ProcProcessInspector().inspect(os.getpid()) != parent:
+            raise ValueError('session owner changed during admission')
+        try:
+            document, _ = read_protected_canonical_json_current(path)
+        except ProtectedAuthorityError:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                time.sleep(0.25)
+                continue
+            raise
+        session = LocalSessionProfile.model_validate_json(canonical_json_bytes(document))
+        if (session.parent != parent or session.identity != profile.identity
+            or session.source != closure.source or session.closure_sha256 != closure.closure_sha256
+            or canonical_json_bytes(session.environment_ref) != canonical_json_bytes(profile.environment_ref)
+            or session.issued_at != observation.issued_at or session.workflow_deadline != deadline
+            or not session.issued_at <= datetime.now(UTC) < session.expires_at):
+            raise ValueError('protected session differs from observed owner/deadline')
+        guard()
+        return observation
+    raise ValueError('session owner admission deadline expired')
+
+
 def session_identity(profile) -> tuple[int,int] | LocalRunIdentity:
     if isinstance(profile,LocalSessionProfile):
         return profile.identity

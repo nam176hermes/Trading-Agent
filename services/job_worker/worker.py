@@ -437,12 +437,21 @@ class JobWorker:
                               (getattr(cause,"reason_code",None) or getattr(error,"reason_code",None) or "SAFETY_DRIFT") if safety_drift else
                               "P3_AUTHORITY_HELD" if blocked else "P3_INTEGRATION_FAILED")
                     expected = JobState.CANCEL_REQUESTED if cancelled else (JobState.RUNNING if started else JobState.CLAIMED)
+                    diagnostics = ()
+                    try:
+                        diagnostics = (self._validator.integration_failure_artifact(
+                            claimed, error, started=started,
+                            reason_code='CANCELLED' if cancelled else reason),)
+                    except (OSError, ValueError):
+                        # Storage failure must not change the durable failure/control outcome.
+                        import logging
+                        logging.getLogger(__name__).error('P3 integration diagnostic storage unavailable')
                     finalized = self._repository_call("finalize_execution",
                         claimed, expected_state=expected,
                         expected_attempt_outcome="RUNNING" if started else "CLAIMED",
                         final_state=JobState.CANCELLED if cancelled else (JobState.BLOCKED if blocked else (JobState.FAILED if started else JobState.BLOCKED)),
                         reason_code="CANCELLED" if cancelled else reason, trace_id=trace_id,
-                        outcome=outcome, result=None, stream_artifacts=(),
+                        outcome=outcome, result=None, stream_artifacts=diagnostics,
                     )
             else:
                 finalized = self._repository_call("finalize_execution",

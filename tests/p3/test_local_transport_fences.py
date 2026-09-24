@@ -766,6 +766,9 @@ def _protected(**by_name):
         for suffix, document in by_name.items():
             if str(path).endswith(suffix):
                 return document, 'digest'
+        if path.name in {'authority-request.json', '00000000-0000-4000-8000-000000000004.json'}:
+            return {'authorization':{'schema_version':'p3-local-run-authorization-v1',
+                'identity':_identity(), 'nonce':'00000000-0000-4000-8000-000000000004'}}, 'digest'
         raise FileNotFoundError(path)
     return read
 
@@ -838,6 +841,9 @@ def test_the_worker_environment_satisfies_every_name_the_consumer_reads(tmp_path
     missing = [name for name in WORKER_REQUIRED if name not in environment]
     assert not missing, f'the worker reads these and the controller does not supply them: {missing}'
     assert environment['P3_ISSUER_KIND'] == 'LOCAL'
+    assert environment['P3_AUTHORITY_REQUEST_FILE'] == (
+        '/etc/trading-agent/local-qualification/operator-a/operations/'
+        '00000000-0000-4000-8000-000000000004.json')
     # Nothing ambient: no loader injection and no inherited search path.
     assert not any(name.startswith('LD_') for name in environment)
 
@@ -1220,3 +1226,14 @@ def test_a_later_invocation_does_not_silently_overwrite_a_terminal_record(tmp_pa
     assert (root/'terminal.json').read_bytes() != first
     kept = sorted(p.name for p in root.glob('terminal.json.*'))
     assert kept, 'the superseded record has to remain; a failure is not erased by a retry'
+def test_durable_publication_applies_exact_mode_under_private_umask(tmp_path):
+    import os
+    import stat
+    from scripts.p3_local_transport import _durable_write
+    previous = os.umask(0o077)
+    try:
+        target = tmp_path/'launch.json'
+        _durable_write(target, b'{}', mode=0o444)
+        assert stat.S_IMODE(target.stat().st_mode) == 0o444
+    finally:
+        os.umask(previous)

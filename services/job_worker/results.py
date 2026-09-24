@@ -248,6 +248,30 @@ class ResultValidator:
             },
         )
 
+    def integration_failure_artifact(self, job, error, *, started: bool, reason_code: str):
+        """Retain bounded metadata, never exception messages, SQL, or credentials."""
+        from io import BytesIO
+        from packages.engine_contracts.serialization import canonical_json_bytes
+        from .artifacts import ArtifactWriter
+        cause = error
+        seen = set()
+        while cause.__cause__ is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            cause = cause.__cause__
+        last_check = getattr(error, 'last_check', None)
+        raw = canonical_json_bytes(dict(
+            schema_version='p3-integration-failure-v1', job_id=job.job_id,
+            attempt_id=job.attempt_id, started=started, reason_code=reason_code,
+            exception_type=type(error).__name__[:128], cause_type=type(cause).__name__[:128],
+            stage=getattr(error, 'stage', 'UNKNOWN') if getattr(error, 'stage', None) in
+                {'AUTHORITY', 'NATIVE', 'SQL', 'CLEANUP', 'RECEIPT'} else 'UNKNOWN',
+            last_check=last_check if isinstance(last_check, str) and
+                re.fullmatch(r'[A-Z][A-Z0-9_]{0,95}_PASS', last_check) else None,
+            cleanup_unverified=bool(getattr(error, 'cleanup_unverified', False)),
+        ))
+        return ArtifactWriter(self._artifact_root).capture_stream(
+            job.job_id, job.attempt_id, 'stderr', BytesIO(raw))
+
     def seal_integration_receipt(self, job: object, receipt: object) -> ValidatedResult:
         """Seal a trusted-parent fixture result without claiming a child emitted it."""
         from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt, LocalIntegrationReceipt, INTEGRATION_RECEIPT

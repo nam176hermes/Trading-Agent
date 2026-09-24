@@ -79,6 +79,16 @@ def run_official_once(values,*,build_worker):
         safety_preflight()
     if authority.application_revision!=closure.source.commit_sha:
         raise ValueError('P3 official worker revision differs from its closure')
+    if local and WORKFLOW_OPERATIONS.get(operation) == 'HOLDOUT':
+        from .p3_session import await_local_session_owner
+        if request is None or safety_preflight is None:
+            raise ValueError('LOCAL owner lost startup authority')
+        owner_preflight = safety_preflight
+        def owner_guard():
+            attest_closure()
+            owner_preflight()
+        await_local_session_owner(profile, closure, host_profile_digest=digest,
+            expires_at=request.authorization.expires_at, guard=owner_guard)
     settings=JobStoreSettings.from_systemd_credentials(
         {'CREDENTIALS_DIRECTORY':profile.worker_credentials_directory},expected_user='trading_job_worker')
     provider=P3SpawnProvider(attest_closure=attest_closure,store=LocalArtifactStore(Path(profile.store_root)),

@@ -746,6 +746,8 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
 
     finally:
         primary_error = sys.exception()
+        if primary_error is not None:
+            setattr(primary_error, 'last_check', checks[-1] if checks else None)
         try:
             _cleanup_cluster(root, data, sock, started, run, process=process, identity=identity)
         except BaseException as cleanup_error:
