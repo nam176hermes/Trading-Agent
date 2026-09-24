@@ -1499,6 +1499,12 @@ def _prepare_image(request: dict, root: Path, deadline: float) -> dict:
         unresolvable: list[dict] = []
         sources = library_closure(_closure_objects(stage, inventory), stage, loader_fd,
                                   unresolvable)
+        # Nested replicas execute bubblewrap inside this same sealed runtime. Its
+        # dependencies are mandatory, unlike optional Python extension dependencies.
+        sandbox_sources = library_closure([BWRAP], stage, loader_fd)
+        sources = sorted(set(sources) | set(sandbox_sources))
+        if len(sources) > MAX_EXTERNAL_LIBRARIES:
+            raise TransportHeld('external library count exceeds the accepted bound')
         # A durable record of the attempt, written before the artifact exists. Without it a
         # crash between creation and the PREPARED record leaves a file nothing identifies.
         #
@@ -1516,6 +1522,14 @@ def _prepare_image(request: dict, root: Path, deadline: float) -> dict:
         built = build_image(stage, root / 'runtime.squashfs', uid, gid, tool_fd,
                             deadline, builder)
         libraries = _seal_external_libraries(sources, snapshots)
+        pinned_dependencies = {member['path']: member for member in manifest['members']
+                               if member['role'] == 'dependency'}
+        for library in libraries:
+            if Path(library['target']) in sandbox_sources:
+                pinned = pinned_dependencies.get(library['target'])
+                if pinned is None or (library['sha256'], library['size_bytes']) != (
+                        pinned['sha256'], pinned['size']):
+                    raise TransportHeld('sandbox library differs from toolchain manifest')
     finally:
         os.close(sandbox_fd)
         os.close(tool_fd)

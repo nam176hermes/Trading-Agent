@@ -309,6 +309,60 @@ def test_the_toolchain_manifest_covers_every_executable_the_transport_runs(tmp_p
         'a shared dependency must be listed once'
 
 
+@pytest.mark.parametrize('case', ['complete', 'missing-sandbox-library', 'combined-bound', 'manifest-drift'])
+def test_prepare_image_includes_required_nested_sandbox_libraries(tmp_path, monkeypatch, case):
+    stage = _stage(tmp_path, {'release/app.py': b'', 'python/bin/python3.11': b''})
+    root = tmp_path/'task'
+    root.mkdir()
+    monkeypatch.setattr(transport, 'builder_identity', lambda _: (1001, 1001))
+    monkeypatch.setattr(transport, 'normalise_stage_modes', lambda _: 0)
+    monkeypatch.setattr(transport.os, 'chown', lambda *_: None)
+    monkeypatch.setattr(transport, 'seal_verified_tool',
+                        lambda *a, **kw: (os.open('/dev/null', os.O_RDONLY), {}))
+    monkeypatch.setattr(transport, 'open_verified_tool',
+                        lambda *a: (os.open('/dev/null', os.O_RDONLY), {}))
+    monkeypatch.setattr(transport, 'toolchain_manifest', lambda *a: {})
+    common = Path('/lib/libc.so.6')
+    sandbox = Path('/lib/libselinux.so.1')
+
+    def resolve(objects, stage, loader_fd, unresolvable=None):
+        if transport.BWRAP in objects:
+            assert unresolvable is None, 'required sandbox dependencies must fail closed'
+            if case == 'missing-sandbox-library':
+                raise TransportHeld('sandbox dependency missing')
+            return [common, sandbox]
+        assert unresolvable is not None
+        return [common, Path('/lib/libpython-needed.so')]
+
+    monkeypatch.setattr(transport, 'library_closure', resolve)
+    if case == 'combined-bound':
+        monkeypatch.setattr(transport, 'MAX_EXTERNAL_LIBRARIES', 2)
+    monkeypatch.setattr(transport, 'build_image', lambda *a: {})
+
+    class Captured(Exception):
+        pass
+
+    def capture(sources, snapshots):
+        assert sandbox in sources, 'nested bwrap libraries omitted from runtime image'
+        assert sources == sorted(set(sources)), 'runtime libraries must be unique and stable'
+        if case == 'manifest-drift':
+            return [dict(target=str(sandbox), sha256='a'*64, size_bytes=1)]
+        raise Captured
+
+    if case == 'manifest-drift':
+        monkeypatch.setattr(transport, 'toolchain_manifest', lambda *a: dict(members=[
+            dict(role='dependency', path=str(sandbox), sha256='b'*64, size=1)]))
+    monkeypatch.setattr(transport, '_seal_external_libraries', capture)
+    request = dict(stage=str(stage), worker_uid=1000, worker_gid=1000,
+                   release_root='release', python_root='python', job_id='probe',
+                   loader_sha256='a'*64, mksquashfs_sha256='b'*64, bwrap_sha256='c'*64)
+    expected = Captured if case == 'complete' else TransportHeld
+    with pytest.raises(expected):
+        transport._prepare_image(request, root, deadline=0)
+    if case in {'missing-sandbox-library', 'combined-bound'}:
+        assert not (root/'quarantine.json').exists(), 'refuse before building an image'
+
+
 def test_a_sealed_tool_cannot_be_written_and_still_executes(tmp_path):
     """Executing the file binds the inode, not the bytes it held when it was hashed.
 
