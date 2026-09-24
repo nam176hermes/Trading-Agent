@@ -333,6 +333,13 @@ def main():
         profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(command['profile']))
         result, _ = read_official_profile(_absolute(command['path']), command['digest'],
             job_id=profile.job_id, payload=profile.payload, context=os.environ)
+    elif command['action'] == 'database-identity':
+        from services.job_store.config import read_systemd_credential
+        if set(command) != {'action', 'credentials_directory'}:
+            raise ValueError('database identity accepts no arbitrary credential names')
+        credentials = {'CREDENTIALS_DIRECTORY':str(_absolute(command['credentials_directory']))}
+        result = {key:read_systemd_credential(credentials, key)
+                  for key in ('database-host', 'database-port', 'database-name')}
     else:
         raise ValueError('unknown host helper action')
     sys.stdout.buffer.write(canonical_json_bytes(result))

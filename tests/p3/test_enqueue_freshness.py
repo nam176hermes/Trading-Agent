@@ -29,7 +29,7 @@ def local_request():
     return request.model_copy(update={'payload':payload}),auth,intent
 
 
-@pytest.mark.parametrize('fault',[None,'revoked','expired','after_insert','changed','intent','obsolete_catalog','payload'])
+@pytest.mark.parametrize('fault',[None,'revoked','expired','after_insert','changed','intent','obsolete_catalog','payload','missing_acceptance'])
 def test_enqueue_rereads_local_authority_inside_transaction(monkeypatch,fault):
     request,auth,intent=local_request()
     if fault=='payload':
@@ -49,6 +49,7 @@ def test_enqueue_rereads_local_authority_inside_transaction(monkeypatch,fault):
             if 'version_num' in sql:
                 return _Result({'version_num':'0031_p3_local_identity' if fault=='obsolete_catalog' else '0032_p3_enqueue_freshness'})
             if 'api_read_p3_enqueue_authority' in sql:
+                if fault=='missing_acceptance':return _Result(None)
                 return _Result({'authorization_text':canonical_json_bytes(auth).decode(),
                     'intent_text':canonical_json_bytes(intent).decode()})
             return super().execute(sql,parameters)
@@ -60,7 +61,7 @@ def test_enqueue_rereads_local_authority_inside_transaction(monkeypatch,fault):
         assert 'synthetic secret' not in str(caught.value)
         if fault=='payload':assert not reads
         assert connection.transaction_events[-1][1] is not None
-        if fault in {'revoked','expired','intent','obsolete_catalog','payload'}:assert not connection.calls
+        if fault in {'revoked','expired','intent','obsolete_catalog','payload','missing_acceptance'}:assert not connection.calls
     else:
         result=repository.enqueue(request,trace_id='test:local-admission')
         assert result.job.job_id=='job_fixed'

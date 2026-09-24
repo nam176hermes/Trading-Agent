@@ -61,6 +61,52 @@ def test_stage_history_rejects_reordered_duplicate_or_different_session():
             next_stage(first, current, session_digest=session_digest, host_digest='c'*64)
 
 
+@pytest.mark.parametrize('fault',[None,'database','uid','extra'])
+def test_stage_observer_keeps_worker_credentials_private_and_original_deadline(monkeypatch,tmp_path,fault):
+    import time
+    from scripts import p3_local_controller as module, p3_local_host as worker, p3_local_transport as transport
+    from services.job_store import config
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    from tests.p3.test_host_profile import _host_profile_document, _image_descriptor
+    from tests.p3.test_local_transport_fences import _identity
+    host = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(
+        _host_profile_document('p3-local-official-host-profile-v2',identity=_identity(),image=_image_descriptor())))
+    now = datetime.now(UTC)
+    runtime = dict(uid=host.image.worker_uid+(1 if fault=='uid' else 0),
+        identity=host.identity.model_dump(mode='json'),source=host.payload.expected_source.model_dump(mode='json'),
+        application_root='/qualified/application',application_python='/qualified/python',
+        expires_at=(now+timedelta(seconds=20)).isoformat().replace('+00:00','Z'))
+    monkeypatch.setattr(transport,'_runtime_authority',lambda _:runtime)
+    values = {'database-host':'127.0.0.1','database-port':'55435','database-name':'synthetic'}
+    reads = []
+    def credential(env,key):
+        assert env == {'CREDENTIALS_DIRECTORY':str(tmp_path/'root-observer')}
+        reads.append(key)
+        return 'private-observer-password' if key=='database-password' else values[key]
+    monkeypatch.setattr(config,'read_systemd_credential',credential)
+    def observed(uid,gid,deadline,environment,command):
+        assert (uid,gid) == (host.image.worker_uid,host.image.worker_gid)
+        assert 0 < deadline-time.monotonic() <= 20
+        assert environment['P3_APPLICATION_ROOT'] == runtime['application_root']
+        assert environment['P3_APPLICATION_PYTHON'] == runtime['application_python']
+        assert command == dict(action='database-identity',credentials_directory=host.worker_credentials_directory)
+        result = values.copy()
+        if fault=='database':result['database-name']='other'
+        if fault=='extra':result['database-password']='must-be-rejected'
+        return result
+    monkeypatch.setattr(worker,'as_worker',observed)
+    if fault:
+        with pytest.raises(ValueError):
+            module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90))
+        assert 'database-password' not in reads
+        if fault=='uid':assert not reads
+    else:
+        settings, observed_runtime, deadline = module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90))
+        assert (settings.host,settings.port,settings.database,settings.user) == ('127.0.0.1',55435,'synthetic','trading_owner')
+        assert reads == [*values,'database-password']
+        assert observed_runtime == runtime and 0 < deadline-time.monotonic() <= 20
+
+
 def test_operation_issuer_rejects_auth_intent_mismatch_before_any_authority_io(monkeypatch, tmp_path):
     from scripts import p3_local_controller as module
     from packages.alpha_lifecycle.authority import _LocalRequestFile, AuthorityHeld
@@ -90,6 +136,60 @@ def test_operation_issuer_rejects_auth_intent_mismatch_before_any_authority_io(m
     monkeypatch.setattr(module, 'publish_protected', unexpected)
     with pytest.raises(AuthorityHeld, match='operation differs'):
         module.install_operation(tmp_path/'request', tmp_path/'review', tmp_path/'proof')
+
+
+@pytest.mark.parametrize('fault',[None,'runtime_expired','runtime_replaced'])
+def test_stage_publication_rechecks_runtime_after_readonly_sql(tmp_path,monkeypatch,fault):
+    """Issuer inputs and SQL are substituted; no root or database authority is granted."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    import time
+    import psycopg
+    from scripts import p3_local_controller as module, p3_local_transport as transport
+    from services.job_worker.p3_session import LocalSessionProfile
+    from services.job_worker.recovery import ProcProcessInspector
+    identity = SimpleNamespace(issuer_identity='synthetic',model_dump=lambda **_:dict(issuer_kind='LOCAL'))
+    parent = SimpleNamespace(pid=123)
+    now = datetime.now(UTC)
+    session = SimpleNamespace(identity=identity,source='source',parent=parent,
+        issued_at=now-timedelta(seconds=1),expires_at=now+timedelta(seconds=60))
+    monkeypatch.setattr(LocalSessionProfile,'model_validate_json',lambda *_:session)
+    request = SimpleNamespace(authorization=SimpleNamespace(identity=identity,operation='HOLDOUT'),execution_source='source')
+    host = SimpleNamespace(identity=identity,job_id='job_claimed',payload={})
+    context = (request,tmp_path,host,'b'*64)
+    monkeypatch.setattr(module,'_session_context',lambda _:context)
+    monkeypatch.setattr(module,'_protected_model',lambda *_:session)
+    monkeypatch.setattr(module,'read_protected_canonical_json_current',lambda _:({},'a'*64))
+    monkeypatch.setattr(ProcProcessInspector,'inspect',lambda *_:parent)
+    runtime = {'generation':'admitted'}
+    deadline = -1 if fault=='runtime_expired' else time.monotonic()+30
+    settings = SimpleNamespace(conninfo=lambda:'synthetic-not-a-connection')
+    monkeypatch.setattr(module,'owner_database_settings',lambda *_:(settings,runtime,deadline))
+    queries = []
+    class Connection:
+        def execute(self,sql,parameters=None):
+            queries.append(sql)
+            if 'session_user' in sql:return SimpleNamespace(fetchone=lambda:('trading_owner','trading_owner'))
+            assert parameters == ('job_claimed','{}')
+            return SimpleNamespace(fetchone=lambda:('attempt_claimed','worker','c'*64))
+    def connect(_conninfo,**kwargs):
+        assert kwargs['options']=='-c default_transaction_read_only=on -c statement_timeout=5000'
+        return nullcontext(Connection())
+    monkeypatch.setattr(psycopg,'connect',connect)
+    monkeypatch.setattr(module,'AuthorityStore',lambda _:SimpleNamespace(locked=lambda:nullcontext()))
+    def current(_):
+        assert len(queries)==2
+        return {'generation':'replaced'} if fault=='runtime_replaced' else runtime
+    monkeypatch.setattr(transport,'_runtime_authority',current)
+    published = []
+    monkeypatch.setattr(module,'publish_protected',lambda *a,**kw:published.append(a))
+    if fault:
+        with pytest.raises(ValueError,match='stage authority changed'):
+            module.install_stage(tmp_path/'request',tmp_path/'root-observer')
+        assert not published
+    else:
+        result = module.install_stage(tmp_path/'request',tmp_path/'root-observer')
+        assert len(published)==1 and result.attempts[0].job_id=='job_claimed'
 
 
 @pytest.mark.parametrize('wrong_owner', [False, True])

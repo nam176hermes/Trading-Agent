@@ -51,6 +51,27 @@ def test_host_inputs_reject_relative_paths_and_unknown_fields():
                 schema_version='p3-local-host-inputs-v1', **fields, **extra)))
 
 
+def test_worker_database_identity_reads_only_public_connection_metadata(tmp_path,monkeypatch):
+    import io
+    import json
+    from scripts import p3_local_host as module
+    credentials = tmp_path/'credentials'
+    credentials.mkdir(mode=0o700)
+    expected = {'database-host':'127.0.0.1','database-port':'55435','database-name':'synthetic'}
+    for name,value in expected.items():
+        path = credentials/name
+        path.write_text(value)
+        path.chmod(0o400)
+    # A directory at this name makes any password read fail, even for root.
+    (credentials/'database-password').mkdir()
+    command = dict(action='database-identity',credentials_directory=str(credentials))
+    output = io.BytesIO()
+    monkeypatch.setattr(module.sys,'stdin',SimpleNamespace(buffer=io.BytesIO(canonical_json_bytes(command))))
+    monkeypatch.setattr(module.sys,'stdout',SimpleNamespace(buffer=output))
+    module.main()
+    assert json.loads(output.getvalue()) == expected
+
+
 def test_late_host_transition_preserves_closure_and_refuses_replay_or_skips():
     from scripts.p3_local_host import next_session_host
     from packages.job_contracts import AlphaCampaignPayload

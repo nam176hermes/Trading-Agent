@@ -24,6 +24,7 @@ from packages.alpha_lifecycle.authority import (
     validate_workflow_operation,
 )
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
+from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization, RunAuthorization
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody, JobMetadata, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
@@ -176,9 +177,14 @@ def enqueue(request_file: Path, token_file: Path, output_dir: Path, workflow_ope
     authorization = request.authorization
     payload, review = _stage_request(request, payload, workflow_operation,
         LocalArtifactStore(artifact_root), manifest_file, review_file)
-    if request.operation_input is not None:
+    # LOCAL SQL acceptance runs under the separate authority UID. The Job API
+    # requires the exact accepted bytes and rechecks protected authority inside
+    # its enqueue transaction; the worker never receives that SQL credential.
+    if request.operation_input is not None and not isinstance(authorization, LocalRunAuthorization):
         from packages.alpha_lifecycle.authority import AuthorityHeld
         from services.job_store.p3_operation_authority import accept_operation_authorization
+        if not isinstance(authorization, RunAuthorization):
+            raise AuthorityHeld('HELD E_SQL_AUTHORITY: official authorization type required')
         credential_directory = os.environ.get("P3_AUTHORITY_CREDENTIALS_DIRECTORY")
         if not credential_directory:
             raise AuthorityHeld("HELD E_SQL_AUTHORITY: protected acceptance credentials unavailable")

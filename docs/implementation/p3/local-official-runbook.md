@@ -159,11 +159,22 @@ result refs for the next operation; never substitute fixture publication entries
    root:worker-group `0440`, and returns their immutable nonce-specific paths.
    Partial staging is retained and cannot be replayed. Its parent run directory
    and `host-inputs.json` must already be protected by the existing root protocol.
-5. As the configured worker UID, reuse `scripts/p3_authority.py enqueue` with
-   the returned request/manifest/review/preflight paths and existing acceptance
-   credentials. Enqueue creates the new `0700` preflight directory and retains
+5. Before enqueue, the separate authority UID calls the existing
+   `services.job_store.p3_operation_authority.accept_operation_authorization`
+   with the installed request's authorization/operation input, exact protected
+   review and its own private acceptance credentials. Supply those exact bytes
+   through protected files readable by the authority UID or root-mediated input;
+   the worker-group `0440` staging files do not grant the authority UID access.
+   Retain that command and result; never copy the authority login into worker
+   credentials. Then, as the configured worker UID, reuse
+   `scripts/p3_authority.py enqueue` with the returned request/manifest/review/
+   preflight paths, existing Job API token and worker-owned CAS.
+   Enqueue creates the new `0700` preflight directory and retains
    its `0600` canonical response. Each nonce has a different directory; do not
    overwrite old enqueue evidence or use a root-owned preflight copy for the worker.
+   LOCAL enqueue does not perform SQL acceptance. The Job API requires the exact
+   accepted authorization and rechecks current protected authority around the
+   durable transaction; absent, expired or revoked authority still blocks enqueue.
 6. The authorized root controller invokes `run-operation --transport-request
    REQUEST_NAME.json`; this delegates to the existing transport, requiring its
    request operation to be `run`. It does not enqueue, retry or reset a database.
@@ -215,8 +226,13 @@ the session's primary/custody refs from the admitted HOLDOUT intent. It refuses
 an existing session; there is no automatic replay. `install-stage` must run
 after the worker's actual claim is visible. It uses a read-only `trading_owner`
 connection to the same database, hashes the current lease token in SQL, and
-publishes only the next exact claim. Never use worker credentials for owner
-observation or print lease tokens.
+publishes only the next exact claim. The observer credential directory must be
+root-owned (`0700` directory, `0400` files). For LOCAL v2, the qualified helper reads only host, port
+and database name under the worker UID; root compares those fields before using
+the separate observer password. The helper cannot extend the original session
+or runtime deadline; publication rechecks runtime identity and that same deadline.
+Never use worker credentials for owner observation or print
+lease tokens.
 
 After each committed result, review/admit and `stage-operation` the next exact
 PARITY or PHASE_EXIT intent, then enqueue with the returned paths. Run

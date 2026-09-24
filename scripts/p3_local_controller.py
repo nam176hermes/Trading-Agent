@@ -357,10 +357,48 @@ def next_stage(previous, current, *, session_digest, host_digest):
         session_sha256=session_digest, host_profile_sha256=host_digest, attempts=(*attempts, current))
 
 
+def owner_database_settings(credentials, host, expires_at):
+    """Compare worker metadata under its UID before reading the root observer password."""
+    import time
+    from scripts.p3_local_host import as_worker
+    from scripts.p3_local_transport import _runtime_authority, _official_deadline
+    from services.job_store.config import JobStoreSettings, read_systemd_credential
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    if not isinstance(host, LocalOfficialHostProfileV2) or datetime.now(UTC) >= expires_at:
+        raise ValueError('stage observation requires a current LOCAL v2 session')
+    runtime = _runtime_authority(dict(identity=host.identity.model_dump(mode='json')))
+    if (runtime['uid'] != host.image.worker_uid
+        or runtime['identity'] != host.identity.model_dump(mode='json')
+        or runtime['source'] != host.payload.expected_source.model_dump(mode='json')):
+        raise ValueError('stage observer runtime identity differs')
+    deadline = _official_deadline(time.monotonic()+(expires_at-datetime.now(UTC)).total_seconds(),
+                                  runtime.get('expires_at'))
+    from packages.runtime_release.config import _absolute
+    environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
+        P3_APPLICATION_ROOT=str(_absolute(runtime['application_root'])),
+        P3_APPLICATION_PYTHON=str(_absolute(runtime['application_python'])))
+    observed = as_worker(host.image.worker_uid, host.image.worker_gid, deadline, environment,
+        dict(action='database-identity', credentials_directory=host.worker_credentials_directory))
+    if time.monotonic() >= deadline:
+        raise ValueError('stage observer authority expired during worker readback')
+    keys = ('database-host', 'database-port', 'database-name')
+    if not isinstance(observed, dict) or set(observed) != set(keys) or not all(
+        isinstance(observed[key], str) for key in keys):
+        raise ValueError('worker database identity fields differ')
+    env = {'CREDENTIALS_DIRECTORY':str(credentials)}
+    if observed != {key:read_systemd_credential(env, key) for key in keys}:
+        raise ValueError('owner observer database differs from the admitted worker')
+    settings = JobStoreSettings(host=observed['database-host'], port=int(observed['database-port']),
+        database=observed['database-name'], user='trading_owner',
+        password=read_systemd_credential(env,'database-password'))
+    return settings, runtime, deadline
+
+
 def install_stage(request_path, credentials):
     """Read the current claim with the owner role; never claim or expose lease tokens."""
+    import time
     import psycopg
-    from services.job_store.config import JobStoreSettings, read_systemd_credential
+    from scripts.p3_local_transport import _runtime_authority
     from services.job_worker.p3_session import LocalSessionProfile, SessionAttempt, SessionStageProfile
     from services.job_worker.recovery import ProcProcessInspector
     request, directory, host, host_digest = _session_context(request_path)
@@ -370,14 +408,7 @@ def install_stage(request_path, credentials):
         or session.parent != ProcProcessInspector().inspect(session.parent.pid)
         or not session.issued_at <= datetime.now(UTC) < session.expires_at):
         raise ValueError('stage session owner or deadline differs')
-    env = {'CREDENTIALS_DIRECTORY':str(credentials)}
-    worker_env = {'CREDENTIALS_DIRECTORY':host.worker_credentials_directory}
-    for key in ('database-host', 'database-port', 'database-name'):
-        if read_systemd_credential(env, key) != read_systemd_credential(worker_env, key):
-            raise ValueError('owner observer database differs from the admitted worker')
-    settings = JobStoreSettings(host=read_systemd_credential(env,'database-host'),
-        port=int(read_systemd_credential(env,'database-port')), database=read_systemd_credential(env,'database-name'),
-        user='trading_owner', password=read_systemd_credential(env,'database-password'))
+    settings, runtime, deadline = owner_database_settings(credentials, host, session.expires_at)
     with psycopg.connect(settings.conninfo(), connect_timeout=10,
             options='-c default_transaction_read_only=on -c statement_timeout=5000') as connection:
         if connection.execute('SELECT session_user,current_user').fetchone() != ('trading_owner','trading_owner'):
@@ -402,7 +433,8 @@ def install_stage(request_path, credentials):
         if (_session_context(request_path) != (request, directory, host, host_digest)
             or read_protected_canonical_json_current(directory/'session.json')[1] != session_digest
             or ProcProcessInspector().inspect(session.parent.pid) != session.parent
-            or datetime.now(UTC) >= session.expires_at):
+            or datetime.now(UTC) >= session.expires_at or time.monotonic() >= deadline
+            or _runtime_authority(dict(identity=host.identity.model_dump(mode='json'))) != runtime):
             raise ValueError('stage authority changed before publication')
         publish_protected(path, canonical_json_bytes(stage)+b'\n', replace=previous is not None)
     return stage

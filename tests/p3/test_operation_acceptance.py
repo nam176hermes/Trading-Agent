@@ -139,6 +139,36 @@ def test_official_dispatch_accepts_sql_authority_before_job_api(tmp_path,monkeyp
     assert calls == (['accept','post'] if mode == 'accepted' else ['accept'] if mode == 'denied' else [])
 
 
+def test_local_enqueue_does_not_read_protected_acceptance_credentials(tmp_path,monkeypatch):
+    from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
+    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+    from services.job_worker.p3_operation_fixture import _sealed
+    dispatch,authority,original,intent,_,old_payload = _dispatch_inputs(tmp_path,monkeypatch)
+    value = original.model_dump(mode='json')
+    for key in ('issuer_workflow','issuer_run_id','issuer_attempt'):value.pop(key)
+    value.update(schema_version='p3-local-run-authorization-v1',identity=dict(issuer_kind='LOCAL',
+        issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000002',attempt=1,
+        host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'))
+    authorization = LocalRunAuthorization.model_validate_json(_sealed(value))
+    payload = build_alpha_campaign_payload(authorization,old_payload.expected_source,
+        intent.workflow_operation,operation_input=intent)
+    request = SimpleNamespace(authorization=authorization,operation_input=intent)
+    monkeypatch.setattr(dispatch,'preflight',lambda *args:(request,payload))
+    monkeypatch.delenv('P3_AUTHORITY_CREDENTIALS_DIRECTORY',raising=False)
+    monkeypatch.setattr(authority,'accept_operation_authorization',
+        lambda *args,**kwargs:pytest.fail('LOCAL worker must not use the authority login'))
+    class Enqueued(Exception):
+        pass
+    def post(method,path,token,body):
+        assert (method,path) == ('POST','/v1/jobs')
+        assert body['payload'] == payload.model_dump(mode='json')
+        raise Enqueued
+    monkeypatch.setattr(dispatch,'_request_json',post)
+    with pytest.raises(Enqueued):
+        dispatch.enqueue(tmp_path/'request',tmp_path/'token',tmp_path/'output',intent.workflow_operation,
+            artifact_root=tmp_path/'cas',manifest_file=tmp_path/'manifest',review_file=tmp_path/'review')
+
+
 @pytest.mark.parametrize('phase', ['enqueue','detail'])
 @pytest.mark.parametrize('fault', ['payload','fingerprint','priority','actor','job_type','job_id'])
 def test_dispatch_rejects_valid_envelopes_for_other_jobs(tmp_path,monkeypatch,phase,fault):
