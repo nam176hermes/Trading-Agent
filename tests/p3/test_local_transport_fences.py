@@ -848,6 +848,21 @@ def test_the_worker_environment_satisfies_every_name_the_consumer_reads(tmp_path
     assert not any(name.startswith('LD_') for name in environment)
 
 
+def test_the_transport_environment_selects_the_official_worker_entrypoint(tmp_path, monkeypatch):
+    from services.job_worker import main, p3_official
+
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        _protected(**{'profile.json': _host_profile(),
+                                      'runtime.json': _runtime_profile()}))
+    environment = transport._worker_environment(_run_request(), tmp_path/'mnt', 'release',
+                                                tmp_path/'worker')
+    monkeypatch.setattr(main.os, 'environ', environment)
+    monkeypatch.setattr(main, 'attest_worker_runtime_authority',
+                        lambda: pytest.fail('official transport entered the paper worker'))
+    monkeypatch.setattr(p3_official, 'run_official_once', lambda values, *, build_worker: 73)
+    assert main.main() == 73
+
+
 def test_a_revoked_runtime_profile_admits_no_run(tmp_path, monkeypatch):
     # Revocation is the owner withdrawing the stage. It is checked where the profile is read,
     # not left for the worker to discover after an image was built for it.
@@ -966,38 +981,42 @@ def _reaped(status, escalation=(), reaped=True):
 
 
 def test_a_worker_that_exits_non_zero_is_not_a_successful_transport(tmp_path):
+    observed = dict(challenge='c', worker_stderr='startup failed before job claim\n')
     with pytest.raises(TransportHeld, match='worker exited 1'):
-        transport._worker_verdict(dict(challenge='c'), _reaped(1 << 8), False, 'c')
+        transport._worker_verdict(tmp_path, observed, _reaped(1 << 8), False, 'c')
+    diagnostic = tmp_path/'worker-stderr.log'
+    assert diagnostic.read_bytes() == b'startup failed before job claim\n'
+    assert stat.S_IMODE(diagnostic.stat().st_mode) == 0o400
 
 
 def test_a_worker_killed_by_a_signal_is_not_a_successful_transport(tmp_path):
     # SIGKILL leaves 9 in the low bits; waitstatus_to_exitcode reports it as -9.
     with pytest.raises(TransportHeld, match='worker was killed by signal 9'):
-        transport._worker_verdict(dict(challenge='c'), _reaped(9), False, 'c')
+        transport._worker_verdict(tmp_path, dict(challenge='c'), _reaped(9), False, 'c')
 
 
 def test_a_worker_that_needed_escalation_is_not_a_successful_transport(tmp_path):
     with pytest.raises(TransportHeld, match='escalation'):
-        transport._worker_verdict(dict(challenge='c'), _reaped(0, escalation=['TERM']), False, 'c')
+        transport._worker_verdict(tmp_path, dict(challenge='c'), _reaped(0, escalation=['TERM']), False, 'c')
 
 
 def test_an_unreaped_worker_is_not_a_successful_transport(tmp_path):
     with pytest.raises(TransportHeld, match='did not reap'):
-        transport._worker_verdict(dict(challenge='c'), _reaped(None, reaped=False), False, 'c')
+        transport._worker_verdict(tmp_path, dict(challenge='c'), _reaped(None, reaped=False), False, 'c')
 
 
 def test_truncated_worker_output_is_not_a_successful_transport(tmp_path):
     with pytest.raises(TransportHeld, match='exceeded its bound'):
-        transport._worker_verdict(dict(challenge='c'), _reaped(0), True, 'c')
+        transport._worker_verdict(tmp_path, dict(challenge='c'), _reaped(0), True, 'c')
 
 
 def test_a_worker_that_exited_cleanly_and_answered_the_challenge_is_accepted(tmp_path):
-    assert transport._worker_verdict(dict(challenge='c'), _reaped(0), False, 'c') == 0
+    assert transport._worker_verdict(tmp_path, dict(challenge='c'), _reaped(0), False, 'c') == 0
 
 
 def test_a_clean_exit_with_the_wrong_challenge_is_still_refused(tmp_path):
     with pytest.raises(TransportHeld, match='challenge did not match'):
-        transport._worker_verdict(dict(challenge='other'), _reaped(0), False, 'c')
+        transport._worker_verdict(tmp_path, dict(challenge='other'), _reaped(0), False, 'c')
 
 
 def test_an_exec_failure_is_reported_before_the_exit_status_is_blamed(tmp_path):
@@ -1005,7 +1024,7 @@ def test_an_exec_failure_is_reported_before_the_exit_status_is_blamed(tmp_path):
     # hide the cause behind a number.
     observed = dict(challenge='c', error='FileNotFoundError: interpreter')
     with pytest.raises(TransportHeld, match='FileNotFoundError'):
-        transport._worker_verdict(observed, _reaped(1 << 8), False, 'c')
+        transport._worker_verdict(tmp_path, observed, _reaped(1 << 8), False, 'c')
 
 
 # ---------------------------------------------------------------------------

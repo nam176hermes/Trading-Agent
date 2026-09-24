@@ -1718,7 +1718,7 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
     return dict(
         PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
         HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
-        P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL',
+        P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL', TRADING_WORKER_PROFILE='p3-official-v1',
         P3_AUTHORITY_REQUEST_FILE=str(authority_path),
         P3_PREFLIGHT_DIRECTORY=str(preflight),
         P3_ARTIFACT_ROOT=absolute(host, 'store_root', 'host profile'),
@@ -1782,7 +1782,7 @@ def _command_run(request: dict, root: Path, deadline: float) -> dict:
     return session
 
 
-def _worker_verdict(observed: dict, reaped: dict, truncated: bool,
+def _worker_verdict(root: Path, observed: dict, reaped: dict, truncated: bool,
                     expected_challenge: object) -> int:
     """The transport's verdict on the worker. A clean exit is not an economic result.
 
@@ -1796,6 +1796,8 @@ def _worker_verdict(observed: dict, reaped: dict, truncated: bool,
     normal end. What the worker concluded is a separate question answered by the terminal Job
     API result, never by this exit code.
     """
+    # Keep the bounded stderr tail private and durable even when the verdict raises.
+    _durable_write(root/'worker-stderr.log', observed.get('worker_stderr', '').encode(), mode=0o400)
     # The child reports an exec or setup failure through its own channel. Blaming the exit
     # code first would hide the cause behind a number.
     reported = observed.get('error')
@@ -2017,7 +2019,7 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
             fences.append(dict(point='after-worker', nonce=nonce,
                                **mount_fence(descriptor, image_fd, loop_fd, mount)))
             observed['worker_exit_code'] = _worker_verdict(
-                observed, reaped, truncated, expected_challenge)
+                root, observed, reaped, truncated, expected_challenge)
         finally:
             # Unknown is unreaped. Reading this through locals() with a default of True meant
             # any exception raised before the assignment released the mount and the loop while
