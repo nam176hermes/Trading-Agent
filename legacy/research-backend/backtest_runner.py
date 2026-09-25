@@ -114,7 +114,9 @@ def _run_window_backtest(df: pd.DataFrame, symbol: str, config: BacktestConfig,
     if portfolio.positions and bars:
         portfolio.close_all(bars[-1], len(bars) - 1)
 
-    metrics = compute_aggregate_metrics(portfolio.equity_curve, portfolio.trade_log, config, timeframe)
+    metrics = compute_aggregate_metrics(portfolio.equity_curve, portfolio.trade_log, config,
+                                        total_funding_paid=portfolio.total_funding_paid,
+                                        timeframe=timeframe)
     eq_values = [e[1] for e in portfolio.equity_curve]
     return {
         "metrics": metrics,

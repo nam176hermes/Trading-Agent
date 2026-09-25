@@ -213,7 +213,10 @@ class DataHandler:
         ticker = yf.Ticker(self.symbol)
         tf_map = {"1h": "1h", "4h": "4h", "1d": "1d"}
         interval = tf_map.get(self.timeframe, "1h")
-        df = ticker.history(start=self.start, end=self.end, interval=interval)
+        # yfinance treats `end` as exclusive; request the following day so the inclusive
+        # end day is fetched, then load() trims to the calendar window.
+        end_exclusive = (pd.Timestamp(self.end) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        df = ticker.history(start=self.start, end=end_exclusive, interval=interval)
         if df.empty:
             log.warning("yfinance: no data for %s", self.symbol)
             return None
@@ -315,6 +318,54 @@ class Portfolio:
         if dd > self._max_drawdown:
             self._max_drawdown = dd
 
+    def _close_position(self, pos: Position, price: float, bar: Bar, bar_idx: int,
+                        reason: str) -> Fill:
+        """The single exit path: slippage, both commissions, funding and signed cash."""
+        slippage = price * self.config.slippage_pct
+        fill_price = price + slippage if pos.side == "SELL" else price - slippage
+        commission = fill_price * pos.quantity * self.config.commission_pct
+
+        pnl = (fill_price - pos.entry_price) * pos.quantity
+        if pos.side == "SELL":
+            pnl = (pos.entry_price - fill_price) * pos.quantity
+        pnl -= commission
+        pnl -= pos.entry_price * pos.quantity * self.config.commission_pct
+
+        # Funding rate adjustment
+        bars_held = bar_idx - pos.entry_bar
+        adjusted_pnl, funding_cost = funding_aware_pnl(
+            pnl, pos.symbol, self.config.funding_rate_pct,
+            pos.entry_notional, bars_held
+        )
+        pnl = adjusted_pnl
+        self.total_funding_paid += funding_cost
+
+        fill = Fill(
+            timestamp=bar.timestamp, symbol=pos.symbol,
+            side="SELL" if pos.side == "BUY" else "BUY",
+            quantity=pos.quantity, price=fill_price,
+            commission=commission, bar_index=bar_idx,
+        )
+        self.cash += (self._direction(pos.side) * fill_price * pos.quantity
+                      - commission - funding_cost)
+        self._trade_log.append({
+            "entry_time": pos.entry_time.isoformat(),
+            "exit_time": bar.timestamp.isoformat(),
+            "symbol": pos.symbol,
+            "side": pos.side,
+            "entry_price": pos.entry_price,
+            "exit_price": fill_price,
+            "quantity": pos.quantity,
+            "pnl": round(pnl, 4),
+            "pnl_pct": round(pnl / (pos.entry_price * pos.quantity), 6) if pos.quantity > 0 else 0.0,
+            "exit_reason": reason,
+            "funding_cost": round(funding_cost, 4),
+            "bars_held": bars_held,
+        })
+        self.positions.remove(pos)
+        self._fill_history.append(fill)
+        return fill
+
     def check_exits(self, bar: Bar, bar_idx: int) -> list[Fill]:
         fills = []
         for pos in list(self.positions):
@@ -336,54 +387,14 @@ class Portfolio:
                     exit_price = pos.take_profit_price
                     exit_reason = "take_profit"
 
-            if exit_price is not None:
-                slippage = exit_price * self.config.slippage_pct
-                fill_price = exit_price + slippage if pos.side == "SELL" else exit_price - slippage
-                commission = fill_price * pos.quantity * self.config.commission_pct
-
-                pnl = (fill_price - pos.entry_price) * pos.quantity
-                if pos.side == "SELL":
-                    pnl = (pos.entry_price - fill_price) * pos.quantity
-                pnl -= commission
-                pnl -= pos.entry_price * pos.quantity * self.config.commission_pct
-
-                # Funding rate adjustment
-                bars_held = bar_idx - pos.entry_bar
-                adjusted_pnl, funding_cost = funding_aware_pnl(
-                    pnl, pos.symbol, self.config.funding_rate_pct,
-                    pos.entry_notional, bars_held
-                )
-                pnl = adjusted_pnl
-                self.total_funding_paid += funding_cost
-
-                fill = Fill(
-                    timestamp=bar.timestamp, symbol=pos.symbol,
-                    side="SELL" if pos.side == "BUY" else "BUY",
-                    quantity=pos.quantity, price=fill_price,
-                    commission=commission, bar_index=bar_idx,
-                )
-                fills.append(fill)
-                self.cash += (self._direction(pos.side) * fill_price * pos.quantity
-                              - commission - funding_cost)
-
-                self._trade_log.append({
-                    "entry_time": pos.entry_time.isoformat(),
-                    "exit_time": bar.timestamp.isoformat(),
-                    "symbol": pos.symbol,
-                    "side": pos.side,
-                    "entry_price": pos.entry_price,
-                    "exit_price": fill_price,
-                    "quantity": pos.quantity,
-                    "pnl": round(pnl, 4),
-                    "pnl_pct": round(pnl / (pos.entry_price * pos.quantity), 6),
-                    "exit_reason": exit_reason,
-                    "funding_cost": round(funding_cost, 4),
-                    "bars_held": bars_held,
-                })
-                self.positions.remove(pos)
-
-        self._fill_history.extend(fills)
+            if exit_price is not None and exit_reason is not None:
+                fills.append(self._close_position(pos, exit_price, bar, bar_idx, exit_reason))
         return fills
+
+    def close_long(self, symbol: str, bar: Bar, bar_idx: int) -> list[Fill]:
+        """Reduce-only SELL: close the open long of `symbol` at the bar open, if any remains."""
+        return [self._close_position(pos, bar.open, bar, bar_idx, "signal_exit")
+                for pos in list(self.positions) if pos.symbol == symbol and pos.side == "BUY"]
 
     def apply_fill(self, fill: Fill):
         self.cash -= self._direction(fill.side) * fill.price * fill.quantity + fill.commission
@@ -405,54 +416,14 @@ class Portfolio:
         self._fill_history.append(fill)
 
     def close_all(self, bar: Bar, bar_idx: int) -> list[Fill]:
-        fills = []
-        for pos in list(self.positions):
-            fill_price = bar.close
-            slippage = fill_price * self.config.slippage_pct
-            fill_price += -slippage if pos.side == "BUY" else slippage
-            commission = fill_price * pos.quantity * self.config.commission_pct
+        """End-of-test settlement at the last bar, reflected in the final equity snapshot.
 
-            pnl = (fill_price - pos.entry_price) * pos.quantity
-            if pos.side == "SELL":
-                pnl = (pos.entry_price - fill_price) * pos.quantity
-            pnl -= commission
-            pnl -= pos.entry_price * pos.quantity * self.config.commission_pct
-
-            # Funding rate adjustment
-            bars_held = bar_idx - pos.entry_bar
-            adjusted_pnl, funding_cost = funding_aware_pnl(
-                pnl, pos.symbol, self.config.funding_rate_pct,
-                pos.entry_notional, bars_held
-            )
-            pnl = adjusted_pnl
-            self.total_funding_paid += funding_cost
-
-            fill = Fill(
-                timestamp=bar.timestamp, symbol=pos.symbol,
-                side="SELL" if pos.side == "BUY" else "BUY",
-                quantity=pos.quantity, price=fill_price,
-                commission=commission, bar_index=bar_idx,
-            )
-            fills.append(fill)
-            self.cash += (self._direction(pos.side) * fill_price * pos.quantity
-                          - commission - funding_cost)
-
-            self._trade_log.append({
-                "entry_time": pos.entry_time.isoformat(),
-                "exit_time": bar.timestamp.isoformat(),
-                "symbol": pos.symbol,
-                "side": pos.side,
-                "entry_price": pos.entry_price,
-                "exit_price": fill_price,
-                "quantity": pos.quantity,
-                "pnl": round(pnl, 4),
-                "pnl_pct": round(pnl / (pos.entry_price * pos.quantity), 6) if pos.quantity > 0 else 0.0,
-                "exit_reason": "end_of_test",
-                "funding_cost": round(funding_cost, 4),
-                "bars_held": bars_held,
-            })
-        self.positions.clear()
-        self._fill_history.extend(fills)
+        Every caller records a snapshot for `bar` before closing, so replacing it keeps the
+        number of return periods unchanged.
+        """
+        fills = [self._close_position(pos, bar.close, bar, bar_idx, "end_of_test")
+                 for pos in list(self.positions)]
+        self.settle_final_snapshot(bar.timestamp, bar)
         return fills
 
     @property
@@ -492,8 +463,12 @@ class Broker:
             quantity = position_value / bar.close
             side = "BUY"
         elif signal.action == "SELL":
-            existing = next((p for p in portfolio.positions if p.side == "BUY"), None)
-            quantity = existing.quantity if existing else position_value / bar.close
+            # Long/flat contract: SELL only exits a long of this symbol; flat never shorts.
+            existing = next((p for p in portfolio.positions
+                             if p.symbol == symbol and p.side == "BUY"), None)
+            if existing is None:
+                return None
+            quantity = existing.quantity
             side = "SELL"
         else:
             return None
@@ -515,6 +490,14 @@ class Broker:
         fills = []
         for order in list(self._pending):
             if order.symbol != symbol:
+                continue
+
+            if order.side == "SELL":
+                # Reduce-only at fill time: if a stop or target already closed the long,
+                # the exit has nothing left to close and never becomes an opening short.
+                exits = portfolio.close_long(order.symbol, bar, bar_idx)
+                fills.extend(exits)
+                self._pending.remove(order)
                 continue
 
             fill_price = bar.open
@@ -755,7 +738,6 @@ class BacktestEngine:
         # Close remaining positions at last bar
         if self.portfolio.positions and bars:
             self.portfolio.close_all(bars[-1], len(bars) - 1)
-            self.portfolio.settle_final_snapshot(bars[-1].timestamp, bars[-1])
 
         metrics = compute_aggregate_metrics(
             self.portfolio.equity_curve, self.portfolio.trade_log,

@@ -96,3 +96,93 @@ def test_ml_strategy_refuses_a_non_probability_output():
     strategy._features = pd.DataFrame({"feature": [1.0]})
     strategy._feature_cols = ["feature"]
     assert strategy.next(0, _bar(100), []).action == "HOLD"
+
+
+def _signal(action):
+    return b.Signal(action=action, confidence=1.0, stop_loss_pct=0.0, take_profit_pct=0.0)
+
+
+def test_sell_while_flat_never_opens_a_short_and_cannot_exceed_max_positions():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0,
+                              funding_rate_pct=0, max_positions=1)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    for index in range(6):
+        assert broker.place_order(_signal("SELL"), _bar(100), index, portfolio, "SYNTH/TEST") is None
+        broker.process_orders(_bar(100), index, portfolio, "SYNTH/TEST")
+    assert portfolio.positions == []
+    assert portfolio.cash == 1000
+
+
+def test_sell_closes_the_long_instead_of_opening_a_hedge():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0, funding_rate_pct=0)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 2, 100, 0, 0))
+    broker.place_order(_signal("SELL"), _bar(110), 1, portfolio, "SYNTH/TEST")
+    fills = broker.process_orders(_bar(110), 2, portfolio, "SYNTH/TEST")
+    assert [(fill.side, fill.quantity) for fill in fills] == [("SELL", 2)]
+    assert portfolio.positions == []
+    assert portfolio.cash == pytest.approx(1020)
+    assert portfolio.trade_log[-1]["exit_reason"] == "signal_exit"
+
+
+def test_pending_sell_is_dropped_when_a_stop_closed_the_long_first():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0,
+                              funding_rate_pct=0, stop_loss_pct=0.05)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 1, 100, 0, 0))
+    broker.place_order(_signal("SELL"), _bar(100), 1, portfolio, "SYNTH/TEST")
+    portfolio.check_exits(_bar(90), 2)                                   # stop at 95 fires first
+    assert broker.process_orders(_bar(90), 2, portfolio, "SYNTH/TEST") == []
+    assert portfolio.positions == []
+
+
+class _BuyOnce:
+    """Stand-in for MLStrategy in the walk-forward window: buy on the first bar, then hold."""
+    def __init__(self, config, symbol=None, model=None):
+        self.config = config
+
+    def _precompute_features(self, df):
+        return None
+
+    def next(self, i, bar, positions):
+        return _signal("BUY" if i == 0 and not positions else "HOLD")
+
+
+@pytest.mark.parametrize("timeframe", ["1h", "4h"])
+def test_walk_forward_window_settles_final_equity_and_binds_metric_arguments(monkeypatch, timeframe):
+    import backtest_runner
+    monkeypatch.setattr(backtest_runner, "MLStrategy", _BuyOnce)
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0.01, slippage_pct=0, funding_rate_pct=0)
+    frame = pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1.0},
+                         index=pd.date_range(NOW, periods=50, freq="h"))
+    result = backtest_runner._run_window_backtest(frame, "SYNTH/TEST", config, None, None, None, [], timeframe)
+    assert result["final_equity"] == pytest.approx(1000 + result["total_pnl"])
+    assert len(result["equity_curve"]) == 50
+    metrics = result["metrics"]
+    assert isinstance(metrics["total_funding_paid"], float)
+    expected = b.compute_aggregate_metrics(result["equity_curve"], result["trades"], config,
+                                           total_funding_paid=0.0, timeframe=timeframe)
+    assert metrics == expected
+
+
+def test_yfinance_request_covers_the_inclusive_end_day(tmp_path, monkeypatch):
+    import sys
+    from types import ModuleType
+    requested = {}
+
+    class Ticker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, start, end, interval):
+            requested.update(start=start, end=end)
+            days = pd.date_range(start, end, freq="D", inclusive="left", tz="UTC")   # end-exclusive
+            return pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0, "Volume": 1.0}, index=days)
+
+    module = ModuleType("yfinance")
+    module.Ticker = Ticker
+    monkeypatch.setitem(sys.modules, "yfinance", module)
+    monkeypatch.setattr(b, "CACHE_DIR", tmp_path)
+    loaded = b.DataHandler("SYNTHETIC", "2020-01-01", "2020-01-02", timeframe="1d").load()
+    assert requested == {"start": "2020-01-01", "end": "2020-01-03"}
+    assert [ts.strftime("%Y-%m-%d") for ts in loaded.index] == ["2020-01-01", "2020-01-02"]
