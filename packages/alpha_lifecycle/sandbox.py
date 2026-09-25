@@ -48,26 +48,26 @@ def require_official_sandbox(path: Path = Path("/usr/bin/bwrap")) -> Path:
     return path
 
 
-_LOADER_FAILURE = re.compile(rb"error while loading shared libraries: [A-Za-z0-9_.+-]{1,96}")
-_EXCEPTION_NAME = re.compile(rb"^([A-Za-z_][A-Za-z0-9_.]{0,127}?(?:Error|Exception|Held|Exit|Interrupt|Warning))(?::|$)")
+_LOADER_FAILURE = re.compile(rb"error while loading shared libraries: ")
+_TRACEBACK = re.compile(rb"^Traceback \(most recent call last\):$", re.MULTILINE)
 
 
-def _child_failure_summary(fd: int) -> str:
-    """Classify a failed replica without retaining what it printed.
+def _child_failure_summary(fd: int, returncode: int) -> str:
+    """Classify a failed replica into a fixed label; nothing the child produced is echoed.
 
-    Replica stderr may be derived from research or holdout data, so only two fixed shapes
-    leave: a dynamic-loader failure naming a library, or the final exception's class name.
+    Replica stderr and exit status are child-controlled and may be derived from research or
+    holdout data, so the result is one of four constants and never contains matched text,
+    library names, exception names or the raw exit code.
     """
+    if returncode < 0:
+        return "SIGNALLED"
     size = os.fstat(fd).st_size
     tail = os.pread(fd, 4096, max(0, size - 4096))
-    loader = _LOADER_FAILURE.findall(tail)
-    if loader:
-        return loader[-1].decode("ascii")
-    for line in reversed(tail.splitlines()):
-        match = _EXCEPTION_NAME.match(line.strip())
-        if match:
-            return match.group(1).decode("ascii")
-    return "no classifiable stderr"
+    if _LOADER_FAILURE.search(tail):
+        return "LOADER_FAILURE"
+    if _TRACEBACK.search(tail):
+        return "PYTHON_EXCEPTION"
+    return "UNCLASSIFIED"
 
 
 class BubblewrapExecutor:
@@ -255,9 +255,10 @@ class BubblewrapExecutor:
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_fd,
                 timeout=300, check=False, preexec_fn=self._limits,
             )
+            if completed.returncode != 0:
+                summary = _child_failure_summary(stderr_fd, completed.returncode)
         except (OSError, subprocess.SubprocessError, EngineSpawnError) as error:
             raise SandboxHeld("HELD E_SANDBOX: bounded child execution failed") from error
-            summary = "" if completed.returncode == 0 else _child_failure_summary(stderr_fd)
         finally:
             for fd in runtime_fds.values():
                 os.close(fd)
@@ -268,8 +269,7 @@ class BubblewrapExecutor:
             if stderr_fd >= 0:
                 os.close(stderr_fd)
         if completed.returncode != 0:
-            raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result "
-                              f"(exit {completed.returncode}; {summary})")
+            raise SandboxHeld(f"HELD E_SANDBOX: child did not produce one valid result ({summary})")
         if self._holdout_view is not None:
             self._check_fence()
         descriptor = -1

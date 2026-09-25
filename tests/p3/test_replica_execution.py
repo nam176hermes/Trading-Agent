@@ -538,7 +538,7 @@ def test_parent_rejects_tampered_replica_outputs(tmp_path, damage):
     assert not (target_root / ref.locator).exists()
 
 
-@pytest.mark.parametrize('fault', ['session', 'streams', 'oversized', 'descriptor_read'])
+@pytest.mark.parametrize('fault', ['session', 'streams', 'oversized', 'descriptor_read', 'classified'])
 def test_replica_preserves_driver_custody_and_bounds_untrusted_io(isolated_baseline_input,tmp_path, monkeypatch, fault):
     import subprocess
     from packages.alpha_lifecycle import sandbox
@@ -582,8 +582,20 @@ def test_replica_preserves_driver_custody_and_bounds_untrusted_io(isolated_basel
                     stream.truncate(64 * 1024**2 + 1)
             monkeypatch.setattr(Path, 'read_bytes', no_unbounded_path_read)
             return subprocess.CompletedProcess(argv, 0)
+        if fault == 'classified':
+            import os
+            os.write(kwargs['stderr'], b'Traceback (most recent call last):\n'
+                     b'/p3/bin/bwrap: error while loading shared libraries: close_61234.5_2025-10-02.so: x\n'
+                     b'HoldoutClose61234Error: close 61234.5 on 2025-10-02\n')
+            return subprocess.CompletedProcess(argv, 173)
         return subprocess.CompletedProcess(argv, 1)
 
     monkeypatch.setattr(sandbox.subprocess, 'run', run)
-    with pytest.raises(SandboxHeld):
+    with pytest.raises(SandboxHeld) as raised:
         executor.execute(manifest_ref, replicate='R1', logical_trial_id='synthetic', output_dir=output)
+    if fault == 'classified':
+        # The failure reaches the caller as a fixed label; neither the child's text, the
+        # library or exception names it printed, nor its exit status survive.
+        message = str(raised.value)
+        assert message == 'HELD E_SANDBOX: child did not produce one valid result (LOADER_FAILURE)'
+        assert not any(character.isdigit() for character in message)
