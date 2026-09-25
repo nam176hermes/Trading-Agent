@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import path from 'path';
 
 import { roleSatisfies } from './access-policy';
@@ -47,7 +48,19 @@ function appendAuditEvent(
       occurred_at: new Date().toISOString(),
       ...(role ? { role } : {}),
     };
-    writePrivateLocalStateFile(auditPath, `${existing ?? ''}${JSON.stringify(event)}\n`);
+    const line = `${JSON.stringify(event)}\n`;
+    let current = existing ?? '';
+    if (Buffer.byteLength(current, 'utf8') + Buffer.byteLength(line, 'utf8') > MAX_AUDIT_BYTES) {
+      // Keep every record: the validated log becomes a new uniquely named segment before the
+      // current log restarts, so the bounded reader never meets a file it cannot admit.
+      const stamp = event.occurred_at.replace(/[:.]/g, '-');
+      writePrivateLocalStateFile(
+        path.join(path.dirname(auditPath), `dashboard_mutation_audit.${stamp}.${randomUUID()}.jsonl`),
+        current,
+      );
+      current = '';
+    }
+    writePrivateLocalStateFile(auditPath, `${current}${line}`);
     return true;
   } catch {
     return false;

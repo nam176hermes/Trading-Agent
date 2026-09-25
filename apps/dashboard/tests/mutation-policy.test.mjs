@@ -322,3 +322,37 @@ test('auth helper has structured fail-closed configuration and credential errors
   assert.match(source, /UNAUTHORIZED/);
   assert.doesNotMatch(source, /if\s*\(!password\)\s*return null/);
 });
+
+test('audit log at its read cap rotates into a retained segment instead of locking mutations', async () => {
+  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
+    import('../src/lib/trading/auth.ts'),
+    import('../src/lib/trading/session.ts'),
+  ]);
+  const auditDirectory = path.join(researchDirectory, 'memory');
+  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
+  const record = '{"event":"dashboard_mutation_authorization","pad":"';
+  const filler = 1024 * 1024 - 1 - record.length - 3;
+  const nearCap = `${record}${'x'.repeat(filler)}"}\n`;
+  assert.equal(Buffer.byteLength(nearCap), 1024 * 1024 - 1);
+  fs.mkdirSync(auditDirectory, { mode: 0o700 });
+  fs.writeFileSync(auditPath, nearCap, { mode: 0o600 });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = authorizeMutation(
+      requestWithSession(issueSession('operator')),
+      'pipeline.run',
+      'MUTATION_EXECUTION_SENSITIVE',
+      'operator',
+    );
+    assert.equal(response, null);
+  }
+
+  const segments = fs.readdirSync(auditDirectory)
+    .filter((name) => /^dashboard_mutation_audit\..+\.jsonl$/.test(name));
+  assert.equal(segments.length, 1);
+  assert.equal(fs.readFileSync(path.join(auditDirectory, segments[0]), 'utf8'), nearCap);
+  assert.equal(fs.statSync(path.join(auditDirectory, segments[0])).mode & 0o777, 0o600);
+  const current = fs.readFileSync(auditPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+  assert.equal(current.length, 2);
+  assert.ok(current.every((row) => row.authorization_outcome === 'GRANTED'));
+});
