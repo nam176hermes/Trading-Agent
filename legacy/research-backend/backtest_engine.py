@@ -82,6 +82,8 @@ class Order:
     stop_loss_pct: float
     take_profit_pct: float
     created_at: int
+    # A SELL exit names the exact long positions it was placed for (compared by identity).
+    closes: tuple["Position", ...] = ()
 
 
 @dataclass
@@ -391,10 +393,14 @@ class Portfolio:
                 fills.append(self._close_position(pos, exit_price, bar, bar_idx, exit_reason))
         return fills
 
-    def close_long(self, symbol: str, bar: Bar, bar_idx: int) -> list[Fill]:
-        """Reduce-only SELL: close the open long of `symbol` at the bar open, if any remains."""
+    def close_positions(self, targets: tuple[Position, ...], bar: Bar, bar_idx: int) -> list[Fill]:
+        """Reduce-only exit at the bar open of exactly `targets` that are still open.
+
+        Positions already closed by a stop or target, and positions opened after the exit was
+        placed, are left alone, so an exit can never fill more than it was placed for.
+        """
         return [self._close_position(pos, bar.open, bar, bar_idx, "signal_exit")
-                for pos in list(self.positions) if pos.symbol == symbol and pos.side == "BUY"]
+                for pos in list(self.positions) if any(pos is target for target in targets)]
 
     def apply_fill(self, fill: Fill):
         self.cash -= self._direction(fill.side) * fill.price * fill.quantity + fill.commission
@@ -459,17 +465,18 @@ class Broker:
         if signal.action == "BUY" and portfolio.position_count >= self.config.max_positions:
             return None
 
+        closes: tuple[Position, ...] = ()
         if signal.action == "BUY":
             quantity = position_value / bar.close
             side = "BUY"
         elif signal.action == "SELL":
             # Long/flat contract: SELL only exits a long of this symbol; flat never shorts.
-            existing = next((p for p in portfolio.positions
-                             if p.symbol == symbol and p.side == "BUY"), None)
-            if existing is None:
+            longs = tuple(p for p in portfolio.positions if p.symbol == symbol and p.side == "BUY")
+            if not longs:
                 return None
-            quantity = existing.quantity
+            quantity = sum(p.quantity for p in longs)
             side = "SELL"
+            closes = longs
         else:
             return None
 
@@ -481,6 +488,7 @@ class Broker:
             stop_loss_pct=signal.stop_loss_pct if signal.stop_loss_pct > 0 else self.config.stop_loss_pct,
             take_profit_pct=signal.take_profit_pct if signal.take_profit_pct > 0 else self.config.take_profit_pct,
             created_at=bar_idx,
+            closes=closes,
         )
         self._pending.append(order)
         return order
@@ -495,8 +503,13 @@ class Broker:
             if order.side == "SELL":
                 # Reduce-only at fill time: if a stop or target already closed the long,
                 # the exit has nothing left to close and never becomes an opening short.
-                exits = portfolio.close_long(order.symbol, bar, bar_idx)
-                fills.extend(exits)
+                fills.extend(portfolio.close_positions(order.closes, bar, bar_idx))
+                self._pending.remove(order)
+                continue
+
+            if portfolio.position_count >= self.config.max_positions:
+                # Capacity is rechecked at fill: several BUYs queued while flat must not
+                # open more positions than the limit allows. Exits above are never capped.
                 self._pending.remove(order)
                 continue
 

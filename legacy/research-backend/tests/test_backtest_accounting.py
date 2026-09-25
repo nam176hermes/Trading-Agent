@@ -186,3 +186,38 @@ def test_yfinance_request_covers_the_inclusive_end_day(tmp_path, monkeypatch):
     loaded = b.DataHandler("SYNTHETIC", "2020-01-01", "2020-01-02", timeframe="1d").load()
     assert requested == {"start": "2020-01-01", "end": "2020-01-03"}
     assert [ts.strftime("%Y-%m-%d") for ts in loaded.index] == ["2020-01-01", "2020-01-02"]
+
+
+def test_queued_buys_cannot_open_beyond_max_positions_at_fill():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0,
+                              funding_rate_pct=0, max_positions=1)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    for index in range(2):                                   # both accepted while flat
+        assert broker.place_order(_signal("BUY"), _bar(100), index, portfolio, "SYNTH/TEST") is not None
+    fills = broker.process_orders(_bar(100), 2, portfolio, "SYNTH/TEST")
+    assert len(fills) == 1
+    assert portfolio.position_count == 1
+
+
+def test_sell_order_quantity_matches_what_it_fills_across_several_longs():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0, funding_rate_pct=0)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 1, 100, 0, 0))
+    portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 2, 100, 0, 1))
+    order = broker.place_order(_signal("SELL"), _bar(100), 2, portfolio, "SYNTH/TEST")
+    assert order is not None and order.quantity == 3
+    fills = broker.process_orders(_bar(100), 3, portfolio, "SYNTH/TEST")
+    assert sum(fill.quantity for fill in fills) == order.quantity
+    assert portfolio.positions == []
+
+
+def test_sell_never_closes_a_long_opened_after_it_was_placed():
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0, funding_rate_pct=0)
+    portfolio, broker = b.Portfolio(config), b.Broker(config)
+    portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 1, 100, 0, 0))
+    order = broker.place_order(_signal("SELL"), _bar(100), 1, portfolio, "SYNTH/TEST")
+    later = b.Fill(NOW, "SYNTH/TEST", "BUY", 1, 100, 0, 2)    # an identical long opened afterwards
+    portfolio.apply_fill(later)
+    fills = broker.process_orders(_bar(100), 3, portfolio, "SYNTH/TEST")
+    assert order is not None and sum(fill.quantity for fill in fills) == order.quantity == 1
+    assert [(p.side, p.quantity, p.entry_bar) for p in portfolio.positions] == [("BUY", 1, 2)]
