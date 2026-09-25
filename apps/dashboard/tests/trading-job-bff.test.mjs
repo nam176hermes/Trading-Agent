@@ -573,12 +573,15 @@ test('deprecated run route only enqueues a fixed snapshot and does not touch run
   const originals = {
     readFileSync: builtinFs.readFileSync,
     writeFileSync: builtinFs.writeFileSync,
+    writeSync: builtinFs.writeSync,
     renameSync: builtinFs.renameSync,
     spawn: builtinChildProcess.spawn,
   };
   const calls = { read: 0, write: 0, rename: 0, spawn: 0 };
   builtinFs.readFileSync = (...args) => { calls.read += 1; return originals.readFileSync(...args); };
   builtinFs.writeFileSync = (...args) => { calls.write += 1; return originals.writeFileSync(...args); };
+  // The audit is one O_APPEND writeSync; any other write would also be counted here.
+  builtinFs.writeSync = (...args) => { calls.write += 1; return originals.writeSync(...args); };
   builtinFs.renameSync = (...args) => { calls.rename += 1; return originals.renameSync(...args); };
   builtinChildProcess.spawn = (...args) => { calls.spawn += 1; return originals.spawn(...args); };
   syncBuiltinESMExports();
@@ -592,6 +595,7 @@ test('deprecated run route only enqueues a fixed snapshot and does not touch run
     Object.assign(builtinFs, {
       readFileSync: originals.readFileSync,
       writeFileSync: originals.writeFileSync,
+      writeSync: originals.writeSync,
       renameSync: originals.renameSync,
     });
     builtinChildProcess.spawn = originals.spawn;
@@ -606,7 +610,7 @@ test('deprecated run route only enqueues a fixed snapshot and does not touch run
   const afterHash = createHash('sha256').update(fs.readFileSync(legacy)).digest('hex');
   assert.equal(afterHash, beforeHash);
   assert.equal(after.mtimeMs, before.mtimeMs);
-  assert.deepEqual(calls, { read: 0, write: 1, rename: 1, spawn: 0 });
+  assert.deepEqual(calls, { read: 0, write: 1, rename: 0, spawn: 0 });
   const auditRows = fs.readFileSync(path.join(temp, 'memory', 'dashboard_mutation_audit.jsonl'), 'utf8')
     .trim().split('\n').map(JSON.parse);
   assert.deepEqual(auditRows.map((event) => event.action), ['pipeline.run']);

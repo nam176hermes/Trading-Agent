@@ -415,25 +415,26 @@ test('two dashboard processes writing the audit log never lose an authorized eve
   assert.ok(records.every((row) => row.authorization_outcome === 'GRANTED'));
 });
 
-test('a stale audit lock is recovered and a live one fails the mutation closed', async () => {
-  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
-    import('../src/lib/trading/auth.ts'),
-    import('../src/lib/trading/session.ts'),
-  ]);
-  const { spawnSync } = await import('node:child_process');
+test('concurrent appends across a rotation keep every record and stay under the read cap (audit A07)', async () => {
+  const { spawn } = await import('node:child_process');
   const auditDirectory = path.join(researchDirectory, 'memory');
-  const lockPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl.lock');
+  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
+  const record = '{"event":"dashboard_mutation_authorization","pad":"';
+  const seed = `${record}${'x'.repeat(1024 * 1024 - 64 * 1024 - 300 - record.length - 3)}"}\n`;
   fs.mkdirSync(auditDirectory, { mode: 0o700 });
-  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString();
-  fs.writeFileSync(lockPath, `${dead} stale-token\n`, { mode: 0o600 });
-  const request = () => requestWithSession(issueSession('operator'));
-  assert.equal(authorizeMutation(request(), 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator'), null);
-  assert.equal(fs.existsSync(lockPath), false);
-  assert.equal(allAuditRecords().length, 1);
-
-  fs.writeFileSync(lockPath, `${process.ppid} live-token\n`, { mode: 0o600 });
-  const blocked = authorizeMutation(request(), 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator');
-  assert.equal(blocked?.status, 503);
-  assert.equal(fs.readFileSync(lockPath, 'utf8'), `${process.ppid} live-token\n`);
-  assert.equal(allAuditRecords().length, 1);
+  fs.writeFileSync(auditPath, seed, { mode: 0o600 });
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', writerScript(40)], { env: process.env });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(Number(out)) : reject(new Error(`writer exited ${code}`))));
+  });
+  assert.deepEqual(await Promise.all([run(), run()]), [40, 40]);
+  const records = allAuditRecords();
+  assert.equal(records.length, 81);
+  assert.equal(records.filter((row) => row.authorization_outcome === 'GRANTED').length, 80);
+  for (const name of fs.readdirSync(auditDirectory)) {
+    assert.ok(fs.statSync(path.join(auditDirectory, name)).size <= 1024 * 1024, name);
+  }
 });

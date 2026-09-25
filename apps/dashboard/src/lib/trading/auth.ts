@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 
 import { roleSatisfies } from './access-policy';
-import { readLocalStateFile, withLocalStateLock, writePrivateLocalStateFile } from './local-state';
+import { appendPrivateLocalStateLine, readLocalStateFile, retirePrivateLocalStateFile } from './local-state';
 import { memoryDir } from './paths';
 import { verifySession } from './session';
 import type { SessionPayload, SessionRole } from './session';
@@ -15,6 +15,7 @@ export type MutationClassification =
 type AuthorizationOutcome = 'GRANTED' | 'CONFIGURATION_ERROR' | 'FORBIDDEN' | 'UNAUTHORIZED';
 
 const MAX_AUDIT_BYTES = 1024 * 1024;
+const ROTATE_AUDIT_BYTES = MAX_AUDIT_BYTES - 64 * 1024;
 
 function hasValidAuditRecords(existing: string | null): boolean {
   if (existing === null || existing === '') return true;
@@ -38,22 +39,6 @@ function appendAuditEvent(
 ): boolean {
   const auditPath = path.join(memoryDir(), 'dashboard_mutation_audit.jsonl');
   try {
-    // One writer at a time across processes: the whole read/rotate/replace is one transaction.
-    return withLocalStateLock(auditPath, () => appendUnderLock(auditPath, action, classification,
-      authorizationOutcome, role));
-  } catch {
-    return false;
-  }
-}
-
-function appendUnderLock(
-  auditPath: string,
-  action: string,
-  classification: MutationClassification,
-  authorizationOutcome: AuthorizationOutcome,
-  role?: SessionRole,
-): boolean {
-  {
     const existing = readLocalStateFile(auditPath, MAX_AUDIT_BYTES);
     if (!hasValidAuditRecords(existing)) return false;
     const event = {
@@ -65,19 +50,21 @@ function appendUnderLock(
       ...(role ? { role } : {}),
     };
     const line = `${JSON.stringify(event)}\n`;
-    let current = existing ?? '';
-    if (Buffer.byteLength(current, 'utf8') + Buffer.byteLength(line, 'utf8') > MAX_AUDIT_BYTES) {
-      // Keep every record: the validated log becomes a new uniquely named segment before the
-      // current log restarts, so the bounded reader never meets a file it cannot admit.
+    if (Buffer.byteLength(existing ?? '', 'utf8') + Buffer.byteLength(line, 'utf8') > ROTATE_AUDIT_BYTES) {
+      // Keep every record: the log is renamed whole into a uniquely named segment, and the next
+      // append starts a new log. Rotating below the read cap leaves headroom for appends from other
+      // processes that raced this check, so the bounded reader never meets a file it cannot admit.
       const stamp = event.occurred_at.replace(/[:.]/g, '-');
-      writePrivateLocalStateFile(
+      retirePrivateLocalStateFile(
+        auditPath,
         path.join(path.dirname(auditPath), `dashboard_mutation_audit.${stamp}.${randomUUID()}.jsonl`),
-        current,
       );
-      current = '';
     }
-    writePrivateLocalStateFile(auditPath, `${current}${line}`);
+    // One O_APPEND write per event: concurrent processes never overwrite each other's records.
+    appendPrivateLocalStateLine(auditPath, line);
     return true;
+  } catch {
+    return false;
   }
 }
 

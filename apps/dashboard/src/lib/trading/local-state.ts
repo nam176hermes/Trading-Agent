@@ -240,68 +240,64 @@ export function writePrivateLocalStateFile(target: string, content: string): voi
   }
 }
 
-const LOCK_WAIT_MS = 2000;
-const LOCK_POLL_MS = 10;
-
-function sleepSync(milliseconds: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
-}
-
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /**
- * Runs `action` while holding a cross-process lock beside `target`, so read-modify-write
- * cycles from several dashboard processes on one data root never overwrite each other.
- * The lock names its owner PID; a lock whose owner is dead is removed and retried. A live
- * owner that does not release within the wait bound makes this throw, so callers fail closed.
+ * Appends one complete line with a single O_APPEND write, then fsyncs. Concurrent appenders from
+ * several processes never overwrite each other (the kernel positions each append at the current
+ * end of file), so no lock is needed and none can be left behind by a crash.
  */
-export function withLocalStateLock<T>(target: string, action: () => T): T {
+export function appendPrivateLocalStateLine(target: string, line: string): void {
   requireAbsoluteTarget(target);
+  if (!line.endsWith('\n') || line.indexOf('\n') !== line.length - 1) throw stateError('append requires one line');
   const directory = path.dirname(target);
   const directoryFd = openStateDirectory(directory, { create: true, makePrivate: true });
   if (directoryFd === null) throw stateError(`${directory} is unavailable`);
-  fs.closeSync(directoryFd);
-  const lockPath = `${target}.lock`;
-  const token = `${process.pid} ${randomUUID()}\n`;
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    let fd: number;
+  try {
+    requireDirectoryStillAnchored(directory, directoryFd);
+    const fd = fs.openSync(
+      target,
+      fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
+      PRIVATE_FILE_MODE,
+    );
     try {
-      fd = fs.openSync(
-        lockPath,
-        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
-        PRIVATE_FILE_MODE,
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const holder = readLocalStateFile(lockPath, 256);
-      const pid = Number.parseInt(holder?.split(' ')[0] ?? '', 10);
-      if (holder !== null && Number.isSafeInteger(pid) && pid > 0 && !processAlive(pid)) {
-        // Remove only the exact stale lock that was read; a new owner's lock differs.
-        if (readLocalStateFile(lockPath, 256) === holder) fs.unlinkSync(lockPath);
-        continue;
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.nlink !== 1 || (opened.mode & 0o077) !== 0) {
+        throw stateError(`${target} is not a private regular file`);
       }
-      if (Date.now() >= deadline) throw stateError(`${lockPath} is held by a live process`);
-      sleepSync(LOCK_POLL_MS);
-      continue;
-    }
-    try {
-      fs.writeSync(fd, token);
+      const bytes = Buffer.from(line, 'utf8');
+      if (fs.writeSync(fd, bytes) !== bytes.length) throw stateError(`${target} append was partial`);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
+    fs.fsyncSync(directoryFd);
+  } finally {
+    fs.closeSync(directoryFd);
+  }
+}
+
+/**
+ * Moves `target` to `retired` by rename, keeping its bytes. Returns false when another process
+ * already retired it; a writer that still holds the old file open appends into the retired copy.
+ */
+export function retirePrivateLocalStateFile(target: string, retired: string): boolean {
+  requireAbsoluteTarget(target);
+  requireAbsoluteTarget(retired);
+  const directory = path.dirname(target);
+  if (path.dirname(retired) !== directory) throw stateError('retired state must stay in its directory');
+  const directoryFd = openStateDirectory(directory, { create: false, makePrivate: false });
+  if (directoryFd === null) return false;
+  try {
+    requireDirectoryStillAnchored(directory, directoryFd);
+    if (fs.existsSync(retired)) throw stateError(`${retired} already exists`);
     try {
-      return action();
-    } finally {
-      if (readLocalStateFile(lockPath, 256) === token) fs.unlinkSync(lockPath);
+      fs.renameSync(target, retired);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
     }
+    fs.fsyncSync(directoryFd);
+    return true;
+  } finally {
+    fs.closeSync(directoryFd);
   }
 }
