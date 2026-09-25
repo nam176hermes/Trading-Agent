@@ -356,3 +356,84 @@ test('audit log at its read cap rotates into a retained segment instead of locki
   assert.equal(current.length, 2);
   assert.ok(current.every((row) => row.authorization_outcome === 'GRANTED'));
 });
+
+function writerScript(count) {
+  // Child processes share the parent's module hooks so they load the same TypeScript sources.
+  const src = new URL('../src/', import.meta.url).href;
+  const next = new URL('../node_modules/next/server.js', import.meta.url).href;
+  return `
+import fs from 'node:fs';
+import { registerHooks } from 'node:module';
+import { fileURLToPath } from 'node:url';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === 'server-only') return { shortCircuit: true, url: 'data:text/javascript,export%20{}' };
+  if (specifier === 'next/server') return { shortCircuit: true, url: ${JSON.stringify(next)} };
+  if (specifier.startsWith('@/')) {
+    for (const suffix of ['.ts', '.tsx', '/index.ts']) {
+      const candidate = ${JSON.stringify(src)} + specifier.slice(2) + suffix;
+      if (fs.existsSync(fileURLToPath(candidate))) return { shortCircuit: true, url: candidate };
+    }
+  }
+  if (specifier.startsWith('.') && context.parentURL?.includes('/src/')) {
+    const url = new URL(specifier.replace(/\\.js$/, '') + '.ts', context.parentURL);
+    if (fs.existsSync(fileURLToPath(url))) return { shortCircuit: true, url: url.href };
+  }
+  return nextResolve(specifier, context);
+} });
+const { authorizeMutation } = await import(${JSON.stringify(src + 'lib/trading/auth.ts')});
+const { issueSession } = await import(${JSON.stringify(src + 'lib/trading/session.ts')});
+let granted = 0;
+for (let i = 0; i < ${count}; i += 1) {
+  const request = new Request('https://dashboard.test/api/trading/run',
+    { method: 'POST', headers: { cookie: 'trading_session=' + issueSession('operator') } });
+  if (authorizeMutation(request, 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator') === null) granted += 1;
+}
+process.stdout.write(String(granted));
+`;
+}
+
+function allAuditRecords() {
+  const directory = path.join(researchDirectory, 'memory');
+  return fs.readdirSync(directory)
+    .filter((name) => /^dashboard_mutation_audit(\..+)?\.jsonl$/.test(name))
+    .flatMap((name) => fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').map(JSON.parse));
+}
+
+test('two dashboard processes writing the audit log never lose an authorized event (audit A07)', async () => {
+  const { spawn } = await import('node:child_process');
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', writerScript(40)], { env: process.env });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(Number(out)) : reject(new Error(`writer exited ${code}`))));
+  });
+  const granted = await Promise.all([run(), run()]);
+  assert.deepEqual(granted, [40, 40]);
+  const records = allAuditRecords();
+  assert.equal(records.length, 80);
+  assert.ok(records.every((row) => row.authorization_outcome === 'GRANTED'));
+});
+
+test('a stale audit lock is recovered and a live one fails the mutation closed', async () => {
+  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
+    import('../src/lib/trading/auth.ts'),
+    import('../src/lib/trading/session.ts'),
+  ]);
+  const { spawnSync } = await import('node:child_process');
+  const auditDirectory = path.join(researchDirectory, 'memory');
+  const lockPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl.lock');
+  fs.mkdirSync(auditDirectory, { mode: 0o700 });
+  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))']).stdout.toString();
+  fs.writeFileSync(lockPath, `${dead} stale-token\n`, { mode: 0o600 });
+  const request = () => requestWithSession(issueSession('operator'));
+  assert.equal(authorizeMutation(request(), 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator'), null);
+  assert.equal(fs.existsSync(lockPath), false);
+  assert.equal(allAuditRecords().length, 1);
+
+  fs.writeFileSync(lockPath, `${process.ppid} live-token\n`, { mode: 0o600 });
+  const blocked = authorizeMutation(request(), 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator');
+  assert.equal(blocked?.status, 503);
+  assert.equal(fs.readFileSync(lockPath, 'utf8'), `${process.ppid} live-token\n`);
+  assert.equal(allAuditRecords().length, 1);
+});

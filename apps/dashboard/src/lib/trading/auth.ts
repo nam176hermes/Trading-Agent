@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 
 import { roleSatisfies } from './access-policy';
-import { readLocalStateFile, writePrivateLocalStateFile } from './local-state';
+import { readLocalStateFile, withLocalStateLock, writePrivateLocalStateFile } from './local-state';
 import { memoryDir } from './paths';
 import { verifySession } from './session';
 import type { SessionPayload, SessionRole } from './session';
@@ -38,6 +38,22 @@ function appendAuditEvent(
 ): boolean {
   const auditPath = path.join(memoryDir(), 'dashboard_mutation_audit.jsonl');
   try {
+    // One writer at a time across processes: the whole read/rotate/replace is one transaction.
+    return withLocalStateLock(auditPath, () => appendUnderLock(auditPath, action, classification,
+      authorizationOutcome, role));
+  } catch {
+    return false;
+  }
+}
+
+function appendUnderLock(
+  auditPath: string,
+  action: string,
+  classification: MutationClassification,
+  authorizationOutcome: AuthorizationOutcome,
+  role?: SessionRole,
+): boolean {
+  {
     const existing = readLocalStateFile(auditPath, MAX_AUDIT_BYTES);
     if (!hasValidAuditRecords(existing)) return false;
     const event = {
@@ -62,8 +78,6 @@ function appendAuditEvent(
     }
     writePrivateLocalStateFile(auditPath, `${current}${line}`);
     return true;
-  } catch {
-    return false;
   }
 }
 
