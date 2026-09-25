@@ -656,6 +656,23 @@ def compute_profit_factor(trades: list[dict]) -> float:
     return gross_profit / gross_loss
 
 
+def stitch_window_equity(curves: list[list[tuple[datetime, float]]],
+                         initial_capital: float) -> list[tuple[datetime, float]]:
+    """One walk-forward equity curve from independent folds that each start at initial_capital.
+
+    Convention: folds are independent and P&L is additive (no compounding), matching the summed
+    trade P&L. Each fold is shifted by the P&L of the folds before it, so a capital reset between
+    folds is never read as a trading loss and the last point equals initial capital + total P&L.
+    """
+    stitched: list[tuple[datetime, float]] = []
+    offset = 0.0
+    for curve in curves:
+        stitched.extend((ts, equity + offset) for ts, equity in curve)
+        if curve:
+            offset += curve[-1][1] - initial_capital
+    return stitched
+
+
 def compute_equity_returns(equity_curve: list[tuple[datetime, float]]) -> list[float]:
     if len(equity_curve) < 2:
         return []

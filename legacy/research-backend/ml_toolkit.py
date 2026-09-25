@@ -281,14 +281,13 @@ def causal_gmm_regime_probs(
     returns never changes earlier rows. Components are ordered by mean return, so column k keeps
     one meaning ("k-th lowest-mean regime") across refits. Rows before ``min_samples`` are NaN.
     """
-    if not _SKLEARN_AVAILABLE:
-        raise ImportError("scikit-learn is required for causal_gmm_regime_probs")
+    from sklearn.mixture import GaussianMixture
     data = np.asarray(returns, dtype=float).reshape(-1, 1)
     probs = np.full((len(data), n_components), np.nan)
     for start in range(min_samples - 1, len(data), refit_every):
-        gmm = _GaussianMixture(n_components=n_components, random_state=random_state)
+        gmm = GaussianMixture(n_components=n_components, random_state=random_state)
         gmm.fit(data[:start + 1])
-        order = np.argsort(gmm.means_.ravel())
+        order = np.argsort(np.asarray(gmm.means_, dtype=float).ravel())
         end = min(start + refit_every, len(data))
         probs[start:end] = gmm.predict_proba(data[start:end])[:, order]
     return probs

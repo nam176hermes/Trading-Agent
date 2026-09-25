@@ -97,3 +97,25 @@ def test_funding_follows_hours_held_not_bars(hours_per_bar):
     portfolio.close_all(b.Bar(T0 + timedelta(hours=36), 100, 100, 100, 100, 1), bars)
     assert portfolio.total_funding_paid == pytest.approx(4.5)
     assert portfolio.cash == pytest.approx(1000 - 4.5)
+
+
+def test_stitched_walk_forward_equity_carries_pnl_across_window_resets():
+    # Codex A06: two rising windows each restart at 1000; the reset must not read as a loss.
+    first = [(T0 + timedelta(hours=i), 1000 + i * 4.0903) for i in range(5)]           # ends 1016.3612
+    second = [(T0 + timedelta(hours=10 + i), 1000 + i * 3.505) for i in range(5)]      # ends 1014.02
+    curve = b.stitch_window_equity([first, second], initial_capital=1000)
+    values = [v for _, v in curve]
+    assert b.compute_max_drawdown_pct(values) == 0
+    assert values[-1] == pytest.approx(1000 + (first[-1][1] - 1000) + (second[-1][1] - 1000))
+    assert values[5] == pytest.approx(first[-1][1])     # the second window starts where the first ended
+    assert all(r >= 0 for r in b.compute_equity_returns(curve))
+
+
+@pytest.mark.parametrize(('module', 'function'), [
+    ('backtest_runner.py', 'run_walk_forward'), ('alpha_backtest.py', 'run_alpha_walk_forward')])
+def test_walk_forward_aggregates_use_the_stitched_curve(module, function):
+    tree = ast.parse((ROOT / module).read_text())
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == function)
+    calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, 'id', '')
+             for c in ast.walk(node) if isinstance(c, ast.Call)}
+    assert 'stitch_window_equity' in calls

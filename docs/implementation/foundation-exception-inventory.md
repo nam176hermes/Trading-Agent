@@ -211,7 +211,7 @@ legacy/research-backend/alpha_arena.py|80|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/alpha_backtest.py|81|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/alpha_backtest.py|405|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/alpha_backtest.py|416|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/alpha_backtest.py|742|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|744|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/analysts.py|314|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/analysts.py|351|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/analysts.py|376|Exception|PRODUCTION_CRITICAL|RETURN
@@ -225,8 +225,8 @@ legacy/research-backend/assembly.py|901|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/assembly.py|990|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/audit_lookahead.py|46|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/backtest_engine.py|192|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/backtest_engine.py|880|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/backtest_runner.py|590|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/backtest_engine.py|897|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/backtest_runner.py|591|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/broker.py|94|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/broker.py|150|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/broker.py|164|Exception|PRODUCTION_CRITICAL|RETURN
@@ -361,7 +361,7 @@ legacy/research-backend/ml_regime.py|123|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/ml_regime.py|268|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/ml_toolkit.py|155|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/ml_toolkit.py|261|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/ml_toolkit.py|443|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_toolkit.py|442|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/onchain_collector.py|60|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/onchain_collector.py|133|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/onchain_collector.py|199|Exception|PRODUCTION_CRITICAL|OTHER

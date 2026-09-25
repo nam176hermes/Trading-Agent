@@ -29,7 +29,7 @@ import pandas as pd
 from runtime_paths import data_root, signal_output_dir
 
 from backtest_engine import (
-    step_bar,
+    step_bar, stitch_window_equity,
     BacktestConfig,
     BacktestEngine,
     BaselineStrategy,
@@ -476,7 +476,7 @@ def run_alpha_walk_forward(symbol: str, start: str, end: str,
              symbol, total_bars, n_windows, test_size)
 
     all_trades = []
-    all_equity = []
+    window_curves = []
     windows = []
     ann_factor = _annual_factor(timeframe)
 
@@ -519,7 +519,7 @@ def run_alpha_walk_forward(symbol: str, start: str, end: str,
 
         window_trades = portfolio.trade_log
         all_trades.extend(window_trades)
-        all_equity.extend(portfolio.equity_curve)
+        window_curves.append(list(portfolio.equity_curve))
 
         pnl = sum(t["pnl"] for t in window_trades)
         pnl_pct = (pnl / config.initial_capital) * 100
@@ -550,6 +550,8 @@ def run_alpha_walk_forward(symbol: str, start: str, end: str,
     win_count = sum(1 for t in all_trades if t["pnl"] > 0)
     avg_win_rate = win_count / len(all_trades) if all_trades else 0.0
 
+    # Folds rebased so a capital reset between windows is not read as a loss.
+    all_equity = stitch_window_equity(window_curves, config.initial_capital)
     eq_values = [e[1] for e in all_equity]
     from backtest_engine import compute_max_drawdown_pct, compute_sharpe, compute_sortino
     eq_rets = [(all_equity[i][1] - all_equity[i-1][1]) / all_equity[i-1][1]

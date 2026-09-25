@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from backtest_engine import (
-    step_bar,
+    step_bar, stitch_window_equity,
     BacktestConfig, BacktestEngine, DataHandler,
     MLStrategy, BaselineStrategy, Portfolio, Broker,
     compute_aggregate_metrics, compute_sharpe, compute_sortino,
@@ -195,7 +195,7 @@ def run_walk_forward(symbol: str, start: str, end: str,
              symbol, total_bars, n_windows, test_size)
 
     all_trades = []
-    all_equity = []
+    window_curves = []
     windows = []
     window_metrics_agg = {
         "sharpe": [], "total_pnl": [], "win_rate": [], "max_drawdown_pct": [],
@@ -247,7 +247,7 @@ def run_walk_forward(symbol: str, start: str, end: str,
         )
 
         all_trades.extend(result["trades"])
-        all_equity.extend(result["equity_curve"])
+        window_curves.append(result["equity_curve"])
 
         buy_count = sum(1 for t in result["trades"] if t.get("side") == "BUY")
         sell_count = len(result["trades"]) - buy_count
@@ -296,7 +296,8 @@ def run_walk_forward(symbol: str, start: str, end: str,
     profitable = sum(1 for s in sharpe_vals if s > 0)
     consistency = profitable / len(sharpe_vals) if sharpe_vals else 0.0
 
-    # Full equity curve across all windows
+    # Full equity curve across all windows: folds rebased so a capital reset is not a loss
+    all_equity = stitch_window_equity(window_curves, config.initial_capital)
     eq_rets = compute_equity_returns(all_equity) if all_equity else []
     eq_values = [e[1] for e in all_equity]
     max_dd = compute_max_drawdown_pct(eq_values) if eq_values else 0.0
