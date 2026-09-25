@@ -239,3 +239,65 @@ export function writePrivateLocalStateFile(target: string, content: string): voi
     fs.closeSync(directoryFd);
   }
 }
+
+/**
+ * Appends one complete line with a single O_APPEND write, then fsyncs. A short write throws, but
+ * its prefix stays in the file, so callers must keep one writer per file (and validate before the
+ * next append) for a partial write never to merge with another record.
+ */
+export function appendPrivateLocalStateLine(target: string, line: string): void {
+  requireAbsoluteTarget(target);
+  if (!line.endsWith('\n') || line.indexOf('\n') !== line.length - 1) throw stateError('append requires one line');
+  const directory = path.dirname(target);
+  const directoryFd = openStateDirectory(directory, { create: true, makePrivate: true });
+  if (directoryFd === null) throw stateError(`${directory} is unavailable`);
+  try {
+    requireDirectoryStillAnchored(directory, directoryFd);
+    const fd = fs.openSync(
+      target,
+      fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW,
+      PRIVATE_FILE_MODE,
+    );
+    try {
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.nlink !== 1 || (opened.mode & 0o077) !== 0) {
+        throw stateError(`${target} is not a private regular file`);
+      }
+      const bytes = Buffer.from(line, 'utf8');
+      if (fs.writeSync(fd, bytes) !== bytes.length) throw stateError(`${target} append was partial`);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.fsyncSync(directoryFd);
+  } finally {
+    fs.closeSync(directoryFd);
+  }
+}
+
+/**
+ * Moves `target` to `retired` by rename, keeping its bytes. Returns false when another process
+ * already retired it; a writer that still holds the old file open appends into the retired copy.
+ */
+export function retirePrivateLocalStateFile(target: string, retired: string): boolean {
+  requireAbsoluteTarget(target);
+  requireAbsoluteTarget(retired);
+  const directory = path.dirname(target);
+  if (path.dirname(retired) !== directory) throw stateError('retired state must stay in its directory');
+  const directoryFd = openStateDirectory(directory, { create: false, makePrivate: false });
+  if (directoryFd === null) return false;
+  try {
+    requireDirectoryStillAnchored(directory, directoryFd);
+    if (fs.existsSync(retired)) throw stateError(`${retired} already exists`);
+    try {
+      fs.renameSync(target, retired);
+    } catch (error) {
+      if (isMissing(error)) return false;
+      throw error;
+    }
+    fs.fsyncSync(directoryFd);
+    return true;
+  } finally {
+    fs.closeSync(directoryFd);
+  }
+}
