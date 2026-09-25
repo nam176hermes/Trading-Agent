@@ -470,9 +470,11 @@ def predict_next(model, latest_ohlcv: pd.DataFrame) -> dict:
         proba = model.predict_proba(last.values)[0]
         up_prob = float(proba[1])
     else:
-        # Booster returns raw scores — convert with sigmoid
-        raw = model.predict(last.values)[0]
-        up_prob = float(1.0 / (1.0 + np.exp(-raw)))
+        # A binary Booster returns probabilities by default (raw_score=False); Platt calibration
+        # below is fitted on the logit of that same probability, so no second sigmoid.
+        up_prob = float(np.asarray(model.predict(last.values), dtype=float).reshape(-1)[0])
+        if not 0.0 <= up_prob <= 1.0:
+            raise ValueError("model output is not a probability")
 
     # Apply Platt calibration if available
     try:
@@ -502,8 +504,8 @@ def predict_next(model, latest_ohlcv: pd.DataFrame) -> dict:
     return {"direction": direction, "probability": confidence}
 
 
-def load_model(symbol: str = "BTC") -> Optional[LGBMClassifier]:
-    """Load the latest trained LightGBM model for a symbol."""
+def load_model(symbol: str = "BTC"):
+    """Load the latest LightGBM Booster for a symbol, or None when absent or from another contract."""
     path = MODELS_DIR / f"{symbol.lower()}_lightgbm_latest.txt"
     if not path.exists():
         log.warning("No model found at %s", path)
@@ -516,14 +518,11 @@ def load_model(symbol: str = "BTC") -> Optional[LGBMClassifier]:
         return None
     feature_cols = meta.get("features", [])
 
-    model = LGBMClassifier()
-    model.booster_ = None  # placeholder, loaded below
-    # LightGBM booster loading: create a model, then load booster
     import lightgbm as lgb
-    booster = lgb.Booster(model_file=str(path))
-    model._Booster = booster
-    model._n_features = booster.num_feature()
-    model._feature_name = feature_cols if feature_cols else [f"f{i}" for i in range(booster.num_feature())]
+    model = lgb.Booster(model_file=str(path))
+    if feature_cols and model.num_feature() != len(feature_cols):
+        log.warning("Model at %s does not match its recorded features; retrain it", path)
+        return None
     model._symbol = symbol.lower()
     return model
 

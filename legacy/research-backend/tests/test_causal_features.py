@@ -53,3 +53,32 @@ def test_models_trained_on_another_feature_contract_are_refused(tmp_path, monkey
     strategy = backtest_engine.MLStrategy(backtest_engine.BacktestConfig(), symbol='BTC')
     strategy.init()
     assert strategy.model is None
+
+
+def test_a_retrained_model_saves_loads_and_predicts_its_own_probability(tmp_path, monkeypatch):
+    # Codex K01: a model with the current contract must round-trip save -> load -> predict.
+    import lightgbm as lgb
+    import ml_predictor
+    frame = _candles(seed=5, n=600)
+    feats = ml_predictor.generate_features(frame).dropna()
+    cols = [c for c in feats.columns if feats[c].dtype in ('float64', 'float32', 'int64', 'int32')
+            and c not in {'target_1h_return', 'target_up', 'target'}]
+    model = lgb.LGBMClassifier(n_estimators=10, verbose=-1).fit(feats[cols].to_numpy(), feats['target_up'].to_numpy())
+    model.booster_.save_model(str(tmp_path / 'btc_lightgbm_latest.txt'))
+    (tmp_path / 'btc_lightgbm_latest.json').write_text(json.dumps(
+        {'features': cols, 'feature_contract': ml_predictor.FEATURE_CONTRACT}))
+    monkeypatch.setattr(ml_predictor, 'MODELS_DIR', tmp_path)
+    loaded = ml_predictor.load_model('BTC')
+    assert loaded is not None
+    result = ml_predictor.predict_next(loaded, frame)
+    expected = float(model.predict_proba(ml_predictor.generate_features(frame)[cols].iloc[-1:].to_numpy())[0, 1])
+    assert result['probability'] == pytest.approx(round(max(expected, 1 - expected), 4) if not 0.45 < expected < 0.55 else 0.5)
+
+
+def test_assembly_loads_models_through_the_contract_check():
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).resolve().parents[1] / 'assembly.py').read_text())
+    constructors = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == 'Booster']
+    assert constructors == []
