@@ -121,27 +121,28 @@ def test_inner_library_descriptors_are_bounded_readonly_and_closed(
             os.fstat(fd)
 
 
-@pytest.mark.parametrize('raw,expected', [
+@pytest.mark.parametrize('raw,returncode,expected', [
     (b'/p3/bin/bwrap: error while loading shared libraries: libselinux.so.1: cannot open shared object file\n',
-     'error while loading shared libraries: libselinux.so.1'),
-    (b'Traceback (most recent call last):\n  File "x", line 1\nValueError: price 61234.5 on 2025-10-02\n',
-     'ValueError'),
-    (b'x' * 10000 + b'\npackages.alpha_lifecycle.sandbox.SandboxHeld: HELD E_SANDBOX: detail 42\n',
-     'packages.alpha_lifecycle.sandbox.SandboxHeld'),
-    (b'', 'no classifiable stderr'),
-    (b'plain words 2025-09-01 12345\n', 'no classifiable stderr'),
+     127, 'LOADER_FAILURE'),
+    # Child-controlled names must not be echoed even when they match an expected shape.
+    (b'error while loading shared libraries: close_61234.5_2025-10-02.so\n', 127, 'LOADER_FAILURE'),
+    (b'Traceback (most recent call last):\n  File "x", line 1\nHoldoutClose61234Error: synthetic\n', 1,
+     'PYTHON_EXCEPTION'),
+    (b'x' * 10000 + b'\nTraceback (most recent call last):\nValueError: price 61234.5\n', 1, 'PYTHON_EXCEPTION'),
+    (b'', 1, 'UNCLASSIFIED'),
+    (b'plain words 2025-09-01 12345\n', 42, 'UNCLASSIFIED'),
+    (b'Traceback (most recent call last):\n', -9, 'SIGNALLED'),
 ])
-def test_child_failure_summary_keeps_only_fixed_shapes(raw, expected):
-    """A failed replica is classified; data-bearing stderr text never leaves the executor."""
+def test_child_failure_summary_is_a_fixed_label(raw, returncode, expected):
+    """A failed replica is classified into a constant; nothing the child printed leaves."""
     import os
     from packages.alpha_lifecycle.sandbox import _child_failure_summary
     from services.job_worker.engine_spawn import _memfd_create
     fd = _memfd_create('test-child-stderr')
     try:
         os.write(fd, raw)
-        summary = _child_failure_summary(fd)
+        summary = _child_failure_summary(fd, returncode)
     finally:
         os.close(fd)
     assert summary == expected
-    if 'shared libraries' not in summary:
-        assert not any(character.isdigit() for character in summary)
+    assert summary in {'LOADER_FAILURE', 'PYTHON_EXCEPTION', 'SIGNALLED', 'UNCLASSIFIED'}
