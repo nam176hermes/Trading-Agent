@@ -85,3 +85,15 @@ def test_every_bar_loop_uses_the_shared_step(module, function):
     calls = {c.func.attr if isinstance(c.func, ast.Attribute) else getattr(c.func, 'id', '')
              for c in ast.walk(node) if isinstance(c, ast.Call)}
     assert 'step_bar' in calls and not {'check_exits', 'process_orders'} & calls
+
+
+@pytest.mark.parametrize('hours_per_bar', [1, 4, 24])
+def test_funding_follows_hours_held_not_bars(hours_per_bar):
+    # Codex A05: notional 100, 1%/8h, 36 hours held costs 4.5 whatever the bar size.
+    config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0, funding_rate_pct=0.01)
+    portfolio = b.Portfolio(config)
+    portfolio.apply_fill(b.Fill(T0, 'SYNTH/TEST', 'BUY', 1, 100, 0, 0))
+    bars = 36 // hours_per_bar
+    portfolio.close_all(b.Bar(T0 + timedelta(hours=36), 100, 100, 100, 100, 1), bars)
+    assert portfolio.total_funding_paid == pytest.approx(4.5)
+    assert portfolio.cash == pytest.approx(1000 - 4.5)

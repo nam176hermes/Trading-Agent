@@ -333,11 +333,13 @@ class Portfolio:
         pnl -= commission
         pnl -= pos.entry_price * pos.quantity * self.config.commission_pct
 
-        # Funding rate adjustment
+        # Funding accrues on hours actually held (entry fill to exit bar), whatever the timeframe.
         bars_held = bar_idx - pos.entry_bar
+        hours_held = max((bar.timestamp - pos.entry_time).total_seconds() / 3600.0, 0.0)
         adjusted_pnl, funding_cost = funding_aware_pnl(
             pnl, pos.symbol, self.config.funding_rate_pct,
-            pos.entry_notional, bars_held
+            pos.entry_notional, bars_held,
+            bar_interval_hours=hours_held / bars_held if bars_held > 0 else 0.0,
         )
         pnl = adjusted_pnl
         self.total_funding_paid += funding_cost

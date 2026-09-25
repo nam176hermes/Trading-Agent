@@ -225,7 +225,7 @@ legacy/research-backend/assembly.py|901|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/assembly.py|990|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/audit_lookahead.py|46|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/backtest_engine.py|192|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/backtest_engine.py|878|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/backtest_engine.py|880|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/backtest_runner.py|590|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/broker.py|94|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/broker.py|150|Exception|PRODUCTION_CRITICAL|RETURN

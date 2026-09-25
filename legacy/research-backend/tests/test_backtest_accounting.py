@@ -38,10 +38,11 @@ def test_round_trip_cash_equals_trade_pnl_for_long_and_short(side, exit_price, e
 def test_funding_reduces_cash_exactly_once(exit_path):
     portfolio = _portfolio(funding_rate_pct=0.01, stop_loss_pct=0.05)
     portfolio.apply_fill(b.Fill(NOW, "SYNTH/TEST", "BUY", 1, 100, 0, 0))
+    later = NOW + pd.Timedelta(hours=8)                                # one 8h funding interval held
     if exit_path == "close_all":
-        portfolio.close_all(_bar(100), 8)
+        portfolio.close_all(_bar(100, later), 8)
     else:
-        portfolio.check_exits(b.Bar(NOW, 94, 94, 94, 94, 1), 8)     # stop at 95
+        portfolio.check_exits(b.Bar(later, 94, 94, 94, 94, 1), 8)   # stop at 95
     pnl = portfolio.trade_log[0]["pnl"]
     assert portfolio.total_funding_paid == pytest.approx(1.0)
     assert portfolio.cash == pytest.approx(1000 + pnl)
