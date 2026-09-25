@@ -450,10 +450,63 @@ def _output(path, value):
         os.fsync(stream.fileno())
 
 
+_BODY_REFS = {
+    'p3-register-family-v1': ('baseline_selection_ref',),
+    **{f'p3-oos-a{index}-v1': ('publication_receipt_ref',) for index in range(4)},
+    'p3-select-primary-v1': ('oos_receipt_refs', 'review_ref'),
+    'p3-holdout-primary-v1': ('primary_selection_ref', 'custody_record_ref', 'holdout_dataset_ref', 'buffer_ref'),
+    'p3-native-parity-v1': ('holdout_result_ref', 'native_commitment_ref'),
+    'p3-phase-exit-v1': ('primary_selection_ref', 'holdout_result_ref', 'parity_pair_ref'),
+}
+
+
+def derive_body(document, *, source, store):
+    """Turn committed result references into an exact propose-operation request; grants nothing."""
+    from packages.alpha_lifecycle import local_campaign as campaign
+    from packages.alpha_lifecycle.contracts.authority import PrimarySelection
+    operation = document.get('workflow_operation')
+    if operation not in _BODY_REFS or set(document) != {'workflow_operation', 'input_set_ref', 'refs'}:
+        raise ValueError('body derivation request differs')
+    refs = document['refs']
+    if set(refs) != set(_BODY_REFS[operation]):
+        raise ValueError('body derivation references differ')
+    def ref(name):
+        return ArtifactRefV1.model_validate(refs[name])
+    input_set_ref = ArtifactRefV1.model_validate(document['input_set_ref'])
+    primary_alpha_id = None
+    if operation == 'p3-register-family-v1':
+        body = campaign.registration_body(input_set_ref, ref('baseline_selection_ref'), store=store)
+    elif operation.startswith('p3-oos-a'):
+        body = campaign.oos_body(operation, ref('publication_receipt_ref'), store=store)
+    elif operation == 'p3-select-primary-v1':
+        disclosure = campaign.family_disclosure(input_set_ref,
+            tuple(ArtifactRefV1.model_validate(item) for item in refs['oos_receipt_refs']), store=store)
+        body = campaign.family_review_body(disclosure, ref('review_ref'), source=source, store=store)
+    elif operation == 'p3-native-parity-v1':
+        body = campaign.parity_body(ref('holdout_result_ref'), ref('native_commitment_ref'), store=store)
+    else:
+        primary_alpha_id = _read(store, ref('primary_selection_ref'), PrimarySelection).primary_alpha_id
+        body = (campaign.holdout_body(input_set_ref, ref('primary_selection_ref'), custody_record_ref=ref('custody_record_ref'),
+                holdout_dataset_ref=ref('holdout_dataset_ref'), buffer_ref=ref('buffer_ref'), store=store)
+            if operation == 'p3-holdout-primary-v1' else
+            campaign.phase_exit_body(ref('primary_selection_ref'), ref('holdout_result_ref'), ref('parity_pair_ref'), store=store))
+    request = dict(workflow_operation=operation, input_set_ref=input_set_ref, body=body)
+    return request if primary_alpha_id is None else dict(request, primary_alpha_id=primary_alpha_id)
+
+
+def read_session_ref(request_path, kind):
+    """Root reads the worker's note for the reference the next PARITY/PHASE_EXIT intent must name."""
+    from services.job_worker.p3_session import LocalSessionLaunch, read_session_ref as read_note
+    _, directory, host, _ = _session_context(request_path)
+    launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
+    return dict(kind=kind, job_id=host.job_id,
+        ref=read_note(host.output_root, host.job_id, kind, worker_uid=launch.worker_uid))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('prepare-inputs', 'propose-operation', 'prepare-authorization'):
+    for name in ('prepare-inputs', 'propose-operation', 'prepare-authorization', 'derive-body'):
         sub = commands.add_parser(name)
         for arg in ('request', 'store', 'output'):
             sub.add_argument('--'+arg, required=True, type=Path)
@@ -476,6 +529,9 @@ def main(argv=None):
     next_host = commands.add_parser('install-next-host')
     for arg in ('request', 'preflight', 'manifest', 'review'):
         next_host.add_argument('--'+arg, type=Path, required=True)
+    note = commands.add_parser('read-session-ref')
+    note.add_argument('--request', type=Path, required=True)
+    note.add_argument('--kind', choices=('NATIVE_COMMITMENT', 'PARITY_PAIR'), required=True)
     staged = commands.add_parser('stage-operation')
     for arg in ('request', 'review'):
         staged.add_argument('--'+arg, type=Path, required=True)
@@ -493,6 +549,8 @@ def main(argv=None):
         result = install_next_host(args.request, args.preflight, args.manifest, args.review)
     elif args.command == 'stage-operation':
         result = stage_operation(args.request, args.review)
+    elif args.command == 'read-session-ref':
+        result = read_session_ref(args.request, args.kind)
     elif args.command in {'run-operation', 'cleanup'}:
         from scripts import p3_local_transport
         request = p3_local_transport.read_request(args.transport_request)
@@ -510,6 +568,8 @@ def main(argv=None):
                 raise ValueError('InputSet proposal fields differ')
             result = assemble_input_set(source=source, store=store,
                 **{key:ArtifactRefV1.model_validate(document[key]) for key in fields})
+        elif args.command == 'derive-body':
+            result = derive_body(document, source=source, store=store)
         elif args.command == 'propose-operation':
             if set(document) - {'workflow_operation', 'input_set_ref', 'body', 'primary_alpha_id'}:
                 raise ValueError('operation proposal fields differ')

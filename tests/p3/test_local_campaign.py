@@ -146,3 +146,22 @@ def test_oos_body_binds_each_candidate_to_its_committed_registration(retained_ba
     intent = propose_operation(operation, proof.input_set_ref, body, store=store)
     assert intent.allowed_alpha_ids == (FAMILY_IDS[index],) and manifest.holdout_primary_ref is None
     assert oos_body(operation, receipt_ref, store=store) == body
+
+
+def test_derive_body_request_feeds_propose_operation_and_rejects_foreign_refs(retained_baseline):
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.local_campaign import propose_operation
+    from scripts.p3_local_controller import derive_body
+
+    store, input_ref, selection = retained_baseline
+    selection_ref = store.put_bytes(canonical_json_bytes(selection), media_type='application/json')
+    source = InputSet.model_validate_json(store.read_bytes(input_ref)).source
+    document = dict(workflow_operation='p3-register-family-v1', input_set_ref=input_ref.model_dump(mode='json'),
+                    refs=dict(baseline_selection_ref=selection_ref.model_dump(mode='json')))
+    request = derive_body(document, source=source, store=store)
+    intent = propose_operation(request['workflow_operation'], request['input_set_ref'], request['body'], store=store)
+    assert intent.operation == 'REGISTER_FAMILY' and 'primary_alpha_id' not in request
+    for bad in (dict(document, refs={}), dict(document, workflow_operation='p3-integration-fixture-v1'),
+                dict(document, extra=True)):
+        with pytest.raises(ValueError):
+            derive_body(bad, source=source, store=store)

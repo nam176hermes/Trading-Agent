@@ -223,6 +223,50 @@ def holdout_body(input_set_ref, primary_selection_ref, *, custody_record_ref, ho
         instrument_spec_ref=retain(spec), policy_digest=inputs.policy_digest)
 
 
+def parity_body(holdout_result_ref, native_commitment_ref, *, store):
+    """Derive the PARITY body from the committed HOLDOUT result and the session's commitment note.
+
+    The commitment ref comes from `read_session_ref(..., 'NATIVE_COMMITMENT')`; the live session
+    rejects any body whose commitment, manifest or instrument differs from what it holds.
+    """
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    held = _read(store, holdout_result_ref, HoldoutOperationResult)
+    commitment = _read(store, native_commitment_ref, NativeCommitment)
+    if commitment.manifest_ref != held.holdout_manifest_ref:
+        raise ValueError('native commitment belongs to another holdout manifest')
+    return dict(holdout_manifest_ref=held.holdout_manifest_ref, primary_reference_ref=held.executable_ref,
+        baseline_reference_ref=held.baseline_executable_ref, instrument_spec_ref=commitment.instrument_spec_ref,
+        native_request_ref=native_commitment_ref)
+
+
+def phase_exit_body(primary_selection_ref, holdout_result_ref, parity_pair_ref, *, store):
+    """Derive the PHASE_EXIT body from the selection, the HOLDOUT result and the session's parity-pair note."""
+    from packages.alpha_lifecycle.contracts.authority import FamilyReview, PrimarySelection
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
+    from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport, RegistrationProof
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from packages.alpha_lifecycle.parity import ParityPair
+    held = _read(store, holdout_result_ref, HoldoutOperationResult)
+    manifest = _read(store, held.holdout_manifest_ref, HoldoutManifest)
+    primary = _read(store, primary_selection_ref, PrimarySelection)
+    pair = _read(store, parity_pair_ref, ParityPair)
+    if (manifest.primary_selection_ref != primary_selection_ref or primary.primary_alpha_id is None
+        or primary.primary_candidate_head_ref is None or pair.manifest_ref != held.holdout_manifest_ref
+        or (pair.primary_reference_ref, pair.baseline_reference_ref) != (held.executable_ref, held.baseline_executable_ref)):
+        raise ValueError('phase exit inputs belong to another selection, holdout or parity pair')
+    family = _read(store, primary.family_review_ref, FamilyReview)
+    closure = _read(store, family.candidate_report_refs[FAMILY_IDS.index(primary.primary_alpha_id)], CampaignClosureReport)
+    if closure.qualification_ref is None:
+        raise ValueError('phase exit primary has no retained qualification')
+    registration = _read(store, manifest.research_registration_ref, RegistrationProof)
+    return dict(primary_selection_ref=primary_selection_ref, primary_qualification_ref=closure.qualification_ref,
+        baseline_selection_ref=registration.baseline_selection_ref, holdout_request_ref=held.holdout_request_ref,
+        holdout_evaluation_ref=held.holdout_evaluation_ref, holdout_replay_ref=held.holdout_replay_ref,
+        executable_ref=held.executable_ref, baseline_executable_ref=held.baseline_executable_ref,
+        parity_ref=parity_pair_ref, current_primary_head_ref=primary.primary_candidate_head_ref)
+
+
 def family_review_body(disclosure, review_ref, *, source, store):
     """Bind the independent ReviewApproval of exactly this disclosure; select-primary then recomputes."""
     from packages.alpha_lifecycle.contracts.authority import FamilyReview

@@ -227,6 +227,63 @@ def session_identity(profile) -> tuple[int,int] | LocalRunIdentity:
     return profile.workflow_run_id,profile.workflow_attempt
 
 
+SessionRefKind = Literal['NATIVE_COMMITMENT', 'PARITY_PAIR']
+_SESSION_REF_NAMES = {'NATIVE_COMMITMENT': 'native-commitment', 'PARITY_PAIR': 'parity-pair'}
+
+
+class SessionRefObservation(StrictModel):
+    """Untrusted worker note of a session-held reference the next intent must name.
+
+    The references hold no protected prices. The live session still rejects any
+    PARITY or PHASE_EXIT body that differs from what it holds, so a wrong note
+    can only block the campaign, never widen it.
+    """
+    schema_version: Literal['p3-session-ref-observation-v1']
+    job_id: str
+    kind: SessionRefKind
+    ref: ArtifactRefV1
+
+
+def publish_session_ref(output_root, job_id: str, kind: SessionRefKind, ref: ArtifactRefV1) -> Path:
+    """Write the note once, fsynced, under the worker output root; never overwrite."""
+    from io import BytesIO
+    from .artifacts import ArtifactWriter
+    validate_p3_job_id(job_id)
+    note = SessionRefObservation(schema_version='p3-session-ref-observation-v1', job_id=job_id, kind=kind, ref=ref)
+    writer = ArtifactWriter(Path(output_root))
+    name = _SESSION_REF_NAMES[kind]
+    pending = writer.capture_stream(job_id, 'session-refs', name + '-pending', BytesIO(canonical_json_bytes(note)))
+    temporary = writer.root/pending.relative_ref
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    target = temporary.with_name(name + '.log')
+    os.link(temporary, target)  # FileExistsError: one note per job and kind.
+    os.unlink(temporary)
+    return target
+
+
+def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_uid: int) -> ArtifactRefV1:
+    """Root-side read with the same custody checks as the owner observation."""
+    import stat
+    from .results import _open_directory_chain
+    validate_p3_job_id(job_id)
+    path = Path(output_root)/job_id/'session-refs'/(_SESSION_REF_NAMES[kind] + '.log')
+    parent_fd = _open_directory_chain(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent_fd)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != worker_uid or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or not 1 <= info.st_size <= 4096):
+                raise ValueError('session reference note custody differs')
+            note = SessionRefObservation.model_validate_json(stream.read(4097))
+    finally:
+        os.close(parent_fd)
+    if note.job_id != job_id or note.kind != kind:
+        raise ValueError('session reference note names another job or kind')
+    return note.ref
+
+
 class P3HoldoutSession:
     def __init__(self, profile_path: Path, *, store: LocalArtifactStore) -> None:
         if type(store) is not LocalArtifactStore:
@@ -424,6 +481,7 @@ class P3HoldoutSession:
             from packages.alpha_lifecycle.native_request import prepare_native_commitment
             commitment = prepare_native_commitment(manifest_ref, self._spec, view)
             self.native_commitment_ref = self.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
+            publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
             self.fence()
             return request_ref, manifest_ref
         except BaseException:
@@ -536,6 +594,7 @@ class P3HoldoutSession:
             primary_parity_ref=refs[0], baseline_parity_ref=refs[1], store=self,
             native_parent_proof_ref=self.native_parent_proof_ref)
         self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
+        publish_session_ref(self._host(active[0], active[2]).output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
         return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:

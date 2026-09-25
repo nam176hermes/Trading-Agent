@@ -422,3 +422,51 @@ def test_committed_phase_export_authenticates_exact_retained_evidence(committed_
         observed=validate_phase_exit_receipt(qualified.evidence_refs[0],repository=repository,store=store)
         assert observed==phase and observed.outcome=='FAIL' and qualified.status=='PASS'
         assert export_phase_exit(job_id,repository=repository,store=store)==ref
+
+
+def _holdout_result(store, intent):
+    from packages.alpha_lifecycle.contracts.results import HoldoutEvaluationResult
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    import hashlib
+    body = intent.body
+    value = dict(schema_version='p3-holdout-operation-result-v1', holdout_request_ref=body.holdout_request_ref,
+        holdout_manifest_ref=_read(store, body.holdout_evaluation_ref, HoldoutEvaluationResult).manifest_ref,
+        holdout_evaluation_ref=body.holdout_evaluation_ref, holdout_replay_ref=body.holdout_replay_ref,
+        executable_ref=body.executable_ref, baseline_executable_ref=body.baseline_executable_ref)
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    result = HoldoutOperationResult.model_validate_json(canonical_json_bytes(value))
+    return store.put_bytes(canonical_json_bytes(result), media_type='application/json'), result
+
+
+def test_parity_and_exit_bodies_derive_from_committed_holdout_and_session_notes(exit_graph):
+    from packages.alpha_lifecycle.local_campaign import parity_body, phase_exit_body, propose_operation
+    from packages.alpha_lifecycle.native_request import prepare_native_commitment
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    store, intent, _, view = exit_graph
+    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    held_ref, held = _holdout_result(store, intent)
+    spec_ref = _read(store, intent.body.parity_ref, ParityPair).instrument_spec_ref
+    commitment = prepare_native_commitment(held.holdout_manifest_ref, spec_ref, view)
+    commitment_ref = store.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
+    parity = parity_body(held_ref, commitment_ref, store=store)
+    assert parity == dict(holdout_manifest_ref=held.holdout_manifest_ref, primary_reference_ref=held.executable_ref,
+        baseline_reference_ref=held.baseline_executable_ref, instrument_spec_ref=spec_ref,
+        native_request_ref=commitment_ref)
+    body = phase_exit_body(intent.body.primary_selection_ref, held_ref, intent.body.parity_ref, store=store)
+    from packages.alpha_lifecycle.operation_input import PhaseExitInput
+    assert PhaseExitInput.model_validate(body) == intent.body
+    exit_intent = propose_operation('p3-phase-exit-v1', intent.input_set_ref, body, store=store,
+                                    primary_alpha_id=intent.allowed_alpha_ids[0])
+    assert exit_intent == intent
+
+
+def test_parity_body_refuses_a_commitment_for_another_manifest(exit_graph):
+    from packages.alpha_lifecycle.local_campaign import parity_body
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    store, intent, _, _ = exit_graph
+    held_ref, _ = _holdout_result(store, intent)
+    with pytest.raises(ValueError):
+        parity_body(held_ref, store.put_bytes(canonical_json_bytes({}), media_type='application/json'), store=store)

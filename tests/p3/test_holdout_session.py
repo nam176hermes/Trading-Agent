@@ -125,7 +125,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch, request):
         auth = _read(store, payload.authorization_ref, RUN_AUTHORIZATION)
         assert stage_alpha_campaign_payload(ReadbackStore(store, store), auth, manifest.source,
             intent.workflow_operation, canonical_json_bytes(intent), operation_input=intent) == payload
-        return SimpleNamespace(store_root=str(destination), custodian_endpoint=endpoint,
+        return SimpleNamespace(store_root=str(destination), output_root=str(tmp_path/'output'), custodian_endpoint=endpoint,
             model_dump=lambda **kwargs: {'runtime': host.get('runtime', 'fixed')}), SimpleNamespace(
             source=manifest.source, environment_ref=manifest.environment_ref, closure_sha256='f'*64)
     monkeypatch.setattr('services.job_worker.p3_host_profile.read_official_profile', host_reader)
@@ -186,7 +186,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch, request):
         return view, placeholder, manifest_ref
     monkeypatch.setattr('services.job_worker.p3_holdout_release.release_holdout_view', release)
     return SimpleNamespace(session=session, claim=claim, store=store, manifest=manifest_ref, spec=spec_ref,
-        profile=profile, host=host, stage_profile=stage_profile, events=events, module=module)
+        profile=profile, host=host, stage_profile=stage_profile, events=events, module=module, output_root=tmp_path/'output')
 
 
 def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs):
@@ -200,12 +200,18 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
 
 @pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
 def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
+    import os
     from services.job_store.worker_repository import WorkerRepository
+    from services.job_worker.p3_session import read_session_ref
     x = session_inputs
-    with x.session.stage(x.claim('HOLDOUT'), fence=lambda: x.events.append('holdout-fence')):
+    holdout = x.claim('HOLDOUT')
+    with x.session.stage(holdout, fence=lambda: x.events.append('holdout-fence')):
         x.session.release(object.__new__(WorkerRepository), trace_id='test:session')
         view = x.session.view
         assert view.read_bytes(x.manifest)
+    # Root learns the commitment for the PARITY intent only from the worker's retained note.
+    assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid()) \
+        == x.session.native_commitment_ref
     for stage in ('PARITY', 'PHASE_EXIT'):
         with x.session.stage(x.claim(stage), fence=lambda: x.events.append(stage)):
             assert x.session.view is view
@@ -417,3 +423,29 @@ def test_local_session_uses_protected_local_identity_without_github_numbers(sess
     document['identity']={**identity,'host_id':'0'*64}
     with pytest.raises(ValueError,match='host|identity'):
         module.P3HoldoutSession(path,store=x.store)
+
+
+@pytest.mark.parametrize('fault', [None, 'republish', 'owner', 'mode', 'link', 'kind', 'job'])
+def test_session_ref_note_is_single_use_and_custody_checked(tmp_path, fault):
+    import os
+    from packages.data_contracts import ArtifactRefV1
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    ref = ArtifactRefV1(content_sha256='a'*64, locator='a'*64+'.blob', size_bytes=10, media_type='application/json')
+    path = publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
+    uid, kind, job = os.geteuid(), 'PARITY_PAIR', 'job_parity'
+    if fault == 'republish':
+        with pytest.raises(FileExistsError):
+            publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
+        return
+    if fault == 'owner': uid += 1
+    if fault == 'mode': path.chmod(0o640)
+    if fault == 'link': os.link(path, tmp_path/'alias')
+    if fault == 'kind':
+        path.rename(path.with_name('native-commitment.log')); kind = 'NATIVE_COMMITMENT'
+    if fault == 'job':
+        path.parent.parent.rename(tmp_path/'job_other'); job = 'job_other'
+    if fault is None:
+        assert read_session_ref(tmp_path, job, kind, worker_uid=uid) == ref
+    else:
+        with pytest.raises(ValueError):
+            read_session_ref(tmp_path, job, kind, worker_uid=uid)
