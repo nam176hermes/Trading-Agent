@@ -569,8 +569,12 @@ def test_replica_preserves_driver_custody_and_bounds_untrusted_io(isolated_basel
             assert '--new-session' not in argv
             assert not kwargs.get('start_new_session', False)
         if fault == 'streams':
+            # No pipe back to the parent: stdout is discarded and stderr is a private,
+            # size-bounded memfd that only ever yields a filtered failure class.
+            import os
             assert kwargs['stdout'] == subprocess.DEVNULL
-            assert kwargs['stderr'] == subprocess.DEVNULL
+            assert type(kwargs['stderr']) is int and kwargs['stderr'] >= 0
+            assert os.readlink(f"/proc/self/fd/{kwargs['stderr']}").startswith('/memfd:p3-child-stderr')
         if fault in {'oversized', 'descriptor_read'}:
             result.write_bytes(b'{}')
             if fault == 'oversized':

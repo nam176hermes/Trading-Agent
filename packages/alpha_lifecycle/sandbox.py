@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import re
 import json
 import resource
 from decimal import ROUND_HALF_EVEN, localcontext
@@ -45,6 +46,28 @@ def require_official_sandbox(path: Path = Path("/usr/bin/bwrap")) -> Path:
     ):
         raise SandboxHeld("HELD E_SANDBOX: Bubblewrap identity is unsafe")
     return path
+
+
+_LOADER_FAILURE = re.compile(rb"error while loading shared libraries: [A-Za-z0-9_.+-]{1,96}")
+_EXCEPTION_NAME = re.compile(rb"^([A-Za-z_][A-Za-z0-9_.]{0,127}?(?:Error|Exception|Held|Exit|Interrupt|Warning))(?::|$)")
+
+
+def _child_failure_summary(fd: int) -> str:
+    """Classify a failed replica without retaining what it printed.
+
+    Replica stderr may be derived from research or holdout data, so only two fixed shapes
+    leave: a dynamic-loader failure naming a library, or the final exception's class name.
+    """
+    size = os.fstat(fd).st_size
+    tail = os.pread(fd, 4096, max(0, size - 4096))
+    loader = _LOADER_FAILURE.findall(tail)
+    if loader:
+        return loader[-1].decode("ascii")
+    for line in reversed(tail.splitlines()):
+        match = _EXCEPTION_NAME.match(line.strip())
+        if match:
+            return match.group(1).decode("ascii")
+    return "no classifiable stderr"
 
 
 class BubblewrapExecutor:
@@ -187,11 +210,13 @@ class BubblewrapExecutor:
         os.chmod(manifest_path, 0o600)
         started = datetime.now(UTC)
         from packages.alpha_lifecycle.sandbox_policy import socket_filter_bytes
-        from services.job_worker.engine_spawn import _sealed_memfd
+        from services.job_worker.engine_spawn import _memfd_create, _sealed_memfd
         from services.job_worker.engine_spawn_interface import EngineSpawnError
         seccomp_fd = -1
         view_fd = -1
         runtime_fds: dict[Path, int] = {}
+        stderr_fd = -1
+        summary = ""
         try:
             seccomp_fd = _sealed_memfd("p3-child-seccomp", socket_filter_bytes(), mode=0o400)
             if self._holdout_view is not None:
@@ -221,14 +246,18 @@ class BubblewrapExecutor:
                 argv=(self._argv(manifest_path,result_path,output_dir,seccomp_fd,view_fd)
                     if view_fd>=0 else self._argv(manifest_path,result_path,output_dir,seccomp_fd))
             self._check_fence()
+            # Child stderr lands in a private memfd bounded by the child's own file-size limit.
+            # Only a filtered summary ever leaves this function (see _child_failure_summary).
+            stderr_fd = _memfd_create("p3-child-stderr")
             completed = subprocess.run(
                 argv, env={}, cwd="/",
                 pass_fds=(*runtime_fds.values(), seccomp_fd, *((view_fd,) if view_fd>=0 else ())),
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_fd,
                 timeout=300, check=False, preexec_fn=self._limits,
             )
         except (OSError, subprocess.SubprocessError, EngineSpawnError) as error:
             raise SandboxHeld("HELD E_SANDBOX: bounded child execution failed") from error
+            summary = "" if completed.returncode == 0 else _child_failure_summary(stderr_fd)
         finally:
             for fd in runtime_fds.values():
                 os.close(fd)
@@ -236,8 +265,11 @@ class BubblewrapExecutor:
                 os.close(seccomp_fd)
             if view_fd >= 0:
                 os.close(view_fd)
+            if stderr_fd >= 0:
+                os.close(stderr_fd)
         if completed.returncode != 0:
-            raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result")
+            raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result "
+                              f"(exit {completed.returncode}; {summary})")
         if self._holdout_view is not None:
             self._check_fence()
         descriptor = -1
