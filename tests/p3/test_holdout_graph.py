@@ -259,3 +259,30 @@ def test_real_failed_family_cannot_obtain_holdout_projection(holdout_graph):
     with pytest.raises(ValueError,match='family selection'):
         holdout.validate_holdout_operation_input(intent,authorization,expected_source=holdout_graph.inputs.source,
             store=_reader(holdout_graph,[]),now=datetime.now(UTC))
+
+
+def test_holdout_body_is_derived_from_selection_custody_and_policy(holdout_graph, monkeypatch):
+    from packages.alpha_lifecycle.contracts.data import PITProof
+    from packages.alpha_lifecycle.local_campaign import holdout_body
+    graph = holdout_graph
+    intent, _ = _request(graph)
+    fixture = intent.body
+    body = holdout_body(intent.input_set_ref, fixture.primary_selection_ref, custody_record_ref=fixture.custody_record_ref,
+                        holdout_dataset_ref=fixture.holdout_dataset_ref, buffer_ref=fixture.buffer_ref, store=graph.store)
+    same = ('primary_selection_ref', 'candidate_spec_ref', 'registration_proof_ref', 'custody_record_ref',
+            'holdout_dataset_ref', 'context_dataset_ref', 'buffer_ref', 'environment_ref', 'instrument_spec_ref', 'policy_digest')
+    assert {k: body[k] for k in same} == {k: getattr(fixture, k) for k in same}
+    derived = _read(graph.store, body['holdout_input_set_ref'], InputSet)
+    pit = _read(graph.store, derived.pit_proof_ref, PITProof)
+    research_pit = _read(graph.store, graph.inputs.pit_proof_ref, PITProof)
+    assert pit.revision_proof_ref == fixture.custody_record_ref and pit.no_future_suite_ref == research_pit.no_future_suite_ref
+    intent, authorization = _request(graph, body=body)
+    monkeypatch.setattr(primary_selection, 'select_primary', lambda review, reader: graph.primary)
+    original = holdout.validate_research_inputs
+    def training_dependency(ref, reader):
+        inputs, folds, dataset, threshold = original(ref, reader)
+        return inputs, folds, dataset, RegimeThreshold.model_validate(_changed(threshold,
+            training_range=dict(start='2018-01-01', end='2021-08-31'), sample_count=1276))
+    monkeypatch.setattr(holdout, 'validate_research_inputs', training_dependency)
+    holdout.validate_holdout_operation_input(intent, authorization, expected_source=graph.inputs.source,
+                                             store=_reader(graph, []), now=datetime.now(UTC))

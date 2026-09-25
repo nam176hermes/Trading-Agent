@@ -95,3 +95,54 @@ def test_operation_proposal_requires_existing_body_and_independent_review(tmp_pa
     missing = manifest_ref.model_copy(update={'content_sha256':'0'*64, 'locator':'0'*64+'.blob'})
     with pytest.raises((OSError, ValueError)):
         propose_operation('p3-baselines-v1', manifest.input_set_ref, {'baseline_manifest_ref':missing}, store=store)
+
+
+def test_registration_body_is_derived_and_accepted_by_the_job_validator(retained_baseline):
+    from packages.alpha_lifecycle.local_campaign import propose_operation, registration_body
+    from packages.alpha_lifecycle.registry import AlphaRecordV1
+    from services.job_worker.p3_publication_producer import prepare_family_registration
+
+    store, input_ref, selection = retained_baseline
+    selection_ref = store.put_bytes(canonical_json_bytes(selection), media_type='application/json')
+    body = registration_body(input_ref, selection_ref, store=store)
+    intent = propose_operation('p3-register-family-v1', input_ref, body, store=store)
+    now = datetime(2026, 9, 10, tzinfo=UTC)
+    proposal = prepare_family_registration(intent, job_id='job_registration', observed_at=now,
+                                           expires_at=now + timedelta(hours=1), store=store)
+    assert len(proposal.request.proposed_event_refs) == 8
+    records = [AlphaRecordV1.model_validate_json(store.read_bytes(ref)) for ref in body['candidate_record_refs']]
+    specs = body['candidate_spec_refs']
+    assert [r.artifact_digests for r in records] == [(spec.content_sha256,) for spec in specs]
+    assert records[0].feature_set == ('close', 'high', 'low') and records[1].feature_set == ('close',)
+    assert all(r.validation_start_at == r.training_end_at + timedelta(microseconds=1) for r in records)
+    # Deterministic: the same inputs give byte-identical records.
+    assert registration_body(input_ref, selection_ref, store=store) == body
+
+
+def test_registration_body_refuses_a_selection_for_another_input_set(retained_baseline, tmp_path):
+    from packages.alpha_lifecycle.local_campaign import registration_body
+
+    store, input_ref, selection = retained_baseline
+    selection_ref = store.put_bytes(canonical_json_bytes(selection), media_type='application/json')
+    other = store.put_bytes(b'{}', media_type='application/json')
+    with pytest.raises((ValueError, OSError)):
+        registration_body(other, selection_ref, store=store)
+
+
+@pytest.mark.parametrize('index', range(4))
+def test_oos_body_binds_each_candidate_to_its_committed_registration(retained_baseline, index):
+    from packages.alpha_lifecycle.contracts.execution import EvaluationManifest
+    from packages.alpha_lifecycle.local_campaign import oos_body, propose_operation
+    from packages.alpha_lifecycle.operation_input import FAMILY_IDS
+    from packages.alpha_lifecycle.publication import validate_evaluation_registration
+    from tests.p3.test_registration_proof import registration_chain
+
+    store, _, _, receipt = registration_chain(retained_baseline)
+    receipt_ref = store.put_bytes(canonical_json_bytes(receipt), media_type='application/json')
+    operation = f'p3-oos-a{index}-v1'
+    body = oos_body(operation, receipt_ref, store=store)
+    manifest = EvaluationManifest.model_validate_json(store.read_bytes(body['evaluation_manifest_ref']))
+    proof = validate_evaluation_registration(manifest, store=store)
+    intent = propose_operation(operation, proof.input_set_ref, body, store=store)
+    assert intent.allowed_alpha_ids == (FAMILY_IDS[index],) and manifest.holdout_primary_ref is None
+    assert oos_body(operation, receipt_ref, store=store) == body
