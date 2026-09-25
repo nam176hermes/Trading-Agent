@@ -78,9 +78,10 @@ function requestWithSession(token) {
 }
 
 function auditEvents() {
-  const auditPath = path.join(researchDirectory, 'memory', 'dashboard_mutation_audit.jsonl');
-  if (!fs.existsSync(auditPath)) return [];
-  return fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
+  const directory = path.join(researchDirectory, 'memory');
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory).filter((name) => /^dashboard_mutation_audit\..+\.jsonl$/.test(name)).sort()
+    .flatMap((name) => fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').map(JSON.parse));
 }
 
 test('every mutation route passes its explicit required role to the shared policy', () => {
@@ -209,8 +210,9 @@ test('malformed persisted audit evidence fails closed without overwriting it', a
     import('../src/lib/trading/auth.ts'),
     import('../src/lib/trading/session.ts'),
   ]);
+  const { mutationAuditPath } = await import('../src/lib/trading/auth.ts');
   const auditDirectory = path.join(researchDirectory, 'memory');
-  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
+  const auditPath = mutationAuditPath();
   const malformed = '{"event":"dashboard_mutation_authorization"\n';
   fs.mkdirSync(auditDirectory, { mode: 0o700 });
   fs.writeFileSync(auditPath, malformed, { mode: 0o600 });
@@ -328,8 +330,9 @@ test('audit log at its read cap rotates into a retained segment instead of locki
     import('../src/lib/trading/auth.ts'),
     import('../src/lib/trading/session.ts'),
   ]);
+  const { mutationAuditPath } = await import('../src/lib/trading/auth.ts');
   const auditDirectory = path.join(researchDirectory, 'memory');
-  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
+  const auditPath = mutationAuditPath();
   const record = '{"event":"dashboard_mutation_authorization","pad":"';
   const filler = 1024 * 1024 - 1 - record.length - 3;
   const nearCap = `${record}${'x'.repeat(filler)}"}\n`;
@@ -348,7 +351,7 @@ test('audit log at its read cap rotates into a retained segment instead of locki
   }
 
   const segments = fs.readdirSync(auditDirectory)
-    .filter((name) => /^dashboard_mutation_audit\..+\.jsonl$/.test(name));
+    .filter((name) => name !== path.basename(auditPath) && /^dashboard_mutation_audit\..+\.jsonl$/.test(name));
   assert.equal(segments.length, 1);
   assert.equal(fs.readFileSync(path.join(auditDirectory, segments[0]), 'utf8'), nearCap);
   assert.equal(fs.statSync(path.join(auditDirectory, segments[0])).mode & 0o777, 0o600);
@@ -415,26 +418,42 @@ test('two dashboard processes writing the audit log never lose an authorized eve
   assert.ok(records.every((row) => row.authorization_outcome === 'GRANTED'));
 });
 
-test('concurrent appends across a rotation keep every record and stay under the read cap (audit A07)', async () => {
+test('a partial write by one process never invalidates another process record (audit AR04)', async () => {
+  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
+    import('../src/lib/trading/auth.ts'),
+    import('../src/lib/trading/session.ts'),
+  ]);
   const { spawn } = await import('node:child_process');
-  const auditDirectory = path.join(researchDirectory, 'memory');
-  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
-  const record = '{"event":"dashboard_mutation_authorization","pad":"';
-  const seed = `${record}${'x'.repeat(1024 * 1024 - 64 * 1024 - 300 - record.length - 3)}"}\n`;
-  fs.mkdirSync(auditDirectory, { mode: 0o700 });
-  fs.writeFileSync(auditPath, seed, { mode: 0o600 });
-  const run = () => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['--input-type=module', '-e', writerScript(40)], { env: process.env });
+  const run = (limitKiB) => new Promise((resolve, reject) => {
+    // A child with RLIMIT_FSIZE gets a short write once its log would cross the limit.
+    const script = writerScript(20);
+    const child = limitKiB
+      ? spawn('/bin/bash', ['-c', `ulimit -f ${limitKiB}; exec "$0" --input-type=module -e "$1"`, process.execPath, script],
+        { env: process.env })
+      : spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
     child.on('error', reject);
-    child.on('close', (code) => (code === 0 ? resolve(Number(out)) : reject(new Error(`writer exited ${code}`))));
+    child.on('close', () => resolve(Number(out)));
   });
-  assert.deepEqual(await Promise.all([run(), run()]), [40, 40]);
-  const records = allAuditRecords();
-  assert.equal(records.length, 81);
-  assert.equal(records.filter((row) => row.authorization_outcome === 'GRANTED').length, 80);
-  for (const name of fs.readdirSync(auditDirectory)) {
-    assert.ok(fs.statSync(path.join(auditDirectory, name)).size <= 1024 * 1024, name);
+  const [limited, normal] = await Promise.all([run(1), run(0)]);
+  assert.ok(limited < 20, 'the size-limited writer must hit a short write');
+  assert.equal(normal, 20);
+  // This process is a third writer after the damage: it must still authorize and record.
+  assert.equal(authorizeMutation(requestWithSession(issueSession('operator')), 'pipeline.run',
+    'MUTATION_EXECUTION_SENSITIVE', 'operator'), null);
+  const directory = path.join(researchDirectory, 'memory');
+  let valid = 0;
+  let broken = 0;
+  for (const name of fs.readdirSync(directory).filter((entry) => /^dashboard_mutation_audit\..+\.jsonl$/.test(entry))) {
+    const lines = fs.readFileSync(path.join(directory, name), 'utf8').split('\n');
+    const tail = lines.pop();
+    for (const line of lines) {
+      assert.equal(JSON.parse(line).authorization_outcome, 'GRANTED', name);
+      valid += 1;
+    }
+    if (tail !== '') broken += 1;   // only the limited writer's own log may end in its failed write
   }
+  assert.equal(valid, limited + normal + 1);
+  assert.ok(broken <= 1);
 });

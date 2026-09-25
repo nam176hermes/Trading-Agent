@@ -241,9 +241,9 @@ export function writePrivateLocalStateFile(target: string, content: string): voi
 }
 
 /**
- * Appends one complete line with a single O_APPEND write, then fsyncs. Concurrent appenders from
- * several processes never overwrite each other (the kernel positions each append at the current
- * end of file), so no lock is needed and none can be left behind by a crash.
+ * Appends one complete line with a single O_APPEND write, then fsyncs. A short write throws, but
+ * its prefix stays in the file, so callers must keep one writer per file (and validate before the
+ * next append) for a partial write never to merge with another record.
  */
 export function appendPrivateLocalStateLine(target: string, line: string): void {
   requireAbsoluteTarget(target);

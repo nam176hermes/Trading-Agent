@@ -611,8 +611,9 @@ test('deprecated run route only enqueues a fixed snapshot and does not touch run
   assert.equal(afterHash, beforeHash);
   assert.equal(after.mtimeMs, before.mtimeMs);
   assert.deepEqual(calls, { read: 0, write: 1, rename: 0, spawn: 0 });
-  const auditRows = fs.readFileSync(path.join(temp, 'memory', 'dashboard_mutation_audit.jsonl'), 'utf8')
-    .trim().split('\n').map(JSON.parse);
+  const auditRows = fs.readdirSync(path.join(temp, 'memory'))
+    .filter((name) => /^dashboard_mutation_audit\..+\.jsonl$/.test(name))
+    .flatMap((name) => fs.readFileSync(path.join(temp, 'memory', name), 'utf8').trim().split('\n').map(JSON.parse));
   assert.deepEqual(auditRows.map((event) => event.action), ['pipeline.run']);
   assert.deepEqual(auditRows.map((event) => event.authorization_outcome), ['GRANTED']);
 
