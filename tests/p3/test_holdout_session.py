@@ -202,7 +202,7 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
 def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
     import os
     from services.job_store.worker_repository import WorkerRepository
-    from services.job_worker.p3_session import read_session_ref
+    from services.job_worker.p3_session import LocalSessionProfile, read_session_ref
     x = session_inputs
     holdout = x.claim('HOLDOUT')
     with x.session.stage(holdout, fence=lambda: x.events.append('holdout-fence')):
@@ -210,8 +210,12 @@ def test_session_reuses_one_view_across_independently_admitted_stages(session_in
         view = x.session.view
         assert view.read_bytes(x.manifest)
     # Root learns the commitment for the PARITY intent only from the worker's retained note.
-    assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid()) \
-        == x.session.native_commitment_ref
+    note = x.output_root/holdout.job_id/'session-refs'/'native-commitment.log'
+    if isinstance(x.session.profile, LocalSessionProfile):
+        assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid(),
+            store=x.store, expected_source=x.session.profile.source) == x.session.native_commitment_ref
+    else:  # The note channel is LOCAL-only until the GITHUB lane is verified separately.
+        assert not note.exists()
     for stage in ('PARITY', 'PHASE_EXIT'):
         with x.session.stage(x.claim(stage), fence=lambda: x.events.append(stage)):
             assert x.session.view is view
@@ -425,27 +429,59 @@ def test_local_session_uses_protected_local_identity_without_github_numbers(sess
         module.P3HoldoutSession(path,store=x.store)
 
 
-@pytest.mark.parametrize('fault', [None, 'republish', 'owner', 'mode', 'link', 'kind', 'job'])
-def test_session_ref_note_is_single_use_and_custody_checked(tmp_path, fault):
+def _synthetic_commitment(store):
+    import hashlib
+    import json
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    dummy = store.put_bytes(b'{}', media_type='application/json').model_dump(mode='json')
+    value = dict(schema_version='p3-native-commitment-v1', environment_ref=dummy, manifest_ref=dummy,
+                 instrument_spec_ref=dummy, primary_request_sha256='4'*64, baseline_request_sha256='5'*64,
+                 source=dict(closure_policy_sha256='0'*64, closure_schema_version='trading-agent-source-closure-v1',
+                             closure_sha256='1'*64, commit_sha='2'*40, tree_sha='3'*40))
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    commitment = NativeCommitment.model_validate_json(json.dumps(value))
+    return store.put_bytes(canonical_json_bytes(commitment), media_type='application/json'), commitment.source
+
+
+@pytest.mark.parametrize('fault', [None, 'republish', 'owner', 'mode', 'link', 'kind', 'job', 'media',
+                                   'missing', 'wrong_type', 'source'])
+def test_session_ref_note_is_single_use_custody_checked_and_authenticated(tmp_path, fault):
     import os
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    from packages.data_catalog.artifact_store import LocalArtifactStore
     from packages.data_contracts import ArtifactRefV1
     from services.job_worker.p3_session import publish_session_ref, read_session_ref
-    ref = ArtifactRefV1(content_sha256='a'*64, locator='a'*64+'.blob', size_bytes=10, media_type='application/json')
-    path = publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
-    uid, kind, job = os.geteuid(), 'PARITY_PAIR', 'job_parity'
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    if fault == 'media':  # Codex F01: worker-chosen text must never be echoed.
+        ref = ref.model_copy(update=dict(media_type='SYNTHETIC_H1_CLOSE=12345.67'))
+    if fault == 'missing':
+        ref = ArtifactRefV1(content_sha256='a'*64, locator='a'*64+'.blob', size_bytes=10, media_type='application/json')
+    if fault == 'wrong_type':
+        ref = store.put_bytes(b'{"schema_version":"other"}', media_type='application/json')
+    if fault == 'source':
+        source = SourceIdentity.model_validate({**source.model_dump(mode='json'), 'commit_sha': '9'*40})
+    output = tmp_path/'output'
+    path = publish_session_ref(output, 'job_parity', 'NATIVE_COMMITMENT', ref)
+    uid, kind, job = os.geteuid(), 'NATIVE_COMMITMENT', 'job_parity'
     if fault == 'republish':
         with pytest.raises(FileExistsError):
-            publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
+            publish_session_ref(output, 'job_parity', 'NATIVE_COMMITMENT', ref)
         return
     if fault == 'owner': uid += 1
     if fault == 'mode': path.chmod(0o640)
-    if fault == 'link': os.link(path, tmp_path/'alias')
+    if fault == 'link': os.link(path, output/'alias')
     if fault == 'kind':
-        path.rename(path.with_name('native-commitment.log')); kind = 'NATIVE_COMMITMENT'
+        path.rename(path.with_name('parity-pair.log')); kind = 'PARITY_PAIR'
     if fault == 'job':
-        path.parent.parent.rename(tmp_path/'job_other'); job = 'job_other'
+        path.parent.parent.rename(output/'job_other'); job = 'job_other'
+    def read():
+        return read_session_ref(output, job, kind, worker_uid=uid, store=store, expected_source=source)
     if fault is None:
-        assert read_session_ref(tmp_path, job, kind, worker_uid=uid) == ref
+        assert read() == ref
     else:
-        with pytest.raises(ValueError):
-            read_session_ref(tmp_path, job, kind, worker_uid=uid)
+        with pytest.raises(ValueError) as error:
+            read()
+        assert 'SYNTHETIC_H1' not in str(error.value)

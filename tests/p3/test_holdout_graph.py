@@ -68,15 +68,17 @@ def holdout_graph(retained_family):
     buffer_ref,buffer=dataset('BUFFER',date(2026,9,1),1)
     folds=build_holdout_fold_manifest(context,h_data,policy_digest=inputs.policy_digest)
     folds_ref=store.put_bytes(canonical_json_bytes(folds),media_type='application/json')
-    pit_ref=_seal(store,schema_version='p3-p-i-t-proof-v1',dataset_ref=h_ref,fold_manifest_ref=folds_ref,
-        vintage_class=h_data.vintage_class,historical_vintage_verified=False,
-        revision_proof_ref=closed('holdout.producer'),no_future_suite_ref=closed('holdout.no-future'),limitations=h_data.limitations)
-    h_inputs_ref=store.put_bytes(canonical_json_bytes(_changed(inputs,dataset_evidence_ref=h_ref,
-        fold_manifest_ref=folds_ref,pit_proof_ref=pit_ref)),media_type='application/json')
     custody_ref=_seal(store,schema_version='p3-custody-record-v1',holdout_commitment='a'*64,
         ciphertext_ref=closed('ciphertext'),plaintext_bundle_digest='b'*64,custodian_identity='synthetic.custodian',
         research_identity='synthetic.research',custodian_attestation_ref=closed('attestation'),
         access_policy_digest='c'*64,classification='HISTORICAL_ACCESS_CONTROLLED_NOT_INFORMATIONALLY_BLIND')
+    # Holdout PIT contract: the custody record (holdout commitment) is the revision proof; the no-future suite is the research one.
+    research_pit=_read(store,inputs.pit_proof_ref,PITProof)
+    pit_ref=_seal(store,schema_version='p3-p-i-t-proof-v1',dataset_ref=h_ref,fold_manifest_ref=folds_ref,
+        vintage_class=h_data.vintage_class,historical_vintage_verified=False,
+        revision_proof_ref=custody_ref,no_future_suite_ref=research_pit.no_future_suite_ref,limitations=h_data.limitations)
+    h_inputs_ref=store.put_bytes(canonical_json_bytes(_changed(inputs,dataset_evidence_ref=h_ref,
+        fold_manifest_ref=folds_ref,pit_proof_ref=pit_ref)),media_type='application/json')
     # This selected value is a declared dependency stub only. The real family fails;
     # the separate non-stubbed test below must reject it and never read H1.
     primary_ref=_seal(store,schema_version='p3-primary-selection-v1',family_review_ref=family_ref,
@@ -122,7 +124,7 @@ def _reader(graph,reads):
 
 
 @pytest.mark.parametrize('fault',[None,'epoch','family','cost','regime','integration','h_source','h_environment',
-    'h_dataset','pit_dataset','pit_fold','pit_vintage','fold_rows','row_overlap','snapshot_overlap',
+    'h_dataset','pit_dataset','pit_fold','pit_vintage','pit_revision','pit_suite','fold_rows','row_overlap','snapshot_overlap',
     'row_snapshot_overlap','ciphertext_attestation_overlap','ciphertext_row_overlap','attestation_snapshot_overlap',
     'primary_none','primary_head','primary_alias','custody_alias','registration','candidate','instrument','training','negative_threshold'])
 def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypatch,fault):
@@ -143,10 +145,12 @@ def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypa
             'h_dataset':('dataset_evidence_ref',intent.body.buffer_ref),
         }[fault]
         body['holdout_input_set_ref']=changed(intent.body.holdout_input_set_ref,InputSet,**{key:value})
-    elif fault in {'pit_dataset','pit_fold','pit_vintage'}:
+    elif fault in {'pit_dataset','pit_fold','pit_vintage','pit_revision','pit_suite'}:
         values={'pit_dataset':dict(dataset_ref=intent.body.context_dataset_ref),
             'pit_fold':dict(fold_manifest_ref=graph.closed('other-fold')),
-            'pit_vintage':dict(vintage_class='HISTORICAL_VINTAGE_VERIFIED',historical_vintage_verified=True)}[fault]
+            'pit_vintage':dict(vintage_class='HISTORICAL_VINTAGE_VERIFIED',historical_vintage_verified=True),
+            'pit_revision':dict(revision_proof_ref=graph.closed('holdout.producer')),
+            'pit_suite':dict(no_future_suite_ref=intent.body.custody_record_ref)}[fault]
         ref=changed(h_inputs.pit_proof_ref,PITProof,**values)
         body['holdout_input_set_ref']=changed(intent.body.holdout_input_set_ref,InputSet,pit_proof_ref=ref)
     elif fault=='fold_rows':

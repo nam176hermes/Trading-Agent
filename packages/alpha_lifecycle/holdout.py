@@ -223,6 +223,13 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
         raise ValueError('holdout InputSet fold or PIT metadata differs')
     for ref in (pit.revision_proof_ref,pit.no_future_suite_ref):
         _reference(ref,65536)
+    # Holdout PIT contract: the revision proof is this operation's custody record, whose commitment
+    # binds the sealed holdout rows; the no-future suite is a typed receipt for this exact source.
+    # Neither proves a historical vintage; the retrospective label above stays mandatory.
+    from packages.alpha_lifecycle.pit_suite import validate_pit_suite_receipt
+    if pit.revision_proof_ref!=body.custody_record_ref:
+        raise ValueError('holdout PIT revision proof is not this operation custody record')
+    validate_pit_suite_receipt(pit.no_future_suite_ref,source=expected_source,store=reader)
     family=_read(reader,primary.family_review_ref,FamilyReview)
     if family.input_set_ref!=intent.input_set_ref or select_primary(family,reader)!=primary:
         raise ValueError('holdout primary differs from complete retained family selection')

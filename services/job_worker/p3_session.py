@@ -262,9 +262,19 @@ def publish_session_ref(output_root, job_id: str, kind: SessionRefKind, ref: Art
     return target
 
 
-def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_uid: int) -> ArtifactRefV1:
-    """Root-side read with the same custody checks as the owner observation."""
+def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_uid: int,
+                     store: LocalArtifactStore, expected_source: SourceIdentity) -> ArtifactRefV1:
+    """Root-side read: owner-observation custody checks, then authenticate the referenced artifact.
+
+    Nothing from the note is returned as is. The ref must name a bounded canonical JSON artifact of the
+    expected type, present in the worker store under its hash and bound to this source; the result is
+    rebuilt from those checked values, so worker-chosen text never reaches the caller.
+    """
+    import hashlib
     import stat
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.alpha_lifecycle.parity import ParityPair
     from .results import _open_directory_chain
     validate_p3_job_id(job_id)
     path = Path(output_root)/job_id/'session-refs'/(_SESSION_REF_NAMES[kind] + '.log')
@@ -279,9 +289,28 @@ def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_u
             note = SessionRefObservation.model_validate_json(stream.read(4097))
     finally:
         os.close(parent_fd)
-    if note.job_id != job_id or note.kind != kind:
-        raise ValueError('session reference note names another job or kind')
-    return note.ref
+    ref = note.ref
+    if (note.job_id != job_id or note.kind != kind or ref.media_type != 'application/json'
+        or ref.locator != ref.content_sha256 + '.blob' or not 1 <= ref.size_bytes <= 65536):
+        raise ValueError('session reference note is not a bounded JSON artifact of this job and kind')
+    try:
+        raw = store.read_bytes(ref)
+    except Exception as error:
+        raise ValueError('session reference names no retained artifact') from error
+    if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.content_sha256:
+        raise ValueError('session reference artifact differs')
+    model = NativeCommitment if kind == 'NATIVE_COMMITMENT' else ParityPair
+    try:
+        value = model.model_validate_json(raw)
+    except Exception as error:
+        raise ValueError('session reference artifact has the wrong type') from error
+    if canonical_json_bytes(value) != raw:
+        raise ValueError('session reference artifact is not canonical')
+    bound = value.source if isinstance(value, NativeCommitment) else _read(store, value.manifest_ref, HoldoutManifest).source
+    if bound != expected_source:
+        raise ValueError('session reference artifact is bound to another source')
+    return ArtifactRefV1(content_sha256=ref.content_sha256, locator=ref.content_sha256 + '.blob',
+                         size_bytes=len(raw), media_type='application/json')
 
 
 class P3HoldoutSession:
@@ -481,7 +510,8 @@ class P3HoldoutSession:
             from packages.alpha_lifecycle.native_request import prepare_native_commitment
             commitment = prepare_native_commitment(manifest_ref, self._spec, view)
             self.native_commitment_ref = self.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
-            publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
+            if isinstance(self.profile, LocalSessionProfile):  # GITHUB lane not verified for notes.
+                publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
             self.fence()
             return request_ref, manifest_ref
         except BaseException:
@@ -594,7 +624,8 @@ class P3HoldoutSession:
             primary_parity_ref=refs[0], baseline_parity_ref=refs[1], store=self,
             native_parent_proof_ref=self.native_parent_proof_ref)
         self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
-        publish_session_ref(self._host(active[0], active[2]).output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
+        if isinstance(self.profile, LocalSessionProfile):
+            publish_session_ref(self._host(active[0], active[2]).output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
         return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:

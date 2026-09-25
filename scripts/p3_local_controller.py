@@ -497,10 +497,11 @@ def derive_body(document, *, source, store):
 def read_session_ref(request_path, kind):
     """Root reads the worker's note for the reference the next PARITY/PHASE_EXIT intent must name."""
     from services.job_worker.p3_session import LocalSessionLaunch, read_session_ref as read_note
-    _, directory, host, _ = _session_context(request_path)
+    request, directory, host, _ = _session_context(request_path)
     launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
     return dict(kind=kind, job_id=host.job_id,
-        ref=read_note(host.output_root, host.job_id, kind, worker_uid=launch.worker_uid))
+        ref=read_note(host.output_root, host.job_id, kind, worker_uid=launch.worker_uid,
+                      store=LocalArtifactStore(Path(host.store_root)), expected_source=request.execution_source))
 
 
 def main(argv=None):
