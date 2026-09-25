@@ -120,16 +120,29 @@ class DataHandler:
         self.timeframe = timeframe
         self._df: Optional[pd.DataFrame] = None
 
+    def _window(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Inclusive calendar-day window [start 00:00, end 23:59:59.999] in UTC.
+
+        Providers return whole pages, so a fetch or a cache written by an older version can
+        extend past `end`; every source is trimmed here before it is cached or used.
+        """
+        start_ts = pd.Timestamp(self.start, tz="UTC")
+        end_ts = pd.Timestamp(self.end, tz="UTC") + pd.Timedelta(days=1)
+        index = df.index if df.index.tz is not None else df.index.tz_localize("UTC")
+        return df[(index >= start_ts) & (index < end_ts)]
+
     def load(self) -> Optional[pd.DataFrame]:
         cache_file = CACHE_DIR / f"{self.symbol.replace('/', '_')}_{self.start}_{self.end}_{self.timeframe}.csv"
         if cache_file.exists():
             df = pd.read_csv(cache_file, parse_dates=["timestamp"], index_col="timestamp")
             df.sort_index(inplace=True)
+            df = self._window(df)
             self._df = df
             return df
 
         df = self._fetch()
         if df is not None and not df.empty:
+            df = self._window(df)
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             df.to_csv(cache_file)
         self._df = df
@@ -142,10 +155,7 @@ class DataHandler:
         if historical_path.exists() and self.timeframe == "1h":
             df = pd.read_csv(historical_path, parse_dates=["timestamp"], index_col="timestamp")
             df.sort_index(inplace=True)
-            # Filter to requested date range
-            start_ts = pd.Timestamp(self.start, tz="UTC")
-            end_ts = pd.Timestamp(self.end, tz="UTC")
-            df = df[(df.index >= start_ts) & (df.index <= end_ts)]
+            df = self._window(df)
             if not df.empty:
                 log.info("Loaded %d candles from historical CSV: %s", len(df), historical_path)
                 return df
@@ -270,14 +280,32 @@ class Portfolio:
     def position_count(self) -> int:
         return len(self.positions)
 
+    @staticmethod
+    def _direction(side: str) -> int:
+        """+1 for a long (BUY) position, -1 for a short (SELL) position."""
+        return 1 if side == "BUY" else -1
+
     def compute_equity(self, bar: Bar) -> float:
         value = self.cash
         for pos in self.positions:
-            value += pos.quantity * bar.close
+            value += self._direction(pos.side) * pos.quantity * bar.close
         return value
 
+    def settle_final_snapshot(self, timestamp: datetime, bar: Bar):
+        """Replace the last snapshot with post-settlement equity; adds no return period."""
+        if self._equity_history:
+            self._equity_history.pop()
+        self._peak_equity = self.config.initial_capital
+        self._max_drawdown = 0.0
+        history, self._equity_history = self._equity_history, []
+        for ts, eq in history:
+            self._track(ts, eq)
+        self._track(timestamp, self.compute_equity(bar))
+
     def record_snapshot(self, timestamp: datetime, bar: Bar):
-        eq = self.compute_equity(bar)
+        self._track(timestamp, self.compute_equity(bar))
+
+    def _track(self, timestamp: datetime, eq: float):
         self._equity_history.append((timestamp, eq))
         if eq > self._peak_equity:
             self._peak_equity = eq
@@ -333,7 +361,8 @@ class Portfolio:
                     commission=commission, bar_index=bar_idx,
                 )
                 fills.append(fill)
-                self.cash += fill_price * pos.quantity - commission
+                self.cash += (self._direction(pos.side) * fill_price * pos.quantity
+                              - commission - funding_cost)
 
                 self._trade_log.append({
                     "entry_time": pos.entry_time.isoformat(),
@@ -355,8 +384,7 @@ class Portfolio:
         return fills
 
     def apply_fill(self, fill: Fill):
-        cost = fill.price * fill.quantity
-        self.cash -= cost + fill.commission
+        self.cash -= self._direction(fill.side) * fill.price * fill.quantity + fill.commission
 
         if fill.side == "BUY":
             sl = fill.price * (1 - self.config.stop_loss_pct)
@@ -404,7 +432,8 @@ class Portfolio:
                 commission=commission, bar_index=bar_idx,
             )
             fills.append(fill)
-            self.cash += fill_price * pos.quantity - commission
+            self.cash += (self._direction(pos.side) * fill_price * pos.quantity
+                          - commission - funding_cost)
 
             self._trade_log.append({
                 "entry_time": pos.entry_time.isoformat(),
@@ -724,6 +753,7 @@ class BacktestEngine:
         # Close remaining positions at last bar
         if self.portfolio.positions and bars:
             self.portfolio.close_all(bars[-1], len(bars) - 1)
+            self.portfolio.settle_final_snapshot(bars[-1].timestamp, bars[-1])
 
         metrics = compute_aggregate_metrics(
             self.portfolio.equity_curve, self.portfolio.trade_log,
@@ -823,8 +853,11 @@ class MLStrategy(Strategy):
             return Signal(action="HOLD", confidence=0.0, stop_loss_pct=0.0, take_profit_pct=0.0)
 
         try:
-            raw = self.model.predict(row.values.reshape(1, -1))[0]
-            up_prob = float(1.0 / (1.0 + np.exp(-raw)))
+            # A binary LightGBM Booster returns probabilities by default (raw_score=False),
+            # and Platt calibration is fitted on the logit of those same probabilities.
+            up_prob = float(self.model.predict(row.values.reshape(1, -1))[0])
+            if not 0.0 <= up_prob <= 1.0:
+                raise ValueError("model output is not a probability")
 
             if self._platt_a is not None and self._platt_b is not None:
                 eps = 1e-12
