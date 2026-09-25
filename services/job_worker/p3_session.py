@@ -264,17 +264,25 @@ def publish_session_ref(output_root, job_id: str, kind: SessionRefKind, ref: Art
 
 def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_uid: int,
                      store: LocalArtifactStore, expected_source: SourceIdentity) -> ArtifactRefV1:
-    """Root-side read: owner-observation custody checks, then authenticate the referenced artifact.
+    """Owner-observation custody checks, then authenticate the referenced artifact.
 
-    Nothing from the note is returned as is. The ref must name a bounded canonical JSON artifact of the
-    expected type, present in the worker store under its hash and bound to this source; the result is
-    rebuilt from those checked values, so worker-chosen text never reaches the caller.
+    Run under the worker UID (the root controller reaches it through `as_worker`). Nothing from the
+    note or artifact is returned or raised: every failure becomes one fixed error without its chain,
+    and the result is rebuilt from checked values.
     """
+    try:
+        return _authenticated_session_ref(output_root, job_id, kind, worker_uid=worker_uid,
+                                          store=store, expected_source=expected_source)
+    except Exception:
+        raise ValueError('session reference note rejected') from None
+
+
+def _authenticated_session_ref(output_root, job_id, kind, *, worker_uid, store, expected_source):
     import hashlib
     import stat
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
     from packages.alpha_lifecycle.native_request import NativeCommitment
-    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.parity import SessionParityPair
     from .results import _open_directory_chain
     validate_p3_job_id(job_id)
     path = Path(output_root)/job_id/'session-refs'/(_SESSION_REF_NAMES[kind] + '.log')
@@ -285,30 +293,24 @@ def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_u
             info = os.fstat(stream.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != worker_uid or info.st_nlink != 1
                 or stat.S_IMODE(info.st_mode) != 0o600 or not 1 <= info.st_size <= 4096):
-                raise ValueError('session reference note custody differs')
+                raise ValueError('custody')
             note = SessionRefObservation.model_validate_json(stream.read(4097))
     finally:
         os.close(parent_fd)
     ref = note.ref
     if (note.job_id != job_id or note.kind != kind or ref.media_type != 'application/json'
         or ref.locator != ref.content_sha256 + '.blob' or not 1 <= ref.size_bytes <= 65536):
-        raise ValueError('session reference note is not a bounded JSON artifact of this job and kind')
-    try:
-        raw = store.read_bytes(ref)
-    except Exception as error:
-        raise ValueError('session reference names no retained artifact') from error
+        raise ValueError('shape')
+    raw = store.read_bytes(ref)
     if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.content_sha256:
-        raise ValueError('session reference artifact differs')
-    model = NativeCommitment if kind == 'NATIVE_COMMITMENT' else ParityPair
-    try:
-        value = model.model_validate_json(raw)
-    except Exception as error:
-        raise ValueError('session reference artifact has the wrong type') from error
+        raise ValueError('bytes')
+    # The live session always retains the native-bound pair (build_parity_pair with its parent proof).
+    value = (NativeCommitment if kind == 'NATIVE_COMMITMENT' else SessionParityPair).model_validate_json(raw)
     if canonical_json_bytes(value) != raw:
-        raise ValueError('session reference artifact is not canonical')
+        raise ValueError('canonical')
     bound = value.source if isinstance(value, NativeCommitment) else _read(store, value.manifest_ref, HoldoutManifest).source
     if bound != expected_source:
-        raise ValueError('session reference artifact is bound to another source')
+        raise ValueError('source')
     return ArtifactRefV1(content_sha256=ref.content_sha256, locator=ref.content_sha256 + '.blob',
                          size_bytes=len(raw), media_type='application/json')
 

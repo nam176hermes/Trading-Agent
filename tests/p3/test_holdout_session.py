@@ -482,6 +482,61 @@ def test_session_ref_note_is_single_use_custody_checked_and_authenticated(tmp_pa
     if fault is None:
         assert read() == ref
     else:
-        with pytest.raises(ValueError) as error:
-            read()
-        assert 'SYNTHETIC_H1' not in str(error.value)
+        _assert_rejected_without_marker(read)
+
+
+def _assert_rejected_without_marker(read):
+    import traceback
+    with pytest.raises(ValueError) as error:
+        read()
+    # Nothing worker-controlled may survive in the message or the exception chain (Codex round 2).
+    assert 'SYNTHETIC_H1' not in ''.join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+
+
+@pytest.mark.parametrize('variant', ['note_field', 'artifact_field'])
+def test_session_ref_rejection_carries_no_worker_text(tmp_path, variant):
+    import json
+    import os
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    if variant == 'artifact_field':
+        ref = store.put_bytes(b'{"schema_version":"SYNTHETIC_H1_CLOSE=12345.67"}', media_type='application/json')
+    path = publish_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT', ref)
+    if variant == 'note_field':
+        note = json.loads(path.read_bytes())
+        note['ref']['size_bytes'] = 'SYNTHETIC_H1_CLOSE=12345.67'
+        path.write_bytes(json.dumps(note).encode())
+    _assert_rejected_without_marker(lambda: read_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT',
+        worker_uid=os.geteuid(), store=store, expected_source=source))
+
+
+@pytest.mark.parametrize('observed', [
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'SYNTHETIC_H1_CLOSE=1'},
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 'SYNTHETIC_H1_CLOSE=1', 'media_type': 'application/json'},
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'application/json',
+     'extra': 'SYNTHETIC_H1_CLOSE=1'},
+    'SYNTHETIC_H1_CLOSE=1'])
+def test_root_accepts_only_a_plain_ref_from_the_worker_helper(observed):
+    from scripts.p3_local_controller import checked_session_ref
+    _assert_rejected_without_marker(lambda: checked_session_ref(observed))
+
+
+def test_worker_helper_session_ref_action_round_trips_and_rejects_extra_fields(tmp_path):
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from scripts.p3_local_controller import checked_session_ref
+    from scripts.p3_local_host import session_ref_action
+    from services.job_worker.p3_session import publish_session_ref
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    publish_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT', ref)
+    command = dict(action='session-ref', output_root=str(tmp_path/'output'), job_id='job_parity',
+                   kind='NATIVE_COMMITMENT', store_root=str(tmp_path/'cas'),
+                   expected_source=source.model_dump(mode='json'))
+    assert checked_session_ref(session_ref_action(command)) == ref
+    with pytest.raises(ValueError):
+        session_ref_action(dict(command, credentials_directory='/run/anything'))

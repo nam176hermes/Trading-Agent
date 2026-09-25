@@ -470,3 +470,21 @@ def test_parity_body_refuses_a_commitment_for_another_manifest(exit_graph):
     held_ref, _ = _holdout_result(store, intent)
     with pytest.raises(ValueError):
         parity_body(held_ref, store.put_bytes(canonical_json_bytes({}), media_type='application/json'), store=store)
+
+
+def test_session_parity_pair_note_reads_back_with_native_parent_proof(exit_graph, tmp_path):
+    import hashlib
+    import os
+    from packages.alpha_lifecycle.parity import ParityPair, SessionParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    store, intent, source, _ = exit_graph
+    value = _read(store, intent.body.parity_ref, ParityPair).model_dump(mode='json', exclude={'digest'})
+    value['native_parent_proof_ref'] = intent.body.holdout_replay_ref.model_dump(mode='json')
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    pair = SessionParityPair.model_validate(value)
+    ref = store.put_bytes(canonical_json_bytes(pair), media_type='application/json')
+    publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
+    assert read_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', worker_uid=os.geteuid(),
+                            store=store, expected_source=source) == ref

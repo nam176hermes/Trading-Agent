@@ -494,14 +494,48 @@ def derive_body(document, *, source, store):
     return request if primary_alpha_id is None else dict(request, primary_alpha_id=primary_alpha_id)
 
 
+def checked_session_ref(observed):
+    """Root accepts only a plain JSON artifact ref from the worker helper; nothing else is echoed."""
+    try:
+        ref = ArtifactRefV1.model_validate(observed)
+        if (set(observed) != {'content_sha256', 'locator', 'size_bytes', 'media_type'}
+            or ref.media_type != 'application/json' or ref.locator != ref.content_sha256 + '.blob'
+            or not 1 <= ref.size_bytes <= 65536):
+            raise ValueError('shape')
+    except Exception:
+        raise ValueError('session reference note rejected') from None
+    return ref
+
+
 def read_session_ref(request_path, kind):
-    """Root reads the worker's note for the reference the next PARITY/PHASE_EXIT intent must name."""
-    from services.job_worker.p3_session import LocalSessionLaunch, read_session_ref as read_note
+    """Root reads the worker's note for the reference the next PARITY/PHASE_EXIT intent must name.
+
+    The worker CAS and output root belong to the worker UID, so the read runs there through the
+    bounded `as_worker` helper (stderr discarded); root re-checks the returned ref.
+    """
+    import time
+    from scripts.p3_local_host import as_worker
+    from scripts.p3_local_transport import _official_deadline, _runtime_authority
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    from services.job_worker.p3_session import LocalSessionLaunch
+    from packages.runtime_release.config import _absolute
+    if kind not in {'NATIVE_COMMITMENT', 'PARITY_PAIR'}:
+        raise ValueError('session reference kind differs')
     request, directory, host, _ = _session_context(request_path)
+    if not isinstance(host, LocalOfficialHostProfileV2):
+        raise ValueError('session note reader requires a LOCAL v2 host profile')
     launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
-    return dict(kind=kind, job_id=host.job_id,
-        ref=read_note(host.output_root, host.job_id, kind, worker_uid=launch.worker_uid,
-                      store=LocalArtifactStore(Path(host.store_root)), expected_source=request.execution_source))
+    runtime = _runtime_authority(dict(identity=request.authorization.identity.model_dump(mode='json')))
+    if runtime['uid'] != launch.worker_uid or runtime['uid'] != host.image.worker_uid:
+        raise ValueError('session note reader runtime identity differs')
+    deadline = _official_deadline(time.monotonic()+60, runtime.get('expires_at'))
+    environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
+        P3_APPLICATION_ROOT=str(_absolute(runtime['application_root'])),
+        P3_APPLICATION_PYTHON=str(_absolute(runtime['application_python'])))
+    observed = as_worker(host.image.worker_uid, host.image.worker_gid, deadline, environment, dict(
+        action='session-ref', output_root=host.output_root, job_id=host.job_id, kind=kind,
+        store_root=host.store_root, expected_source=request.execution_source.model_dump(mode='json')))
+    return dict(kind=kind, job_id=host.job_id, ref=checked_session_ref(observed))
 
 
 def main(argv=None):

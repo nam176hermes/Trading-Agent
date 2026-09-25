@@ -315,6 +315,17 @@ def host_inventory(closure):
             size=m.size, mode=m.mode, sha256=m.sha256) for m in closure.mounts])))
 
 
+def session_ref_action(command):
+    """Worker-UID read of a session note; the worker owns both its output root and its CAS."""
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    from services.job_worker.p3_session import read_session_ref
+    if set(command) != {'action', 'output_root', 'job_id', 'kind', 'store_root', 'expected_source'}:
+        raise ValueError('session reference read accepts only its fixed fields')
+    return read_session_ref(_absolute(command['output_root']), command['job_id'], command['kind'],
+        worker_uid=os.geteuid(), store=LocalArtifactStore(_absolute(command['store_root'])),
+        expected_source=SourceIdentity.model_validate(command['expected_source'])).model_dump(mode='json')
+
+
 def main():
     """Fixed worker-UID helper in the qualified application, never an alternate launcher."""
     raw = sys.stdin.buffer.read(4194305)
@@ -333,6 +344,8 @@ def main():
         profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(command['profile']))
         result, _ = read_official_profile(_absolute(command['path']), command['digest'],
             job_id=profile.job_id, payload=profile.payload, context=os.environ)
+    elif command['action'] == 'session-ref':
+        result = session_ref_action(command)
     elif command['action'] == 'database-identity':
         from services.job_store.config import read_systemd_credential
         if set(command) != {'action', 'credentials_directory'}:
