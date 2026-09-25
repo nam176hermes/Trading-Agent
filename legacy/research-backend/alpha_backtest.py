@@ -29,6 +29,7 @@ import pandas as pd
 from runtime_paths import data_root, signal_output_dir
 
 from backtest_engine import (
+    step_bar,
     BacktestConfig,
     BacktestEngine,
     BaselineStrategy,
@@ -334,12 +335,7 @@ def _run_alpha_backtest(symbol: str, strategy: AlphaSignalStrategy,
         return _empty_alpha_result(symbol, strategy.name)
 
     for i, bar in enumerate(bars):
-        exit_fills = portfolio.check_exits(bar, i)
-        entry_fills = broker.process_orders(bar, i, portfolio, symbol)
-        signal = strategy.next(i, bar, portfolio.positions)
-        if signal.action in ("BUY", "SELL"):
-            broker.place_order(signal, bar, i, portfolio, symbol)
-        portfolio.record_snapshot(bar.timestamp, bar)
+        step_bar(portfolio, broker, strategy, bar, i, symbol)
 
     if portfolio.positions and bars:
         portfolio.close_all(bars[-1], len(bars) - 1)
@@ -516,12 +512,7 @@ def run_alpha_walk_forward(symbol: str, start: str, end: str,
             continue
 
         for i, bar in enumerate(bars):
-            exit_fills = portfolio.check_exits(bar, i)
-            entry_fills = broker.process_orders(bar, i, portfolio, symbol)
-            signal = strategy.next(i, bar, portfolio.positions)
-            if signal.action in ("BUY", "SELL"):
-                broker.place_order(signal, bar, i, portfolio, symbol)
-            portfolio.record_snapshot(bar.timestamp, bar)
+            step_bar(portfolio, broker, strategy, bar, i, symbol)
 
         if portfolio.positions and bars:
             portfolio.close_all(bars[-1], len(bars) - 1)

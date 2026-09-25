@@ -369,6 +369,12 @@ class Portfolio:
         return fill
 
     def check_exits(self, bar: Bar, bar_idx: int) -> list[Fill]:
+        """Intrabar stop/target exits; call after pending orders filled at this bar's open.
+
+        With OHLC only, a stop is assumed hit before a target in the same bar. When the open has
+        already crossed a level, the open is the first tradable price: a stop fills there (worse
+        than its level) and a resting target fills there (better than its level).
+        """
         fills = []
         for pos in list(self.positions):
             exit_price = None
@@ -376,17 +382,17 @@ class Portfolio:
 
             if pos.side == "BUY":
                 if bar.low <= pos.stop_loss_price:
-                    exit_price = pos.stop_loss_price
+                    exit_price = min(bar.open, pos.stop_loss_price)
                     exit_reason = "stop_loss"
                 elif bar.high >= pos.take_profit_price:
-                    exit_price = pos.take_profit_price
+                    exit_price = max(bar.open, pos.take_profit_price)
                     exit_reason = "take_profit"
             else:
                 if bar.high >= pos.stop_loss_price:
-                    exit_price = pos.stop_loss_price
+                    exit_price = max(bar.open, pos.stop_loss_price)
                     exit_reason = "stop_loss"
                 elif bar.low <= pos.take_profit_price:
-                    exit_price = pos.take_profit_price
+                    exit_price = min(bar.open, pos.take_profit_price)
                     exit_reason = "take_profit"
 
             if exit_price is not None and exit_reason is not None:
@@ -402,15 +408,19 @@ class Portfolio:
         return [self._close_position(pos, bar.open, bar, bar_idx, "signal_exit")
                 for pos in list(self.positions) if any(pos is target for target in targets)]
 
-    def apply_fill(self, fill: Fill):
+    def apply_fill(self, fill: Fill, stop_loss_pct: Optional[float] = None,
+                   take_profit_pct: Optional[float] = None):
+        """Open a position; the order's effective stop/target override the config defaults."""
         self.cash -= self._direction(fill.side) * fill.price * fill.quantity + fill.commission
+        stop = self.config.stop_loss_pct if stop_loss_pct is None else stop_loss_pct
+        target = self.config.take_profit_pct if take_profit_pct is None else take_profit_pct
 
         if fill.side == "BUY":
-            sl = fill.price * (1 - self.config.stop_loss_pct)
-            tp = fill.price * (1 + self.config.take_profit_pct)
+            sl = fill.price * (1 - stop)
+            tp = fill.price * (1 + target)
         else:
-            sl = fill.price * (1 + self.config.stop_loss_pct)
-            tp = fill.price * (1 - self.config.take_profit_pct)
+            sl = fill.price * (1 + stop)
+            tp = fill.price * (1 - target)
 
         self.positions.append(Position(
             symbol=fill.symbol, side=fill.side,
@@ -529,10 +539,28 @@ class Broker:
                 price=fill_price, commission=commission, bar_index=bar_idx,
             )
             fills.append(fill)
-            portfolio.apply_fill(fill)
+            portfolio.apply_fill(fill, order.stop_loss_pct, order.take_profit_pct)
             self._pending.remove(order)
 
         return fills
+
+
+def step_bar(portfolio: "Portfolio", broker: "Broker", strategy: "Strategy", bar: Bar, i: int,
+             symbol: str) -> tuple[list[Fill], Signal]:
+    """One bar, in time order, for every backtest loop.
+
+    1. Orders placed on earlier bars fill at this bar's open (entries and signal exits).
+    2. Stops/targets are evaluated on this bar's range, including positions opened at its open.
+    3. The strategy sees the closed bar and may queue orders for the next open.
+    4. Equity is snapshotted at the close.
+    """
+    fills = broker.process_orders(bar, i, portfolio, symbol)
+    fills += portfolio.check_exits(bar, i)
+    signal = strategy.next(i, bar, portfolio.positions)
+    if signal.action in ("BUY", "SELL"):
+        broker.place_order(signal, bar, i, portfolio, symbol)
+    portfolio.record_snapshot(bar.timestamp, bar)
+    return fills, signal
 
 
 # ── Recorder ────────────────────────────────────────────────────────────────────
@@ -727,26 +755,10 @@ class BacktestEngine:
                  self.symbol, len(bars), self.config.initial_capital)
 
         for i, bar in enumerate(bars):
-            # 1. Check exits (stop loss / take profit)
-            exit_fills = self.portfolio.check_exits(bar, i)
-            for fill in exit_fills:
+            fills, signal = step_bar(self.portfolio, self.broker, self.strategy, bar, i, self.symbol)
+            for fill in fills:
                 self.recorder.record_fill(fill)
-
-            # 2. Process pending orders (market orders fill at bar open)
-            entry_fills = self.broker.process_orders(bar, i, self.portfolio, self.symbol)
-            for fill in entry_fills:
-                self.recorder.record_fill(fill)
-
-            # 3. Strategy evaluation
-            signal = self.strategy.next(i, bar, self.portfolio.positions)
             self.recorder.record_signal(i, bar.timestamp, signal)
-
-            # 4. Create orders from signal
-            if signal.action in ("BUY", "SELL"):
-                self.broker.place_order(signal, bar, i, self.portfolio, self.symbol)
-
-            # 5. Record equity snapshot
-            self.portfolio.record_snapshot(bar.timestamp, bar)
 
         # Close remaining positions at last bar
         if self.portfolio.positions and bars:

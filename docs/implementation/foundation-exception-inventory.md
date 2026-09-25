@@ -208,10 +208,10 @@ legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|C
 legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/allocation_engine.py|475|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/alpha_arena.py|80|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/alpha_backtest.py|80|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/alpha_backtest.py|409|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/alpha_backtest.py|420|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/alpha_backtest.py|751|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|81|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/alpha_backtest.py|405|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|416|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|742|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/analysts.py|314|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/analysts.py|351|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/analysts.py|376|Exception|PRODUCTION_CRITICAL|RETURN
@@ -225,8 +225,8 @@ legacy/research-backend/assembly.py|901|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/assembly.py|990|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/audit_lookahead.py|46|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/backtest_engine.py|192|Exception|PRODUCTION_CRITICAL|OTHER
-legacy/research-backend/backtest_engine.py|866|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/backtest_runner.py|594|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/backtest_engine.py|878|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/backtest_runner.py|590|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/broker.py|94|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/broker.py|150|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/broker.py|164|Exception|PRODUCTION_CRITICAL|RETURN

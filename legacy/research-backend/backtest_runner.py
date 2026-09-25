@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 
 from backtest_engine import (
+    step_bar,
     BacktestConfig, BacktestEngine, DataHandler,
     MLStrategy, BaselineStrategy, Portfolio, Broker,
     compute_aggregate_metrics, compute_sharpe, compute_sortino,
@@ -104,12 +105,7 @@ def _run_window_backtest(df: pd.DataFrame, symbol: str, config: BacktestConfig,
         return _empty_window_result()
 
     for i, bar in enumerate(bars):
-        exit_fills = portfolio.check_exits(bar, i)
-        entry_fills = broker.process_orders(bar, i, portfolio, symbol)
-        signal = strategy.next(i, bar, portfolio.positions)
-        if signal.action in ("BUY", "SELL"):
-            broker.place_order(signal, bar, i, portfolio, symbol)
-        portfolio.record_snapshot(bar.timestamp, bar)
+        step_bar(portfolio, broker, strategy, bar, i, symbol)
 
     if portfolio.positions and bars:
         portfolio.close_all(bars[-1], len(bars) - 1)
