@@ -56,6 +56,12 @@ def test_a_position_opened_at_the_open_is_stopped_by_the_same_bar():
     ('BUY', (120, 125, 118, 121), 120, 'take_profit'),  # resting limit fills at the better open
     ('SELL', (120, 125, 118, 121), 120, 'stop_loss'),
     ('SELL', (80, 85, 75, 80), 80, 'take_profit'),
+    # Codex AR02: the open is known first; a target already crossed at the open wins over a later stop touch.
+    ('BUY', (120, 125, 90, 100), 120, 'take_profit'),
+    ('SELL', (80, 110, 75, 100), 80, 'take_profit'),
+    # Open between the levels and both touched inside the bar: the conservative stop-first rule stays.
+    ('BUY', (100, 111, 94, 100), 95, 'stop_loss'),
+    ('SELL', (100, 106, 89, 100), 105, 'stop_loss'),
 ])
 def test_gap_exits_fill_at_prices_the_bar_could_trade(side, bar, price, reason):
     config = b.BacktestConfig(initial_capital=1000, commission_pct=0, slippage_pct=0, funding_rate_pct=0,

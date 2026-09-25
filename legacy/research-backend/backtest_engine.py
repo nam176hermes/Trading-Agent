@@ -371,34 +371,36 @@ class Portfolio:
         return fill
 
     def check_exits(self, bar: Bar, bar_idx: int) -> list[Fill]:
-        """Intrabar stop/target exits; call after pending orders filled at this bar's open.
+        """Stop/target exits for one bar; call after pending orders filled at this bar's open.
 
-        With OHLC only, a stop is assumed hit before a target in the same bar. When the open has
-        already crossed a level, the open is the first tradable price: a stop fills there (worse
-        than its level) and a resting target fills there (better than its level).
+        The open is known first: a level it already crossed fills there (worse than the level
+        for a stop, better for a resting target). Only when the open lies between the levels and
+        the bar touches both is the order unknown; then the stop is assumed first.
         """
         fills = []
         for pos in list(self.positions):
-            exit_price = None
-            exit_reason = None
-
             if pos.side == "BUY":
-                if bar.low <= pos.stop_loss_price:
-                    exit_price = min(bar.open, pos.stop_loss_price)
-                    exit_reason = "stop_loss"
-                elif bar.high >= pos.take_profit_price:
-                    exit_price = max(bar.open, pos.take_profit_price)
-                    exit_reason = "take_profit"
+                crossed_target = bar.open >= pos.take_profit_price
+                crossed_stop = bar.open <= pos.stop_loss_price
+                touched_stop = bar.low <= pos.stop_loss_price
+                touched_target = bar.high >= pos.take_profit_price
             else:
-                if bar.high >= pos.stop_loss_price:
-                    exit_price = max(bar.open, pos.stop_loss_price)
-                    exit_reason = "stop_loss"
-                elif bar.low <= pos.take_profit_price:
-                    exit_price = min(bar.open, pos.take_profit_price)
-                    exit_reason = "take_profit"
+                crossed_target = bar.open <= pos.take_profit_price
+                crossed_stop = bar.open >= pos.stop_loss_price
+                touched_stop = bar.high >= pos.stop_loss_price
+                touched_target = bar.low <= pos.take_profit_price
 
-            if exit_price is not None and exit_reason is not None:
-                fills.append(self._close_position(pos, exit_price, bar, bar_idx, exit_reason))
+            if crossed_target:
+                exit_price, exit_reason = bar.open, "take_profit"
+            elif crossed_stop:
+                exit_price, exit_reason = bar.open, "stop_loss"
+            elif touched_stop:
+                exit_price, exit_reason = pos.stop_loss_price, "stop_loss"
+            elif touched_target:
+                exit_price, exit_reason = pos.take_profit_price, "take_profit"
+            else:
+                continue
+            fills.append(self._close_position(pos, exit_price, bar, bar_idx, exit_reason))
         return fills
 
     def close_positions(self, targets: tuple[Position, ...], bar: Bar, bar_idx: int) -> list[Fill]:
