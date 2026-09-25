@@ -826,14 +826,16 @@ class MLStrategy(Strategy):
         if not path.exists():
             log.warning("No model at %s — MLStrategy stays HOLD", path)
             return
+        from ml_predictor import FEATURE_CONTRACT
+        cal_path = MODELS_DIR / f"{self.symbol}_lightgbm_latest.json"
+        meta = json.loads(cal_path.read_text()) if cal_path.exists() else {}
+        if meta.get("feature_contract") != FEATURE_CONTRACT:
+            log.warning("Model at %s was trained on another feature contract — MLStrategy stays HOLD", path)
+            return
         import lightgbm as lgb
         self.model = lgb.Booster(model_file=str(path))
-
-        cal_path = MODELS_DIR / f"{self.symbol}_lightgbm_latest.json"
-        if cal_path.exists():
-            meta = json.loads(cal_path.read_text())
-            self._platt_a = meta.get("platt_a")
-            self._platt_b = meta.get("platt_b")
+        self._platt_a = meta.get("platt_a")
+        self._platt_b = meta.get("platt_b")
 
     def init(self):
         self._load_model()

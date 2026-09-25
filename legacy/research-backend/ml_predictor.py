@@ -28,11 +28,13 @@ log = logging.getLogger("ml_predictor")
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # ── ml_toolkit integration ──
-from ml_toolkit import gmm_regime_detect as _gmm_regime, purged_kfold_splits as _purged_kfold
+from ml_toolkit import causal_gmm_regime_probs as _causal_gmm, purged_kfold_splits as _purged_kfold
 from runtime_paths import data_root
 
 HISTORICAL_DIR = data_root() / "memory" / "backtest" / "historical"
 MODELS_DIR = data_root() / "models"
+# Bump when generated features change meaning; models trained on another contract are refused.
+FEATURE_CONTRACT = "causal-gmm-v2"
 
 TRAIN_DAYS = 60
 TEST_DAYS = 7
@@ -128,23 +130,16 @@ def generate_features(df: pd.DataFrame) -> pd.DataFrame:
     else:
         feats["prediction_market_prob"] = 0.5  # neutral when no market data
 
-    # GMM regime detection — probabilistic regime feature from ml_toolkit
+    # GMM regime detection, causal: each row uses a mixture fitted only on the returns up to it
+    # (FEATURE_CONTRACT). Rows without enough history stay NaN and are dropped with the rest.
     ret_1h = feats["return_1h"].dropna()
     if len(ret_1h) >= 50:
-        try:
-            regime_result = _gmm_regime(ret_1h.values, n_components=3)
-            if regime_result.get("error") is None:
-                # Align regime probabilities with the feature index
-                reg_probs = regime_result["regime_probs"]  # (n_samples, n_components)
-                regime_df = pd.DataFrame(
-                    reg_probs,
-                    index=ret_1h.index,
-                    columns=[f"regime_prob_{i}" for i in range(reg_probs.shape[1])]
-                )
-                feats = feats.join(regime_df, how="left")
-                feats["regime_label"] = np.argmax(reg_probs, axis=1)
-        except Exception:
-            pass  # regime detection is optional; degrade gracefully
+        reg_probs = _causal_gmm(ret_1h.to_numpy(), n_components=3)
+        regime_df = pd.DataFrame(reg_probs, index=ret_1h.index,
+                                 columns=[f"regime_prob_{i}" for i in range(reg_probs.shape[1])])
+        regime_df["regime_label"] = regime_df.to_numpy().argmax(axis=1).astype(float)
+        regime_df.loc[regime_df.iloc[:, 0].isna(), "regime_label"] = np.nan
+        feats = feats.join(regime_df, how="left")
 
     # Targets: next 1h return
     feats["target_1h_return"] = ret_1h.shift(-1)
@@ -416,6 +411,7 @@ def train_ml_predictor(symbol: str = "BTC") -> tuple:
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "train_windows": window_count,
         "features": feature_cols,
+        "feature_contract": FEATURE_CONTRACT,
         "platt_a": platt_a,
         "platt_b": platt_b,
         "metrics": {
@@ -514,11 +510,11 @@ def load_model(symbol: str = "BTC") -> Optional[LGBMClassifier]:
         return None
 
     cal_path = MODELS_DIR / f"{symbol.lower()}_lightgbm_latest.json"
-    if cal_path.exists():
-        meta = json.loads(cal_path.read_text())
-        feature_cols = meta.get("features", [])
-    else:
-        feature_cols = []
+    meta = json.loads(cal_path.read_text()) if cal_path.exists() else {}
+    if meta.get("feature_contract") != FEATURE_CONTRACT:
+        log.warning("Model at %s was trained on another feature contract; retrain it", path)
+        return None
+    feature_cols = meta.get("features", [])
 
     model = LGBMClassifier()
     model.booster_ = None  # placeholder, loaded below
