@@ -540,3 +540,46 @@ def test_worker_helper_session_ref_action_round_trips_and_rejects_extra_fields(t
     assert checked_session_ref(session_ref_action(command)) == ref
     with pytest.raises(ValueError):
         session_ref_action(dict(command, credentials_directory='/run/anything'))
+
+
+@pytest.mark.parametrize('fault', [None, 'uid', 'source', 'run_id'])
+def test_root_note_read_binds_runtime_to_this_session_before_the_worker_helper(monkeypatch, fault):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from scripts import p3_local_controller as controller
+    import scripts.p3_local_host as host_module
+    import scripts.p3_local_transport as transport
+    import services.job_worker.p3_host_profile as profiles
+    import services.job_worker.p3_session as session_module
+    source = dict(commit_sha='2'*40, tree_sha='3'*40, closure_sha256='1'*64,
+                  closure_policy_sha256='0'*64, closure_schema_version='trading-agent-source-closure-v1')
+    identity = dict(issuer_kind='LOCAL', issuer_identity='synthetic', run_id='00000000-0000-4000-8000-000000000001',
+                    attempt=1, host_id='a'*64, boot_id='00000000-0000-4000-8000-000000000002')
+    class V2:
+        pass
+    host = V2()
+    host.image = SimpleNamespace(worker_uid=980, worker_gid=980)
+    host.output_root, host.store_root, host.job_id = '/w/out', '/w/cas', 'job_parity'
+    request = SimpleNamespace(authorization=SimpleNamespace(identity=SimpleNamespace(model_dump=lambda **_: identity)),
+                              execution_source=SimpleNamespace(model_dump=lambda **_: source))
+    runtime = dict(uid=980, identity=dict(identity), source=dict(source), expires_at=None,
+                   application_root='/app', application_python='/app/python')
+    if fault == 'uid': runtime['uid'] = 981
+    if fault == 'source': runtime['source'] = {**source, 'commit_sha': '9'*40}
+    if fault == 'run_id': runtime['identity'] = {**identity, 'run_id': '00000000-0000-4000-8000-000000000009'}
+    calls = []
+    ref = {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'application/json'}
+    monkeypatch.setattr(profiles, 'LocalOfficialHostProfileV2', V2)
+    monkeypatch.setattr(controller, '_session_context', lambda path: (request, Path('/run/session'), host, None))
+    monkeypatch.setattr(controller, '_protected_model', lambda path, model: SimpleNamespace(worker_uid=980))
+    monkeypatch.setattr(transport, '_runtime_authority', lambda value: runtime)
+    monkeypatch.setattr(transport, '_official_deadline', lambda bound, expires: bound)
+    monkeypatch.setattr(host_module, 'as_worker', lambda *args: calls.append(args) or ref)
+    monkeypatch.setattr(session_module, 'LocalSessionLaunch', object)
+    if fault is None:
+        assert controller.read_session_ref('/request.json', 'NATIVE_COMMITMENT')['ref'].locator == ref['locator']
+        assert len(calls) == 1
+    else:
+        with pytest.raises(ValueError):
+            controller.read_session_ref('/request.json', 'NATIVE_COMMITMENT')
+        assert calls == []

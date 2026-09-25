@@ -526,7 +526,10 @@ def read_session_ref(request_path, kind):
         raise ValueError('session note reader requires a LOCAL v2 host profile')
     launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
     runtime = _runtime_authority(dict(identity=request.authorization.identity.model_dump(mode='json')))
-    if runtime['uid'] != launch.worker_uid or runtime['uid'] != host.image.worker_uid:
+    # Same runtime binding as owner_database_settings: this session's UID, run identity and source.
+    if (runtime['uid'] != launch.worker_uid or runtime['uid'] != host.image.worker_uid
+        or runtime['identity'] != request.authorization.identity.model_dump(mode='json')
+        or runtime['source'] != request.execution_source.model_dump(mode='json')):
         raise ValueError('session note reader runtime identity differs')
     deadline = _official_deadline(time.monotonic()+60, runtime.get('expires_at'))
     environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
