@@ -128,8 +128,10 @@ class DataHandler:
         """
         start_ts = pd.Timestamp(self.start, tz="UTC")
         end_ts = pd.Timestamp(self.end, tz="UTC") + pd.Timedelta(days=1)
-        index = df.index if df.index.tz is not None else df.index.tz_localize("UTC")
-        return df[(index >= start_ts) & (index < end_ts)]
+        index = pd.DatetimeIndex(df.index)
+        if index.tz is None:
+            index = index.tz_localize("UTC")
+        return df.loc[(index >= start_ts) & (index < end_ts)]
 
     def load(self) -> Optional[pd.DataFrame]:
         cache_file = CACHE_DIR / f"{self.symbol.replace('/', '_')}_{self.start}_{self.end}_{self.timeframe}.csv"
@@ -855,7 +857,8 @@ class MLStrategy(Strategy):
         try:
             # A binary LightGBM Booster returns probabilities by default (raw_score=False),
             # and Platt calibration is fitted on the logit of those same probabilities.
-            up_prob = float(self.model.predict(row.values.reshape(1, -1))[0])
+            prediction = np.asarray(self.model.predict(row.values.reshape(1, -1)), dtype=float)
+            up_prob = float(prediction.reshape(-1)[0])
             if not 0.0 <= up_prob <= 1.0:
                 raise ValueError("model output is not a probability")
 
