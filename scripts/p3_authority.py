@@ -98,7 +98,8 @@ def _request_json(method: str, path: str, token: str, body: object | None = None
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=10) as response:
+        # Enqueue commits before it answers; a cold first request exceeded 10 s and lost the ACK.
+        with urlopen(request, timeout=60 if method == "POST" else 10) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, TimeoutError) as error:
         raise RuntimeError("HELD E_JOB_API: loopback Job API request failed") from error

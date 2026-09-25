@@ -359,3 +359,29 @@ def test_fixture_worker_rejects_replayed_enqueue_before_credentials(dispatch_fix
     monkeypatch.setattr(main,'WorkerRepository',forbidden)
     with pytest.raises(AuthorityHeld,match='ISSUER'):
         main.main()
+
+
+def test_enqueue_post_waits_longer_than_detail_polls(monkeypatch):
+    # A slow first enqueue on a cold Job API lost the committed ACK twice at 10 s.
+    from scripts import p3_authority as command
+
+    seen = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, size):
+            return b'{}'
+
+    def urlopen(request, timeout):
+        seen[request.get_method()] = timeout
+        return Response()
+
+    monkeypatch.setattr(command, 'urlopen', urlopen)
+    command._request_json('POST', '/v1/jobs', 'synthetic-token', {})
+    command._request_json('GET', '/v1/jobs/job_x', 'synthetic-token')
+    assert seen == {'POST': 60, 'GET': 10}

@@ -67,6 +67,9 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = {"broker": False, "live": False, "network": False, "production": False}
 P1_QUALIFICATION_OPERATION = "p2-security-master-runtime-green-v1"
 _P2_FIXTURE_VALIDITY = timedelta(hours=2)
+# One LOCAL qualification must cover integration, producers and the whole R06 campaign;
+# every receipt binds the run identity, so a mid-campaign renewal restarts the chain.
+LOCAL_RECEIPT_VALIDITY = timedelta(hours=8)
 _P2_FIXTURE_PORT = 49152
 _P1_EXTERNAL_OUTCOMES = {
     "EXT-DISPOSABLE-PG-GREEN": "DEFERRED",
@@ -744,7 +747,7 @@ def produce_local_gate(identity, binding, store, *, retained=()):
                 version=_run(str(binary),'--version').strip(),binary_sha256=_sha(binary),
                 source=binding.source.model_dump(mode='json')))),)
     completed = datetime.now(timezone.utc)
-    expires = min([started+timedelta(hours=24),completed+timedelta(hours=2),
+    expires = min([started+timedelta(hours=24),completed+LOCAL_RECEIPT_VALIDITY,
         *(receipt.expires_at for receipt in dependencies)])
     value = dict(schema_version='local-phase-qualification-receipt-v1',identity=identity,binding=binding,
         started_at=started.isoformat().replace('+00:00','Z'),completed_at=completed.isoformat().replace('+00:00','Z'),
@@ -1459,7 +1462,7 @@ def main(arguments: list[str] | None = None) -> int:
                     completed=datetime.now(timezone.utc)
                     value=dict(schema_version='local-phase-qualification-receipt-v1',identity=profile.identity,binding=binding,
                         started_at=started.isoformat().replace('+00:00','Z'),completed_at=completed.isoformat().replace('+00:00','Z'),
-                        expires_at=min(completed+timedelta(hours=2),ready.expires_at).isoformat().replace('+00:00','Z'),
+                        expires_at=min(completed+LOCAL_RECEIPT_VALIDITY,ready.expires_at).isoformat().replace('+00:00','Z'),
                         evidence_refs=(profile.phase_receipt_ref,),status='PASS',authority=AUTHORITY)
                     value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
                     # PASS qualifies readback integrity; economic outcome stays in the referenced receipt.
