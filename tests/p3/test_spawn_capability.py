@@ -468,6 +468,79 @@ print('projected official owners imported')
     assert result.stdout=='projected official owners imported\n'
 
 
+# Function-level first-party imports that leave the projection. Each is reached only on the host (protected
+# authority and qualification reads, research producers and backups, status derivation, the native session and
+# SQL fixtures), never by the sandboxed driver. A new entry needs the same argument, not just a listing.
+_HOST_ONLY_PROJECTION_IMPORTS = frozenset({
+    ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.local_qualification'),
+    ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.local_research'),
+    ('packages/alpha_lifecycle/authority.py', 'packages.local_pre_p3'),
+    ('packages/alpha_lifecycle/authority.py', 'packages.project_status'),
+    ('packages/alpha_lifecycle/parity.py', 'packages.alpha_lifecycle.native_request'),
+    ('packages/alpha_lifecycle/pit_evidence.py', 'packages.alpha_lifecycle.acquisition'),
+    ('packages/alpha_lifecycle/research_custody.py', 'packages.alpha_lifecycle.acquisition'),
+    ('packages/hwc_status.py', 'packages.alpha_lifecycle.local_qualification'),
+    ('packages/p3_status.py', 'packages.alpha_lifecycle.local_qualification'),
+    ('packages/p3_status.py', 'packages.local_pre_p3'),
+    ('services/job_worker/p3_fixture_sql.py', 'services.job_store.p3_catalog'),
+    ('services/job_worker/p3_native_runner.py', 'packages.alpha_lifecycle.native_request'),
+})
+
+
+def test_projected_driver_function_imports_stay_inside_projection():
+    """Top-level import probes miss imports inside functions; one of those failed OOS in the sandbox (R06)."""
+    import ast
+    import json
+    root=Path(__file__).resolve().parents[2]
+    paths=set(json.loads((root/'docs/implementation/p3/p3-driver-files-v1.json').read_bytes())['paths'])
+
+    def inside(module):
+        relative=module.replace('.','/')
+        return relative+'.py' in paths or relative+'/__init__.py' in paths
+
+    escaped=set()
+    for relative in sorted(p for p in paths if p.endswith('.py')):
+        for node in ast.walk(ast.parse((root/relative).read_text())):
+            if isinstance(node,ast.ImportFrom) and node.level==0 and node.module:
+                modules=[node.module]
+            elif isinstance(node,ast.Import):
+                modules=[alias.name for alias in node.names]
+            else:
+                continue
+            escaped|={(relative,module) for module in modules
+                      if module.split('.')[0] in {'apps','packages','scripts','services'} and not inside(module)}
+    assert escaped==_HOST_ONLY_PROJECTION_IMPORTS
+
+
+def test_projected_pit_suite_validator_reaches_its_store(tmp_path):
+    """OOS qualification validates the PIT suite receipt inside the sandbox projection."""
+    import json
+    import subprocess
+    import sys
+    root=Path(__file__).resolve().parents[2]
+    for relative in json.loads((root/'docs/implementation/p3/p3-driver-files-v1.json').read_bytes())['paths']:
+        target=tmp_path/relative
+        target.parent.mkdir(parents=True,exist_ok=True)
+        target.write_bytes((root/relative).read_bytes())
+    probe="""import sys
+sys.path.insert(0,sys.argv[1])
+from packages.alpha_lifecycle.pit_suite import validate_pit_suite_receipt
+from packages.data_contracts import ArtifactRefV1
+class Empty:
+    def read_bytes(self, ref):
+        raise LookupError('reached the store')
+ref=ArtifactRefV1(content_sha256='a'*64,size_bytes=10,media_type='application/json',locator='a'*64+'.blob')
+try:
+    validate_pit_suite_receipt(ref,source=None,store=Empty())
+except LookupError as error:
+    print(error)
+"""
+    result=subprocess.run([sys.executable,'-I','-B','-c',probe,str(tmp_path)],cwd=tmp_path,
+        capture_output=True,text=True,timeout=30,check=False)
+    assert result.returncode==0,result.stderr
+    assert result.stdout=='reached the store\n'
+
+
 @pytest.mark.parametrize('fault', ['closure', 'transport'])
 def test_replica_fence_rechecks_consumed_profile_and_transport(synthetic_provider, fault):
     from services.job_worker.p3_spawn import consume_prepared_p3_spawn

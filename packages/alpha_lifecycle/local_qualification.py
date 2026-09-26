@@ -18,7 +18,7 @@ from packages.alpha_lifecycle.contracts.authority import (
     QualificationBinding,
     QualificationReceipt,
 )
-from packages.alpha_lifecycle.pit_evidence import _reference
+from packages.alpha_lifecycle.pit_evidence import _read_evidence, _reference
 from packages.alpha_lifecycle.replica_store import ArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -73,14 +73,6 @@ def _host_identity() -> tuple[str, UUID]:
     if str(boot_id) != boot or boot_id.int == 0:
         raise ValueError('local boot identity is invalid')
     return hashlib.sha256(machine).hexdigest(), boot_id
-
-
-def _read_evidence(store: ArtifactStore, ref: ArtifactRefV1) -> bytes:
-    _reference(ref, 131072, media=ref.media_type)
-    raw = store.read_bytes(ref)
-    if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.content_sha256:
-        raise ValueError('qualification evidence bytes differ from their reference')
-    return raw
 
 
 def validate_local_qualification(

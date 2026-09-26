@@ -139,7 +139,7 @@ def build_pit_suite_receipt(source, suite_manifest_ref, collection_ref, report_r
 def validate_pit_suite_receipt(ref: ArtifactRefV1, *, source: SourceIdentity,
     store: ArtifactStore) -> PITAdversarialSuiteReceiptV1 | PITAdversarialSuiteReceiptV2:
     _json_ref(ref, 65536)
-    from packages.alpha_lifecycle.local_qualification import _read_evidence
+    from packages.alpha_lifecycle.pit_evidence import _read_evidence
     raw = _read_evidence(store, ref)
     # Resolve the version by enumeration. Selecting V2 on an exact string match and
     # falling through to V1 picks the wrong model for any other schema, so the failure
