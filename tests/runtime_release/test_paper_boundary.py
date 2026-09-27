@@ -663,6 +663,9 @@ def test_paper_application_projection_is_exact_and_rejects_injected_file(
     expected = {artifact for artifact, _ in PAPER_APPLICATION_SOURCE_MAPPING}
     assert _files(destination) == expected
     inspect_paper_application_artifact(destination)
+    # The paper application enforces the same K1 staging window as the core loader.
+    staging = "packages/runtime_release/staging_v2.py"
+    assert (destination / staging).read_bytes() == (REPOSITORY_SOURCE / staging).read_bytes()
 
     injected = destination / "apps/control_api/trading_control/migrate.py"
     injected.parent.mkdir(parents=True)
