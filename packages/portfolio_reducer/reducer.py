@@ -92,6 +92,11 @@ def _rounded_decimal(value: Fraction, precision: int, *, field: str) -> Decimal:
     )
 
 
+def _negated(value: Decimal) -> Decimal:
+    """Exact negation, independent of the ambient Decimal context (CR01); zero keeps its sign."""
+    return value.copy_negate() if value else value
+
+
 def _sum(*values: Decimal, field: str) -> Decimal:
     return _decimal(sum((_fraction(value) for value in values), Fraction(0)), field=field)
 
@@ -460,7 +465,7 @@ def _fill_accounting(
     basis_before: Fraction,
 ) -> tuple[Decimal, Decimal, Price | None, Fraction, Decimal, Fraction]:
     definition = fill.instrument_definition
-    signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
+    signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else _negated(fill.quantity.value)
     residual = _sum(current, signed_fill, field="position quantity")
     current_fraction = _fraction(current)
     signed_fraction = _fraction(signed_fill)
@@ -561,11 +566,11 @@ def _fill_effect(
             definition.settlement_currency.precision,
             field="realized PnL",
         ),
-        -_rounded_decimal(
+        _negated(_rounded_decimal(
             realized_before,
             definition.settlement_currency.precision,
             field="realized PnL",
-        ),
+        )),
         field="realized PnL delta",
     )
     next_quantity = _quantity(residual, fill.quantity.precision)
@@ -649,11 +654,11 @@ def validate_execution_effect(
             settlement.precision,
             field="realized PnL",
         ),
-        -_rounded_decimal(
+        _negated(_rounded_decimal(
             realized_before,
             settlement.precision,
             field="realized PnL",
-        ),
+        )),
         field="realized PnL delta",
     )
     expected_realized = (
@@ -772,7 +777,7 @@ def _with_effect(
     ) or _new_position(effect.entry, effect.fill)
     unrealized_delta = _sum(
         applied_position.unrealized_pnl.amount,
-        -previous_position.unrealized_pnl.amount,
+        _negated(previous_position.unrealized_pnl.amount),
         field="balance unrealized PnL delta",
     )
     snapshot = PortfolioWorkingSnapshot(
@@ -843,7 +848,7 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
     position = _find_position(state, effect.strategy_id, effect.fill.instrument_definition.instrument_id.canonical)
     if position is None:
         raise PortfolioReplayError("active normal execution has no position to reverse")
-    next_quantity = _sum(position.quantity.value, -effect.quantity_delta.value, field="reversed position quantity")
+    next_quantity = _sum(position.quantity.value, _negated(effect.quantity_delta.value), field="reversed position quantity")
     next_quantity_value = _quantity(next_quantity, position.quantity.precision)
     remaining_effects = tuple(
         item
@@ -871,25 +876,25 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
         quantity=next_quantity_value,
         mark=next_mark,
         average_entry_price=effect.average_before,
-        realized_pnl=_money(_sum(position.realized_pnl.amount, -effect.realized_pnl_delta.amount, field="reversed realized PnL"), position.settlement_currency, field="reversed realized PnL"),
+        realized_pnl=_money(_sum(position.realized_pnl.amount, _negated(effect.realized_pnl_delta.amount), field="reversed realized PnL"), position.settlement_currency, field="reversed realized PnL"),
         unrealized_pnl=next_unrealized,
-        fees=_money(_sum(position.fees.amount, -effect.fees_delta.amount, field="reversed fees"), position.settlement_currency, field="reversed fees"),
+        fees=_money(_sum(position.fees.amount, _negated(effect.fees_delta.amount), field="reversed fees"), position.settlement_currency, field="reversed fees"),
         funding=position.funding,
         observed_at=observed_at,
         schema_version=position.schema_version,
     )
-    reverse_cash = tuple(_money(-delta.amount, delta.currency, field="reversed cash") for delta in effect.cash_deltas)
+    reverse_cash = tuple(_money(_negated(delta.amount), delta.currency, field="reversed cash") for delta in effect.cash_deltas)
     reverse_realized_pnl = tuple(
-        _money(-delta.amount, delta.currency, field="reversed balance realized PnL")
+        _money(_negated(delta.amount), delta.currency, field="reversed balance realized PnL")
         for delta in effect.balance_realized_pnl_deltas
     )
     reverse_fees = tuple(
-        _money(-delta.amount, delta.currency, field="reversed balance fees")
+        _money(_negated(delta.amount), delta.currency, field="reversed balance fees")
         for delta in effect.balance_fee_deltas
     )
     unrealized_delta = _sum(
         next_position.unrealized_pnl.amount,
-        -position.unrealized_pnl.amount,
+        _negated(position.unrealized_pnl.amount),
         field="reversed balance unrealized PnL",
     )
     return PortfolioWorkingSnapshot(
@@ -1100,7 +1105,7 @@ def _apply_mark(
         )
         unrealized_delta = _sum(
             next_unrealized.amount,
-            -position.unrealized_pnl.amount,
+            _negated(position.unrealized_pnl.amount),
             field="balance unrealized PnL delta",
         )
         unrealized_by_currency[position.settlement_currency] = _sum(
@@ -1232,7 +1237,7 @@ def _apply_conversion(
     if source.cash.amount < conversion.source.amount:
         raise PortfolioReplayError("insufficient source cash for conversion")
     by_currency[source.currency] = _updated_balance(
-        source, cash_delta=-conversion.source.amount, observed_at=entry.effective_at
+        source, cash_delta=_negated(conversion.source.amount), observed_at=entry.effective_at
     )
     by_currency[target.currency] = _updated_balance(
         target, cash_delta=conversion.target.amount, observed_at=entry.effective_at
@@ -1467,13 +1472,13 @@ def derive_account_snapshot(
             state, position.settlement_currency, reporting, observed_at=observed_at
         )
         notional = _product(
-            abs(position.quantity.value),
+            position.quantity.value.copy_abs(),
             position.mark.price.amount,
             position.instrument_definition.multiplier,
             rate,
             field="marked exposure",
         )
-        signed = notional if position.quantity.value > 0 else -notional
+        signed = notional if position.quantity.value > 0 else _negated(notional)
         for amounts, key, field in (
             (instrument_amounts, position.instrument, "instrument exposure"),
             (strategy_amounts, position.strategy_id, "strategy exposure"),

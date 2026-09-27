@@ -381,6 +381,11 @@ def _market_rows(inputs: object) -> dict[str, dict[str, object]]:
     return rows
 
 
+def _settled_cash(cash: Decimal, side: str, quantity: Decimal, price: Decimal, fee: Decimal, quantum: Decimal) -> Decimal:
+    """CR02 (callers hold prec 96): settle one fill's net delta once, HALF_EVEN, then add it exactly to the balance."""
+    return cash + (((quantity * price).copy_negate() if side == "BUY" else quantity * price) - fee).quantize(quantum, rounding=ROUND_HALF_EVEN)
+
+
 def _validate_business_facts(
     inputs: object,
     run: object,
@@ -563,17 +568,13 @@ def _validate_business_facts(
                             position * average + quantity * price
                         ) / new_position
                         position = new_position
-                        cash = (cash - quantity * price - commission).quantize(
-                            quote_quantum, rounding=ROUND_HALF_EVEN
-                        )
+                        cash = _settled_cash(cash, "BUY", quantity, price, commission, quote_quantum)
                     elif fill["side"] == "SELL":
                         realized += (price - average) * quantity
                         position = (position - quantity).quantize(
                             base_quantum, rounding=ROUND_HALF_EVEN
                         )
-                        cash = (cash + quantity * price - commission).quantize(
-                            quote_quantum, rounding=ROUND_HALF_EVEN
-                        )
+                        cash = _settled_cash(cash, "SELL", quantity, price, commission, quote_quantum)
                         if position == 0:
                             average = Decimal(0)
                     else:

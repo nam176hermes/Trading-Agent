@@ -592,3 +592,45 @@ def test_derived_snapshot_retains_reconciled_flat_position_accounting() -> None:
     assert canonical.positions == (zero_position,)
     assert canonical.total_exposure.gross.amount == Decimal("0")
     assert canonical.instrument_exposures == ()
+
+
+# CR01: exposure and conversion arithmetic must not depend on the ambient Decimal context.
+import decimal  # noqa: E402
+
+CONTEXTS = pytest.mark.parametrize("context", [
+    decimal.Context(prec=2),
+    decimal.Context(prec=28),
+    decimal.Context(prec=80),
+    decimal.Context(prec=28, traps=[decimal.InvalidOperation, decimal.DivisionByZero, decimal.Overflow,
+                                    decimal.Rounded, decimal.Inexact]),
+], ids=["prec2", "prec28", "prec80", "prec28-traps"])
+
+
+@CONTEXTS
+def test_marked_short_exposure_is_context_independent(context: decimal.Context) -> None:
+    events = (opening(), fill(number=2, execution=20, side=OrderSide.SELL, quantity="1.23", price="100"),
+              mark(number=3, price="100"))
+    with decimal.localcontext(context):
+        snapshot = derive_account_snapshot(reduce_portfolio_events(events), observed_at=NOW + timedelta(seconds=3))
+
+    assert snapshot.total_exposure.gross.amount == Decimal("123")
+    assert snapshot.total_exposure.net.amount == Decimal("-123")
+    assert snapshot.model_dump_json() == derive_account_snapshot(
+        reduce_portfolio_events(events), observed_at=NOW + timedelta(seconds=3)).model_dump_json()
+
+
+@CONTEXTS
+def test_conversion_debit_is_context_independent(context: decimal.Context) -> None:
+    conversion = envelope(
+        PortfolioConversionEntry(
+            account_id="account-1",
+            conversion=CurrencyConversion(money("123.45"), Currency.USDT, Decimal("2"), money("246.9", Currency.USDT)),
+            provenance_id="conversion-v1", effective_at=NOW, schema_version="portfolio-entry-v1",
+        ), number=2,
+    )
+    events = (opening(currencies=((Currency.USD, "1000"), (Currency.USDT, "0"))), conversion)
+    with decimal.localcontext(context):
+        state = reduce_portfolio_events(events)
+
+    assert [item.cash.amount for item in state.snapshot.balances] == [Decimal("876.55"), Decimal("246.9")]
+    assert state.model_dump_json() == reduce_portfolio_events(events).model_dump_json()

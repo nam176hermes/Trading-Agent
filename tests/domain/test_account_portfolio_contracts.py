@@ -541,3 +541,14 @@ def test_account_portfolio_sequences_accept_only_tuples(field: str) -> None:
 
     with pytest.raises(ValidationError):
         account_portfolio(**{field: list(getattr(snapshot, field))})
+
+
+# CR01: gross must cover |net| exactly, whatever the ambient Decimal context.
+@pytest.mark.parametrize("precision", [2, 28, 80])
+def test_exposure_cannot_hide_net_via_decimal_context(precision: int) -> None:
+    import decimal
+
+    with decimal.localcontext(decimal.Context(prec=precision)):
+        with pytest.raises(ValueError, match="absolute net"):
+            exposure(gross=money("1.20"), net=money("-1.23"))
+        assert exposure(gross=money("1.23"), net=money("-1.23")).gross.amount == Decimal("1.23")
