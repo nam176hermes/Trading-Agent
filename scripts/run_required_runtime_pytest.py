@@ -17,6 +17,11 @@ class _RequiredRuntimePlugin:
         if report.skipped:
             self.skipped.add(report.nodeid)
 
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        # A module-level skip never reaches runtest reports (CT20).
+        if report.skipped:
+            self.skipped.add(report.nodeid)
+
 
 def main(argv: Iterable[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)

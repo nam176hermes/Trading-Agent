@@ -1355,3 +1355,105 @@ def test_p3_separate_runtime_tests_have_exact_portable_deselection_records(tmp_p
     scoped = [row for row in entries if row['test_node_id'].split('::')[0] in paths]
     compare_inventory(observed, scoped)
     assert {row['reason_category'] for row in scoped} == {'DISPOSABLE_POSTGRES_REQUIRED', 'MISSING_HOST_CAPABILITY'}
+
+
+# QG01: a dashboard child killed by a signal after printing passing TAP must never yield an accepted aggregate.
+_REAL_RUN = subprocess.run
+_PASSING_TAP = "TAP version 13\n# Subtest: seen\nok 1 - seen\n1..1\n"
+
+
+def _real_child(command, *, exit_code: int, tap: str = _PASSING_TAP):
+    """Run a real Python child owned by the test: print TAP, then exit or kill itself with SIGTERM (-15)."""
+    ending = "os.kill(os.getpid(), signal.SIGTERM)" if exit_code == -15 else f"sys.exit({exit_code})"
+    child = _REAL_RUN(
+        [sys.executable, "-c", f"import os, signal, sys\nsys.stdout.write({tap!r})\nsys.stdout.flush()\n{ending}"],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    assert child.returncode == exit_code
+    return subprocess.CompletedProcess(command, child.returncode, stdout=child.stdout)
+
+
+def _dashboard_tree(tmp_path: Path, node: list[str], integration: list[str]) -> Path:
+    tests = tmp_path / "apps" / "dashboard" / "tests"
+    tests.mkdir(parents=True)
+    for name in (*node, *integration):
+        (tests.parent / name).write_text("", encoding="utf-8")
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir(mode=0o700)
+    return report_dir
+
+
+def _governance_run(tmp_path, monkeypatch, node_codes: dict[str, int], integration_codes: dict[str, int],
+                    tap: dict[str, str] | None = None):
+    # The canonical inventory requires both lists non-empty and sorted: add a passing integration peer if none.
+    integration_codes = integration_codes or {"tests/ok.integration.sh": 0}
+    report_dir = _dashboard_tree(tmp_path, sorted(node_codes), sorted(integration_codes))
+
+    def fake_run(command, **kwargs):
+        if "--list-json" in command:
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({
+                "schema_version": 1, "node_tests": sorted(node_codes), "integration_tests": sorted(integration_codes)}))
+        name = command[-1]
+        codes = node_codes if command[0] == "node" else integration_codes
+        return _real_child(command, exit_code=codes[name], tap=(tap or {}).get(name, _PASSING_TAP))
+
+    monkeypatch.setattr(test_governance, "ROOT", tmp_path)
+    monkeypatch.setattr(test_governance.subprocess, "run", fake_run)
+    exit_status, report_path = test_governance._run_dashboard(report_dir)
+    return exit_status, json.loads(report_path.read_text(encoding="utf-8"))
+
+
+def test_dashboard_signal_exit_cannot_pass_with_valid_tap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exit_status, report = _governance_run(tmp_path, monkeypatch, {"tests/killed.test.mjs": -15}, {})
+
+    assert exit_status > 0
+    assert report["node_exit_statuses"] == {"tests/killed.test.mjs": -15}      # raw status kept as evidence
+    assert report["node_exit_status"] > 0
+
+
+def test_dashboard_integration_signal_exit_is_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    exit_status, report = _governance_run(
+        tmp_path, monkeypatch, {"tests/seen.test.mjs": 0}, {"tests/killed.integration.sh": -15})
+
+    assert exit_status > 0
+    assert report["integration_exit_statuses"] == {"tests/killed.integration.sh": -15}
+    assert report["integration_exit_status"] > 0
+
+
+@pytest.mark.parametrize(("codes", "tap", "accepted"), [
+    ({"tests/a.test.mjs": 0, "tests/b.test.mjs": 0}, {}, True),
+    ({"tests/a.test.mjs": 0, "tests/b.test.mjs": 2}, {}, False),
+    ({"tests/a.test.mjs": 0, "tests/b.test.mjs": 0}, {"tests/b.test.mjs": "TAP version 13\n1..0\n"}, False),
+])
+def test_dashboard_exit_controls(tmp_path, monkeypatch, codes, tap, accepted) -> None:
+    exit_status, _ = _governance_run(tmp_path, monkeypatch, codes, {}, tap)
+
+    assert (exit_status == 0) is accepted and exit_status >= 0
+
+
+@pytest.mark.parametrize("order", [("tests/pass.test.mjs", "tests/killed.test.mjs"),
+                                   ("tests/killed.test.mjs", "tests/pass.test.mjs")])
+def test_critical_dashboard_signal_exit_cannot_pass_with_passing_peer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: tuple[str, str],
+) -> None:
+    codes = {"tests/pass.test.mjs": 0, "tests/killed.test.mjs": -15}
+    monkeypatch.setattr(critical_coverage.subprocess, "run",
+                        lambda command, **kwargs: _real_child(command, exit_code=codes[command[-1]]))
+    with TemporaryDirectory(dir="/tmp") as temporary_directory:
+        exit_status, report_path = critical_coverage._run_dashboard_observations(
+            tmp_path, list(order), Path(temporary_directory), {})
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert exit_status > 0
+    assert report["exit_codes"] == codes
+
+
+def test_critical_dashboard_exit_controls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for codes, accepted in (({"tests/a.test.mjs": 0, "tests/b.test.mjs": 0}, True),
+                            ({"tests/a.test.mjs": 0, "tests/b.test.mjs": 2}, False)):
+        monkeypatch.setattr(critical_coverage.subprocess, "run",
+                            lambda command, codes=codes, **kwargs: _real_child(command, exit_code=codes[command[-1]]))
+        with TemporaryDirectory(dir="/tmp") as temporary_directory:
+            exit_status, _ = critical_coverage._run_dashboard_observations(
+                tmp_path, list(codes), Path(temporary_directory), {})
+        assert (exit_status == 0) is accepted and exit_status >= 0

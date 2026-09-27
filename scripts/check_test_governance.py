@@ -733,6 +733,11 @@ def _load_dashboard_inventory(
     )
 
 
+def _failure_status(*codes: int) -> int:
+    """0 only when every child exited 0; a signal (negative) status is a failure, never 0 (QG01)."""
+    return max((code if code > 0 else 1 for code in codes if code != 0), default=0)
+
+
 def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
     dashboard = ROOT / "apps/dashboard"
     dashboard_env = {
@@ -747,6 +752,7 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
     records: list[dict[str, object]] = []
     outputs: list[str] = []
     node_exit_status = 0
+    node_exit_statuses: dict[str, int] = {}
     for path in test_files:
         test_file = str(path.relative_to(dashboard))
         result = subprocess.run(
@@ -774,7 +780,8 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
             )
             node_exit_status = max(node_exit_status, 1)
         records.extend(file_records)
-        node_exit_status = max(node_exit_status, result.returncode)
+        node_exit_statuses[test_file] = result.returncode
+        node_exit_status = _failure_status(node_exit_status, result.returncode)
     if not test_files and not integration_files:
         records.append(
             {
@@ -814,7 +821,7 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
             }
         )
     _write_bytes(log_path, "".join(outputs).encode("utf-8"))
-    integration_exit_status = max(integration_exit_statuses.values(), default=0)
+    integration_exit_status = _failure_status(*integration_exit_statuses.values())
 
     counts: dict[str, int] = {}
     for record in records:
@@ -826,6 +833,7 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
             "schema_version": 1,
             "component": "dashboard",
             "node_exit_status": node_exit_status,
+            "node_exit_statuses": node_exit_statuses,
             "integration_exit_status": integration_exit_status,
             "integration_exit_statuses": integration_exit_statuses,
             "summary": counts,
