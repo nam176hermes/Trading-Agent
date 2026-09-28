@@ -24,6 +24,12 @@ RUN_ID = UUID("70000000-0000-4000-8000-000000000009")
 AUTHORITY = ("a" * 64, "b" * 64, UUID("80000000-0000-4000-8000-000000000001"))
 
 
+_CATALOG_ROWS = {                                        # the diagnostics' multi-column catalog reads
+    "p.prosrc": ("BEGIN RETURN; END;", "trading_owner", None, None, True, "v", "u", "", "TABLE(x uuid)"),
+    "pg_constraint": ("engine_run_projections_pkey", "PRIMARY KEY (engine_run_id)"),
+}
+
+
 def _ambiguous() -> EngineEventConflictError:
     try:
         raise psycopg.errors.AmbiguousColumn('column reference "engine_run_id" is ambiguous')
@@ -126,13 +132,17 @@ def test_diagnostics_read_scalars_on_a_dict_row_connection() -> None:
     def value_for(query: str) -> str:
         return next(value for key, value in values.items() if key in query)
 
+    def row_for(query: str) -> tuple:
+        key = next((key for key in _CATALOG_ROWS if key in query), None)
+        return _CATALOG_ROWS[key] if key is not None else (value_for(query),)
+
     class DictRowConnection:                              # the proof opens its connections with dict_row
         def execute(self, query, *_args):
             return SimpleNamespace(fetchone=lambda: {"column": value_for(query)})
 
         def cursor(self, *, row_factory):
             assert row_factory is psycopg.rows.tuple_row
-            return SimpleNamespace(execute=lambda query, *_a: SimpleNamespace(fetchone=lambda: (value_for(query),)))
+            return SimpleNamespace(execute=lambda query, *_a: SimpleNamespace(fetchone=lambda: row_for(query)))
 
     result = proof._diagnostics(DictRowConnection())
 
@@ -324,11 +334,47 @@ def test_diagnostics_load_plpgsql_before_reading_its_setting() -> None:
         executed.append(query)
         if "variable_conflict" in query and not any(item.lstrip().upper().startswith("DO ") for item in executed):
             raise psycopg.errors.UndefinedObject('unrecognized configuration parameter "plpgsql.variable_conflict"')
+        catalog = next((row for key, row in _CATALOG_ROWS.items() if key in query), None)
         value = next((value for key, value in values.items() if key in query), None)
-        return SimpleNamespace(fetchone=lambda: (value,))
+        return SimpleNamespace(fetchone=lambda: catalog or (value,))
 
     class Connection:
         def cursor(self, *, row_factory):
             return SimpleNamespace(execute=execute)
 
     assert proof._diagnostics(Connection())["plpgsql_variable_conflict"] == "error"
+
+
+
+def test_diagnostics_capture_the_catalog_inputs_a_guarded_rotation_binds() -> None:
+    """R5: pg_get_functiondef alone is not the rotation guard; record prosrc and the function/constraint catalog."""
+    import hashlib
+
+    prosrc = "\nBEGIN\n  RETURN;\nEND;\n"
+    rows = {
+        "pg_get_functiondef": ("CREATE FUNCTION stub()",),
+        "alembic_version": ("0032_p3_enqueue_freshness",),
+        "server_version": ("16.15",),
+        "variable_conflict": ("error",),
+        "p.prosrc": (prosrc, "trading_owner", "{trading_owner=X/trading_owner}", "{search_path=pg_catalog}",
+                     True, "v", "u", "", "TABLE(engine_run_id uuid)"),
+        "pg_constraint": ("engine_run_projections_pkey", "PRIMARY KEY (engine_run_id)"),
+    }
+
+    def execute(query, *_args):
+        row = next((value for key, value in rows.items() if key in query), (None,))
+        return SimpleNamespace(fetchone=lambda: row)
+
+    class Connection:
+        def cursor(self, *, row_factory):
+            return SimpleNamespace(execute=execute)
+
+    result = proof._diagnostics(Connection())
+    assert result["function_prosrc_sha256"] == hashlib.sha256(prosrc.encode()).hexdigest()
+    assert result["function_catalog"] == {
+        "owner": "trading_owner", "acl": "{trading_owner=X/trading_owner}", "config": "{search_path=pg_catalog}",
+        "security_definer": True, "volatility": "v", "parallel": "u", "identity_arguments": "",
+        "result": "TABLE(engine_run_id uuid)",
+    }
+    assert result["projection_primary_key"] == {"name": "engine_run_projections_pkey",
+                                                "definition": "PRIMARY KEY (engine_run_id)"}

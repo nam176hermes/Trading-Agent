@@ -62,6 +62,7 @@ EXPECTED_OPERATION_BUILDERS = {
     "pg_ctl_stop": "_build_pg_ctl_stop_command",
     "green_base_psql": "_build_green_base_psql_command",
     "green_job_psql": "_build_green_job_psql_command",
+    "green_p3_psql": "_build_green_p3_psql_command",
     "green_restore_target_psql": "_build_green_restore_target_psql_command",
     "red_base_psql": "_build_red_base_psql_command",
     "red_job_psql": "_build_red_job_psql_command",
@@ -75,6 +76,7 @@ EXPECTED_OPERATION_SCOPES = {
     "pg_ctl_stop": frozenset({GREEN_SCOPE, RED_SCOPE}),
     "green_base_psql": frozenset({GREEN_SCOPE}),
     "green_job_psql": frozenset({GREEN_SCOPE}),
+    "green_p3_psql": frozenset({GREEN_SCOPE}),
     "green_restore_target_psql": frozenset({GREEN_SCOPE}),
     "red_base_psql": frozenset({RED_SCOPE}),
     "red_job_psql": frozenset({RED_SCOPE}),
@@ -543,6 +545,7 @@ def _require_operation_specific_command_api() -> None:
         "_build_pg_ctl_stop_command",
         "_build_green_base_psql_command",
         "_build_green_job_psql_command",
+        "_build_green_p3_psql_command",
         "_build_red_base_psql_command",
         "_build_red_job_psql_command",
         "_build_pg_dump_command",
@@ -554,6 +557,7 @@ def _require_operation_specific_command_api() -> None:
         "_run_pg_ctl_stop",
         "_run_green_base_psql",
         "_run_green_job_psql",
+        "_run_green_p3_psql",
         "_run_red_base_psql",
         "_run_red_job_psql",
         "_run_pg_dump",
@@ -1558,3 +1562,79 @@ def test_all_reviewed_database_calls_have_unique_explicit_operation_ids() -> Non
     assert missing == []
     assert len(operation_ids) == 26
     assert len(set(operation_ids)) == 26
+
+
+# R5: P3 role provisioning is a bound, harness-controlled GREEN-only command that runs only on explicit request.
+
+def _capture_provisioning_routes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    routes: list[str] = []
+    for name, label in (
+        ("_run_green_base_psql", "green_base"), ("_run_green_job_psql", "green_job"),
+        ("_run_green_p3_psql", "green_p3"), ("_run_red_base_psql", "red_base"), ("_run_red_job_psql", "red_job"),
+    ):
+        monkeypatch.setattr(_postgres, name, lambda _session, label=label: routes.append(label), raising=False)
+    monkeypatch.setattr(_postgres, "_upgrade_to_revision", lambda *_args: None)
+    return routes
+
+
+def test_p3_roles_are_provisioned_only_on_explicit_green_request(
+    protected_record_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = write_record(protected_record_dir / "approval.json", build_record(scope=GREEN_SCOPE))
+    _set_controls(monkeypatch, record, scope=GREEN_SCOPE)
+    _install_mocked_postgres_boundary(monkeypatch, [], [])
+    routes = _capture_provisioning_routes(monkeypatch)
+
+    with disposable_database(operation_id=OPERATION_ID):
+        pass
+    assert routes == ["green_base", "green_job"]              # default: unchanged, no P3 roles
+
+    routes.clear()
+    with disposable_database(operation_id=OPERATION_ID, p3_roles=True):
+        pass
+    assert routes == ["green_base", "green_job", "green_p3"]
+
+
+def test_red_scope_refuses_p3_role_provisioning(
+    protected_record_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = write_record(protected_record_dir / "approval.json", build_record(scope=RED_SCOPE))
+    _set_controls(monkeypatch, record, scope=RED_SCOPE)
+    _install_mocked_postgres_boundary(monkeypatch, [], [])
+    routes = _capture_provisioning_routes(monkeypatch)
+
+    with pytest.raises(DisposablePostgresApprovalRejected, match="P3 role provisioning"):
+        with disposable_database(operation_id=OPERATION_ID, p3_roles=True):
+            pass
+    assert "green_p3" not in routes
+
+
+def test_green_p3_command_runs_the_exact_bound_bytes_against_the_maintenance_database(
+    protected_record_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = write_record(protected_record_dir / "approval.json", build_record(scope=GREEN_SCOPE))
+    _set_controls(monkeypatch, record, scope=GREEN_SCOPE)
+    _install_mocked_postgres_boundary(monkeypatch, [], [])
+    with _postgres._disposable_postgres_session(operation_id=OPERATION_ID) as session:
+        command = _postgres._build_green_p3_psql_command(session)
+    assert command.operation == "green_p3_psql" and command.binary == "psql"
+    assert command.arguments == ("-X", "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--dbname=postgres")
+    assert command.input_bytes == (ROOT / "ops/postgres/provision-p3-roles.sql").read_bytes()
+
+
+def test_p3_role_bootstrap_matches_the_p3_fixtures_statements() -> None:
+    sql = (ROOT / "ops/postgres/provision-p3-roles.sql").read_text()
+    statements = [line.rstrip(";") for line in sql.splitlines() if line.startswith(("CREATE ROLE", "GRANT"))]
+    assert statements == [
+        "CREATE ROLE trading_p3_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+        "GRANT trading_p3_owner TO trading_owner",
+        "CREATE ROLE trading_p3_authority LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+        "CREATE ROLE trading_p3_custodian LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    ]
+    fixtures = "".join((ROOT / "services/job_worker" / name).read_text() for name in (
+        "p3_fixture_sql.py", "p3_operation_fixture.py", "p3_custodian_fixture.py"))
+    for statement in statements:
+        assert statement in fixtures                            # the fixtures' own bootstrap, no drift

@@ -196,6 +196,7 @@ _POSTGRES_OPERATION_SCOPES = MappingProxyType(
         "pg_ctl_stop": _BOTH_DISPOSABLE_SCOPES,
         "green_base_psql": _GREEN_ONLY_SCOPE,
         "green_job_psql": _GREEN_ONLY_SCOPE,
+        "green_p3_psql": _GREEN_ONLY_SCOPE,
         "green_restore_target_psql": _GREEN_ONLY_SCOPE,
         "red_base_psql": _RED_ONLY_SCOPE,
         "red_job_psql": _RED_ONLY_SCOPE,
@@ -228,6 +229,7 @@ _BASE_ROLE_SQL_BYTES = (ROOT / "ops/postgres/provision-roles.sql").read_bytes()
 _JOB_ROLE_SQL_BYTES = (
     ROOT / "ops/postgres/provision-job-roles.sql"
 ).read_bytes()
+_P3_ROLE_SQL_BYTES = (ROOT / "ops/postgres/provision-p3-roles.sql").read_bytes()
 
 
 def _upgrade_to_revision(settings: DatabaseSettings, revision: str) -> None:
@@ -285,8 +287,12 @@ def disposable_database(
     operation_id: str | None = None,
     red_sql_file: Path | None = None,
     planned: bool = False,
+    p3_roles: bool = False,
 ):
-    """Yield an isolated exact-0004 database ready for the 0005 migration."""
+    """Yield an isolated exact-0004 database ready for the 0005 migration.
+
+    `p3_roles=True` (GREEN only) also runs the bound P3 role bootstrap, which migrations 0020-0032 require.
+    """
 
     with _disposable_postgres_session(
         operation_id=operation_id,
@@ -294,7 +300,7 @@ def disposable_database(
         planned=planned,
         expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
-        yield _prepare_disposable_database(session)
+        yield _prepare_disposable_database(session, p3_roles=p3_roles)
 
 
 @contextmanager
@@ -546,8 +552,14 @@ def _validated_reviewed_sql_snapshot(
 
 def _prepare_disposable_database(
     session: object,
+    *,
+    p3_roles: bool = False,
 ) -> DatabaseSettings:
     validated = _validated_session(session)
+    if p3_roles and validated.authority.context.scope != "DISPOSABLE_PG_GREEN":
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning is available only in disposable GREEN scope"
+        )
     cluster = _public_cluster(validated)
     _provision_base_roles(validated)
     owner = _owner_settings(cluster)
@@ -556,6 +568,8 @@ def _prepare_disposable_database(
         state = _require_red_derivation_phase(validated, "RED_BASE_SETUP")
         state.phase = "RED_UPGRADED_0004"
     _provision_job_roles(validated)
+    if p3_roles:
+        _run_green_p3_psql(validated)
     return owner
 
 
@@ -846,6 +860,16 @@ def _build_green_job_psql_command(session: object) -> _PostgresCommand:
     )
 
 
+def _build_green_p3_psql_command(session: object) -> _PostgresCommand:
+    return _command(
+        session,
+        "green_p3_psql",
+        "psql",
+        ("-X", "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--dbname=postgres"),
+        input_bytes=_P3_ROLE_SQL_BYTES,
+    )
+
+
 def _build_green_restore_target_psql_command(session: object) -> _PostgresCommand:
     return _command(
         session,
@@ -923,6 +947,7 @@ def _expected_command(
         "pg_ctl_stop": _build_pg_ctl_stop_command,
         "green_base_psql": _build_green_base_psql_command,
         "green_job_psql": _build_green_job_psql_command,
+        "green_p3_psql": _build_green_p3_psql_command,
         "green_restore_target_psql": _build_green_restore_target_psql_command,
         "red_base_psql": _build_red_base_psql_command,
         "red_job_psql": _build_red_job_psql_command,
@@ -1041,6 +1066,18 @@ def _run_green_job_psql(session: object) -> subprocess.CompletedProcess:
     except subprocess.CalledProcessError:
         raise RuntimeError(
             "isolated PostgreSQL provisioning failed: provision-job-roles.sql"
+        ) from None
+
+
+def _run_green_p3_psql(session: object) -> subprocess.CompletedProcess:
+    try:
+        return _execute_postgres_command(
+            session,
+            _build_green_p3_psql_command(session),
+        )
+    except subprocess.CalledProcessError:
+        raise RuntimeError(
+            "isolated PostgreSQL provisioning failed: provision-p3-roles.sql"
         ) from None
 
 

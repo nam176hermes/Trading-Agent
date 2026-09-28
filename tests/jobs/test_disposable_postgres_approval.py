@@ -67,6 +67,7 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0031_p3_local_identity.py",
     "alembic/versions/0032_p3_enqueue_freshness.py",
     "ops/postgres/provision-job-roles.sql",
+    "ops/postgres/provision-p3-roles.sql",
     "ops/postgres/provision-roles.sql",
 )
 
@@ -897,6 +898,33 @@ def test_executed_forward_migration_requires_exact_source_binding() -> None:
     changed = build_record()
     for binding in changed["source_bindings"]:  # type: ignore[union-attr]
         if binding["path"] == migrations[-1]:
+            binding["sha256"] = "e" * 64
+    refresh_digest(changed)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="digest does not match"):
+        module.validate_source_binding_files(changed, ROOT)
+
+
+@pytest.mark.parametrize("path", ("ops/postgres/provision-p3-roles.sql",))
+def test_every_provisioning_script_the_harness_can_run_is_bound(path: str) -> None:
+    """R5: the P3 role bootstrap is bound by exact bytes like every other provisioning script."""
+    module = load_validator()
+    provisioning = tuple(
+        f"ops/postgres/{item.name}" for item in sorted((ROOT / "ops/postgres").glob("provision-*.sql"))
+    )
+    assert tuple(item for item in module.APPROVAL_SOURCE_BINDING_PATHS if item.startswith("ops/")) == provisioning
+    assert path in provisioning
+
+    missing = build_record()
+    missing["source_bindings"] = [  # type: ignore[index]
+        binding for binding in missing["source_bindings"] if binding["path"] != path  # type: ignore[union-attr]
+    ]
+    refresh_digest(missing)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="missing or excessive"):
+        module.validate_disposable_postgres_approval(missing, context(module))
+
+    changed = build_record()
+    for binding in changed["source_bindings"]:  # type: ignore[union-attr]
+        if binding["path"] == path:
             binding["sha256"] = "e" * 64
     refresh_digest(changed)
     with pytest.raises(module.DisposablePostgresApprovalRejected, match="digest does not match"):

@@ -102,7 +102,7 @@ def owner_database(request: pytest.FixtureRequest) -> Iterator[object]:
     require_disposable_green()
     _evidence_dir()                                          # before any cluster exists
     operation_id = f"sv01-{request.node.name.removeprefix('test_').replace('_', '-')}-v1"
-    with disposable_database(operation_id=operation_id, planned=True) as owner:
+    with disposable_database(operation_id=operation_id, planned=True, p3_roles=True) as owner:   # 0020-0032 need them
         yield owner
 
 
@@ -113,6 +113,16 @@ def _diagnostics(connection) -> dict[str, object]:
         return cursor.execute(query).fetchone()[0]
 
     definition = scalar("SELECT pg_get_functiondef('public.recover_engine_run_projections()'::regprocedure)")
+    catalog = cursor.execute(                               # what a guarded forward rotation binds
+        "SELECT p.prosrc, pg_catalog.pg_get_userbyid(p.proowner), p.proacl::text, p.proconfig::text,"
+        " p.prosecdef, p.provolatile::text, p.proparallel::text,"
+        " pg_catalog.pg_get_function_identity_arguments(p.oid), pg_catalog.pg_get_function_result(p.oid)"
+        " FROM pg_catalog.pg_proc AS p WHERE p.oid = 'public.recover_engine_run_projections()'::regprocedure"
+    ).fetchone()
+    key = cursor.execute(
+        "SELECT c.conname, pg_catalog.pg_get_constraintdef(c.oid) FROM pg_catalog.pg_constraint AS c"
+        " WHERE c.conrelid = 'public.engine_run_projections'::regclass AND c.contype = 'p'"
+    ).fetchone()
     cursor.execute("DO $sv01$ BEGIN END $sv01$")             # load plpgsql so its setting exists; changes nothing
     return {
         "revision": scalar("SELECT version_num FROM public.alembic_version"),
@@ -120,6 +130,13 @@ def _diagnostics(connection) -> dict[str, object]:
         "plpgsql_variable_conflict": scalar("SHOW plpgsql.variable_conflict"),
         "function_definition_sha256": hashlib.sha256(definition.encode()).hexdigest(),
         "function_definition": definition,
+        "function_prosrc_sha256": hashlib.sha256(catalog[0].encode()).hexdigest(),
+        "function_prosrc": catalog[0],
+        "function_catalog": dict(zip(
+            ("owner", "acl", "config", "security_definer", "volatility", "parallel", "identity_arguments", "result"),
+            catalog[1:],
+        )),
+        "projection_primary_key": {"name": key[0], "definition": key[1]},
     }
 
 

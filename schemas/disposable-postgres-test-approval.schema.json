@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 34,
-      "maxItems": 34,
+      "minItems": 35,
+      "maxItems": 35,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -117,6 +117,7 @@
         {"$ref": "#/$defs/sourceBinding0031"},
         {"$ref": "#/$defs/sourceBinding0032"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
+        {"$ref": "#/$defs/sourceBindingP3Roles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
       "items": false
@@ -413,6 +414,12 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "ops/postgres/provision-job-roles.sql"}}}
+      ]
+    },
+    "sourceBindingP3Roles": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "ops/postgres/provision-p3-roles.sql"}}}
       ]
     },
     "sourceBindingRoles": {
