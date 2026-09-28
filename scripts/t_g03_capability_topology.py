@@ -4026,6 +4026,8 @@ def validate_receipt(
 def _validate_external_outcome(
     receipt: dict[str, object], expected: tuple[str, ...],
 ) -> None:
+    from scripts.validate_disposable_postgres_approval import APPROVAL_SOURCE_BINDING_PATHS
+
     code = str(receipt["capability_or_authority_code"])
     state = str(receipt["preflight_state"])
     fact = str(receipt["redacted_fact_class"])
@@ -4153,7 +4155,7 @@ def _validate_external_outcome(
                 or authority["approval_record_sha256"] == EMPTY_SHA256
                 or authority["approved_operation_count"]
                 != len(_disposable_pg_operations(code))
-                or authority["source_binding_count"] != 21
+                or authority["source_binding_count"] != len(APPROVAL_SOURCE_BINDING_PATHS)
                 or authority["fixture_plan_status"]
                 != (
                     "PRIVATE_RETAINED_FIXTURE_PLAN"

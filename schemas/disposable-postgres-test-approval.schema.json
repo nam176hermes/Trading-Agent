@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 21,
-      "maxItems": 21,
+      "minItems": 34,
+      "maxItems": 34,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -103,6 +103,19 @@
         {"$ref": "#/$defs/sourceBinding0017"},
         {"$ref": "#/$defs/sourceBinding0018"},
         {"$ref": "#/$defs/sourceBinding0019"},
+        {"$ref": "#/$defs/sourceBinding0020"},
+        {"$ref": "#/$defs/sourceBinding0021"},
+        {"$ref": "#/$defs/sourceBinding0022"},
+        {"$ref": "#/$defs/sourceBinding0023"},
+        {"$ref": "#/$defs/sourceBinding0024"},
+        {"$ref": "#/$defs/sourceBinding0025"},
+        {"$ref": "#/$defs/sourceBinding0026"},
+        {"$ref": "#/$defs/sourceBinding0027"},
+        {"$ref": "#/$defs/sourceBinding0028"},
+        {"$ref": "#/$defs/sourceBinding0029"},
+        {"$ref": "#/$defs/sourceBinding0030"},
+        {"$ref": "#/$defs/sourceBinding0031"},
+        {"$ref": "#/$defs/sourceBinding0032"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
@@ -316,6 +329,84 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0019_p2_security_master.py"}}}
+      ]
+    },
+    "sourceBinding0020": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0020_p3_alpha_campaign_authority.py"}}}
+      ]
+    },
+    "sourceBinding0021": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0021_p3_operation_authority.py"}}}
+      ]
+    },
+    "sourceBinding0022": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0022_p3_worker_lane_isolation.py"}}}
+      ]
+    },
+    "sourceBinding0023": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0023_p3_output_custody.py"}}}
+      ]
+    },
+    "sourceBinding0024": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0024_p3_workflow_claim.py"}}}
+      ]
+    },
+    "sourceBinding0025": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0025_p3_holdout_intent.py"}}}
+      ]
+    },
+    "sourceBinding0026": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0026_p3_holdout_disclosure.py"}}}
+      ]
+    },
+    "sourceBinding0027": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0027_p3_custodian_release.py"}}}
+      ]
+    },
+    "sourceBinding0028": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0028_p3_native_process.py"}}}
+      ]
+    },
+    "sourceBinding0029": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0029_p3_session_holdout_claim.py"}}}
+      ]
+    },
+    "sourceBinding0030": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0030_p3_session_terminal_fences.py"}}}
+      ]
+    },
+    "sourceBinding0031": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0031_p3_local_identity.py"}}}
+      ]
+    },
+    "sourceBinding0032": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0032_p3_enqueue_freshness.py"}}}
       ]
     },
     "sourceBindingJobRoles": {
