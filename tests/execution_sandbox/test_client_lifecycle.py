@@ -161,6 +161,7 @@ def valid_submit_request(prepared_case: Any, *, command_id: int = 100) -> Sandbo
         order_id=uid(1),
         order_intent=prepared_case.intent,
         permit=prepared_case.permit,
+        policy_decision=prepared_case.policy_decision,
         current_observation=prepared_case.observation,
         current_policy=prepared_case.policy,
         current_safety=prepared_case.safety,

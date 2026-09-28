@@ -127,6 +127,7 @@ def _submit_request(case: Any, *, command_id: int = 100, consumed_event_id: int 
         order_id=case.intent.intent_id,
         order_intent=case.intent,
         permit=case.permit,
+        policy_decision=case.policy_decision,
         current_observation=case.observation,
         current_policy=case.policy,
         current_safety=case.safety,
@@ -730,3 +731,32 @@ def test_cancel_and_modify_fill_races_keep_the_existing_accepted_intent(
 
     assert client.snapshot().orders[0].order_intent == prepared_case.intent
     assert client.snapshot().orders[0].observed_state.status is OrderStatus.FILLED
+
+
+def test_submit_stale_admissibility_has_no_effect(
+    prepared_case_factory: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    """CR03: a market fact that ages past its TTL after prepare stops the submit before any sandbox effect."""
+    from packages.domain.runtime_risk import RuntimeRiskReasonCode
+    from packages.runtime_risk import SubmitPermitConsumptionError
+
+    def aged_market(observation):
+        return observation.model_copy(update={"market_snapshots": tuple(
+            item.model_copy(update={"observed_at": NOW - timedelta(seconds=9)})
+            for item in observation.market_snapshots)})
+
+    case = prepared_case_factory(age=aged_market)            # prepared at NOW + 1 s: market age exactly 10 s
+    client = _client(case, _accepted_submit_scenario(
+        submitted_envelope, response=SandboxResponseDisposition.LOST_RESPONSE))
+    before = (client.snapshot(), case.ledger.load_events(), case.ledger.load_outbox())
+    submitted_at = NOW + timedelta(seconds=1, microseconds=1)
+    assert submitted_at < case.permit.expires_at
+
+    with pytest.raises(SandboxExecutionError) as raised:
+        client.submit(_submit_request(case, submitted_at=submitted_at))
+
+    assert type(raised.value) is SandboxExecutionError       # not SandboxLostResponse: no venue effect happened
+    cause = raised.value.__cause__
+    assert type(cause) is SubmitPermitConsumptionError
+    assert cause.reason_codes == (RuntimeRiskReasonCode.MARKET_DATA_STALE,)
+    assert (client.snapshot(), case.ledger.load_events(), case.ledger.load_outbox()) == before

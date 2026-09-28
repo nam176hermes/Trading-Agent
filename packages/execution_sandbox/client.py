@@ -129,6 +129,8 @@ class SandboxExecutionClient:
             authority = consume_submit_permit(
                 repository=self._repository,
                 permit=request.permit,
+                intent=request.order_intent,
+                policy_decision=request.policy_decision,
                 current_observation=request.current_observation,
                 current_policy=request.current_policy,
                 current_safety=request.current_safety,

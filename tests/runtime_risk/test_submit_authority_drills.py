@@ -365,6 +365,8 @@ def test_consume_classifies_intervening_authority(intervening: str) -> None:
         authority = consume_submit_permit(
             repository=repository,
             permit=permit,
+            intent=current.evaluator.intent,
+            policy_decision=current.evaluator.policy_decision,
             current_observation=current.evaluator.observation,
             current_policy=current.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -379,6 +381,8 @@ def test_consume_classifies_intervening_authority(intervening: str) -> None:
             consume_submit_permit(
                 repository=repository,
                 permit=permit,
+                intent=current.evaluator.intent,
+                policy_decision=current.evaluator.policy_decision,
                 current_observation=current.evaluator.observation,
                 current_policy=current.evaluator.policy,
                 current_safety=safety(observed_at=CONSUMED_AT),
@@ -398,6 +402,8 @@ def test_consume_bounds_second_sequence_conflict_without_partial_authority() -> 
         consume_submit_permit(
             repository=repository,
             permit=permit,
+            intent=current.evaluator.intent,
+            policy_decision=current.evaluator.policy_decision,
             current_observation=current.evaluator.observation,
             current_policy=current.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -432,6 +438,8 @@ def test_consume_rejects_concurrent_exact_duplicate_instead_of_sharing_authority
         consume_submit_permit(
             repository=ConcurrentDuplicateRepository(case.ledger),  # type: ignore[arg-type]
             permit=permit,
+            intent=case.evaluator.intent,
+            policy_decision=case.evaluator.policy_decision,
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -471,6 +479,8 @@ def test_consume_rejects_wrong_type_receipt_for_real_concurrent_duplicate() -> N
         consume_submit_permit(
             repository=repository,  # type: ignore[arg-type]
             permit=permit,
+            intent=case.evaluator.intent,
+            policy_decision=case.evaluator.policy_decision,
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -563,6 +573,8 @@ def test_consume_persistence_failure_returns_no_partial_authority(
         consume_submit_permit(
             repository=fault,
             permit=permit,
+            intent=case.evaluator.intent,
+            policy_decision=case.evaluator.policy_decision,
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -586,6 +598,8 @@ def test_consume_requires_exact_consumed_event_read_back(fault: str) -> None:
         consume_submit_permit(
             repository=repository,
             permit=permit,
+            intent=case.evaluator.intent,
+            policy_decision=case.evaluator.policy_decision,
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -615,6 +629,8 @@ def test_consume_rejects_missing_or_forged_prepared_event(fault: str) -> None:
         consume_submit_permit(
             repository=repository,
             permit=permit,
+            intent=case.evaluator.intent,
+            policy_decision=case.evaluator.policy_decision,
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
@@ -630,6 +646,8 @@ def test_restart_audit_loads_once_writes_nothing_and_returns_full_replay() -> No
     consume_submit_permit(
         repository=case.ledger,
         permit=permit,
+        intent=case.evaluator.intent,
+        policy_decision=case.evaluator.policy_decision,
         current_observation=case.evaluator.observation,
         current_policy=case.evaluator.policy,
         current_safety=safety(observed_at=CONSUMED_AT),

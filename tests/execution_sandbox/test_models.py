@@ -60,6 +60,7 @@ def valid_submit_values(prepared_case: Any) -> dict[str, object]:
         "order_id": uid(1),
         "order_intent": prepared_case.intent,
         "permit": prepared_case.permit,
+        "policy_decision": prepared_case.policy_decision,
         "current_observation": prepared_case.observation,
         "current_policy": prepared_case.policy,
         "current_safety": prepared_case.safety,
