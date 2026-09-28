@@ -291,7 +291,9 @@ def disposable_database(
 ):
     """Yield an isolated exact-0004 database ready for the 0005 migration.
 
-    `p3_roles=True` (GREEN only) also runs the bound P3 role bootstrap, which migrations 0020-0032 require.
+    `p3_roles=True` (GREEN only) allows exactly one `provision_p3_roles(owner)` call, at revision 0019, for the
+    bound P3 role bootstrap that migrations 0020-0032 require. Earlier provisioning would change the role
+    catalog that the 0007 preflight digest binds.
     """
 
     with _disposable_postgres_session(
@@ -300,7 +302,40 @@ def disposable_database(
         planned=planned,
         expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
-        yield _prepare_disposable_database(session, p3_roles=p3_roles)
+        owner = _prepare_disposable_database(session, p3_roles=p3_roles)
+        if not p3_roles:
+            yield owner
+            return
+        _P3_ROLE_REQUESTS[id(owner)] = (owner, _validated_session(session))
+        try:
+            yield owner
+        finally:
+            _P3_ROLE_REQUESTS.pop(id(owner), None)
+
+
+_P3_ROLE_REQUESTS: dict[int, tuple[DatabaseSettings, object]] = {}
+_P3_ROLE_REVISION = "0019_p2_security_master"
+
+
+def _alembic_revision(owner: DatabaseSettings) -> str | None:
+    with psycopg.connect(owner.conninfo()) as connection:
+        row = connection.execute("SELECT version_num FROM public.alembic_version").fetchone()
+    return None if row is None else row[0]
+
+
+def provision_p3_roles(owner: DatabaseSettings) -> None:
+    """Run the bound P3 role bootstrap once, at 0019, for a GREEN database opened with `p3_roles=True`."""
+    request = _P3_ROLE_REQUESTS.get(id(owner))
+    if request is None or request[0] is not owner:
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning was not requested for this disposable database"
+        )
+    if _alembic_revision(owner) != _P3_ROLE_REVISION:
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning is allowed only at revision 0019_p2_security_master"
+        )
+    del _P3_ROLE_REQUESTS[id(owner)]                      # exactly once
+    _run_green_p3_psql(request[1])
 
 
 @contextmanager
@@ -568,8 +603,6 @@ def _prepare_disposable_database(
         state = _require_red_derivation_phase(validated, "RED_BASE_SETUP")
         state.phase = "RED_UPGRADED_0004"
     _provision_job_roles(validated)
-    if p3_roles:
-        _run_green_p3_psql(validated)
     return owner
 
 

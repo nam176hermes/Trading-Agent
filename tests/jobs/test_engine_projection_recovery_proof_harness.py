@@ -118,6 +118,7 @@ def evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("TRADING_TEST_SV01_EVIDENCE_DIR", str(directory))
     monkeypatch.setattr(proof, "_upgrade_to_revision", _observe)
     monkeypatch.setattr(proof, "_metadata", lambda _owner: {"revision": _OBSERVED.get("revision")}, raising=False)
+    monkeypatch.setattr(proof, "provision_p3_roles", lambda _owner: None, raising=False)
     return directory
 
 
@@ -378,3 +379,52 @@ def test_diagnostics_capture_the_catalog_inputs_a_guarded_rotation_binds() -> No
     }
     assert result["projection_primary_key"] == {"name": "engine_run_projections_pkey",
                                                 "definition": "PRIMARY KEY (engine_run_id)"}
+
+
+
+# i03: the P3 role bootstrap must run at 0019, after 0007's catalog digest, and before any upgrade past 0019.
+def _record_order(monkeypatch) -> list[str]:
+    order: list[str] = []
+
+    def upgrade(owner, revision):
+        order.append(f"upgrade:{revision}")
+        _observe(owner, revision)
+
+    monkeypatch.setattr(proof, "_upgrade_to_revision", upgrade)
+    monkeypatch.setattr(proof, "provision_p3_roles", lambda _owner: order.append("provision"), raising=False)
+    return order
+
+
+def test_current_head_cases_provision_p3_roles_at_0019_before_0032(evidence, monkeypatch) -> None:
+    order = _record_order(monkeypatch)
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
+    monkeypatch.setattr(proof, "_table_rows", lambda _owner: {})
+    monkeypatch.setattr(proof, "_owner_ledger", lambda _owner: (_Pool(), _Ledger(recover_error=_ambiguous())))
+
+    with pytest.raises(EngineEventConflictError):
+        proof.test_recover_engine_projections_is_idempotent_after_reconnect(_Owner())
+
+    assert order == ["upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"]
+
+
+def test_revision_case_provisions_once_between_0019_and_0032(evidence, monkeypatch) -> None:
+    order = _record_order(monkeypatch)
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
+    rows = [{"engine_run_id": proof.RUN_A, "event_count": 2, "last_sequence": 3}]
+    monkeypatch.setattr(proof, "_recover_directly", lambda _owner: {"result": "COMMITTED", "rows": rows})
+
+    proof.test_recover_engine_projections_at_required_revisions(_Owner())
+
+    assert order == ["upgrade:0018_p1_paper_closure_rotation", "upgrade:0019_p2_security_master",
+                     "upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"]
+
+
+def test_sequential_databases_each_get_their_own_p3_bootstrap(evidence, monkeypatch) -> None:
+    """A4 REVISE: no process-wide memory of provisioned owners. The same object identity reused by a later
+    database (as CPython may reuse id()) must still be provisioned; the harness's one-shot guard is the only guard."""
+    order = _record_order(monkeypatch)
+    reused = _Owner()                                          # database A, then database B with the same identity
+    for _database in ("A", "B"):
+        proof._upgrade(reused, proof.CURRENT_HEAD)
+
+    assert order == ["upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"] * 2

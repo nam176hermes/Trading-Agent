@@ -1577,10 +1577,11 @@ def _capture_provisioning_routes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return routes
 
 
-def test_p3_roles_are_provisioned_only_on_explicit_green_request(
+def test_p3_roles_are_never_provisioned_while_the_database_is_prepared(
     protected_record_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """i03: provisioning before 0005 changed the role catalog the 0007 preflight digest binds."""
     record = write_record(protected_record_dir / "approval.json", build_record(scope=GREEN_SCOPE))
     _set_controls(monkeypatch, record, scope=GREEN_SCOPE)
     _install_mocked_postgres_boundary(monkeypatch, [], [])
@@ -1588,12 +1589,37 @@ def test_p3_roles_are_provisioned_only_on_explicit_green_request(
 
     with disposable_database(operation_id=OPERATION_ID):
         pass
-    assert routes == ["green_base", "green_job"]              # default: unchanged, no P3 roles
-
+    assert routes == ["green_base", "green_job"]
     routes.clear()
     with disposable_database(operation_id=OPERATION_ID, p3_roles=True):
         pass
-    assert routes == ["green_base", "green_job", "green_p3"]
+    assert routes == ["green_base", "green_job"]              # nothing P3 until an explicit call at 0019
+
+
+def test_p3_roles_are_provisioned_once_and_only_at_0019(
+    protected_record_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = write_record(protected_record_dir / "approval.json", build_record(scope=GREEN_SCOPE))
+    _set_controls(monkeypatch, record, scope=GREEN_SCOPE)
+    _install_mocked_postgres_boundary(monkeypatch, [], [])
+    routes = _capture_provisioning_routes(monkeypatch)
+    revision = ["0018_p1_paper_closure_rotation"]
+    monkeypatch.setattr(_postgres, "_alembic_revision", lambda _owner: revision[0])
+
+    with disposable_database(operation_id=OPERATION_ID) as plain:
+        with pytest.raises(DisposablePostgresApprovalRejected, match="not requested"):
+            _postgres.provision_p3_roles(plain)
+    with disposable_database(operation_id=OPERATION_ID, p3_roles=True) as owner:
+        with pytest.raises(DisposablePostgresApprovalRejected, match="only at revision 0019"):
+            _postgres.provision_p3_roles(owner)
+        revision[0] = "0019_p2_security_master"
+        _postgres.provision_p3_roles(owner)
+        with pytest.raises(DisposablePostgresApprovalRejected, match="not requested"):
+            _postgres.provision_p3_roles(owner)                # exactly once
+    with pytest.raises(DisposablePostgresApprovalRejected, match="not requested"):
+        _postgres.provision_p3_roles(owner)                    # not after the context closed
+    assert routes.count("green_p3") == 1
 
 
 def test_red_scope_refuses_p3_role_provisioning(

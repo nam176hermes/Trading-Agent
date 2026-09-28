@@ -30,7 +30,13 @@ from services.job_store.engine_event_repository import PostgresEngineEventLedger
 from services.job_store.worker_repository import WorkerRepository
 from tests.control_api._disposable_runtime import require_disposable_green
 from tests.engine_event_ledger.test_p1_stream_ingestion import _validated_p1_batch
-from tests.jobs._postgres import ROOT, _upgrade_to_revision, disposable_database, disposable_role_settings
+from tests.jobs._postgres import (
+    ROOT,
+    _upgrade_to_revision,
+    disposable_database,
+    disposable_role_settings,
+    provision_p3_roles,
+)
 from tests.jobs.test_engine_event_ledger import _batch, _event
 from tests.jobs.test_engine_event_postgres_runtime import P1_PRODUCT_CLOSURE_SHA256, _seed_running_job
 from tests.nautilus_runtime_contracts.test_result import CODE_COMMIT, _p1_claim
@@ -43,6 +49,7 @@ REQUIRED_REVISIONS = (
     "0032_p3_enqueue_freshness",
 )
 CURRENT_HEAD = REQUIRED_REVISIONS[-1]
+P3_ROLE_REVISION = "0019_p2_security_master"            # the P3 role bootstrap runs here, before 0020
 RUN_A = UUID("70000000-0000-4000-8000-000000000001")
 PROJECTION_TABLES = ("engine_run_projections", "engine_events", "engine_event_batch_receipts")
 _T = TypeVar("_T")
@@ -178,6 +185,18 @@ def _owner_ledger(owner) -> tuple[ConnectionPool, PostgresEngineEventLedger]:
     return pool, PostgresEngineEventLedger(pool)
 
 
+def _upgrade(owner, revision: str) -> None:
+    """Upgrade; past 0019, first stop at 0019 and run the bound P3 role bootstrap (0020-0032 need it).
+
+    Each case upgrades past 0019 once. No state is kept here: the harness allows exactly one bootstrap per
+    database context and rejects a second call.
+    """
+    if revision not in (REQUIRED_REVISIONS[0], P3_ROLE_REVISION):
+        _upgrade_to_revision(owner, P3_ROLE_REVISION)
+        provision_p3_roles(owner)
+    _upgrade_to_revision(owner, revision)
+
+
 def _ingest_generic(owner, run_id: UUID) -> None:
     pool, ledger = _owner_ledger(owner)
     try:
@@ -217,7 +236,7 @@ def test_recover_engine_projections_at_required_revisions(owner_database) -> Non
     failures stop at once. The verdict is asserted only after every revision has a recorded result."""
     results = {}
     for index, revision in enumerate(REQUIRED_REVISIONS):
-        _upgrade_to_revision(owner_database, revision)
+        _upgrade(owner_database, revision)
         if index == 0:
             _ingest_generic(owner_database, RUN_A)
         name = f"sv01-revision-{index + 1}-{revision}"
@@ -240,7 +259,7 @@ def test_recover_engine_projections_at_required_revisions(owner_database) -> Non
 
 
 def test_recover_engine_projections_is_idempotent_after_reconnect(owner_database) -> None:
-    _upgrade_to_revision(owner_database, CURRENT_HEAD)
+    _upgrade(owner_database, CURRENT_HEAD)
     _ingest_generic(owner_database, RUN_A)
     before = _table_rows(owner_database)
     metadata = _metadata(owner_database)
@@ -265,7 +284,7 @@ def test_recover_engine_projections_is_idempotent_after_reconnect(owner_database
 
 
 def test_recover_completed_p1_projection_preserves_authority(owner_database, tmp_path: Path) -> None:
-    _upgrade_to_revision(owner_database, CURRENT_HEAD)
+    _upgrade(owner_database, CURRENT_HEAD)
     batch = _ingest_completed_p1(owner_database, tmp_path)
     run_id = batch.events[0].engine_run_id
     pool, ledger = _owner_ledger(owner_database)
@@ -288,7 +307,7 @@ def test_recover_completed_p1_projection_preserves_authority(owner_database, tmp
 
 def test_recover_missing_completed_projection_cannot_lose_completion_fence(owner_database, tmp_path: Path) -> None:
     """Deleting the synthetic projection row is the one data mutation this operation's work order names."""
-    _upgrade_to_revision(owner_database, CURRENT_HEAD)
+    _upgrade(owner_database, CURRENT_HEAD)
     batch = _ingest_completed_p1(owner_database, tmp_path)
     run_id = batch.events[0].engine_run_id
     tables_with_projection = _table_rows(owner_database)
