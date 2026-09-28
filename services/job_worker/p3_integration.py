@@ -247,14 +247,18 @@ class P3IntegrationFixtureExecutor:
         except Exception as error:
             outcome = error.outcome if isinstance(error,NativeFixtureError) else (runs[-1].outcome if runs else None)
             completed = error.completed if isinstance(error,NativeFixtureError) else runs
+            def failure(message: str, cleanup_unverified: bool, cause: Exception) -> IntegrationExecutionError:
+                return IntegrationExecutionError(message,outcome=outcome,native_runs=completed,
+                    cleanup_unverified=cleanup_unverified,control=getattr(cause,"control",None),
+                    blocked=isinstance(cause,AuthorityHeld),reason_code=getattr(cause,"reason_code",None),
+                    stage=stage,last_check=getattr(cause,'last_check',None))
             if root is not None and root.exists():
+                # WR01: a retained root is cleanup-unverified; keep outcome, stage, control and the causes.
                 if outcome is not None and outcome.termination_reason in {'SESSION_CLEANUP_FAILED','PROCESS_TERMINATION_UNPROVEN'}:
-                    raise IntegrationExecutionError(f'cleanup unverified; retained {root}',outcome=outcome,native_runs=completed) from error
+                    raise failure(f'cleanup unverified; retained {root}',True,error) from error
                 try:
                     shutil.rmtree(root)
                 except OSError as cleanup_error:
-                    raise IntegrationExecutionError(f'fixture failed and cleanup failed; retained {root}',outcome=outcome,native_runs=completed) from ExceptionGroup('fixture and cleanup failed',[error,cleanup_error])
-            raise IntegrationExecutionError(str(error),outcome=outcome,native_runs=completed,
-                cleanup_unverified=getattr(error,"cleanup_unverified",False),control=getattr(error,"control",None),
-                blocked=isinstance(error,AuthorityHeld),reason_code=getattr(error,"reason_code",None),
-                stage=stage,last_check=getattr(error,'last_check',None)) from error
+                    raise failure(f'fixture failed and cleanup failed; retained {root}',True,error
+                                  ) from ExceptionGroup('fixture and cleanup failed',[error,cleanup_error])
+            raise failure(str(error),getattr(error,"cleanup_unverified",False),error) from error

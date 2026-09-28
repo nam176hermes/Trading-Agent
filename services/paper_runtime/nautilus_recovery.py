@@ -24,6 +24,7 @@ from packages.nautilus_runtime_contracts.result import P1_ENGINE_VERSION
 from packages.safety_evidence import CanonicalKillSwitchState
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 
+from .nautilus_child import EngineSessionPort, is_issued_engine_session_port
 from .nautilus_checkpoint import (
     NautilusCheckpointRecord,
     ZERO_CHECKPOINT_SHA256,
@@ -95,8 +96,15 @@ _INTENT_SCHEMA = "trading-agent-nautilus-paper-recovery-intent/v1"
 _INTENT_NAME = re.compile(r"intent-([0-9]{8})\.json\Z", re.ASCII)
 _STEP_NAME = re.compile(r"step-([0-9]{8})\.json\Z", re.ASCII)
 _TEMP_NAME = re.compile(
-    r"\.(?:intent|step)-[0-9]{8}\.json\.[0-9a-f]{32}\.tmp\Z", re.ASCII
+    r"\.(?:intent|step|recovery-attempt)-[0-9]{8}(?:-child|-closed)?\.json\.[0-9a-f]{32}\.tmp\Z",
+    re.ASCII,
 )
+# Durable recovery-attempt state (R3 finding 1), outside the command prefix: N.json is written before the
+# factory runs, N-child.json binds the fresh child identity, N-closed.json records a proven termination of
+# exactly that child. Nothing else closes an attempt: not a factory error, not a recovery success.
+_ATTEMPT_NAME = re.compile(r"recovery-attempt-([0-9]{8})(-child|-closed)?\.json\Z", re.ASCII)
+_ATTEMPT_SCHEMA = "nautilus-recovery-attempt-v1"
+_ATTEMPT_FIELD = {"": "chain_sha256", "-child": "child_identity", "-closed": "child_identity"}
 _INTENT_KEYS = {
     "closure_digest",
     "command_base64",
@@ -547,7 +555,11 @@ class NautilusRecoveryStore:
             raise ValueError("durable recovery directory is not private")
         self._directory_fd = descriptor
         self._replay_index: int | None = None
+        # In-process handle on a failed child, only to let this store re-check its liveness; the blocking
+        # state itself is durable (recovery-attempt markers).
+        self._unproven_recovery_child: EngineSessionPort | None = None
         self.steps()
+        self._recovery_attempts()
 
     def __del__(self) -> None:
         descriptor = getattr(self, "_directory_fd", -1)
@@ -562,7 +574,7 @@ class NautilusRecoveryStore:
         entries = tuple(
             name
             for name in sorted(os.listdir(self._directory_fd))
-            if not _TEMP_NAME.fullmatch(name)
+            if not _TEMP_NAME.fullmatch(name) and not _ATTEMPT_NAME.fullmatch(name)
         )
         steps: list[NautilusRecoveryStep] = []
         prior = ZERO_CHECKPOINT_SHA256
@@ -631,6 +643,115 @@ class NautilusRecoveryStore:
 
     def cancel_replay(self) -> None:
         self._replay_index = None
+
+    def _attempt_document(self, name: str, attempt: int, kind: str) -> dict[str, object]:
+        try:
+            raw = _read_sealed_at(self._directory_fd, name, 4096)
+            document = json.loads(raw, object_pairs_hook=_pairs)
+        except (OSError, ValueError):
+            raise ValueError("recovery attempt marker is unreadable") from None
+        field = _ATTEMPT_FIELD[kind]
+        if (
+            type(document) is not dict
+            or set(document) != {"schema_version", "attempt", field}
+            or canonical_json_bytes(document) + b"\n" != raw
+            or document["schema_version"] != _ATTEMPT_SCHEMA
+            or type(document["attempt"]) is not int
+            or document["attempt"] != attempt
+            or type(document[field]) is not str
+            or _SHA256.fullmatch(document[field]) is None
+        ):
+            raise ValueError("recovery attempt marker is invalid")
+        return document
+
+    def _recovery_attempts(self) -> dict[int, dict[str, dict[str, object]]]:
+        """Every attempt with its validated markers; any unreadable or inconsistent marker fails closed."""
+        attempts: dict[int, dict[str, dict[str, object]]] = {}
+        for name in sorted(os.listdir(self._directory_fd)):
+            if (match := _ATTEMPT_NAME.fullmatch(name)) is None:
+                continue
+            attempt = int(match.group(1))
+            kind = match.group(2) or ""
+            attempts.setdefault(attempt, {})[kind] = self._attempt_document(name, attempt, kind)
+        if sorted(attempts) != list(range(1, len(attempts) + 1)):
+            raise ValueError("recovery attempt markers are not contiguous")
+        for attempt, markers in attempts.items():
+            child, closed = markers.get("-child"), markers.get("-closed")
+            if (
+                "" not in markers
+                or (closed is not None and (child is None or closed["child_identity"] != child["child_identity"]))
+                or (closed is None and attempt != len(attempts))   # a new attempt opens only after all are closed
+            ):
+                raise ValueError("recovery attempt markers are inconsistent")
+        return attempts
+
+    def _write_attempt_marker(self, attempt: int, suffix: str, value: str) -> None:
+        document = {"schema_version": _ATTEMPT_SCHEMA, "attempt": attempt, _ATTEMPT_FIELD[suffix]: value}
+        _write_sealed_at(
+            self._directory_fd,
+            f"recovery-attempt-{attempt:08d}{suffix}.json",
+            canonical_json_bytes(document) + b"\n",
+        )
+
+    def _open_recovery_attempt(self) -> int:
+        """Durably open the next attempt BEFORE any recovery child can exist (covers a crash in the factory).
+
+        Re-checks the one inventory it numbers from: the earlier guard may be stale if another store on this
+        directory opened an attempt meanwhile. The create-only writer refuses a race on the same number.
+        """
+        attempts = self._recovery_attempts()
+        if attempts and "-closed" not in attempts[len(attempts)]:
+            raise ValueError("a recovery attempt is still open; no new recovery child")
+        attempt = len(attempts) + 1
+        self._write_attempt_marker(attempt, "", self.chain_sha256)
+        return attempt
+
+    def _record_recovery_child(self, attempt: int, child: EngineSessionPort) -> None:
+        self._write_attempt_marker(attempt, "-child", child.process_authority_sha256)
+
+    def retain_unproven_recovery_child(self, child: EngineSessionPort) -> None:
+        self._unproven_recovery_child = child
+
+    def prove_recovery_child_terminated(self, child: EngineSessionPort) -> None:
+        """Close the open attempt only with the issued port of the recorded child, proven not running."""
+        attempts = self._recovery_attempts()
+        markers = attempts.get(len(attempts), {})
+        if "-child" not in markers or "-closed" in markers:
+            raise ValueError("no recovery attempt with a recorded child is open; not proven terminated")
+        identity = markers["-child"]["child_identity"]
+        if not is_issued_engine_session_port(child) or child.process_authority_sha256 != identity:
+            raise ValueError("the recovery child port is not the recorded one; not proven terminated")
+        try:
+            running = child.is_running()
+        except BaseException:
+            running = True
+        if running is not False:
+            raise ValueError("the recovery child is not proven terminated")
+        self._write_attempt_marker(len(attempts), "-closed", child.process_authority_sha256)
+        if self._unproven_recovery_child is child:
+            self._unproven_recovery_child = None
+
+    def require_failed_recovery_child_terminated(self, prior_child: EngineSessionPort) -> None:
+        """Block before any factory call while the last attempt is open, unless its child is proven ended.
+
+        The proof may come from this store's retained failed child or from the prior session's child (a
+        recovered child that later stopped); a reopened store without either stays HELD.
+        """
+        attempts = self._recovery_attempts()
+        markers = attempts.get(len(attempts))
+        if markers is None or "-closed" in markers:
+            return
+        if "-child" not in markers:
+            raise ValueError("recovery attempt outcome is unknown; a recovery child may exist")
+        identity = markers["-child"]["child_identity"]
+        candidate = next(
+            (child for child in (self._unproven_recovery_child, prior_child)
+             if child is not None and child.process_authority_sha256 == identity),
+            None,
+        )
+        if candidate is None:
+            raise ValueError("a recovery child is not proven terminated; no new recovery child")
+        self.prove_recovery_child_terminated(candidate)
 
     def begin(
         self,
@@ -744,6 +865,7 @@ def recover_nautilus_paper_session(
     prior_child = prior_session._child
     if prior_child.is_running():
         raise ValueError("prior child is still running")
+    store.require_failed_recovery_child_terminated(prior_child)
     decision = reconcile_nautilus_paper(evidence)
     terminal_steps = store.steps()
     if (
@@ -762,35 +884,40 @@ def recover_nautilus_paper_session(
     ):
         raise ValueError("sealed recovery authority does not match prior session")
     steps = store.begin_replay()
-    if not steps:
-        store.cancel_replay()
-        raise ValueError("durable recovery prefix is empty")
-    last = steps[-1].checkpoint
-    if (
-        last.checkpoint.state is PaperSessionState.STOPPING
-        and last.event_batch_sha256 is not None
-    ):
-        store.cancel_replay()
-        raise ValueError("durable paper session is already stopped")
-    session = session_factory(store)
-    if type(session) is not NautilusPaperSession:
-        store.cancel_replay()
-        raise TypeError("recovery factory returned an invalid paper session")
-    fresh_child = session._child
-    if (
-        fresh_child.process_authority_sha256 == prior_child.process_authority_sha256
-        or fresh_child.capability_sha256 != prior_child.capability_sha256
-        or fresh_child.custodian_authority_sha256
-        != prior_child.custodian_authority_sha256
-        or fresh_child.closure_digest != prior_child.closure_digest
-        or session._request != prior_session._request
-    ):
-        store.cancel_replay()
-        fresh_child.abort()
-        raise ValueError("fresh recovery session authority does not match")
-    expected = ZERO_CHECKPOINT_SHA256
+    # PR02: everything after begin_replay runs in one cleanup scope. On any failure the fresh child (if one
+    # was created) is aborted and its termination checked, replay bookkeeping is always released, and the
+    # primary failure is kept together with any cleanup failure; a termination-unproven child is never a
+    # recovery success.
+    fresh_child = None
+    child_recorded = False
     result = None
+    attempt: int | None = None
     try:
+        if not steps:
+            raise ValueError("durable recovery prefix is empty")
+        last = steps[-1].checkpoint
+        if (
+            last.checkpoint.state is PaperSessionState.STOPPING
+            and last.event_batch_sha256 is not None
+        ):
+            raise ValueError("durable paper session is already stopped")
+        attempt = store._open_recovery_attempt()   # durable before any recovery child can exist
+        session = session_factory(store)
+        if type(session) is not NautilusPaperSession:
+            raise TypeError("recovery factory returned an invalid paper session")
+        fresh_child = session._child
+        store._record_recovery_child(attempt, fresh_child)
+        child_recorded = True
+        if (
+            fresh_child.process_authority_sha256 == prior_child.process_authority_sha256
+            or fresh_child.capability_sha256 != prior_child.capability_sha256
+            or fresh_child.custodian_authority_sha256
+            != prior_child.custodian_authority_sha256
+            or fresh_child.closure_digest != prior_child.closure_digest
+            or session._request != prior_session._request
+        ):
+            raise ValueError("fresh recovery session authority does not match")
+        expected = ZERO_CHECKPOINT_SHA256
         for step in steps:
             result = session.execute(
                 step.command_raw,
@@ -798,13 +925,40 @@ def recover_nautilus_paper_session(
             )
             expected = result.checkpoint.checkpoint_sha256
         store.finish_replay()
-    except BaseException:
+        # The attempt stays open: the recovered child runs, so no further recovery child until it is proven ended.
+    except BaseException as primary:
+        cleanup_failures: list[BaseException] = []
+        running = True   # unknown until proven otherwise
         try:
-            fresh_child.abort()
+            if fresh_child is not None:
+                try:
+                    fresh_child.abort()
+                except BaseException as error:  # noqa: BLE001 - kept with the primary failure below
+                    cleanup_failures.append(error)
+                try:
+                    running = fresh_child.is_running()
+                except BaseException as error:  # noqa: BLE001 - liveness unknown means termination unproven
+                    cleanup_failures.append(error)
+                    running = True
+                if running:
+                    store.retain_unproven_recovery_child(fresh_child)
+                    cleanup_failures.append(
+                        RuntimeError("failed recovery child could not be terminated")
+                    )
+            if child_recorded and not running and fresh_child is not None:
+                # Only a recorded child proven ended closes the attempt. A factory error, an invalid factory
+                # result or an unrecorded child leaves it open: outcome unknown, HELD for the operator.
+                try:
+                    store.prove_recovery_child_terminated(fresh_child)
+                except BaseException as error:  # noqa: BLE001 - the attempt stays open: fail closed
+                    cleanup_failures.append(error)
         finally:
-            if fresh_child.is_running():
-                raise RuntimeError("failed recovery child could not be terminated")
-        store.cancel_replay()
+            store.cancel_replay()
+        if cleanup_failures:
+            raise BaseExceptionGroup(
+                "durable recovery failed and cleanup was not proven",
+                [primary, *cleanup_failures],
+            ) from None
         raise
     assert result is not None
     return RecoveredNautilusPaperSession(
