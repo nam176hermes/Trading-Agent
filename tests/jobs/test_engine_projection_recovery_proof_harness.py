@@ -312,3 +312,23 @@ def test_rolled_back_first_revision_still_records_every_revision_then_fails(evid
     assert calls == list(proof.REQUIRED_REVISIONS)            # all three revisions ran
     recorded = _recorded(evidence)
     assert all(f'"requested_revision": "{revision}"' in recorded for revision in proof.REQUIRED_REVISIONS)
+
+
+def test_diagnostics_load_plpgsql_before_reading_its_setting() -> None:
+    """SV01 issue 1: a fresh session has no `plpgsql.variable_conflict` until plpgsql is loaded (UndefinedObject)."""
+    executed: list[str] = []
+    values = {"pg_get_functiondef": "CREATE FUNCTION stub()", "alembic_version": "0032_p3_enqueue_freshness",
+              "server_version": "16.15", "variable_conflict": "error"}
+
+    def execute(query, *_args):
+        executed.append(query)
+        if "variable_conflict" in query and not any(item.lstrip().upper().startswith("DO ") for item in executed):
+            raise psycopg.errors.UndefinedObject('unrecognized configuration parameter "plpgsql.variable_conflict"')
+        value = next((value for key, value in values.items() if key in query), None)
+        return SimpleNamespace(fetchone=lambda: (value,))
+
+    class Connection:
+        def cursor(self, *, row_factory):
+            return SimpleNamespace(execute=execute)
+
+    assert proof._diagnostics(Connection())["plpgsql_variable_conflict"] == "error"

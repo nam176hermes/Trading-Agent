@@ -113,6 +113,7 @@ def _diagnostics(connection) -> dict[str, object]:
         return cursor.execute(query).fetchone()[0]
 
     definition = scalar("SELECT pg_get_functiondef('public.recover_engine_run_projections()'::regprocedure)")
+    cursor.execute("DO $sv01$ BEGIN END $sv01$")             # load plpgsql so its setting exists; changes nothing
     return {
         "revision": scalar("SELECT version_num FROM public.alembic_version"),
         "server_version": scalar("SHOW server_version"),
