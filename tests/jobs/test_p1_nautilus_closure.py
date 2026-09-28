@@ -415,3 +415,26 @@ def test_schema8_attestor_rejects_an_oversized_sparse_manifest_before_reading(
     with pytest.raises(EngineSpawnError) as error:
         attest_p1_nautilus_closure(config)
     assert error.value.reason == "ENGINE_CLOSURE_INVALID"
+
+
+def test_changed_runtime_bytes_invalidate_product_closure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Task 10.2: the rotated inventory binds the current runtime bytes; one changed byte invalidates it."""
+    closure_module._load_policy()                            # the committed pins match the checkout bytes
+    source_root = Path(__file__).parents[2]
+    for entry in source_root.iterdir():                     # everything else stays the exact checkout bytes
+        if entry.name != "engines":
+            (tmp_path / entry.name).symlink_to(entry)
+    (tmp_path / "engines/nautilus").mkdir(parents=True)
+    for entry in (source_root / "engines/nautilus").iterdir():
+        if entry.name not in {"runtime_v1", "p1-runtime-closure-policy.json"}:
+            (tmp_path / "engines/nautilus" / entry.name).symlink_to(entry)
+    shutil.copytree(source_root / "engines/nautilus/runtime_v1", tmp_path / "engines/nautilus/runtime_v1")
+    policy = tmp_path / "engines/nautilus/p1-runtime-closure-policy.json"
+    shutil.copyfile(source_root / "engines/nautilus/p1-runtime-closure-policy.json", policy)
+    changed = tmp_path / "engines/nautilus/runtime_v1/event_projector.py"
+    changed.write_bytes(changed.read_bytes() + b"\n")
+    monkeypatch.setattr(closure_module, "_ROOT", tmp_path)
+    monkeypatch.setattr(closure_module, "_POLICY_PATH", policy)
+
+    with pytest.raises(EngineSpawnError, match="runtime inventory record is invalid"):
+        closure_module._load_policy()

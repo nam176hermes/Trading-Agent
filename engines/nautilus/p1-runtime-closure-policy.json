@@ -127,13 +127,13 @@
     },
     {
       "mode": "0400",
-      "sha256": "1f4b2065ff6e9a438de60dac2216b1205a38fe82c26e73e7da0129bef7bf54aa",
+      "sha256": "725dec925579086eea6aa004c1c68857b839e85a9423cc53ae426ecbb69032ea",
       "source": "engines/nautilus/runtime_v1/event_projector.py",
       "target": "/engine/runtime_v1/event_projector.py"
     },
     {
       "mode": "0400",
-      "sha256": "022e716c3e2b2fa5bdbace08772c8e2db24b943035aac6b873f943ab09a1aa82",
+      "sha256": "e0a43faec06216783e8fce38aede39c0773befc53b93d9cb112ba52b9f7dc160",
       "source": "engines/nautilus/runtime_v1/final_state.py",
       "target": "/engine/runtime_v1/final_state.py"
     },
@@ -163,7 +163,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "e89404378d1c9dbadddd75a12e5f184eaf4dd347befcd5913cab61a34a17d734",
+      "sha256": "985f4283a8055e28db66d59e0c934eef09446397bc2c753b33f6d3eb81358273",
       "source": "engines/nautilus/runtime_v1/generated_protocol.py",
       "target": "/engine/runtime_v1/generated_protocol.py"
     },
@@ -222,7 +222,7 @@
       "target": "/engine/runtime_v1/target_strategy.py"
     }
   ],
-  "runtime_inventory_sha256": "1078d6bc593ef4b2037985bd458aa51c04ce9a315977098e9ce1270c0e350e62",
+  "runtime_inventory_sha256": "42591b911732211c3c1b67a3ef26b6d079d9fb28065178bce1c2cfdcb380415e",
   "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
   "schema": "trading-agent-p1-runtime-closure-policy/v1",
   "semantic_profile": "nautilus-p1-real-backtest-v1",

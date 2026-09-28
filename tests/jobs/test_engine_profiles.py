@@ -53,7 +53,7 @@ def test_p1_profile_is_one_code_owned_closed_policy() -> None:
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
     )
     assert policy.runtime_inventory_sha256 == (
-        "1078d6bc593ef4b2037985bd458aa51c04ce9a315977098e9ce1270c0e350e62"
+        "42591b911732211c3c1b67a3ef26b6d079d9fb28065178bce1c2cfdcb380415e"
     )
     assert "profile" not in RunBacktest.model_fields
 
