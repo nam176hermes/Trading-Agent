@@ -5,11 +5,16 @@ slot). Evidence is written create-only to TRADING_TEST_SV01_EVIDENCE_DIR, which 
 checkout and every disposable cleanup root: metadata (revision, `plpgsql.variable_conflict`, function definition
 hash) before each checked recovery, and that same invocation's result or SQLSTATE before any assertion or cleanup.
 Skipped or unauthorized runs are not a PASS.
+
+0033 GREEN: the pre-repair revisions must still fail with 42702 and 0033 must commit; a missing completed-P1
+projection must be refused with the exact P2D01 fence reason and change nothing; a non-P1 completion still
+recovers; the P1 closure accepts C_new and rejects the prior closure.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 import dataclasses
 import hashlib
 import json
@@ -21,12 +26,14 @@ from uuid import UUID
 import psycopg
 from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import ConnectionPool
+from pydantic import BaseModel
 import pytest
 
 from packages.engine_event_ledger import EngineEventConflictError
 from scripts.validate_disposable_postgres_approval import PGDATA_PREFIX
 from services.job_store.config import JobStoreSettings
 from services.job_store.engine_event_repository import PostgresEngineEventLedger
+from services.job_store.p3_catalog import SESSION_CATALOG_SQL
 from services.job_store.worker_repository import WorkerRepository
 from tests.control_api._disposable_runtime import require_disposable_green
 from tests.engine_event_ledger.test_p1_stream_ingestion import _validated_p1_batch
@@ -38,19 +45,30 @@ from tests.jobs._postgres import (
     provision_p3_roles,
 )
 from tests.jobs.test_engine_event_ledger import _batch, _event
-from tests.jobs.test_engine_event_postgres_runtime import P1_PRODUCT_CLOSURE_SHA256, _seed_running_job
+from tests.jobs.test_engine_event_postgres_runtime import _seed_running_job
 from tests.nautilus_runtime_contracts.test_result import CODE_COMMIT, _p1_claim
 
 pytestmark = pytest.mark.runtime_postgres
 
-REQUIRED_REVISIONS = (
+REPAIR_REVISION = "0033_p3_core_closure_repair"
+PRE_REPAIR_REVISIONS = (                                  # SV01 RED (issue 4): 42702 at each of these
     "0018_p1_paper_closure_rotation",
     "0019_p2_security_master",
     "0032_p3_enqueue_freshness",
 )
-CURRENT_HEAD = REQUIRED_REVISIONS[-1]
+REQUIRED_REVISIONS = (*PRE_REPAIR_REVISIONS, REPAIR_REVISION)
+CURRENT_HEAD = REPAIR_REVISION
 P3_ROLE_REVISION = "0019_p2_security_master"            # the P3 role bootstrap runs here, before 0020
+C_NEW = "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
+C_PRIOR = "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"   # the 0018 closure; fixed, not the head pin
+PARENT_SESSION_CATALOG_SHA256 = "f5092b5f50e6f81aa504e8515d595e8a1e2cf1848c3e4375c8d9990dc2c83d9a"
+RECOVERY_PRIOR_DEFINITION_SHA256 = "4841af0563ed378dba8fcbd99448829ee4a6e3787cbfe7804df02a594ec94373"
+CATALOG_DRIFT = "CREATE FUNCTION public.sv01_parent_catalog_drift() RETURNS integer LANGUAGE sql AS 'SELECT 1'"
+FENCE = {"sqlstate": "P2D01", "message_primary": "completed P1 engine run projection is missing",
+         "detail": "reason=P1_COMPLETED_PROJECTION_MISSING"}
+INGEST_FUNCTION = "job_plane.ingest_p1_engine_event_batch_v2(text,uuid,uuid,uuid,uuid,text,text,text,text,text)"
 RUN_A = UUID("70000000-0000-4000-8000-000000000001")
+RUN_B = UUID("70000000-0000-4000-8000-000000000002")
 PROJECTION_TABLES = ("engine_run_projections", "engine_events", "engine_event_batch_receipts")
 _T = TypeVar("_T")
 
@@ -71,6 +89,8 @@ def _evidence_dir() -> Path:
 
 
 def _jsonable(value: object) -> object:
+    if isinstance(value, BaseModel):                         # EngineRunProjection: a JSON mapping, not str()
+        return value.model_dump(mode="json")
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     return str(value)
@@ -82,14 +102,19 @@ def _record(name: str, document: object) -> None:
         handle.write("\n")
 
 
-def _sqlstate(error: BaseException) -> str | None:
-    """SQLSTATE of the error or of the database error it wraps (the repository re-raises typed errors)."""
+def _database_error(error: BaseException) -> psycopg.Error | None:
+    """The error itself or the database error it wraps (the repository re-raises typed errors)."""
     current: BaseException | None = error
     while current is not None:
         if isinstance(current, psycopg.Error):
-            return current.sqlstate
-        current = current.__cause__
+            return current
+        current = getattr(current, "orig", None) or current.__cause__     # SQLAlchemy wraps the driver error
     return None
+
+
+def _sqlstate(error: BaseException) -> str | None:
+    database_error = _database_error(error)
+    return None if database_error is None else database_error.sqlstate
 
 
 def _checked(name: str, invocation: Callable[[], _T]) -> _T:
@@ -131,7 +156,13 @@ def _diagnostics(connection) -> dict[str, object]:
         " WHERE c.conrelid = 'public.engine_run_projections'::regclass AND c.contype = 'p'"
     ).fetchone()
     cursor.execute("DO $sv01$ BEGIN END $sv01$")             # load plpgsql so its setting exists; changes nothing
+    ingest = scalar(f"SELECT pg_get_functiondef('{INGEST_FUNCTION}'::regprocedure)")
+    cursor.execute("SET LOCAL search_path = pg_catalog")      # as the session admission reads it
+    session_catalog = scalar(SESSION_CATALOG_SQL)
     return {
+        "session_catalog_sha256": session_catalog,           # what a reviewed 0033 session pin would bind
+        "ingest_definition_sha256": hashlib.sha256(ingest.encode()).hexdigest(),
+        "ingest_closure_pins": {"c_prior": ingest.count(C_PRIOR), "c_new": ingest.count(C_NEW)},
         "revision": scalar("SELECT version_num FROM public.alembic_version"),
         "server_version": scalar("SHOW server_version"),
         "plpgsql_variable_conflict": scalar("SHOW plpgsql.variable_conflict"),
@@ -166,7 +197,8 @@ def _recover_directly(owner) -> dict[str, object]:
                 rows = connection.execute("SELECT * FROM public.recover_engine_run_projections()").fetchall()
             return {"result": "COMMITTED", "rows": rows}
         except psycopg.Error as error:
-            return {"result": "ROLLED_BACK", "sqlstate": error.sqlstate, "message": str(error)}
+            return {"result": "ROLLED_BACK", "sqlstate": error.sqlstate, "message": str(error),
+                    "message_primary": error.diag.message_primary, "detail": error.diag.message_detail}
 
 
 def _table_rows(owner) -> dict[str, list[dict[str, object]]]:
@@ -185,30 +217,32 @@ def _owner_ledger(owner) -> tuple[ConnectionPool, PostgresEngineEventLedger]:
     return pool, PostgresEngineEventLedger(pool)
 
 
-def _upgrade(owner, revision: str) -> None:
-    """Upgrade; past 0019, first stop at 0019 and run the bound P3 role bootstrap (0020-0032 need it).
+def _upgrade(owner, revision: str, *, reached: str | None = None) -> None:
+    """Upgrade; when crossing 0019, first stop there and run the bound P3 role bootstrap (0020-0033 need it).
 
-    Each case upgrades past 0019 once. No state is kept here: the harness allows exactly one bootstrap per
-    database context and rejects a second call.
+    `reached` is the revision this database already reached in the calling case (None: a fresh database). No
+    state is kept here: the harness allows exactly one bootstrap per database context and rejects a second call.
     """
-    if revision not in (REQUIRED_REVISIONS[0], P3_ROLE_REVISION):
+    crosses = reached in (None, *PRE_REPAIR_REVISIONS[:2])
+    if revision not in (PRE_REPAIR_REVISIONS[0], P3_ROLE_REVISION) and crosses:
         _upgrade_to_revision(owner, P3_ROLE_REVISION)
         provision_p3_roles(owner)
     _upgrade_to_revision(owner, revision)
 
 
-def _ingest_generic(owner, run_id: UUID) -> None:
+def _ingest_generic(owner, run_id: UUID, *, completion: str = "BacktestCompleted") -> None:
     pool, ledger = _owner_ledger(owner)
     try:
         ledger.ingest(_batch(_event(2, "BacktestStarted", engine_run_id=run_id),
-                             _event(3, "BacktestCompleted", engine_run_id=run_id)))
+                             _event(3, completion, engine_run_id=run_id)))
     finally:
         pool.close()
 
 
-def _ingest_completed_p1(owner, tmp_path: Path):
+@contextmanager
+def _p1_worker(owner) -> Iterator[tuple[WorkerRepository, object]]:
+    """The real P1 worker authority: a seeded running job, a BUSY heartbeat and the worker role."""
     claim = _p1_claim()
-    batch = _validated_p1_batch(tmp_path, closure_digest=P1_PRODUCT_CLOSURE_SHA256)
     with psycopg.connect(owner.conninfo()) as connection:
         _seed_running_job(connection, claim, idempotency_key="sv01-p1-completed")
     worker = disposable_role_settings(owner, "trading_job_worker")
@@ -218,6 +252,18 @@ def _ingest_completed_p1(owner, tmp_path: Path):
         repository.worker_heartbeat(claim.worker_id, CODE_COMMIT, "IDLE", current_job_id=None, current_attempt_id=None)
         repository.worker_heartbeat(claim.worker_id, CODE_COMMIT, "BUSY",
                                     current_job_id=claim.job_id, current_attempt_id=claim.attempt_id)
+        yield repository, claim
+
+
+def _p1_batch(tmp_path: Path, closure: str):
+    root = tmp_path / closure[:12]
+    root.mkdir()
+    return _validated_p1_batch(root, closure_digest=closure)
+
+
+def _ingest_completed_p1(owner, tmp_path: Path):
+    batch = _p1_batch(tmp_path, C_NEW)
+    with _p1_worker(owner) as (repository, claim):
         repository.engine_event_ingestor().ingest_for_job(batch, claimed=claim)
     return batch
 
@@ -235,8 +281,10 @@ def test_recover_engine_projections_at_required_revisions(owner_database) -> Non
     """A rolled-back SQL error is recorded and the later revisions still run; migration, authority or revision
     failures stop at once. The verdict is asserted only after every revision has a recorded result."""
     results = {}
+    reached = None
     for index, revision in enumerate(REQUIRED_REVISIONS):
-        _upgrade(owner_database, revision)
+        _upgrade(owner_database, revision, reached=reached)
+        reached = revision
         if index == 0:
             _ingest_generic(owner_database, RUN_A)
         name = f"sv01-revision-{index + 1}-{revision}"
@@ -247,15 +295,12 @@ def test_recover_engine_projections_at_required_revisions(owner_database) -> Non
         _record(f"{name}-result", {"requested_revision": revision, **result})   # before the next revision
         results[revision] = result
 
-    failures = {
-        revision: (result.get("sqlstate"), result.get("message"))
-        for revision, result in results.items() if result["result"] != "COMMITTED"
-    }
-    assert not failures, failures
-    for revision, result in results.items():
-        assert [(row["engine_run_id"], row["event_count"], row["last_sequence"]) for row in result["rows"]] == [
-            (RUN_A, 2, 3)
-        ], revision
+    # The same database shows the defect before the repair and its absence after it.
+    observed = {revision: (result["result"], result.get("sqlstate")) for revision, result in results.items()}
+    expected = {revision: ("ROLLED_BACK", "42702") for revision in PRE_REPAIR_REVISIONS}
+    assert observed == {**expected, REPAIR_REVISION: ("COMMITTED", None)}, observed
+    assert [(row["engine_run_id"], row["event_count"], row["last_sequence"])
+            for row in results[REPAIR_REVISION]["rows"]] == [(RUN_A, 2, 3)]
 
 
 def test_recover_engine_projections_is_idempotent_after_reconnect(owner_database) -> None:
@@ -329,16 +374,123 @@ def test_recover_missing_completed_projection_cannot_lose_completion_fence(owner
     after = _table_rows(owner_database)
     _record("sv01-missing-projection-tables-after", after)
 
-    if result["result"] != "COMMITTED":                      # allowed: rejected and fully rolled back, nothing else
-        assert after == before
-        return
-    pool, ledger = _owner_ledger(owner_database)             # committed: exact authority and a holding fence
+    # Only the fence's own rejection counts: 42702 or any other SQL error is not evidence that the fence holds.
+    assert result["result"] == "ROLLED_BACK", result
+    assert {key: result.get(key) for key in FENCE} == FENCE, result
+    assert after == before                                   # events, receipts and projections all unchanged
+    assert batch.sha256 in {row["batch_sha256"] for row in after["engine_event_batch_receipts"]}
+
+
+def _without_updated_at(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [{key: value for key, value in row.items() if key != "updated_at"} for row in rows]
+
+
+def test_recover_missing_non_p1_completion_projection_is_not_fenced(owner_database, tmp_path: Path) -> None:
+    """Control: a receipt that ends in a completion without P1 authority recovers, beside an intact P1 run.
+    Deleting the generic run's projection row is the one data mutation this operation's work order names."""
+    _upgrade(owner_database, CURRENT_HEAD)
+    batch = _ingest_completed_p1(owner_database, tmp_path)
+    _ingest_generic(owner_database, RUN_B, completion="RunCompleted")
+    with_projection = _table_rows(owner_database)
+    metadata = _metadata(owner_database)
+    _record("sv01-non-p1-metadata", {"metadata": metadata, "tables_with_projection": with_projection})
+    _require_revision(metadata, CURRENT_HEAD)
+    with psycopg.connect(owner_database.conninfo()) as connection:
+        with connection.transaction():
+            deleted = connection.execute(
+                "DELETE FROM public.engine_run_projections WHERE engine_run_id = %s", (RUN_B,)
+            ).rowcount
+            if deleted != 1:
+                raise AssertionError(f"synthetic projection DELETE touched {deleted} rows; rolled back")
+    before = _table_rows(owner_database)
+    _record("sv01-non-p1-before", {"deleted_rows": deleted, "tables_before_recovery": before})
+
+    result = _recover_directly(owner_database)
+    _record("sv01-non-p1-recovery", result)
+    after = _table_rows(owner_database)
+    _record("sv01-non-p1-tables-after", after)
+
+    assert result["result"] == "COMMITTED", result
+    for table in ("engine_events", "engine_event_batch_receipts"):
+        assert after[table] == before[table]
+    assert _without_updated_at(after["engine_run_projections"]) == _without_updated_at(
+        with_projection["engine_run_projections"])           # RUN_B recreated as it was; the P1 row keeps authority
+    pool, ledger = _owner_ledger(owner_database)
     try:
-        projection = ledger.load_projection(run_id)
-        _record("sv01-missing-projection-projection-after", {"projection_after": projection})
-        assert projection is not None
-        assert (projection.batch_sha256, projection.semantic_digest, projection.request_message_id) == _authority(batch)
-        with pytest.raises(EngineEventConflictError):
-            _append_after_completion(ledger, batch)
+        p1 = ledger.load_projection(batch.events[0].engine_run_id)
+        generic = ledger.load_projection(RUN_B)
+        _record("sv01-non-p1-projections-after", {"p1": p1, "generic": generic})
+        assert (p1.batch_sha256, p1.semantic_digest, p1.request_message_id) == _authority(batch)
+        assert (generic.event_count, generic.last_sequence, generic.semantic_digest) == (2, 3, None)
     finally:
         pool.close()
+
+
+def test_repair_revision_accepts_c_new_and_rejects_the_prior_closure(owner_database, tmp_path: Path) -> None:
+    """The same claim and batch shape, differing only in the closure: the prior one is refused and leaves nothing."""
+    _upgrade(owner_database, CURRENT_HEAD)
+    metadata = _metadata(owner_database)
+    _record("sv01-closure-metadata", metadata)
+    _require_revision(metadata, CURRENT_HEAD)
+    assert metadata["ingest_closure_pins"] == {"c_prior": 0, "c_new": 2}
+    prior, rotated = _p1_batch(tmp_path, C_PRIOR), _p1_batch(tmp_path, C_NEW)
+    with _p1_worker(owner_database) as (repository, claim):
+        ingestor = repository.engine_event_ingestor()
+        try:
+            ingestor.ingest_for_job(prior, claimed=claim)
+        except Exception as error:                          # recorded before any assertion
+            database_error = _database_error(error)
+            refused = {"result": "FAILED", "error_type": type(error).__name__, "sqlstate": _sqlstate(error),
+                       "message_primary": database_error and database_error.diag.message_primary}
+        else:
+            refused = {"result": "RETURNED"}
+        _record("sv01-closure-prior", refused)
+        after_refusal = _table_rows(owner_database)
+        _record("sv01-closure-tables-after-refusal", after_refusal)
+        accepted = _checked("sv01-closure-new", lambda: ingestor.ingest_for_job(rotated, claimed=claim))
+
+    assert (refused.get("sqlstate"), refused.get("message_primary")) == (
+        "P2D04", "P1 validation metadata is invalid"), refused
+    assert after_refusal == {table: [] for table in PROJECTION_TABLES}
+    assert accepted.batch_sha256 == rotated.sha256
+    pool, ledger = _owner_ledger(owner_database)
+    try:
+        projection = ledger.load_projection(rotated.events[0].engine_run_id)
+        _record("sv01-closure-projection-after", {"projection_after": projection})
+        assert (projection.batch_sha256, projection.semantic_digest, projection.request_message_id) == _authority(
+            rotated)
+    finally:
+        pool.close()
+
+
+def test_repair_refuses_a_drifted_parent_catalog_and_changes_nothing(owner_database) -> None:
+    """Control: 0033 on a 0032 database whose session catalog drifted is refused and fully rolled back. Creating the
+    one inert function below is the one schema mutation this operation's work order names."""
+    _upgrade(owner_database, PRE_REPAIR_REVISIONS[-1])
+    parent = _metadata(owner_database)
+    _record("sv01-parent-catalog-metadata", parent)
+    _require_revision(parent, PRE_REPAIR_REVISIONS[-1])
+    with psycopg.connect(owner_database.conninfo()) as connection:
+        connection.execute(CATALOG_DRIFT)
+    drifted = _metadata(owner_database)
+    _record("sv01-parent-catalog-drifted", drifted)
+    try:
+        _upgrade_to_revision(owner_database, REPAIR_REVISION)
+    except Exception as error:                              # recorded before any assertion
+        database_error = _database_error(error)
+        refused = {"result": "FAILED", "error_type": type(error).__name__, "sqlstate": _sqlstate(error),
+                   "message_primary": database_error and database_error.diag.message_primary}
+    else:
+        refused = {"result": "UPGRADED"}
+    _record("sv01-parent-catalog-upgrade", refused)
+    after = _metadata(owner_database)
+    _record("sv01-parent-catalog-after", after)
+
+    assert parent["session_catalog_sha256"] == PARENT_SESSION_CATALOG_SHA256, parent["session_catalog_sha256"]
+    assert drifted["session_catalog_sha256"] != PARENT_SESSION_CATALOG_SHA256     # the control really drifted
+    assert (refused.get("sqlstate"), refused.get("message_primary")) == (
+        "P2D08", "0033 parent session catalog differs"), refused
+    assert after["revision"] == PRE_REPAIR_REVISIONS[-1]
+    assert after["function_definition_sha256"] == RECOVERY_PRIOR_DEFINITION_SHA256
+    assert after["ingest_closure_pins"] == {"c_prior": 2, "c_new": 0}
+    assert after["session_catalog_sha256"] == drifted["session_catalog_sha256"]

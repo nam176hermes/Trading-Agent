@@ -59,6 +59,7 @@ APPROVAL_SOURCE_BINDING_PATHS = (
     "alembic/versions/0030_p3_session_terminal_fences.py",
     "alembic/versions/0031_p3_local_identity.py",
     "alembic/versions/0032_p3_enqueue_freshness.py",
+    "alembic/versions/0033_p3_core_closure_repair.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-p3-roles.sql",
     "ops/postgres/provision-roles.sql",

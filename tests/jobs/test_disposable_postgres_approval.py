@@ -66,6 +66,7 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0030_p3_session_terminal_fences.py",
     "alembic/versions/0031_p3_local_identity.py",
     "alembic/versions/0032_p3_enqueue_freshness.py",
+    "alembic/versions/0033_p3_core_closure_repair.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-p3-roles.sql",
     "ops/postgres/provision-roles.sql",
@@ -884,6 +885,7 @@ def test_executed_forward_migration_requires_exact_source_binding() -> None:
     )
     bound = tuple(path for path in module.APPROVAL_SOURCE_BINDING_PATHS if path.startswith("alembic/"))
     assert bound == migrations
+    assert migrations[-1] == "alembic/versions/0033_p3_core_closure_repair.py"   # the controls below: newest binding
     module.validate_source_binding_files(build_record(), ROOT)
 
     missing = build_record()

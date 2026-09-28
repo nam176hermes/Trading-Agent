@@ -193,50 +193,50 @@ def test_failed_completed_p1_recovery_is_recorded_before_it_raises(evidence, tmp
     assert '"42702"' in _recorded(evidence)
 
 
-@pytest.mark.parametrize("append", ("blocked", "succeeds"))
-def test_rolled_back_recovery_records_tables_and_never_appends(evidence, tmp_path, monkeypatch, append) -> None:
-    ledger = _Ledger(ingest_error=EngineEventSequenceBlockedError(engine_run_id=RUN_ID, expected_sequence=1, actual_sequence=4) if append == "blocked" else None)
+_TABLES = {"engine_run_projections": [], "engine_events": [{"engine_run_id": RUN_ID}],
+           "engine_event_batch_receipts": [{"batch_sha256": AUTHORITY[0]}]}
+_FENCE_ROLLBACK = {"result": "ROLLED_BACK", "message": "fence", **proof.FENCE}
+
+
+def _missing_projection_case(monkeypatch, *, recovery, snapshots=None, ledger=None):
     monkeypatch.setattr(proof.psycopg, "connect", lambda *_args, **_kwargs: _DeleteConnection())
     monkeypatch.setattr(proof, "_ingest_completed_p1", lambda *_args: _batch())
-    monkeypatch.setattr(proof, "_table_rows", lambda _owner: {"engine_run_projections": []})
-    monkeypatch.setattr(proof, "_recover_directly",
-                        lambda _owner: {"result": "ROLLED_BACK", "sqlstate": "42702", "message": "ambiguous"})
-    monkeypatch.setattr(proof, "_owner_ledger", lambda _owner: (_Pool(), ledger))
+    tables = iter(snapshots) if snapshots is not None else None
+    monkeypatch.setattr(proof, "_table_rows", lambda _owner: next(tables) if tables is not None else _TABLES)
+    monkeypatch.setattr(proof, "_recover_directly", lambda _owner: recovery)
+    monkeypatch.setattr(proof, "_owner_ledger", lambda _owner: (_Pool(), ledger or _Ledger()))
+
+
+def test_fence_rejection_with_every_table_unchanged_passes_and_never_appends(evidence, tmp_path, monkeypatch) -> None:
+    ledger = _Ledger()
+    _missing_projection_case(monkeypatch, recovery=_FENCE_ROLLBACK, ledger=ledger)
 
     proof.test_recover_missing_completed_projection_cannot_lose_completion_fence(_Owner(), tmp_path)
 
-    assert ledger.ingested == []                               # the rollback branch never tries to append
-    assert '"ROLLED_BACK"' in _recorded(evidence)
+    assert ledger.ingested == []
+    assert '"reason=P1_COMPLETED_PROJECTION_MISSING"' in _recorded(evidence)
 
 
-def test_rolled_back_recovery_must_leave_every_table_unchanged(evidence, tmp_path, monkeypatch) -> None:
-    unchanged, changed = {"engine_run_projections": []}, {"engine_run_projections": [{"engine_run_id": RUN_ID}]}
-    snapshots = iter((unchanged, unchanged, changed, changed))  # with row, before recovery, after recovery, spare
-    monkeypatch.setattr(proof.psycopg, "connect", lambda *_args, **_kwargs: _DeleteConnection())
-    monkeypatch.setattr(proof, "_ingest_completed_p1", lambda *_args: _batch())
-    monkeypatch.setattr(proof, "_table_rows", lambda _owner: next(snapshots))
-    monkeypatch.setattr(proof, "_recover_directly", lambda _owner: {"result": "ROLLED_BACK", "sqlstate": "42702"})
-    monkeypatch.setattr(proof, "_owner_ledger", lambda _owner: (_Pool(), _Ledger()))
+@pytest.mark.parametrize("recovery", [
+    {"result": "ROLLED_BACK", "sqlstate": "42702", "message_primary": "ambiguous", "detail": None},   # the defect
+    {**_FENCE_ROLLBACK, "message_primary": "durable engine-event sequence is not recoverable", "detail": None},
+    {**_FENCE_ROLLBACK, "detail": None},                                                    # P2D01 without reason
+    {"result": "COMMITTED", "rows": []},                                                    # recreated, fenced or not
+], ids=["42702", "other-p2d01", "no-reason", "committed"])
+def test_only_the_fence_rejection_is_evidence_for_the_missing_projection_case(
+    evidence, tmp_path, monkeypatch, recovery,
+) -> None:
+    _missing_projection_case(monkeypatch, recovery=recovery, ledger=_Ledger(projection=_projection()))
 
     with pytest.raises(AssertionError):
         proof.test_recover_missing_completed_projection_cannot_lose_completion_fence(_Owner(), tmp_path)
 
 
-@pytest.mark.parametrize(("projection", "ingest_error"), [
-    (_projection(fenced=False), EngineEventConflictError("completed")),   # recovered without authority
-    (_projection(), None),                                                 # authority back, fence does not hold
-])
-def test_committed_recovery_needs_exact_authority_and_a_holding_fence(
-    evidence, tmp_path, monkeypatch, projection, ingest_error,
-) -> None:
-    monkeypatch.setattr(proof.psycopg, "connect", lambda *_args, **_kwargs: _DeleteConnection())
-    monkeypatch.setattr(proof, "_ingest_completed_p1", lambda *_args: _batch())
-    monkeypatch.setattr(proof, "_table_rows", lambda _owner: {})
-    monkeypatch.setattr(proof, "_recover_directly", lambda _owner: {"result": "COMMITTED", "rows": []})
-    monkeypatch.setattr(proof, "_owner_ledger",
-                        lambda _owner: (_Pool(), _Ledger(projection=projection, ingest_error=ingest_error)))
+def test_fence_rejection_must_leave_every_table_unchanged(evidence, tmp_path, monkeypatch) -> None:
+    changed = {**_TABLES, "engine_run_projections": [{"engine_run_id": RUN_ID}]}
+    _missing_projection_case(monkeypatch, recovery=_FENCE_ROLLBACK, snapshots=(_TABLES, _TABLES, changed))
 
-    with pytest.raises((AssertionError, pytest.fail.Exception)):
+    with pytest.raises(AssertionError):
         proof.test_recover_missing_completed_projection_cannot_lose_completion_fence(_Owner(), tmp_path)
 
 
@@ -268,6 +268,37 @@ def _count_recoveries(monkeypatch, outcomes):
 
 
 _GOOD_ROWS = [{"engine_run_id": proof.RUN_A, "event_count": 2, "last_sequence": 3}]
+_DEFECT = {"result": "ROLLED_BACK", "sqlstate": "42702", "message": "ambiguous"}
+
+
+def _defect_then_repair(_n):
+    return ({"result": "COMMITTED", "rows": _GOOD_ROWS} if _OBSERVED.get("revision") == proof.REPAIR_REVISION
+            else _DEFECT)
+
+
+def test_required_revisions_pass_only_with_the_defect_before_and_a_commit_at_the_repair(evidence, monkeypatch) -> None:
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
+    calls = _count_recoveries(monkeypatch, _defect_then_repair)
+
+    proof.test_recover_engine_projections_at_required_revisions(_Owner())
+
+    assert calls == list(proof.REQUIRED_REVISIONS)
+
+
+@pytest.mark.parametrize("outcome", [
+    lambda n: _DEFECT,                                                    # the repair did not repair
+    lambda n: {"result": "ROLLED_BACK", "sqlstate": "P2D08", "message": "x"} if n == 4 else _DEFECT,
+    lambda n: {"result": "COMMITTED", "rows": _GOOD_ROWS},                # no defect before: not the RED schema
+    lambda n: {"result": "COMMITTED", "rows": []} if n == 4 else _DEFECT,  # committed without the run
+], ids=["unrepaired", "other-error", "no-defect-before", "wrong-rows"])
+def test_required_revisions_fail_on_any_other_outcome(evidence, monkeypatch, outcome) -> None:
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
+    calls = _count_recoveries(monkeypatch, outcome)
+
+    with pytest.raises(AssertionError):
+        proof.test_recover_engine_projections_at_required_revisions(_Owner())
+
+    assert calls == list(proof.REQUIRED_REVISIONS)                        # every revision recorded first
 
 
 def test_revision_mismatch_stops_before_recovery_at_required_revisions(evidence, monkeypatch) -> None:
@@ -281,14 +312,15 @@ def test_revision_mismatch_stops_before_recovery_at_required_revisions(evidence,
     assert calls == []                                       # no recovery ran against the wrong schema
 
 
-@pytest.mark.parametrize("case", ("idempotent", "completed_p1", "missing_projection"))
+@pytest.mark.parametrize("case", ("idempotent", "completed_p1", "missing_projection", "non_p1", "closure",
+                                  "parent_catalog"))
 def test_current_head_cases_reject_a_wrong_revision_before_recovery(evidence, tmp_path, monkeypatch, case) -> None:
     monkeypatch.setattr(proof, "_metadata", lambda _owner: {"revision": "0019_p2_security_master"})
     deletes = []
     connection = _DeleteConnection()
     monkeypatch.setattr(connection, "execute", lambda *args: deletes.append(args) or SimpleNamespace(rowcount=1))
     monkeypatch.setattr(proof.psycopg, "connect", lambda *_args, **_kwargs: connection)
-    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(proof, "_ingest_completed_p1", lambda *_args: _batch())
     monkeypatch.setattr(proof, "_table_rows", lambda _owner: {})
     ledger = _Ledger(projection=_projection())
@@ -301,13 +333,16 @@ def test_current_head_cases_reject_a_wrong_revision_before_recovery(evidence, tm
         "completed_p1": lambda: proof.test_recover_completed_p1_projection_preserves_authority(_Owner(), tmp_path),
         "missing_projection": lambda: proof.test_recover_missing_completed_projection_cannot_lose_completion_fence(
             _Owner(), tmp_path),
+        "non_p1": lambda: proof.test_recover_missing_non_p1_completion_projection_is_not_fenced(_Owner(), tmp_path),
+        "closure": lambda: proof.test_repair_revision_accepts_c_new_and_rejects_the_prior_closure(_Owner(), tmp_path),
+        "parent_catalog": lambda: proof.test_repair_refuses_a_drifted_parent_catalog_and_changes_nothing(_Owner()),
     }[case]
 
     with pytest.raises(AssertionError, match="revision"):
         run()
 
     assert calls == [] and recovered == []
-    if case == "missing_projection":                         # no synthetic DELETE on an unverified schema either
+    if case in ("missing_projection", "non_p1", "parent_catalog"):   # no synthetic mutation on an unverified schema
         assert deletes == []
 
 
@@ -395,7 +430,7 @@ def _record_order(monkeypatch) -> list[str]:
     return order
 
 
-def test_current_head_cases_provision_p3_roles_at_0019_before_0032(evidence, monkeypatch) -> None:
+def test_current_head_cases_provision_p3_roles_at_0019_before_the_head(evidence, monkeypatch) -> None:
     order = _record_order(monkeypatch)
     monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
     monkeypatch.setattr(proof, "_table_rows", lambda _owner: {})
@@ -404,19 +439,19 @@ def test_current_head_cases_provision_p3_roles_at_0019_before_0032(evidence, mon
     with pytest.raises(EngineEventConflictError):
         proof.test_recover_engine_projections_is_idempotent_after_reconnect(_Owner())
 
-    assert order == ["upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"]
+    assert order == ["upgrade:0019_p2_security_master", "provision", "upgrade:0033_p3_core_closure_repair"]
 
 
-def test_revision_case_provisions_once_between_0019_and_0032(evidence, monkeypatch) -> None:
+def test_revision_case_provisions_once_between_0019_and_0032_and_not_again_for_0033(evidence, monkeypatch) -> None:
     order = _record_order(monkeypatch)
     monkeypatch.setattr(proof, "_ingest_generic", lambda *_args: None)
-    rows = [{"engine_run_id": proof.RUN_A, "event_count": 2, "last_sequence": 3}]
-    monkeypatch.setattr(proof, "_recover_directly", lambda _owner: {"result": "COMMITTED", "rows": rows})
+    _count_recoveries(monkeypatch, _defect_then_repair)
 
     proof.test_recover_engine_projections_at_required_revisions(_Owner())
 
     assert order == ["upgrade:0018_p1_paper_closure_rotation", "upgrade:0019_p2_security_master",
-                     "upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"]
+                     "upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness",
+                     "upgrade:0033_p3_core_closure_repair"]
 
 
 def test_sequential_databases_each_get_their_own_p3_bootstrap(evidence, monkeypatch) -> None:
@@ -427,4 +462,57 @@ def test_sequential_databases_each_get_their_own_p3_bootstrap(evidence, monkeypa
     for _database in ("A", "B"):
         proof._upgrade(reused, proof.CURRENT_HEAD)
 
-    assert order == ["upgrade:0019_p2_security_master", "provision", "upgrade:0032_p3_enqueue_freshness"] * 2
+    assert order == ["upgrade:0019_p2_security_master", "provision", f"upgrade:{proof.CURRENT_HEAD}"] * 2
+
+
+# 0033: the non-P1 control must commit (an over-broad fence fails it); the closure case must see the prior closure
+# refused with the exact metadata rejection and nothing persisted.
+def test_non_p1_control_fails_when_recovery_is_refused(evidence, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(proof, "_metadata", lambda _owner: {"revision": proof.CURRENT_HEAD})
+    monkeypatch.setattr(proof, "_ingest_generic", lambda *_args, **_kwargs: None)
+    _missing_projection_case(monkeypatch, recovery=_FENCE_ROLLBACK)
+
+    with pytest.raises(AssertionError, match="ROLLED_BACK"):
+        proof.test_recover_missing_non_p1_completion_projection_is_not_fenced(_Owner(), tmp_path)
+
+
+@pytest.mark.parametrize("prior_error", [
+    None,                                                                         # the prior closure was accepted
+    psycopg.errors.RaiseException("P1 event stream is incomplete"),               # refused for another reason
+], ids=["accepted", "other-reason"])
+def test_closure_case_needs_the_exact_refusal_of_the_prior_closure(evidence, tmp_path, monkeypatch, prior_error) -> None:
+    monkeypatch.setattr(proof, "_metadata", lambda _owner: {
+        "revision": proof.CURRENT_HEAD, "ingest_closure_pins": {"c_prior": 0, "c_new": 2}})
+    batches = {proof.C_PRIOR: SimpleNamespace(name="prior"), proof.C_NEW: _batch()}
+    monkeypatch.setattr(proof, "_p1_batch", lambda _root, closure: batches[closure])
+    monkeypatch.setattr(proof, "_table_rows", lambda _owner: {table: [] for table in proof.PROJECTION_TABLES})
+    monkeypatch.setattr(proof, "_owner_ledger", lambda _owner: (_Pool(), _Ledger(projection=_projection())))
+
+    def ingest_for_job(batch, *, claimed):
+        if getattr(batch, "name", None) == "prior" and prior_error is not None:
+            raise EngineEventConflictError("rejected") from prior_error
+        return SimpleNamespace(batch_sha256=getattr(batch, "sha256", None))
+
+    @contextmanager
+    def worker(_owner):
+        yield SimpleNamespace(engine_event_ingestor=lambda: SimpleNamespace(ingest_for_job=ingest_for_job)), None
+
+    monkeypatch.setattr(proof, "_p1_worker", worker)
+
+    with pytest.raises(AssertionError):
+        proof.test_repair_revision_accepts_c_new_and_rejects_the_prior_closure(_Owner(), tmp_path)
+
+
+def test_parent_catalog_control_fails_when_the_repair_applies_despite_drift(evidence, monkeypatch) -> None:
+    """Codex P2: the drift control passes only on the exact P2D08 refusal with nothing changed."""
+    parent = {"revision": proof.PRE_REPAIR_REVISIONS[-1], "session_catalog_sha256": proof.PARENT_SESSION_CATALOG_SHA256,
+              "function_definition_sha256": proof.RECOVERY_PRIOR_DEFINITION_SHA256,
+              "ingest_closure_pins": {"c_prior": 2, "c_new": 0}}
+    drifted = {**parent, "session_catalog_sha256": "d" * 64}
+    snapshots = iter((parent, drifted, drifted))
+    monkeypatch.setattr(proof, "_metadata", lambda _owner: next(snapshots))
+    monkeypatch.setattr(proof.psycopg, "connect", lambda *_args, **_kwargs: _DeleteConnection())
+
+    with pytest.raises(AssertionError, match="UPGRADED"):                 # the stub upgrade accepted the drift
+        proof.test_repair_refuses_a_drifted_parent_catalog_and_changes_nothing(_Owner())
+    assert '"UPGRADED"' in _recorded(evidence)

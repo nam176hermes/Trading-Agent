@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 35,
-      "maxItems": 35,
+      "minItems": 36,
+      "maxItems": 36,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -116,6 +116,7 @@
         {"$ref": "#/$defs/sourceBinding0030"},
         {"$ref": "#/$defs/sourceBinding0031"},
         {"$ref": "#/$defs/sourceBinding0032"},
+        {"$ref": "#/$defs/sourceBinding0033"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingP3Roles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
@@ -408,6 +409,12 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0032_p3_enqueue_freshness.py"}}}
+      ]
+    },
+    "sourceBinding0033": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0033_p3_core_closure_repair.py"}}}
       ]
     },
     "sourceBindingJobRoles": {
