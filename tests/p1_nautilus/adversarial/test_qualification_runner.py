@@ -139,7 +139,7 @@ def test_qualification_authority_binds_schema8_and_rejects_mixed_baseline(
     authority = qualification._qualification_authority()
     assert authority["p1_product_closure_schema"] == 8
     assert authority["p1_product_closure_sha256"] == (
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     )
     assert authority["operator_decision"] == "PROMOTE_1_231_FOR_P1"
     assert authority["legacy_phase4_profiles_unchanged"] is True

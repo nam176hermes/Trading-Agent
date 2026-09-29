@@ -112,7 +112,8 @@ SESSION_CATALOG_SQL = CUSTODIAN_CATALOG_SQL.replace("'event_outbox']",
 
 LEGACY_SESSION_REVISION = '0030_p3_session_terminal_fences'
 LEGACY_SESSION_CATALOG_SHA256 = '506071c06cdd91fe7e9506a03c15df10949e41f97f80dbbdd27c305aef3a82d4'
-SESSION_REVISION = '0032_p3_enqueue_freshness'
-# Observed from the real disposable upgrade and cross-lane disclosure test.
-SESSION_CATALOG_SHA256 = 'f5092b5f50e6f81aa504e8515d595e8a1e2cf1848c3e4375c8d9990dc2c83d9a'
+SESSION_REVISION = '0033_p3_core_closure_repair'
+# Observed at 0033 in SV01 GREEN issue 5 (ops 1-6, fresh databases; accepted). The 0032 catalog
+# f5092b5f... remains only as 0033's literal parent guard.
+SESSION_CATALOG_SHA256 = '894218b307c2c7748db0bd4183fa9528e04a735f1fad98e58066b26ab2432969'
 SESSION_CATALOGS = {LEGACY_SESSION_REVISION:LEGACY_SESSION_CATALOG_SHA256,SESSION_REVISION:SESSION_CATALOG_SHA256}

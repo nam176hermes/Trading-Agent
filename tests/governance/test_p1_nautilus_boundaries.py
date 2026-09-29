@@ -119,7 +119,7 @@ def test_current_p1_lineage_is_p1_1231_with_unchanged_legacy_1227() -> None:
     assert report["verdict"] == "PASS"
     assert report["p1_engine_version"] == "1.231.0"
     assert report["p1_product_closure_sha256"] == (
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     )
     assert report["p1_product_policy_sha256"] == (
         "b3481f3202c1a6517cb24dcea6df253e41d0b1222106e72c7de4cc75e5b238b2"

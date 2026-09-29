@@ -48,7 +48,7 @@ def test_paper_qualification_binds_exact_p1_authority(
     assert receipt["paper_protocol"] == "nautilus-paper-session-v2"
     assert receipt["p1_product_closure_schema"] == 8
     assert receipt["p1_product_closure_sha256"] == (
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     )
     assert receipt["p1_29_source_commit"] == qualification.P1_29_COMMIT
     assert receipt["p1_29_source_tree"] == qualification.P1_29_TREE

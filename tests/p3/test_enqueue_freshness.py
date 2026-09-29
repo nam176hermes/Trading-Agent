@@ -47,7 +47,7 @@ def test_enqueue_rereads_local_authority_inside_transaction(monkeypatch,fault):
     class Connection(_Connection):
         def execute(self,sql,parameters=None):
             if 'version_num' in sql:
-                return _Result({'version_num':'0031_p3_local_identity' if fault=='obsolete_catalog' else '0032_p3_enqueue_freshness'})
+                return _Result({'version_num':'0031_p3_local_identity' if fault=='obsolete_catalog' else '0033_p3_core_closure_repair'})
             if 'api_read_p3_enqueue_authority' in sql:
                 if fault=='missing_acceptance':return _Result(None)
                 return _Result({'authorization_text':canonical_json_bytes(auth).decode(),
@@ -69,7 +69,7 @@ def test_enqueue_rereads_local_authority_inside_transaction(monkeypatch,fault):
         assert connection.transaction_events[-1][1] is None
 
 
-@pytest.mark.parametrize('revision',['0026_p3_holdout_disclosure','0030_p3_session_terminal_fences','0032_p3_enqueue_freshness'])
+@pytest.mark.parametrize('revision',['0026_p3_holdout_disclosure','0030_p3_session_terminal_fences','0033_p3_core_closure_repair'])
 def test_hosted_admission_does_not_require_local_profile(monkeypatch,revision):
     from packages.alpha_lifecycle.contracts.authority import RunAuthorization
     from services.job_worker.p3_operation_fixture import _authorization
@@ -98,7 +98,7 @@ def test_local_fixture_admission_has_no_operation_intent(monkeypatch):
     data.update(schema_version='p3-local-fixture-authorization-v1',fixture_plan_ref=request.payload.manifest_ref,operation='PARITY')
     auth=authority.FIXTURE_AUTHORIZATION.validate_json(_sealed(data))
     payload=authority.build_alpha_campaign_payload(auth,request.payload.expected_source,'p3-integration-fixture-v1')
-    connection=_Connection({'version_num':'0032_p3_enqueue_freshness'},
+    connection=_Connection({'version_num':'0033_p3_core_closure_repair'},
         {'authorization_text':canonical_json_bytes(auth).decode(),'intent_text':None})
     protected=SimpleNamespace(authorization=auth,operation_input=None)
     monkeypatch.setattr('services.job_store.p3_enqueue.validate_local_operation_authority',lambda *a,**k:protected)

@@ -92,9 +92,11 @@ access. Use distinct approved accounts; actual UIDs must be observed, not assume
 
 Provision a new isolated rehearsal database through reviewed owner credentials;
 apply the existing migration chain and new forward-only
-`0031_p3_local_identity`, then `0032_p3_enqueue_freshness`. Their parent and final
-catalogs are pinned in source. Current LOCAL admission requires0032; old0031
-is held, while historical hosted0026/0030 code paths remain explicit. The API
+`0031_p3_local_identity`, `0032_p3_enqueue_freshness`, then
+`0033_p3_core_closure_repair` (projection-recovery repair and the P1 closure
+rotation to `C_new`). Their parent and final catalogs are pinned in source.
+Current LOCAL admission requires 0033; old 0031 and 0032 are held, while
+historical hosted 0026/0030 code paths remain explicit. The API
 reads only accepted authority through its scoped SQL reader, validates current
 LOCAL request/prerequisites before enqueue and again before transaction commit.
 A rejection rolls back jobs, events and authorization bindings. This is an API

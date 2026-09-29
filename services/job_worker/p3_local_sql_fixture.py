@@ -21,7 +21,7 @@ from .p3_holdout_fixture import _inputs, _seed, CONSUME
 from .p3_operation_fixture import _rejected, _sealed
 from .recovery import ProcessIdentity, ProcProcessInspector
 
-REVISION='0032_p3_enqueue_freshness'
+REVISION='0033_p3_core_closure_repair'
 
 
 def check_local_identity(sock: Path,name: str,source) -> dict[str,object]:

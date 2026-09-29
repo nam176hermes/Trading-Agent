@@ -436,7 +436,7 @@ def test_exact_g1_streaming_paper_runtime_matches_one_shot(tmp_path: Path) -> No
         product_lineage = Path(product_lineage_value)
         lineage_document = json.loads(product_lineage.read_bytes())
         assert lineage_document["closure_sha256"] == (
-            "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+            "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
         )
         commands = _native_commands()
         command_stream = tmp_path / "commands.bin"

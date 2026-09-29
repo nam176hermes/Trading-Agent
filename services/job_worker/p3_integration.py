@@ -44,7 +44,7 @@ class FixturePlan(_FixturePlanFields):
 
 class LocalFixturePlan(_FixturePlanFields):
     schema_version: Literal['p3-local-integration-fixture-plan-v1']
-    sql_revision: Literal['0032_p3_enqueue_freshness']
+    sql_revision: Literal['0033_p3_core_closure_repair']
 
 
 FIXTURE_PLAN=TypeAdapter(Annotated[FixturePlan | LocalFixturePlan,Field(discriminator='schema_version')])

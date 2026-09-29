@@ -33,7 +33,7 @@ from packages.nautilus_upgrade_authority.lifecycle import (
 )
 
 
-_EXPECTED_POLICY_SHA256 = "3f5055e2db482da951b3d27a7a489623e8f8ec9b0a7bd2848e220ffcd30363e0"
+_EXPECTED_POLICY_SHA256 = "0ead8a01f1cda4858cc30970edac0a6dc9498e85f032fb4709346b6aa6b4c551"
 _SHA256 = r"^[0-9a-f]{64}$"
 _COMMIT = r"^[0-9a-f]{40}$"
 

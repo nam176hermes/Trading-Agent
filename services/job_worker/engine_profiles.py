@@ -38,7 +38,7 @@ class EngineProfilePolicy:
 P1_REAL_BACKTEST_POLICY = EngineProfilePolicy(
     profile=P1_REAL_BACKTEST_PROFILE,
     closure_sha256=(
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     ),
     semantic_profile=P1_REAL_BACKTEST_SEMANTIC_PROFILE,
     command_type="RunBacktest",

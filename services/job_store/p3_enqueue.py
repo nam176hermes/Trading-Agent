@@ -14,7 +14,7 @@ def read_enqueue_authority(connection, payload):
     row=connection.execute('SELECT version_num FROM public.alembic_version').fetchone()
     if row and row['version_num'] in {'0026_p3_holdout_disclosure','0030_p3_session_terminal_fences'}:
         return None
-    if not row or row['version_num']!='0032_p3_enqueue_freshness':
+    if not row or row['version_num']!='0033_p3_core_closure_repair':
         raise JobStoreError('P3 enqueue authority catalog is unavailable')
     row=connection.execute('SELECT * FROM job_plane.api_read_p3_enqueue_authority(%s)',
         (canonical_json_bytes(payload).decode(),)).fetchone()
