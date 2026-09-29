@@ -429,7 +429,8 @@ test('a partial write by one process never invalidates another process record (a
     const script = writerScript(20);
     const child = limitKiB
       ? spawn('/bin/bash', ['-c', `ulimit -f ${limitKiB}; exec "$0" --input-type=module -e "$1"`, process.execPath, script],
-        { env: process.env })
+        // RLIMIT_FSIZE would also cut an inherited V8 coverage file short; the empty value keeps node from re-adding it.
+        { env: { ...process.env, NODE_V8_COVERAGE: '' } })
       : spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env });
     let out = '';
     child.stdout.on('data', (chunk) => { out += chunk; });
