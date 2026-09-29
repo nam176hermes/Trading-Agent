@@ -57,6 +57,7 @@ POSTGRES_EXECUTABLES = frozenset(
 
 _AUTHORITY_TOKEN = object()
 _PLANNED_SLOT_COUNTERS: dict[tuple[str, str, str], int] = {}
+FIXTURE_PLAN_REQUIRED_ENV = "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"
 
 
 class _ReviewedSqlSnapshot(NamedTuple):
@@ -1308,6 +1309,18 @@ def _approval_inputs(
     return record, scope, operation_id
 
 
+def _fixture_plan_required() -> bool:
+    """An owner lane sets YES: every session then takes an approved plan slot, whatever its caller asked for."""
+    value = os.environ.get(FIXTURE_PLAN_REQUIRED_ENV)
+    if value is None:
+        return False
+    if value != "YES":
+        raise DisposablePostgresApprovalRejected(
+            "disposable PostgreSQL fixture plan requirement is not exact"
+        )
+    return True
+
+
 def _require_paper_safety_environment() -> None:
     expected = {
         "TRADING_TEST_REQUESTED_MODE": "paper",
@@ -1559,6 +1572,7 @@ def _disposable_postgres_session(
     """Yield a private capability for one validated disposable cluster."""
 
     record, scope, stable_operation_id = _approval_inputs(operation_id)
+    planned = _fixture_plan_required() or planned     # validate the requirement even when the caller plans
     source_commit, source_tree = _current_source_identity()
     _require_current_source_matches_approval(
         record, source_commit, source_tree,
@@ -1626,5 +1640,6 @@ def disposable_postgres_cluster(
     with _disposable_postgres_session(
         operation_id=operation_id,
         red_sql_file=red_sql_file,
+        expected_lifecycle_actions=lifecycle_actions_for("CLUSTER"),
     ) as session:
         yield _public_cluster(session)

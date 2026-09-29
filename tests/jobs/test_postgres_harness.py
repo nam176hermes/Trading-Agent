@@ -1664,3 +1664,140 @@ def test_p3_role_bootstrap_matches_the_p3_fixtures_statements() -> None:
         "p3_fixture_sql.py", "p3_operation_fixture.py", "p3_custodian_fixture.py"))
     for statement in statements:
         assert statement in fixtures                            # the fixtures' own bootstrap, no drift
+
+
+FIXTURE_PLAN_REQUIRED = "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"
+_REQUIRED_SQL = ROOT / "ops/postgres/provision-roles.sql"
+
+
+def _required_entrypoints():
+    """Every session opener with its default arguments: none of them asks for a plan by itself."""
+    return (
+        pytest.param(GREEN_SCOPE_NAME, lambda: disposable_database(operation_id=OPERATION_ID), id="database"),
+        pytest.param(GREEN_SCOPE_NAME, lambda: disposable_restore_workflow(operation_id=OPERATION_ID), id="restore"),
+        pytest.param(RED_SCOPE, lambda: _postgres.disposable_red_derivation_database(
+            operation_id=OPERATION_ID, red_sql_file=_REQUIRED_SQL), id="red-derivation"),
+        pytest.param(GREEN_SCOPE_NAME, lambda: _postgres.disposable_legacy_database(operation_id=OPERATION_ID),
+                     id="legacy"),
+        pytest.param(GREEN_SCOPE_NAME, lambda: disposable_postgres_cluster(operation_id=OPERATION_ID), id="cluster"),
+        pytest.param(GREEN_SCOPE_NAME, lambda: _postgres._disposable_postgres_session(operation_id=OPERATION_ID),
+                     id="direct-session"),
+    )
+
+
+GREEN_SCOPE_NAME = "DISPOSABLE_PG_GREEN"
+
+
+def _required_controls(monkeypatch, protected_record_dir, scope):
+    document = _red_record(_REQUIRED_SQL) if scope == RED_SCOPE else build_record()
+    approval = write_record(protected_record_dir / "approval.json", document)
+    _set_controls(monkeypatch, approval, scope=scope)
+    monkeypatch.setenv(FIXTURE_PLAN_REQUIRED, "YES")
+    monkeypatch.setattr(_postgres, "_PLANNED_SLOT_COUNTERS", {})
+    return document
+
+
+def _required_plan(protected_record_dir, document, kind, slots=2):
+    plan_document = fixture_plan(document)
+    plan_document["greenlight"]["operation_lifecycles"][0]["lifecycle_actions"] = list(  # type: ignore[index]
+        lifecycle_actions_for(kind))
+    plan_document["slots"] = plan_document["slots"][:slots]  # type: ignore[index]
+    plan_document["canonical_record_sha256"] = fixture_plan_sha256(plan_document)
+    plan = protected_record_dir / "fixture-plan.json"
+    plan.write_text(json.dumps(plan_document), encoding="utf-8")
+    plan.chmod(0o600)
+    return plan
+
+
+def _phase4_roots():
+    return set(Path("/tmp").glob("phase4-postgres-*"))
+
+
+@pytest.mark.parametrize("plan_value", [None, "/tmp/phase4-missing-fixture-plan/plan.json"])
+@pytest.mark.parametrize(("scope", "opener"), _required_entrypoints())
+def test_required_plan_mode_stops_every_entrypoint_before_initdb_without_a_plan(
+    scope, opener, plan_value, protected_record_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _required_controls(monkeypatch, protected_record_dir, scope)
+    if plan_value is None:
+        monkeypatch.delenv("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", raising=False)
+    else:
+        monkeypatch.setenv("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", plan_value)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    sessions: list[object] = []
+    _install_mocked_postgres_boundary(monkeypatch, calls, sessions)
+    before = _phase4_roots()
+    with pytest.raises(DisposablePostgresApprovalRejected):
+        with opener():
+            pass
+    assert calls == [] and sessions == []
+    assert _phase4_roots() == before
+
+
+@pytest.mark.parametrize(("scope", "opener", "kind"), (
+    (GREEN_SCOPE_NAME, lambda: disposable_database(operation_id=OPERATION_ID), "MIGRATE"),
+    (GREEN_SCOPE_NAME, lambda: _postgres.disposable_legacy_database(operation_id=OPERATION_ID), "MIGRATE"),
+    (GREEN_SCOPE_NAME, lambda: disposable_postgres_cluster(operation_id=OPERATION_ID), "CLUSTER"),
+    (GREEN_SCOPE_NAME, lambda: _postgres._disposable_postgres_session(
+        operation_id=OPERATION_ID, expected_lifecycle_actions=lifecycle_actions_for("RESTORE")), "RESTORE"),
+))
+def test_required_plan_mode_puts_default_callers_on_the_planned_slot_and_stops_when_slots_run_out(
+    scope, opener, kind, protected_record_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _required_controls(monkeypatch, protected_record_dir, scope)
+    monkeypatch.setenv("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", str(_required_plan(protected_record_dir, document, kind, 1)))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    sessions: list[object] = []
+    _install_mocked_postgres_boundary(monkeypatch, calls, sessions)
+    monkeypatch.setattr(_postgres, "_provision_base_roles", lambda session: None)
+    monkeypatch.setattr(_postgres, "_prepare_disposable_database", lambda session, **_: None)
+    expected_root = Path("/tmp/phase4-postgres-fixture-plan-01")
+    with opener():
+        assert sessions[0].root == expected_root and sessions[0].authority.context.port == 49152
+    assert not expected_root.exists()
+    initdb_calls = len(calls)
+    with pytest.raises(DisposablePostgresApprovalRejected, match="no unused exact slot"):
+        with opener():
+            pass
+    assert len(calls) == initdb_calls and len(sessions) == 1
+
+
+def test_required_plan_mode_rejects_a_direct_session_without_a_lifecycle_before_initdb(
+    protected_record_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _required_controls(monkeypatch, protected_record_dir, GREEN_SCOPE_NAME)
+    monkeypatch.setenv("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", str(_required_plan(protected_record_dir, document, "MIGRATE")))
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    sessions: list[object] = []
+    _install_mocked_postgres_boundary(monkeypatch, calls, sessions)
+    with pytest.raises(DisposablePostgresApprovalRejected, match="lacks an exact lifecycle binding"):
+        with _postgres._disposable_postgres_session(operation_id=OPERATION_ID):
+            pass
+    assert calls == [] and sessions == []
+
+
+@pytest.mark.parametrize("value", ["yes", "1", "NO"])
+def test_the_plan_requirement_accepts_only_yes(value, protected_record_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _required_controls(monkeypatch, protected_record_dir, GREEN_SCOPE_NAME)
+    monkeypatch.setenv(FIXTURE_PLAN_REQUIRED, value)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    _install_mocked_postgres_boundary(monkeypatch, calls, [])
+    with pytest.raises(DisposablePostgresApprovalRejected, match="fixture plan requirement is not exact"):
+        with disposable_postgres_cluster(operation_id=OPERATION_ID):
+            pass
+    assert calls == []
+
+
+@pytest.mark.parametrize("value", ["yes", "NO"])
+def test_the_plan_requirement_is_validated_even_when_the_caller_already_plans(
+    value, protected_record_dir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _required_controls(monkeypatch, protected_record_dir, GREEN_SCOPE_NAME)
+    monkeypatch.setenv(FIXTURE_PLAN_REQUIRED, value)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    sessions: list[object] = []
+    _install_mocked_postgres_boundary(monkeypatch, calls, sessions)
+    with pytest.raises(DisposablePostgresApprovalRejected, match="fixture plan requirement is not exact"):
+        with disposable_database(operation_id=OPERATION_ID, planned=True):
+            pass
+    assert calls == [] and sessions == []

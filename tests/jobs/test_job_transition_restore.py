@@ -34,6 +34,7 @@ from packages.restore_proof_failure_codes import (
     RESTORE_PROOF_REPORTABLE_FAILURE_CODES as STANDALONE_RESTORE_PROOF_REPORTABLE_FAILURE_CODES,
     extract_restore_proof_failure_code,
 )
+from scripts.validate_disposable_postgres_fixture_plan import lifecycle_actions_for
 from tests.jobs._postgres import (
     _disposable_postgres_session,
     _prepare_empty_restore_target,
@@ -2483,7 +2484,8 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
 
     with _guard_restore_proof_stage(RESTORE_PROOF_SOURCE_PREPARATION_DUMP_FAILURE):
         with _disposable_postgres_session(
-            operation_id=RESTORE_OPERATION_ID
+            operation_id=RESTORE_OPERATION_ID,
+            expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
         ) as source_session:
             source_owner = _prepare_disposable_database(source_session)
             _upgrade_to_revision(source_owner, EXACT_HEAD)
@@ -2512,7 +2514,8 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                     RESTORE_PROOF_TARGET_BOOTSTRAP_DROP_FAILURE
                 ):
                     with _disposable_postgres_session(
-                        operation_id=RESTORE_OPERATION_ID
+                        operation_id=RESTORE_OPERATION_ID,
+                        expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
                     ) as target_session:
                         _assert_restore_proof_equal(
                             source_session.root == target_session.root,

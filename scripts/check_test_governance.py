@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import hashlib
 import json
 import os
 import re
@@ -16,6 +18,10 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from scripts import t_g03_capability_topology as capability_topology
+from scripts.validate_disposable_postgres_approval import (
+    DisposablePostgresApprovalRejected,
+    load_protected_approval_record,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +65,36 @@ REQUIRED_FIELDS = frozenset(
 INVENTORY_OUTCOMES = frozenset({"skipped", "deselected"})
 OBSERVED_OUTCOMES = frozenset({"passed", "failed", "skipped", "deselected", "not_run"})
 OBSERVATION_PHASES = frozenset({"collection", "setup", "call", "teardown", "report"})
+DEFAULT_POSTGRES_LANE_PLAN = ROOT / "tests/postgres-authority-lanes.json"
+POSTGRES_LANE_SCOPES = frozenset({"DISPOSABLE_PG_GREEN", "DISPOSABLE_PG_RED"})
+POSTGRES_LANE_INPUT_KEYS = frozenset({
+    "TRADING_TEST_DISPOSABLE_APPROVAL_RECORD",
+    "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN",
+    "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR",
+    "TRADING_TEST_POSTGRES_EVIDENCE_DIR",
+})
+POSTGRES_AUTHORITY_ENVIRONMENT = POSTGRES_LANE_INPUT_KEYS | {
+    "TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES",
+    "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE",
+    "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED",
+}
+POSTGRES_LANE_PAPER_ENVIRONMENT = {
+    "TRADING_TEST_REQUESTED_MODE": "paper",
+    "TRADING_TEST_EFFECTIVE_MODE": "paper",
+    "LIVE_EXECUTION_ENABLED": "false",
+    "LIVE_TRADING_APPROVED": "false",
+    "LIVE_TRADING_ENABLED": "false",
+    "TRADING_TEST_KILL_SWITCH": "INACTIVE",
+}
+POSTGRES_AUTHORITY_ABSENT_REASONS = frozenset({     # the harness's exact skips when a run carries no authority
+    "explicit disposable PostgreSQL authority is not present",
+    "exact disposable PostgreSQL authority is not present",
+    "exact disposable PostgreSQL GREEN authority is not present",
+    "exact disposable PostgreSQL RED authority is not present",
+    "exact disposable PostgreSQL RED evidence authority is not present",
+    "exact disposable PostgreSQL GREEN restore authority is absent",
+})
+ROOT_PYTEST_MARKERS = "not runtime_postgres and not host_coupled"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -376,6 +412,191 @@ def build_governed_report(
         "postgres_disclosure": postgres_disclosure,
         "tests": tests,
     }
+
+
+def validate_postgres_lane_plan(document: object) -> dict[str, Any]:
+    """Every authority node in exactly one lane whose scope and single RED SQL binding fit its operations."""
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"schema_version", "lanes", "nodes"}
+        or document["schema_version"] != "postgres-authority-lanes/v1"
+        or not isinstance(document["lanes"], list)
+        or not isinstance(document["nodes"], list)
+    ):
+        raise GovernanceError("lane plan fields are not exact")
+    lanes: dict[str, dict[str, Any]] = {}
+    for lane in document["lanes"]:
+        if (
+            not isinstance(lane, dict)
+            or set(lane) != {"lane_id", "scope", "red_sql_operation", "red_sql_path"}
+            or not isinstance(lane["lane_id"], str)
+            or lane["scope"] not in POSTGRES_LANE_SCOPES
+            or (lane["red_sql_operation"] is None) != (lane["red_sql_path"] is None)
+        ):
+            raise GovernanceError("lane plan fields are not exact")
+        if lane["lane_id"] in lanes:
+            raise GovernanceError("lane ids must be unique")
+        if lane["scope"] == "DISPOSABLE_PG_GREEN" and lane["red_sql_operation"] is not None:
+            raise GovernanceError(f"GREEN lane {lane['lane_id']} cannot carry a RED SQL binding")
+        lanes[lane["lane_id"]] = lane
+    bindings: dict[str, set[tuple[str, str]]] = {lane_id: set() for lane_id in lanes}
+    assigned: set[str] = set()
+    for node in document["nodes"]:
+        if (
+            not isinstance(node, dict)
+            or set(node) != {"test_node_id", "lane_id", "operations"}
+            or not isinstance(node["test_node_id"], str)
+            or not isinstance(node["operations"], list)
+            or not node["operations"]
+        ):
+            raise GovernanceError("lane plan fields are not exact")
+        node_id = node["test_node_id"]
+        if node_id in assigned:
+            raise GovernanceError(f"{node_id} is assigned more than once")
+        assigned.add(node_id)
+        lane = lanes.get(node["lane_id"])
+        if lane is None:
+            raise GovernanceError(f"{node_id} names unknown lane {node['lane_id']}")
+        for operation in node["operations"]:
+            if (
+                not isinstance(operation, dict)
+                or set(operation) != {"operation_id", "scope", "red_sql_path"}
+                or not isinstance(operation["operation_id"], str)
+                or operation["scope"] not in POSTGRES_LANE_SCOPES | {"GREEN_OR_RED"}
+                or (operation["red_sql_path"] is not None and operation["scope"] != "DISPOSABLE_PG_RED")
+            ):
+                raise GovernanceError("lane plan fields are not exact")
+            if operation["scope"] not in {lane["scope"], "GREEN_OR_RED"}:
+                raise GovernanceError(
+                    f"{node_id} requires {operation['scope']} but lane {lane['lane_id']} is {lane['scope']}"
+                )
+            if operation["red_sql_path"] is not None:
+                bindings[lane["lane_id"]].add((operation["operation_id"], operation["red_sql_path"]))
+    for lane_id, lane in lanes.items():
+        declared = set() if lane["red_sql_operation"] is None else {(lane["red_sql_operation"], lane["red_sql_path"])}
+        if bindings[lane_id] != declared:
+            needed = ", ".join(sorted(operation for operation, _ in bindings[lane_id])) or "none"
+            raise GovernanceError(
+                f"lane {lane_id} needs RED SQL bindings for {needed} but declares {lane['red_sql_operation']}"
+            )
+    return document
+
+
+_LABEL = "{0}::{1}".format
+_BASE_FIELDS = frozenset({"test_node_id", "component", "outcome", "reason", "phase"})
+
+
+def _postgres_lane_problems(
+    lane: dict[str, Any],
+    result: dict[str, Any],
+    assigned: set[tuple[str, str]],
+    source: dict[str, str],
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Every problem one lane shows, plus its PASS records; the runner stops on any problem."""
+    lane_id = lane["lane_id"]
+    if "not_started" in result:
+        return [f"lane {lane_id} was not started: {result['not_started']}"], []
+    problems: list[str] = []
+    exit_code = result.get("exit_code")
+    if exit_code != 0:
+        problems.append(f"lane {lane_id} exited {exit_code}")
+    if result.get("source_before") != source or result.get("source_after") != source:
+        problems.append(f"lane {lane_id} did not run on the candidate source")
+    if result.get("approval_scope") != lane["scope"]:
+        problems.append(f"lane {lane_id} approval scope {result.get('approval_scope')} differs from {lane['scope']}")
+    if result.get("approval_red_sql_operation") != lane["red_sql_operation"]:
+        problems.append(
+            f"lane {lane_id} approval binds {result.get('approval_red_sql_operation')}, "
+            f"not {lane['red_sql_operation']}"
+        )
+    if result.get("new_cluster_roots"):
+        problems.append(f"lane {lane_id} left disposable cluster roots: {', '.join(result['new_cluster_roots'])}")
+    report = result.get("report")
+    if not isinstance(report, dict) or not isinstance(report.get("tests"), list):
+        problems.append(f"lane {lane_id} has no raw report")
+        return problems, []
+    if report.get("component") != "root" or report.get("collection_only") is not False:
+        problems.append(f"lane {lane_id} raw report is not a root execution report")
+    if report.get("pytest_exit_status") != exit_code:
+        problems.append(
+            f"lane {lane_id} report exit status {report.get('pytest_exit_status')} "
+            f"differs from process exit {exit_code}"
+        )
+    passed: list[dict[str, object]] = []
+    observed: set[tuple[str, str]] = set()
+    for index, item in enumerate(report["tests"]):
+        if not isinstance(item, dict) or not {"test_node_id", "component", "outcome", "phase"} <= set(item):
+            problems.append(f"lane {lane_id} raw record {index} is invalid")
+            continue
+        record = dict(item)
+        key = _entry_key(record)
+        if key in observed:
+            problems.append(f"lane {lane_id} observed {_LABEL(*key)} more than once")
+            continue
+        observed.add(key)
+        if key not in assigned:
+            problems.append(f"lane {lane_id} observed unassigned {_LABEL(*key)}")
+        elif record["outcome"] != "passed" or record["phase"] != "call":
+            problems.append(f"lane {lane_id} {_LABEL(*key)} is {record['outcome']} in {record['phase']}")
+        else:
+            passed.append({**record, "postgres_lane": lane_id})
+    problems.extend(f"lane {lane_id} did not observe {_LABEL(*key)}" for key in sorted(assigned - observed))
+    return problems, passed
+
+
+def _assigned_nodes(plan: dict[str, Any], lane_id: str) -> set[tuple[str, str]]:
+    return {("root", node["test_node_id"]) for node in plan["nodes"] if node["lane_id"] == lane_id}
+
+
+def merge_postgres_lanes(
+    base_records: Sequence[dict[str, object]],
+    plan: dict[str, Any],
+    lane_results: dict[str, dict[str, Any]],
+    *,
+    source: dict[str, str],
+) -> list[dict[str, object]]:
+    """Replace each planned authority-absent skip with a PASS from its own lane; report every gap together."""
+    problems: list[str] = []
+    planned = {("root", node["test_node_id"]) for node in plan["nodes"]}
+    merged: list[dict[str, object]] = []
+    in_base: set[tuple[str, str]] = set()
+    for index, raw in enumerate(base_records):
+        if not isinstance(raw, dict) or not _BASE_FIELDS <= set(raw):
+            problems.append(f"base run record {index} is invalid")
+            continue
+        key = _entry_key(raw)
+        if key not in planned:
+            merged.append(dict(raw))
+            continue
+        if key in in_base:
+            problems.append(f"base run observed {_LABEL(*key)} more than once")
+            continue
+        in_base.add(key)
+        if (
+            raw["outcome"] != "skipped"
+            or raw["reason"] not in POSTGRES_AUTHORITY_ABSENT_REASONS
+            or raw["phase"] not in {"setup", "call"}
+        ):
+            problems.append(
+                f"base run observed {_LABEL(*key)} as {raw['outcome']} in {raw['phase']}, "
+                "not the authority-absent skip"
+            )
+    problems.extend(f"base run did not observe {_LABEL(*key)}" for key in sorted(planned - in_base))
+    problems.extend(
+        f"result for unplanned lane {lane_id}"
+        for lane_id in sorted(set(lane_results) - {lane["lane_id"] for lane in plan["lanes"]})
+    )
+    for lane in plan["lanes"]:
+        result = lane_results.get(lane["lane_id"])
+        if result is None:
+            problems.append(f"lane {lane['lane_id']} has no result")
+            continue
+        lane_problems, passed = _postgres_lane_problems(lane, result, _assigned_nodes(plan, lane["lane_id"]), source)
+        problems.extend(lane_problems)
+        merged.extend(passed)
+    if problems:
+        raise GovernanceError("postgres authority lanes failed: " + "; ".join(problems))
+    return merged
 
 
 def build_final_governed_summary(
@@ -843,6 +1064,122 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
     return max(node_exit_status, integration_exit_status), report_path
 
 
+def load_postgres_lane_inputs(path: Path, plan: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """External per-lane authority inputs: exactly the planned lanes, only harness input keys, absolute paths."""
+    if path.resolve().is_relative_to(ROOT.resolve()):
+        raise GovernanceError("lane inputs must remain outside the source checkout")
+    document = _read_json(path)
+    if not isinstance(document, dict) or set(document) != {lane["lane_id"] for lane in plan["lanes"]}:
+        raise GovernanceError("lane inputs must name exactly the planned lanes")
+    for lane_id, inputs in document.items():
+        if (
+            not isinstance(inputs, dict)
+            or not set(inputs) <= POSTGRES_LANE_INPUT_KEYS
+            or not {"TRADING_TEST_DISPOSABLE_APPROVAL_RECORD", "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"} <= set(inputs)
+            or not all(
+                isinstance(value, str)
+                and Path(value).is_absolute()
+                and not Path(value).resolve().is_relative_to(ROOT.resolve())
+                for value in inputs.values()
+            )
+        ):
+            raise GovernanceError(f"lane {lane_id} inputs are not exact")
+    return document
+
+
+def _require_authority_free_base() -> None:
+    if POSTGRES_AUTHORITY_ENVIRONMENT & set(os.environ):
+        raise GovernanceError("base run must not inherit disposable PostgreSQL authority")
+
+
+def _postgres_lane_environment(lane: dict[str, Any], inputs: dict[str, str], report: Path) -> dict[str, str]:
+    env = _pytest_environment("root", report)
+    for name in POSTGRES_AUTHORITY_ENVIRONMENT:
+        env.pop(name, None)
+    env.update(inputs)
+    env.update(POSTGRES_LANE_PAPER_ENVIRONMENT)
+    env["TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES"] = "YES"
+    env["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] = lane["scope"]
+    env["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"] = "YES"      # every session takes an approved plan slot
+    return env
+
+
+def _candidate_source() -> dict[str, str]:
+    def git(*args: str) -> bytes:
+        return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, check=True).stdout
+
+    return {
+        "commit_sha": git("rev-parse", "HEAD").decode("ascii").strip(),
+        "tree_sha": git("rev-parse", "HEAD^{tree}").decode("ascii").strip(),
+        "status_sha256": hashlib.sha256(git("status", "--porcelain=v1", "-z", "--untracked-files=all")).hexdigest(),
+    }
+
+
+def _disposable_cluster_roots() -> set[str]:
+    return set(glob.glob("/tmp/phase4-postgres-*"))
+
+
+def _approval_binding(record_path: str) -> tuple[object, object]:
+    try:
+        record = load_protected_approval_record(Path(record_path))
+    except DisposablePostgresApprovalRejected:
+        return None, None
+    binding = record.get("red_sql_binding")
+    return record.get("scope"), binding.get("operation_id") if isinstance(binding, dict) else None
+
+
+def run_postgres_lanes(
+    report_dir: Path,
+    plan: dict[str, Any],
+    lane_inputs: dict[str, dict[str, str]],
+    *,
+    source: dict[str, str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    """Run each lane on exactly its planned nodes; keep every raw report, log and exit status.
+
+    A lane that is not clean (exit, signal, report, source, record or leftover root) stops the run: no further
+    PostgreSQL lane is launched to collect more errors, and the remaining lanes are recorded as not started.
+    """
+    _prepare_private_directory(report_dir)
+    results: dict[str, dict[str, Any]] = {}
+    exit_codes: dict[str, int] = {}
+    for lane in plan["lanes"]:
+        lane_id = lane["lane_id"]
+        inputs = lane_inputs[lane_id]
+        raw = report_dir / f"root-postgres-{lane_id}-raw.json"
+        _remove_artifacts(raw)
+        nodes = [node["test_node_id"] for node in plan["nodes"] if node["lane_id"] == lane_id]
+        scope, red_operation = _approval_binding(inputs["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"])
+        roots_before = _disposable_cluster_roots()
+        source_before = _candidate_source()
+        exit_code = _run(
+            ["uv", "run", "pytest", "-q", "-m", ROOT_PYTEST_MARKERS, "-p", "scripts.test_governance_pytest", *nodes],
+            cwd=ROOT,
+            env=_postgres_lane_environment(lane, inputs, raw),
+            log_path=report_dir / f"root-postgres-{lane_id}.log",
+        )
+        exit_codes[f"root-postgres-{lane_id}"] = exit_code
+        try:
+            report = _read_json(raw)
+        except GovernanceError:
+            report = None
+        results[lane_id] = {
+            "exit_code": exit_code,
+            "report": report,
+            "source_before": source_before,
+            "source_after": _candidate_source(),
+            "approval_scope": scope,
+            "approval_red_sql_operation": red_operation,
+            "new_cluster_roots": sorted(_disposable_cluster_roots() - roots_before),
+        }
+        problems, _passed = _postgres_lane_problems(lane, results[lane_id], _assigned_nodes(plan, lane_id), source)
+        if problems:
+            for remaining in plan["lanes"][len(results):]:
+                results[remaining["lane_id"]] = {"not_started": f"lane {lane_id} stopped the run"}
+            break
+    return results, exit_codes
+
+
 def run_suites(report_dir: Path) -> tuple[list[dict[str, object]], dict[str, int]]:
     _prepare_private_directory(report_dir)
     raw_paths = {
@@ -1206,6 +1543,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--topology-evidence-root", type=Path)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--foundation-context-path", type=Path)
+    parser.add_argument("--postgres-lanes", type=Path)
     args = parser.parse_args(argv)
 
     report_dir = args.report_dir if args.report_dir.is_absolute() else ROOT / args.report_dir
@@ -1240,6 +1578,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap_path = ROOT / bootstrap_path
         if args.topology_context_preflight and not args.topology_audit:
             raise GovernanceError("topology context preflight requires topology audit")
+        if args.postgres_lanes is not None and args.topology_audit:
+            raise GovernanceError("postgres lanes are not part of the topology audit")
         if args.topology_audit:
             context_path = args.foundation_context_path
             if context_path is not None:
@@ -1326,6 +1666,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 foundation_head_sha=foundation_head_sha,
                 foundation_context_path=context_path,
             )
+        elif args.postgres_lanes is not None:
+            plan = validate_postgres_lane_plan(_read_json(DEFAULT_POSTGRES_LANE_PLAN))
+            lane_inputs = load_postgres_lane_inputs(args.postgres_lanes.absolute(), plan)
+            _require_authority_free_base()
+            source = _candidate_source()
+            records, exit_codes = run_suites(report_dir)
+            lane_results, lane_exit_codes = run_postgres_lanes(report_dir, plan, lane_inputs, source=source)
+            exit_codes.update(lane_exit_codes)
+            records = merge_postgres_lanes(records, plan, lane_results, source=source)
+            context = None
         else:
             records, exit_codes = run_suites(report_dir)
             context = None
