@@ -36,7 +36,7 @@ from tests.jobs.test_job_api import (
 )
 
 
-P1_REVISION = "0018_p1_paper_closure_rotation"
+P1_REVISION = "0033_p3_core_closure_repair"
 GENERIC_REVISION = "0011_engine_backtest_worker_authority"
 JOB_ID = "job_" + "1" * 32
 ATTEMPT_ID = "attempt_" + "2" * 32
