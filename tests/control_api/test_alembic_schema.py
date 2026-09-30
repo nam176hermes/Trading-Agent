@@ -370,7 +370,8 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "'job_plane_worker_heartbeats_update') "
                 "AND roles = ARRAY['trading_job_worker']::name[] "
                 "AND with_check LIKE "
-                "'%paper_worker_job_id_allowed(current_job_id)%'"
+                "'%paper_worker_job_id_allowed(current_job_id)%'",
+                execution_options={"no_parameters": True},
             ).scalar_one() == 2
             assert connection.exec_driver_sql(
                 "SELECT has_function_privilege("
