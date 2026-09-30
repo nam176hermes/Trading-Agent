@@ -366,7 +366,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE FUNCTION reject_job_event_mutation()
+        CREATE FUNCTION public.reject_job_event_mutation()
         RETURNS trigger
         LANGUAGE plpgsql
         AS $$
@@ -380,8 +380,8 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER trg_job_events_append_only
-        BEFORE UPDATE OR DELETE ON job_events
-        FOR EACH ROW EXECUTE FUNCTION reject_job_event_mutation()
+        BEFORE UPDATE OR DELETE ON public.job_events
+        FOR EACH ROW EXECUTE FUNCTION public.reject_job_event_mutation()
         """
     )
 
@@ -398,8 +398,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("REVOKE SELECT ON public.alembic_version FROM trading_jobs")
-    op.execute("DROP TRIGGER IF EXISTS trg_job_events_append_only ON job_events")
-    op.execute("DROP FUNCTION IF EXISTS reject_job_event_mutation()")
+    op.execute("DROP TRIGGER IF EXISTS trg_job_events_append_only ON public.job_events")
+    op.execute("DROP FUNCTION IF EXISTS public.reject_job_event_mutation()")
     op.drop_table("worker_heartbeats")
     op.drop_table("job_artifacts")
     op.drop_table("scheduler_heartbeats")
