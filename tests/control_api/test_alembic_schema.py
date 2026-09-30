@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 
+from tests.jobs import test_p1_paper_closure_rotation_migration as paper_closure
 from tests.jobs._postgres import (
     _upgrade_to_revision,
     disposable_database,
@@ -225,12 +226,12 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             connection.exec_driver_sql("RESET search_path")
             connection.commit()
             after = _p1_ingest_authority(connection)
-            assert after[0] == before_definition.replace(
-                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
+            assert after[0] == paper_closure._postgresql_16_definition(
+                paper_closure._current_prosrc().replace(
+                    paper_closure.OLD_CLOSURE, paper_closure.NEW_CLOSURE
+                )
             )
-            assert after[1] == (
-                "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089"
-            )
+            assert after[1] == paper_closure.ROTATED_SOURCE_SHA256
             assert after[2:] == before[2:]
             command.upgrade(config, EXACT_HEAD)
             inspector = inspect(connection)
