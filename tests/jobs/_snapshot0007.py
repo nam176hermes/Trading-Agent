@@ -38,9 +38,10 @@ _ARRAY_COERCION = re.compile(r"([a-z_][a-z_0-9]*)::text = ANY \(ARRAY\[(.*?)\]::
 
 def logical_restore_catalog_representation(snapshot: bytes) -> tuple[bytes, list[tuple[dict, str]]]:
     """Exact known PG16 dump/reparse representation; all other catalog bytes stay strict."""
-    rows = [json.loads(line) for line in snapshot.splitlines()]
+    lines = []
     repairs = []
-    for row in rows:
+    for line in snapshot.splitlines():
+        row = json.loads(line)
         if row["kind"] == "constraint" and row["constraint_kind"] == "c":
             definition = row["definition"]
 
@@ -59,12 +60,17 @@ def logical_restore_catalog_representation(snapshot: bytes) -> tuple[bytes, list
 
                 original = _ARRAY_COERCION.sub(original_in, definition)
                 repairs.append((dict(row), original.removeprefix("CHECK (").removesuffix(")")))
-                row["definition"] = restored
+                old = b'"definition": ' + json.dumps(definition).encode()
+                new = b'"definition": ' + json.dumps(restored).encode()
+                if line.count(old) != 1:
+                    raise ValueError("reviewed constraint serialization differs")
+                line = line.replace(old, new, 1)
         if row["kind"] == "object" and row.get("name") == "scheduler_heartbeats":
             if row["acl"] != ["trading_owner=arwdDxt/trading_owner"]:
                 raise ValueError("reviewed heartbeat owner ACL differs")
-            row["acl"] = None
-    return b"\n".join(json.dumps(row, sort_keys=True).encode() for row in rows) + b"\n", repairs
+            line = line.replace(b'"acl": ["trading_owner=arwdDxt/trading_owner"]', b'"acl": null', 1)
+        lines.append(line)
+    return b"\n".join(sorted(lines)) + b"\n", repairs
 
 
 def repair_restored_catalog_representation(connection, contract) -> None:

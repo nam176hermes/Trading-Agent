@@ -93,3 +93,16 @@ def test_exact_restore_representation_repair_rejects_catalog_mutations_before_wr
         with pytest.raises(ValueError, match="exact reviewed logical-restore"):
             snapshot.repair_restored_catalog_representation(connection, object())
         assert not calls
+
+
+def test_restore_representation_preserves_all_unmodified_postgresql_catalog_lines():
+    from tests.jobs import _snapshot0007 as snapshot
+    import json
+
+    original = snapshot.reviewed_disposable_catalog_snapshot("0007")
+    expected, _ = snapshot.logical_restore_catalog_representation(original)
+    expected_lines = set(expected.splitlines())
+    for line in original.splitlines():
+        row = json.loads(line)
+        if row["kind"] != "constraint" and row.get("name") != "scheduler_heartbeats":
+            assert line in expected_lines

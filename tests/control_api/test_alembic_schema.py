@@ -127,7 +127,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -149,7 +149,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -164,7 +164,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -208,7 +208,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.exec_driver_sql("SET search_path = public, pg_catalog")
             connection.commit()
-            command.upgrade(config, "head")
+            command.upgrade(config, EXACT_HEAD)
             connection.exec_driver_sql(
                 "DROP OPERATOR public.= (pg_catalog.text, pg_catalog.text)"
             )
@@ -232,7 +232,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089"
             )
             assert after[2:] == before[2:]
-            command.upgrade(config, "head")
+            command.upgrade(config, EXACT_HEAD)
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == EXPECTED_TABLES
 
@@ -280,9 +280,9 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             context = MigrationContext.configure(connection)
             current = set(context.get_current_heads())
             script = ScriptDirectory.from_config(config)
-            assert current == set(script.get_heads()) == {
-                EXACT_HEAD
-            }
+            assert current == {EXACT_HEAD}
+            assert set(script.get_heads()) == {"0033_p3_core_closure_repair"}
+            assert EXACT_HEAD in {revision.revision for revision in script.walk_revisions()}
 
             decision_columns = {
                 item["name"]: item for item in inspector.get_columns("decisions")
