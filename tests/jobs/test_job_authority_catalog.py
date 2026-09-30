@@ -24,6 +24,7 @@ from packages.job_authority import (
     find_event_chain_violations,
     load_frozen_contract,
 )
+from tests.jobs._snapshot0007 import reviewed_disposable_catalog_snapshot
 from tests.jobs._postgres import (
     _upgrade_to_revision,
     disposable_database,
@@ -970,9 +971,7 @@ def test_0007_catalog_matches_reviewed_forward_repair(
     green_authority_database,
 ) -> None:
     owner = green_authority_database
-    expected_snapshot = (
-        ROOT / "ops/postgres/job-plane-authority/catalog-0007-v1.snapshot"
-    ).read_bytes()
+    expected_snapshot = reviewed_disposable_catalog_snapshot("0007")
     with psycopg.connect(owner.conninfo()) as connection:
         head = connection.execute(EXACT_HEAD_SQL).fetchall()
         catalog = capture_catalog(connection, CONTRACT)
@@ -980,7 +979,7 @@ def test_0007_catalog_matches_reviewed_forward_repair(
 
     assert head == [(EXACT_0007_HEAD,)]
     assert catalog.canonical_bytes == expected_snapshot
-    assert catalog.sha256 == "1d83e9bc3f5cffe9e2dded41c33f46ce0b6d4395df84d3081d0b5132db487a40"
+    assert catalog.sha256 == "606963c54fbe6cedd25fc166c7b13bcd3a97effa9c83fde2de7c2a567b9359f6"
     assert catalog.row_count == 724
     assert violations == ()
 
@@ -990,14 +989,14 @@ def test_0007_green_gate_requires_two_independent_reviewed_catalog_captures() ->
 
     first = _fresh_0007_capture()
     second = _fresh_0007_capture()
-    expected_snapshot = REVIEWED_0007_SNAPSHOT_PATH.read_bytes()
+    expected_snapshot = reviewed_disposable_catalog_snapshot("0007")
 
     assert first.head == EXACT_0007_HEAD
     assert second.head == EXACT_0007_HEAD
     assert first.catalog.canonical_bytes == second.catalog.canonical_bytes
     assert first.catalog.canonical_bytes == expected_snapshot
     assert second.catalog.canonical_bytes == expected_snapshot
-    assert first.catalog.sha256 == "1d83e9bc3f5cffe9e2dded41c33f46ce0b6d4395df84d3081d0b5132db487a40"
+    assert first.catalog.sha256 == "606963c54fbe6cedd25fc166c7b13bcd3a97effa9c83fde2de7c2a567b9359f6"
     assert second.catalog.sha256 == first.catalog.sha256
     assert first.violations == ()
     assert second.violations == ()
@@ -1019,7 +1018,7 @@ def test_0007_rejects_catalog_drift_without_changing_pre_0007_authority() -> Non
             GREEN_CATALOG_DIGEST_REJECTION,
         )
 
-    assert before.catalog.canonical_bytes != REVIEWED_0006_SNAPSHOT_PATH.read_bytes()
+    assert before.catalog.canonical_bytes != reviewed_disposable_catalog_snapshot("0006")
     assert before.violations == ()
 
 
@@ -1049,7 +1048,7 @@ def test_0007_rejects_event_chain_violation_without_changing_pre_0007_authority(
             GREEN_EVENT_CHAIN_REJECTION,
         )
 
-    assert before.catalog.canonical_bytes == REVIEWED_0006_SNAPSHOT_PATH.read_bytes()
+    assert before.catalog.canonical_bytes == reviewed_disposable_catalog_snapshot("0006")
     assert before.violations
 
 

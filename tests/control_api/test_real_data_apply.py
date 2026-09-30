@@ -6,8 +6,8 @@ import psycopg
 import pytest
 
 from trading_control.db import DatabaseSettings
-from trading_control.real_import import apply_real_plan, build_real_plan
-from tests.jobs._postgres import disposable_database, disposable_role_settings, upgrade_to_head
+from trading_control.real_import import build_real_plan
+from tests.jobs._postgres import apply_disposable_real_plan, disposable_database, disposable_role_settings, upgrade_to_head
 
 
 REAL_ROOT = Path("/home/thenam176/.hermes/crypto-research")
@@ -31,17 +31,17 @@ def clean_test_database() -> None:
         _TEST_DATABASE = owner
         try:
             upgrade_to_head(owner)
-            yield
+            yield owner
         finally:
             _TEST_DATABASE = None
 
 
-def test_reviewed_real_plan_first_and_second_apply_are_idempotent() -> None:
+def test_reviewed_real_plan_first_and_second_apply_are_idempotent(clean_test_database) -> None:
     settings = role_settings("postgres-migrator.env")
     plan = build_real_plan(REAL_ROOT)
 
-    first = apply_real_plan(plan, settings, apply=True, code_commit="test")
-    second = apply_real_plan(plan, settings, apply=True, code_commit="test")
+    first = apply_disposable_real_plan(plan, clean_test_database, apply=True, code_commit="test")
+    second = apply_disposable_real_plan(plan, clean_test_database, apply=True, code_commit="test")
 
     assert first.inserted == 43055
     assert first.skipped == 0

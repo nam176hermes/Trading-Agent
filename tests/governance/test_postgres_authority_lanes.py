@@ -308,18 +308,24 @@ def test_lane_inputs_must_live_outside_the_checkout(tmp_path, monkeypatch):
 
 
 def test_the_lane_environment_is_built_only_from_the_plan_and_its_inputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", "/synthetic/operator-home")
+    monkeypatch.setenv("UV_CACHE_DIR", "/synthetic/operator-cache")
     monkeypatch.setenv("TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE", "DISPOSABLE_PG_GREEN")
     monkeypatch.setenv("TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR", "/tmp/inherited")
     monkeypatch.setenv("LIVE_TRADING_APPROVED", "true")
     lane = _plan()["lanes"][1]
     env = governance._postgres_lane_environment(
-        lane, {"TRADING_TEST_DISPOSABLE_APPROVAL_RECORD": "/tmp/r.json"}, tmp_path / "raw.json")
+        lane, {"TRADING_TEST_DISPOSABLE_APPROVAL_RECORD": "/tmp/r.json"}, tmp_path / "raw.json", tmp_path)
     assert env["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == "DISPOSABLE_PG_RED"
     assert env["TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES"] == "YES"
     assert env["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"] == "YES"
     assert env["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"] == "/tmp/r.json"
     assert "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR" not in env
     assert env["LIVE_TRADING_APPROVED"] == "false" and env["TEST_GOVERNANCE_COMPONENT"] == "root"
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["UV_CACHE_DIR"] == str(tmp_path / "uv-cache")
+    assert not list(Path(env["HOME"]).iterdir())
+    assert Path(env["HOME"]).stat().st_mode & 0o777 == 0o700
 
 
 @pytest.mark.parametrize("name", ["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE", "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"])
@@ -558,7 +564,7 @@ def test_the_environment_selects_lanes_and_no_child_inherits_it(tmp_path, monkey
     def lanes(report_dir, plan_, lane_inputs, *, source):
         seen["inputs"] = sorted(lane_inputs)
         seen["lane_child"] = LANES_ENV in governance._postgres_lane_environment(
-            plan["lanes"][0], lane_inputs["green"], tmp_path / "lane.json")
+            plan["lanes"][0], lane_inputs["green"], tmp_path / "lane.json", tmp_path)
         results = _results(plan)
         return results, {f"root-postgres-{lane}": 0 for lane in results}
 

@@ -15,8 +15,8 @@ from trading_control.phase3b_writer import (
     inspect_phase3b_dry_run,
     phase3b_run_id,
 )
-from trading_control.real_import import apply_real_plan, build_real_plan
-from tests.jobs._postgres import disposable_database, disposable_role_settings, upgrade_to_head
+from trading_control.real_import import build_real_plan
+from tests.jobs._postgres import apply_disposable_real_plan, disposable_database, disposable_role_settings, upgrade_to_head
 
 
 REAL_ROOT = Path("/home/thenam176/.hermes/crypto-research")
@@ -41,8 +41,8 @@ def phase3b_database() -> tuple[DatabaseSettings, object]:
         try:
             upgrade_to_head(owner)
             settings = role_settings("postgres-migrator.env")
-            apply_real_plan(
-                build_real_plan(REAL_ROOT), settings, apply=True, code_commit="test"
+            apply_disposable_real_plan(
+                build_real_plan(REAL_ROOT), owner, apply=True, code_commit="test"
             )
             yield settings, build_phase3b_backfill_plan(REAL_ROOT)
         finally:

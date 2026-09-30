@@ -25,20 +25,37 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _run_migrations(connection) -> None:
+    context.configure(connection=connection, target_metadata=target_metadata, version_table_schema="public")
+    with context.begin_transaction():
+        prior_path = connection.exec_driver_sql(
+            "SELECT pg_catalog.current_setting('search_path')"
+        ).scalar_one()
+        prior_map = connection.get_execution_options().get("schema_translate_map")
+        # Catalog operators win before Alembic reflection; unqualified DDL still targets public.
+        connection.execution_options(schema_translate_map={None: "public"})
+        connection.exec_driver_sql(
+            "SELECT pg_catalog.set_config('search_path', 'pg_catalog, public', true)"
+        )
+        try:
+            context.run_migrations()
+            connection.exec_driver_sql(
+                "SELECT pg_catalog.set_config('search_path', %s, true)", (prior_path,)
+            )
+        finally:
+            connection.execution_options(schema_translate_map=prior_map)
+
+
 def run_migrations_online() -> None:
     shared = config.attributes.get("connection")
     if shared is not None:
-        context.configure(connection=shared, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+        _run_migrations(shared)
         return
     engine = create_engine(
         DatabaseSettings.from_env().sqlalchemy_url(), poolclass=pool.NullPool
     )
     with engine.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+        _run_migrations(connection)
 
 
 if context.is_offline_mode():

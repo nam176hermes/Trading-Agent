@@ -498,6 +498,19 @@ def disposable_role_settings(
     return replace(database, user=role, password=_ROLE_PASSWORDS[role])
 
 
+def apply_disposable_real_plan(plan, owner: DatabaseSettings, *, apply: bool, code_commit: str):
+    """Exercise the same importer only in an active validated disposable fixture."""
+    from trading_control.real_import import _apply_real_plan
+    from trading_control.writer import ApplyRejected
+
+    if apply is not True:
+        raise ApplyRejected("explicit apply=True is required")
+    _require_active_disposable_endpoint(owner.conninfo(), {})
+    if owner.database != DISPOSABLE_DATABASE or owner.user != "trading_owner":
+        raise DisposablePostgresApprovalRejected("real import requires a disposable owner")
+    return _apply_real_plan(plan, disposable_role_settings(owner, "trading_migrator"), code_commit=code_commit)
+
+
 def _unused_tcp_port() -> int:
     while True:
         with socket.socket() as listener:

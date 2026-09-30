@@ -112,3 +112,30 @@ def test_driver_fence_preserves_the_valid_endpoint_and_leader_credentials(monkey
     dsn = make_conninfo(host="127.0.0.1", port=55501, password="synthetic-only")
     assert psycopg.connect(dsn, autocommit=True) is sentinel
     assert calls == [(dsn, {"autocommit": True})]
+
+
+def test_real_import_fixture_requires_disposable_owner_and_explicit_apply(monkeypatch):
+    from trading_control import real_import
+    from trading_control.writer import ApplyRejected
+    calls = []
+    owner = DatabaseSettings(host="127.0.0.1", port=55501,
+        database="trading_agent_disposable_test", user="trading_owner", password="synthetic-only")
+    monkeypatch.setattr(real_import, "_apply_real_plan", lambda *args, **kwargs: calls.append(True), raising=False)
+    with pytest.raises(ApplyRejected, match="explicit apply"):
+        harness.apply_disposable_real_plan(object(), owner, apply=False, code_commit="test")
+    with pytest.raises(harness.DisposablePostgresApprovalRejected, match="active approved slot"):
+        harness.apply_disposable_real_plan(object(), owner, apply=True, code_commit="test")
+    assert not calls
+
+
+def test_production_real_import_guard_still_rejects_disposable_port(monkeypatch):
+    from trading_control.real_import import apply_real_plan
+    from trading_control.writer import ApplyRejected
+    import psycopg
+    calls = []
+    monkeypatch.setattr(psycopg, "connect", lambda *args, **kwargs: calls.append(True))
+    role = DatabaseSettings(host="127.0.0.1", port=55501,
+        database="trading_agent_disposable_test", user="trading_migrator", password="synthetic-only")
+    with pytest.raises(ApplyRejected, match="localhost migrator role"):
+        apply_real_plan(object(), role, apply=True, code_commit="test")
+    assert not calls

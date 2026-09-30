@@ -174,7 +174,7 @@ Scope is every `git ls-files '*.py'` path, parsed with Python `ast` in repo-rela
 ```text
 apps/control_api/control_api/repositories/status.py|40|Exception|PRODUCTION_CRITICAL|RETURN
 apps/control_api/trading_control/phase3b_writer.py|424|Exception|PRODUCTION_CRITICAL|RAISE
-apps/control_api/trading_control/real_import.py|938|Exception|PRODUCTION_CRITICAL|RAISE
+apps/control_api/trading_control/real_import.py|945|Exception|PRODUCTION_CRITICAL|RAISE
 apps/control_api/trading_control/writer.py|425|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/app.py|177|Exception|PRODUCTION_CRITICAL|OTHER
 apps/job_api/app.py|280|Exception|PRODUCTION_CRITICAL|RETURN
@@ -919,7 +919,7 @@ tests/jobs/_postgres.py|208|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|124|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|441|Exception|TESTS|OTHER
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|479|Exception|TESTS|OTHER
-tests/jobs/test_job_transition_restore.py|1686|Exception|TESTS|OTHER
+tests/jobs/test_job_transition_restore.py|1693|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5251|BaseException|TESTS|OTHER
