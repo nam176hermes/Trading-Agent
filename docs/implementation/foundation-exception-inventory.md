@@ -915,7 +915,7 @@ tests/governance/nautilus_pin_inventory/test_git_source.py|6896|BaseException|TE
 tests/governance/nautilus_pin_inventory/test_git_source.py|6986|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|7073|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|7169|BaseException|TESTS|OTHER
-tests/jobs/_postgres.py|172|Exception|TESTS|RAISE
+tests/jobs/_postgres.py|208|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|124|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|441|Exception|TESTS|OTHER
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|479|Exception|TESTS|OTHER

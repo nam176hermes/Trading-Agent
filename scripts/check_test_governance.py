@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from scripts import t_g03_capability_topology as capability_topology
+from scripts.trusted_test_tmp import prepare_trusted_test_tmp
 from scripts.validate_disposable_postgres_approval import (
     DisposablePostgresApprovalRejected,
     load_protected_approval_record,
@@ -1110,8 +1111,18 @@ def _require_authority_free_base() -> None:
         raise GovernanceError("base run must not inherit disposable PostgreSQL authority")
 
 
-def _postgres_lane_environment(lane: dict[str, Any], inputs: dict[str, str], report: Path) -> dict[str, str]:
+def _postgres_lane_environment(lane: dict[str, Any], inputs: dict[str, str], report: Path,
+                               private: Path) -> dict[str, str]:
     env = _pytest_environment("root", report)
+    for name in tuple(env):
+        if name.startswith(("TRADING_DATABASE_", "TRADING_DB_", "PG")) or name in (
+            "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "USERPROFILE",
+        ):
+            env.pop(name)
+    for name in ("home", "uv-cache", "tmp"):
+        (private / name).mkdir(mode=0o700)
+    env.update(HOME=str(private / "home"), UV_CACHE_DIR=str(private / "uv-cache"),
+               TRADING_TEST_TMP_ROOT=str(private / "tmp"))
     for name in POSTGRES_AUTHORITY_ENVIRONMENT:
         env.pop(name, None)
     env.update(inputs)
@@ -1170,12 +1181,17 @@ def run_postgres_lanes(
         scope, red_operation = _approval_binding(inputs["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"])
         roots_before = _disposable_cluster_roots()
         source_before = _candidate_source()
-        exit_code = _run(
-            ["uv", "run", "pytest", "-q", "-m", ROOT_PYTEST_MARKERS, "-p", "scripts.test_governance_pytest", *nodes],
-            cwd=ROOT,
-            env=_postgres_lane_environment(lane, inputs, raw),
-            log_path=report_dir / f"root-postgres-{lane_id}.log",
-        )
+        private = prepare_trusted_test_tmp(f"postgres-lane-{lane_id}")
+        try:
+            exit_code = _run(
+                ["uv", "run", "--frozen", "--offline", "pytest", "-q", "-m", ROOT_PYTEST_MARKERS,
+                 "-p", "scripts.test_governance_pytest", *nodes],
+                cwd=ROOT,
+                env=_postgres_lane_environment(lane, inputs, raw, private.path),
+                log_path=report_dir / f"root-postgres-{lane_id}.log",
+            )
+        finally:
+            private.cleanup()
         exit_codes[f"root-postgres-{lane_id}"] = exit_code
         try:
             report = _read_json(raw)

@@ -58,6 +58,42 @@ POSTGRES_EXECUTABLES = frozenset(
 _AUTHORITY_TOKEN = object()
 _PLANNED_SLOT_COUNTERS: dict[tuple[str, str, str], int] = {}
 FIXTURE_PLAN_REQUIRED_ENV = "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"
+_ACTIVE_DISPOSABLE_ENDPOINTS: set[tuple[str, int]] = set()
+
+
+def _require_active_disposable_endpoint(conninfo: str, kwargs: dict) -> None:
+    from psycopg.conninfo import conninfo_to_dict
+
+    values = conninfo_to_dict(conninfo)
+    values.update({name: kwargs[name] for name in
+        ("host", "hostaddr", "port", "service", "passfile") if name in kwargs})
+    try:
+        endpoint = (values.get("host"), int(values.get("port", "")))
+    except (TypeError, ValueError):
+        endpoint = None
+    if (endpoint not in _ACTIVE_DISPOSABLE_ENDPOINTS
+        or any(values.get(name) for name in ("hostaddr", "service", "passfile"))):
+        raise DisposablePostgresApprovalRejected(
+            "disposable PostgreSQL connection is outside the active approved slot"
+        )
+
+
+def install_disposable_connection_fence(patch: pytest.MonkeyPatch) -> None:
+    """Fence sync/pool/SQLAlchemy and async drivers before libpq can open a socket."""
+    sync = psycopg.Connection.connect.__func__
+    asynchronous = psycopg.AsyncConnection.connect.__func__
+
+    def connect(cls, conninfo="", **kwargs):
+        _require_active_disposable_endpoint(conninfo, kwargs)
+        return sync(cls, conninfo, **kwargs)
+
+    async def async_connect(cls, conninfo="", **kwargs):
+        _require_active_disposable_endpoint(conninfo, kwargs)
+        return await asynchronous(cls, conninfo, **kwargs)
+
+    patch.setattr(psycopg.Connection, "connect", classmethod(connect))
+    patch.setattr(psycopg, "connect", psycopg.Connection.connect)
+    patch.setattr(psycopg.AsyncConnection, "connect", classmethod(async_connect))
 
 
 class _ReviewedSqlSnapshot(NamedTuple):
@@ -1619,9 +1655,13 @@ def _disposable_postgres_session(
             initialized = True
             _run_pg_ctl_start(session)
             session.derivation_state.phase = "CLUSTER_STARTED"
+            _ACTIVE_DISPOSABLE_ENDPOINTS.add((authority.context.bind_host, authority.context.port))
             yield session
         finally:
             if session is not None:
+                _ACTIVE_DISPOSABLE_ENDPOINTS.discard(
+                    (session.authority.context.bind_host, session.authority.context.port)
+                )
                 session.derivation_state.phase = "CLOSED"
                 if initialized:
                     _ensure_disposable_postgres_stopped(session)
