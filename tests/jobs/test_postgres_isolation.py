@@ -1,4 +1,6 @@
 """Offline isolation checks: synthetic credentials, no connection opened."""
+
+import secrets
 from importlib import import_module
 
 import pytest
@@ -29,7 +31,7 @@ def test_control_api_roles_inherit_the_whole_disposable_owner(
     monkeypatch.setenv("HOME", str(home))
     owner = DatabaseSettings(host="127.0.0.1", port=55501,
         database="trading_agent_disposable_test", user="trading_owner",
-        password="synthetic-owner-only")
+        password=secrets.token_hex(32))
     module = import_module(module_name)
     monkeypatch.setattr(module, "_TEST_DATABASE_NAME", owner.database, raising=False)
     monkeypatch.setattr(module, "_TEST_DATABASE", owner, raising=False)
