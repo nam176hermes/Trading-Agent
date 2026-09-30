@@ -1113,12 +1113,12 @@ def _require_authority_free_base() -> None:
 
 def _postgres_lane_environment(lane: dict[str, Any], inputs: dict[str, str], report: Path,
                                private: Path) -> dict[str, str]:
-    env = _pytest_environment("root", report)
-    for name in tuple(env):
-        if name.startswith(("TRADING_DATABASE_", "TRADING_DB_", "PG")) or name in (
-            "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "USERPROFILE",
-        ):
-            env.pop(name)
+    inherited = _pytest_environment("root", report)
+    env = {name: inherited[name] for name in (
+        "PATH", "PYTHONPATH", "TEST_GOVERNANCE_COMPONENT", "TEST_GOVERNANCE_REPORT",
+        "LIVE_EXECUTION_ENABLED", "LIVE_TRADING_APPROVED",
+    )}
+    env.update(LANG="C.UTF-8", TZ="UTC", UV_OFFLINE="1")
     for name in ("home", "uv-cache", "tmp"):
         (private / name).mkdir(mode=0o700)
     env.update(HOME=str(private / "home"), UV_CACHE_DIR=str(private / "uv-cache"),

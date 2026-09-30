@@ -45,6 +45,7 @@ def test_lane_pytest_has_an_empty_private_home_and_explicit_uv_cache(
     monkeypatch.setenv("XDG_CONFIG_HOME", "/synthetic/operator-config")
     monkeypatch.setenv("TRADING_DATABASE_PASSWORD", "synthetic-only")
     monkeypatch.setenv("PGSERVICE", "synthetic-operator-service")
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", "/synthetic/operator-credentials")
     monkeypatch.setattr(governance, "_candidate_source", lambda: {})
     monkeypatch.setattr(governance, "_disposable_cluster_roots", lambda: set())
     monkeypatch.setattr(governance, "_approval_binding", lambda _: ("DISPOSABLE_PG_GREEN", None))
@@ -62,7 +63,8 @@ def test_lane_pytest_has_an_empty_private_home_and_explicit_uv_cache(
         assert home.stat().st_mode & 0o777 == 0o700
         assert home.stat().st_uid == os.getuid()
         assert Path(env["UV_CACHE_DIR"]).is_dir()
-        assert "XDG_CONFIG_HOME" not in env
+        assert env.get("XDG_CONFIG_HOME") is None
+        assert env.get("CREDENTIALS_DIRECTORY") is None
         assert not any(name.startswith(("TRADING_DATABASE_", "PG")) for name in env)
         return 0
 
