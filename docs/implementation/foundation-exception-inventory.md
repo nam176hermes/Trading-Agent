@@ -915,11 +915,11 @@ tests/governance/nautilus_pin_inventory/test_git_source.py|6896|BaseException|TE
 tests/governance/nautilus_pin_inventory/test_git_source.py|6986|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|7073|BaseException|TESTS|OTHER
 tests/governance/nautilus_pin_inventory/test_git_source.py|7169|BaseException|TESTS|OTHER
-tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
+tests/jobs/_postgres.py|172|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|124|Exception|TESTS|RAISE
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|441|Exception|TESTS|OTHER
 tests/jobs/test_engine_projection_recovery_postgres_runtime.py|479|Exception|TESTS|OTHER
-tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
+tests/jobs/test_job_transition_restore.py|1686|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 tests/nautilus_upgrade/test_v1231_candidate_closure.py|5251|BaseException|TESTS|OTHER
