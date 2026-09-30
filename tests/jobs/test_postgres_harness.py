@@ -1068,9 +1068,9 @@ def test_restore_recreates_exact_target_without_transient_createdb() -> None:
     target_input_source = inspect.getsource(_postgres._restore_target_input)
     assert "CREATE DATABASE" in target_input_source
     assert " OWNER trading_owner" in target_input_source
-    assert "SET SESSION AUTHORIZATION trading_owner" in target_input_source
-    assert "CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public" in target_input_source
-    assert "RESET SESSION AUTHORIZATION" in target_input_source
+    assert "SET SESSION AUTHORIZATION" not in target_input_source
+    assert "CREATE EXTENSION" not in target_input_source
+    assert "RESET SESSION AUTHORIZATION" not in target_input_source
     assert " LOGIN" not in target_input_source
     assert " CREATEDB" not in target_input_source
 

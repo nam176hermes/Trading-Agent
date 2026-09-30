@@ -49,6 +49,17 @@ def phase3b_database() -> tuple[DatabaseSettings, object]:
             _TEST_DATABASE = None
 
 
+@pytest.fixture(autouse=True)
+def isolated_backfill_state(phase3b_database):
+    if _TEST_DATABASE is None:
+        raise RuntimeError("disposable Phase 3B owner is unavailable")
+    with psycopg.connect(_TEST_DATABASE.conninfo()) as connection:
+        connection.execute(
+            "TRUNCATE public.decision_field_lineage, public.cost_session_assets, "
+            "public.asset_source_lineage, public.phase3b_backfill_events, public.phase3b_backfill_runs"
+        )
+
+
 def test_real_phase3b_apply_and_second_apply_are_idempotent(
     phase3b_database: tuple[DatabaseSettings, object],
 ) -> None:

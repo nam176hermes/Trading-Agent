@@ -35,7 +35,7 @@ from packages.restore_proof_failure_codes import (
     extract_restore_proof_failure_code,
 )
 from scripts.validate_disposable_postgres_fixture_plan import lifecycle_actions_for
-from tests.jobs._snapshot0007 import reviewed_disposable_catalog_snapshot
+from tests.jobs._snapshot0007 import repair_disposable_snapshot_restore, reviewed_disposable_catalog_snapshot
 from tests.jobs._postgres import (
     DISPOSABLE_DATABASE,
     _disposable_postgres_session,
@@ -2604,6 +2604,7 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                                 _copy_precreated_custom_dump(source_dump, target_dump)
                                 _validate_secure_precreated_dump(target_dump)
                                 _run_pg_restore(target_session)
+                                repair_disposable_snapshot_restore(target_owner, CONTRACT)
 
                         with _guard_restore_proof_stage(
                             RESTORE_PROOF_POST_RESTORE_VERIFICATION_FAILURE

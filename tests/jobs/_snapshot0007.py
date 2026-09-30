@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 from pathlib import Path
+import re
 from typing import LiteralString, cast
 
 from services.job_store.worker_repository import WorkerRepository
+from packages.job_authority import capture_catalog
 
 ROOT = Path(__file__).parents[2]
 
@@ -28,6 +31,70 @@ def reviewed_disposable_catalog_snapshot(revision: str) -> bytes:
     if hashlib.sha256(snapshot).hexdigest() != pins[f"REVIEWED_DISPOSABLE_{revision}_CATALOG_SHA256"]:
         raise ValueError("reviewed disposable catalog pin differs")
     return snapshot
+
+
+_ARRAY_COERCION = re.compile(r"([a-z_][a-z_0-9]*)::text = ANY \(ARRAY\[(.*?)\]::text\[\]\)")
+
+
+def logical_restore_catalog_representation(snapshot: bytes) -> tuple[bytes, list[tuple[dict, str]]]:
+    """Exact known PG16 dump/reparse representation; all other catalog bytes stay strict."""
+    rows = [json.loads(line) for line in snapshot.splitlines()]
+    repairs = []
+    for row in rows:
+        if row["kind"] == "constraint" and row["constraint_kind"] == "c":
+            definition = row["definition"]
+
+            def expanded(match):
+                values = match[2].replace("::character varying", "::character varying::text")
+                return f"{match[1]}::text = ANY (ARRAY[{values}])"
+
+            restored = _ARRAY_COERCION.sub(expanded, definition)
+            if restored != definition:
+                def original_in(match):
+                    literals = re.findall(r"'(?:''|[^'])*'::character varying", match[2])
+                    if ", ".join(literals) != match[2]:
+                        raise ValueError("reviewed array coercion is not a literal IN predicate")
+                    values = ", ".join(value.removesuffix("::character varying") for value in literals)
+                    return f"{match[1]} IN ({values})"
+
+                original = _ARRAY_COERCION.sub(original_in, definition)
+                repairs.append((dict(row), original.removeprefix("CHECK (").removesuffix(")")))
+                row["definition"] = restored
+        if row["kind"] == "object" and row.get("name") == "scheduler_heartbeats":
+            if row["acl"] != ["trading_owner=arwdDxt/trading_owner"]:
+                raise ValueError("reviewed heartbeat owner ACL differs")
+            row["acl"] = None
+    return b"\n".join(json.dumps(row, sort_keys=True).encode() for row in rows) + b"\n", repairs
+
+
+def repair_restored_catalog_representation(connection, contract) -> None:
+    """Repair only exact dump representation drift, then require the unchanged frozen pin."""
+    from psycopg import sql
+
+    original = reviewed_disposable_catalog_snapshot("0007")
+    expected, repairs = logical_restore_catalog_representation(original)
+    before = capture_catalog(connection, contract)
+    if before.canonical_bytes != expected:
+        raise ValueError("catalog is not the exact reviewed logical-restore representation")
+    for row, predicate in repairs:
+        connection.execute(sql.SQL("ALTER TABLE {} DROP CONSTRAINT {}, ADD CONSTRAINT {} CHECK ({})").format(
+            sql.Identifier(row["schema"], row["relation"]), sql.Identifier(row["name"]),
+            sql.Identifier(row["name"]), sql.SQL(predicate)))
+    connection.execute("GRANT ALL PRIVILEGES ON TABLE public.scheduler_heartbeats TO trading_owner")
+    after = capture_catalog(connection, contract)
+    if after.canonical_bytes != original or after.sha256 != hashlib.sha256(original).hexdigest():
+        raise ValueError("repaired catalog differs from the unchanged reviewed pin")
+
+
+def repair_disposable_snapshot_restore(owner, contract) -> None:
+    import psycopg
+    from tests.jobs._postgres import DISPOSABLE_DATABASE, _require_active_disposable_endpoint
+
+    _require_active_disposable_endpoint(owner.conninfo(), {})
+    if owner.database != DISPOSABLE_DATABASE or owner.user != "trading_owner":
+        raise ValueError("restore repair requires an active disposable owner")
+    with psycopg.connect(owner.conninfo()) as connection:
+        repair_restored_catalog_representation(connection, contract)
 
 
 class Snapshot0007WorkerRepository(WorkerRepository):

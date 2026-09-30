@@ -906,9 +906,6 @@ GRANT CONNECT ON DATABASE {database}
 GRANT TEMPORARY ON DATABASE {database} TO trading_migrator;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ALTER SCHEMA public OWNER TO trading_owner;
-SET SESSION AUTHORIZATION trading_owner;
-CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-RESET SESSION AUTHORIZATION;
 ALTER ROLE trading_owner IN DATABASE {database} SET timezone = 'UTC';
 ALTER ROLE trading_migrator IN DATABASE {database} SET timezone = 'UTC';
 ALTER ROLE trading_reader IN DATABASE {database}

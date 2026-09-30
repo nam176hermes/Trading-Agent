@@ -1287,7 +1287,7 @@ def upgrade() -> None:
           END IF;
         END;
         $p2_security_master_postflight$;
-        SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);
+        SELECT pg_catalog.set_config('search_path', 'pg_catalog, public', true);
         """,
         execution_options={"no_parameters": True},
     )

@@ -70,3 +70,26 @@ def test_restore_acl_scope_keeps_every_selected_object_and_rejects_unknown_datab
         restore._canonical_effective_acl_rows(rows, database_name="unknown_database")
     with pytest.raises(AssertionError, match=restore.RESTORE_PROOF_EFFECTIVE_DATABASE_ACL_SELECTED_OBJECTS_MISMATCH):
         restore._canonical_effective_acl_rows(rows[:-1], database_name=DISPOSABLE_DATABASE)
+
+
+def test_exact_restore_representation_repair_rejects_catalog_mutations_before_writes(monkeypatch):
+    from tests.jobs import _snapshot0007 as snapshot
+    from types import SimpleNamespace
+    import json
+
+    original = snapshot.reviewed_disposable_catalog_snapshot("0007")
+    expected, repairs = snapshot.logical_restore_catalog_representation(original)
+    assert len(repairs) == 38
+    records = [json.loads(line) for line in expected.splitlines()]
+    mutations = [expected + b'{}\n', expected.replace(b'"trading_owner"', b'"unreviewed"', 1)]
+    check = next(row for row in records if row.get("constraint_kind") == "c")
+    old_definition = check["definition"]
+    check["definition"] = old_definition + " OR TRUE"
+    mutations.append(b"\n".join(json.dumps(row, sort_keys=True).encode() for row in records) + b"\n")
+    for changed in mutations:
+        calls = []
+        connection = SimpleNamespace(execute=lambda *args: calls.append(args))
+        monkeypatch.setattr(snapshot, "capture_catalog", lambda *args: SimpleNamespace(canonical_bytes=changed))
+        with pytest.raises(ValueError, match="exact reviewed logical-restore"):
+            snapshot.repair_restored_catalog_representation(connection, object())
+        assert not calls
