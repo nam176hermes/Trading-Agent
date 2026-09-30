@@ -95,6 +95,7 @@ POSTGRES_AUTHORITY_ABSENT_REASONS = frozenset({     # the harness's exact skips 
     "exact disposable PostgreSQL GREEN restore authority is absent",
 })
 ROOT_PYTEST_MARKERS = "not runtime_postgres and not host_coupled"
+POSTGRES_LANES_ENV = "TEST_GOVERNANCE_POSTGRES_LANES"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -1087,6 +1088,23 @@ def load_postgres_lane_inputs(path: Path, plan: dict[str, Any]) -> dict[str, dic
     return document
 
 
+def resolve_postgres_lanes(cli: Path | None) -> Path | None:
+    """The lane inputs from --postgres-lanes or TEST_GOVERNANCE_POSTGRES_LANES (the Makefile stays byte-identical).
+
+    Neither: no lanes (unchanged behavior). Both: they must name the same path. An empty variable is an error. The
+    variable is removed from this process's environment either way, so no suite, lane or nested governance run that
+    copies os.environ can pick lanes up by accident.
+    """
+    raw = os.environ.pop(POSTGRES_LANES_ENV, None)
+    if raw is None:
+        return cli
+    if not raw:
+        raise GovernanceError(f"{POSTGRES_LANES_ENV} is set but empty")
+    if cli is not None and cli != Path(raw):
+        raise GovernanceError(f"--postgres-lanes and {POSTGRES_LANES_ENV} differ")
+    return Path(raw)
+
+
 def _require_authority_free_base() -> None:
     if POSTGRES_AUTHORITY_ENVIRONMENT & set(os.environ):
         raise GovernanceError("base run must not inherit disposable PostgreSQL authority")
@@ -1578,6 +1596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap_path = ROOT / bootstrap_path
         if args.topology_context_preflight and not args.topology_audit:
             raise GovernanceError("topology context preflight requires topology audit")
+        args.postgres_lanes = resolve_postgres_lanes(args.postgres_lanes)
         if args.postgres_lanes is not None and args.topology_audit:
             raise GovernanceError("postgres lanes are not part of the topology audit")
         if args.topology_audit:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -499,3 +500,81 @@ def test_base_records_for_planned_nodes_are_validated_before_they_are_replaced(m
     base = _base(_plan())
     mutate(base)
     assert message in _problems(base=base)
+
+
+# --- lane selection without touching the protected Makefile: CLI or TEST_GOVERNANCE_POSTGRES_LANES, never both apart ---
+LANES_ENV = "TEST_GOVERNANCE_POSTGRES_LANES"
+
+
+@pytest.mark.parametrize(("cli", "env", "expected"), [
+    (None, None, None),
+    (None, "/x/inputs.json", Path("/x/inputs.json")),
+    (Path("/x/inputs.json"), None, Path("/x/inputs.json")),
+    (Path("/x/inputs.json"), "/x/inputs.json", Path("/x/inputs.json")),
+])
+def test_lane_selection_resolves_cli_and_environment(monkeypatch, cli, env, expected):
+    if env is None:
+        monkeypatch.delenv(LANES_ENV, raising=False)
+    else:
+        monkeypatch.setenv(LANES_ENV, env)
+    assert governance.resolve_postgres_lanes(cli) == expected
+    assert LANES_ENV not in os.environ                      # taken, never passed down to a suite or lane
+
+
+@pytest.mark.parametrize(("cli", "env", "message"), [
+    (Path("/x/a.json"), "/x/b.json", "differ"),
+    (None, "", "set but empty"),
+    (Path("/x/a.json"), "", "set but empty"),
+])
+def test_conflicting_or_empty_lane_selection_is_an_error(monkeypatch, cli, env, message):
+    monkeypatch.setenv(LANES_ENV, env)
+    with pytest.raises(GovernanceError, match=message):
+        governance.resolve_postgres_lanes(cli)
+    assert LANES_ENV not in os.environ
+
+
+def test_a_conflicting_selection_fails_before_any_suite_runs(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(governance, "run_suites", lambda report_dir: ran.append("suites") or ([], {}))
+    monkeypatch.setenv(LANES_ENV, str(tmp_path / "b.json"))
+    code = governance.main(["--report-dir", str(tmp_path / "r"), "--postgres-lanes", str(tmp_path / "a.json")])
+    assert code == 1 and ran == []
+    assert "differ" in (tmp_path / "r" / "test-governance-error.json").read_text()
+
+
+def test_the_environment_selects_lanes_and_no_child_inherits_it(tmp_path, monkeypatch):
+    plan = _plan()
+    inputs = _lane_inputs(tmp_path, plan)
+    seen = {}
+    monkeypatch.setattr(governance, "validate_postgres_lane_plan", lambda document: plan)
+    monkeypatch.setattr(governance, "_read_json", lambda path: plan if path == governance.DEFAULT_POSTGRES_LANE_PLAN
+                        else json.loads(Path(path).read_text()))
+
+    def suites(report_dir):
+        seen["suite_os_environ"] = LANES_ENV in os.environ
+        seen["pytest_child"] = LANES_ENV in governance._pytest_environment("root", tmp_path / "raw.json")
+        return _base(plan), {"root": 0, "legacy": 0, "dashboard": 0}
+
+    def lanes(report_dir, plan_, lane_inputs, *, source):
+        seen["inputs"] = sorted(lane_inputs)
+        seen["lane_child"] = LANES_ENV in governance._postgres_lane_environment(
+            plan["lanes"][0], lane_inputs["green"], tmp_path / "lane.json")
+        results = _results(plan)
+        return results, {f"root-postgres-{lane}": 0 for lane in results}
+
+    monkeypatch.setattr(governance, "run_suites", suites)
+    monkeypatch.setattr(governance, "run_postgres_lanes", lanes)
+    monkeypatch.setattr(governance, "_candidate_source", lambda: dict(SOURCE))
+    monkeypatch.setattr(governance, "_load_allowlist", lambda path, today: [])
+    for name in governance.POSTGRES_AUTHORITY_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(LANES_ENV, str(inputs))
+    assert governance.main(["--report-dir", str(tmp_path / "reports")]) == 0
+    assert seen == {"suite_os_environ": False, "pytest_child": False, "inputs": ["green", "red-catalog", "red-evidence"],
+                    "lane_child": False}
+
+
+def test_the_environment_selection_is_not_part_of_the_topology_audit(tmp_path, monkeypatch):
+    monkeypatch.setenv(LANES_ENV, str(tmp_path / "inputs.json"))
+    assert governance.main(["--report-dir", str(tmp_path / "r"), "--topology-audit"]) == 1
+    assert "postgres lanes are not part of the topology audit" in (tmp_path / "r" / "test-governance-error.json").read_text()

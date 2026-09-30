@@ -262,8 +262,7 @@ check-test-skips:
 		PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension" \
 		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
 			uv run python -m scripts.check_test_governance \
-				--report-dir "$(TEST_EVIDENCE_DIR)/test-governance" \
-				$(if $(POSTGRES_LANE_INPUTS),--postgres-lanes "$(POSTGRES_LANE_INPUTS)")
+				--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
 
 check-test-governance-topology:
 	@set +e; \
