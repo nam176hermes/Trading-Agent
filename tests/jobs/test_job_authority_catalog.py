@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import psycopg
+from psycopg import sql
 import pytest
 
 from packages.job_authority import (
@@ -1488,14 +1489,18 @@ def test_catalog_digest_changes_for_every_adversarial_catalog_drift(
     case_id: str,
     statements: tuple[str, ...],
 ) -> None:
-    del case_id
     with psycopg.connect(
         authority_database.conninfo(), autocommit=True
     ) as connection:
         before = capture_catalog(connection, CONTRACT)
         with connection.transaction(force_rollback=True):
             for statement in statements:
-                connection.execute(statement)
+                mutation: str | sql.Composable = statement
+                if case_id == "safe-role-setting-drift":
+                    mutation = sql.SQL(statement.replace(
+                        "IN DATABASE trading_agent ", "IN DATABASE {} "
+                    )).format(sql.Identifier(authority_database.database))
+                connection.execute(mutation)
             after = capture_catalog(connection, CONTRACT)
 
     assert after.sha256 != before.sha256
@@ -1511,8 +1516,10 @@ def test_unknown_role_setting_returns_only_key_and_never_secret_value(
     ) as connection:
         with connection.transaction(force_rollback=True):
             connection.execute(
-                "ALTER ROLE trading_owner IN DATABASE trading_agent "
-                f"SET application_name = '{secret_marker}'"
+                sql.SQL("ALTER ROLE trading_owner IN DATABASE {} "
+                        "SET application_name = {}").format(
+                    sql.Identifier(authority_database.database), sql.Literal(secret_marker)
+                )
             )
             with pytest.raises(UnsafeCatalogSettingError) as captured:
                 capture_catalog(connection, CONTRACT)
