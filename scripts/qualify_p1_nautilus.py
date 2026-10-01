@@ -33,6 +33,11 @@ BASELINE = (
     / "docs/implementation/p1-real-nautilus/upgrade/p1-engine-baseline-receipt.json"
 )
 PRODUCT_POLICY = ROOT / "engines/nautilus/p1-runtime-closure-policy.json"
+_NATIVE_AUTHORITY_NAMES = (
+    "P1_NAUTILUS_CLOSURE_MANIFEST",
+    "P1_NAUTILUS_PRODUCT_LINEAGE",
+    "P1_NAUTILUS_PYTHON",
+)
 P1_22_EVIDENCE = ROOT / "docs/implementation/p1-real-nautilus/e2e-evidence.md"
 _BOUNDARIES = {
     "ACCOUNTING",
@@ -431,8 +436,7 @@ def qualify(
     )
     supplied = environment or {}
     if requires_native and not all(
-        supplied.get(name)
-        for name in ("P1_NAUTILUS_CLOSURE_MANIFEST", "P1_NAUTILUS_PYTHON")
+        supplied.get(name) for name in _NATIVE_AUTHORITY_NAMES
     ):
         raise QualificationError("exact native G1 authority is required")
     commit, tree = source_identity or _source_identity(root)
@@ -592,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matrix", type=Path, default=MATRIX)
     arguments = parser.parse_args(argv)
-    native_names = ("P1_NAUTILUS_CLOSURE_MANIFEST", "P1_NAUTILUS_PYTHON")
+    native_names = _NATIVE_AUTHORITY_NAMES
     native_values = tuple(os.environ.get(name) for name in native_names)
     if not any(native_values):
         print(

@@ -223,3 +223,79 @@ def test_cli_defers_only_when_all_native_authority_is_absent() -> None:
     assert partial.returncode == 2
     assert partial.stdout == ""
     assert "partial" in partial.stderr
+
+
+def test_cli_forwards_product_lineage_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authority = {
+        "P1_NAUTILUS_CLOSURE_MANIFEST": "/synthetic/closure-manifest.json",
+        "P1_NAUTILUS_PRODUCT_LINEAGE": "/synthetic/p1-product-lineage.json",
+        "P1_NAUTILUS_PYTHON": "/synthetic/python",
+    }
+    for name, value in authority.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("TRADING_DATABASE_PASSWORD", "synthetic-unused-password")
+    monkeypatch.setattr(qualification.shutil, "which", lambda _: "/synthetic/uv")
+
+    def observe(matrix, *, environment):
+        assert matrix == qualification.MATRIX
+        assert environment == {
+            **authority,
+            "PATH": "/synthetic:/usr/bin:/bin",
+            "PYTHONHASHSEED": "0",
+        }
+        return {"verdict": "PASS"}
+
+    monkeypatch.setattr(qualification, "qualify", observe)
+    assert qualification.main([]) == 0
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "P1_NAUTILUS_CLOSURE_MANIFEST",
+        "P1_NAUTILUS_PRODUCT_LINEAGE",
+        "P1_NAUTILUS_PYTHON",
+    ],
+)
+def test_cli_rejects_partial_product_authority_before_invocation(
+    missing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in (
+        "P1_NAUTILUS_CLOSURE_MANIFEST",
+        "P1_NAUTILUS_PRODUCT_LINEAGE",
+        "P1_NAUTILUS_PYTHON",
+    ):
+        monkeypatch.setenv(name, "/synthetic/public-input")
+    monkeypatch.delenv(missing)
+    monkeypatch.setattr(
+        qualification, "qualify", lambda *a, **k: pytest.fail("must not invoke")
+    )
+    with pytest.raises(SystemExit) as caught:
+        qualification.main([])
+    assert caught.value.code == 2
+
+
+def test_native_runner_requires_product_lineage_before_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    test_file = tmp_path / "tests/test_case_native.py"
+    test_file.parent.mkdir()
+    test_file.write_text("def test_ok(): pass\n")
+    matrix = _write_matrix(tmp_path, nodeid="tests/test_case_native.py::test_ok")
+    monkeypatch.setattr(
+        qualification.subprocess, "run", lambda *a, **k: pytest.fail("must not spawn")
+    )
+    with pytest.raises(QualificationError, match="exact native G1 authority"):
+        qualify(
+            matrix,
+            root=tmp_path,
+            environment={
+                "P1_NAUTILUS_CLOSURE_MANIFEST": "/synthetic/closure-manifest.json",
+                "P1_NAUTILUS_PYTHON": "/synthetic/python",
+            },
+            source_identity=("a" * 40, "b" * 40),
+        )
