@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 import re
 import stat
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 STAGING_SCOPE = "PACKAGE6_STAGING_ONLY"
@@ -261,7 +261,10 @@ def _validate_private_root(root: Path) -> None:
             raise ValueError
 
 
-def _safe_read(path: Path, *, max_bytes: int, mode: int) -> tuple[bytes, tuple[int, int]]:
+def _safe_read(
+    path: Path, *, max_bytes: int, mode: int,
+    consume_chunk: Callable[[bytes], None] | None = None,
+) -> tuple[bytes, tuple[int, int]]:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -282,10 +285,13 @@ def _safe_read(path: Path, *, max_bytes: int, mode: int) -> tuple[bytes, tuple[i
             chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1 - observed))
             if not chunk:
                 break
-            chunks.append(chunk)
             observed += len(chunk)
             if observed > max_bytes:
                 raise ValueError
+            if consume_chunk is None:
+                chunks.append(chunk)
+            else:
+                consume_chunk(chunk)
         after = os.fstat(descriptor)
         current = path.lstat()
         identity = (before.st_dev, before.st_ino)
@@ -353,17 +359,15 @@ def walk_sealed_stage(stage: Path) -> list[dict[str, object]]:
     ):
         raise ValueError
     entries: list[dict[str, object]] = []
-    pending = [stage]
+    pending = [(stage, "")]
     while pending:
-        directory = pending.pop()
-        children = sorted(
-            directory.iterdir(),
-            key=lambda item: os.fsencode(item.relative_to(stage).as_posix()),
-            reverse=True,
-        )
-        for path in children:
-            child_info = path.lstat()
-            relative = path.relative_to(stage).as_posix()
+        directory, parent_relative = pending.pop()
+        with os.scandir(directory) as scan:
+            children = sorted(scan, key=lambda item: os.fsencode(item.name), reverse=True)
+        for child in children:
+            path = directory / child.name
+            child_info = child.stat(follow_symlinks=False)
+            relative = f"{parent_relative}/{child.name}" if parent_relative else child.name
             if stat.S_ISLNK(child_info.st_mode) or child_info.st_uid != os.geteuid():
                 raise ValueError
             mode = stat.S_IMODE(child_info.st_mode)
@@ -377,22 +381,31 @@ def walk_sealed_stage(stage: Path) -> list[dict[str, object]]:
                     "size": 0,
                     "type": "directory",
                 }
-                pending.append(path)
+                pending.append((path, relative))
             elif stat.S_ISREG(child_info.st_mode):
                 if mode not in {0o444, 0o555}:
                     raise ValueError
-                raw, current_identity = _safe_read(
+                digest = hashlib.sha256()
+                size = 0
+
+                def hash_chunk(chunk: bytes) -> None:
+                    nonlocal size
+                    digest.update(chunk)
+                    size += len(chunk)
+
+                _, current_identity = _safe_read(
                     path,
                     max_bytes=max(child_info.st_size + 1, 1),
                     mode=mode,
+                    consume_chunk=hash_chunk,
                 )
                 if current_identity != (child_info.st_dev, child_info.st_ino):
                     raise ValueError
                 entry = {
                     "mode": f"{mode:04o}",
                     "path": relative,
-                    "sha256": sha256_bytes(raw),
-                    "size": len(raw),
+                    "sha256": digest.hexdigest(),
+                    "size": size,
                     "type": "file",
                 }
             else:
