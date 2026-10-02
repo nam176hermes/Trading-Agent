@@ -164,3 +164,48 @@ def test_local_custodian_binds_protected_operation_before_plaintext(custodian_pr
     else:
         assert module.read_custodian_profile(Path('/synthetic/profile'),digest()).identity==auth.identity
         assert calls==['gates','protected-operation']
+
+
+def test_local_custody_waits_for_admitted_pre_send_fences(custodian_profile,released,release_request,monkeypatch):
+    """Six seconds of mandatory client work; virtual clock, no socket or credential IO."""
+    import socket
+    from datetime import UTC,datetime,timedelta
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+    from services.job_worker import p3_holdout_release as wire
+    from services.job_store.p3_custodian_release import CustodianReleaseRepository
+    from tests.p3.test_local_qualification import sealed
+    module,document,_=custodian_profile;store,*_=released
+    now=datetime.now(UTC)
+    ref=document['request']['custody_record_ref']
+    identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000002',
+        attempt=1,host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001')
+    auth=LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-local-run-authorization-v1',identity=identity,input_set_ref=ref,review_ref=ref,
+        operation='HOLDOUT',allowed_alpha_ids=['a0.donchian-20-10-close-confirm'],
+        issued_at=now.isoformat().replace('+00:00','Z'),expires_at=(now+timedelta(minutes=10)).isoformat().replace('+00:00','Z'),
+        nonce='00000000-0000-4000-8000-000000000003',authority=dict(broker=False,live=False,network=False,production=False)))))
+    auth_ref=store.put_bytes(canonical_json_bytes(auth),media_type='application/json')
+    document.update(schema_version='p3-local-custodian-profile-v1',identity=identity,
+        authorization_ref=auth_ref.model_dump(mode='json'),catalog_sha256=module.SESSION_CATALOG_SHA256)
+    profile=module.LocalCustodianProfile.model_validate_json(canonical_json_bytes(document))
+    monkeypatch.setattr(module,'read_custodian_profile',lambda *args:profile)
+    monkeypatch.setattr(module,'_directory_identity',lambda root:(1,2))
+    monkeypatch.setattr(CustodianReleaseRepository,'from_systemd_credentials',classmethod(lambda cls,*args,**kwargs:object.__new__(cls)))
+    events=[]
+    monkeypatch.setattr(CustodianReleaseRepository,'claim',lambda *args:events.append('claim'))
+    monkeypatch.setattr(CustodianReleaseRepository,'fence',lambda *args:events.append('fence'))
+    monkeypatch.setattr(wire.os,'geteuid',lambda:17001)
+    monkeypatch.setattr(wire,'_peer',lambda *args:events.append('peer'))
+    monkeypatch.setattr(wire,'send_bundle',lambda *args:events.append('send'))
+    class Channel:
+        def settimeout(self,seconds):self.timeout=seconds
+        def recvmsg(self,*args):
+            events.extend(['client-fence','client-consume','client-fence'])
+            if self.timeout<=6:raise TimeoutError('custodian expires before authenticated client first frame')
+            return canonical_json_bytes(release_request),[],0,None
+    channel=Channel()
+    def plaintext(custody):events.append('plaintext');return released[4]
+    module.serve_profiled_release(channel,profile_path=Path('/synthetic/profile'),profile_digest='a'*64,read_plaintext=plaintext)
+    assert 6<channel.timeout<=300
+    assert events==['peer','client-fence','client-consume','client-fence','claim','fence','plaintext','fence','send']

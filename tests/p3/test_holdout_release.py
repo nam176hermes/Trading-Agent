@@ -288,7 +288,7 @@ def test_parent_rejects_unapproved_metadata_before_sql_or_custodian(disclosure,m
     assert not calls
 
 
-@pytest.mark.parametrize('fault', [None, 'after_bundle', 'between_metadata', 'after_view'])
+@pytest.mark.parametrize('fault', [None, 'after_bundle', 'between_metadata', 'after_view', 'local'])
 def test_release_retention_rechecks_authority_and_revokes_failed_view(released, disclosure, tmp_path, monkeypatch, fault):
     """Real custody/view validation; metadata approval, socket and SQL are synthetic."""
     from dataclasses import replace
@@ -313,6 +313,18 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     document['digest'] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
     intent_ref = store.put_bytes(canonical_json_bytes(document), media_type='application/json')
     claim = replace(claim, payload=claim.payload.model_copy(update={'manifest_ref': intent_ref}))
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
+    authorization = _read(store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
+    if fault == 'local':
+        from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+        from tests.p3.test_local_qualification import sealed
+        document = authorization.model_dump(mode='json', exclude={'digest', 'issuer_attempt', 'issuer_run_id', 'issuer_workflow'})
+        document.update(schema_version='p3-local-run-authorization-v1', identity=dict(issuer_kind='LOCAL',
+            issuer_identity='synthetic', run_id='00000000-0000-4000-8000-000000000002', attempt=1,
+            host_id='a'*64, boot_id='00000000-0000-4000-8000-000000000001'))
+        authorization = LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(document)))
+        auth_ref = store.put_bytes(canonical_json_bytes(authorization), media_type='application/json')
+        claim = replace(claim, payload=claim.payload.model_copy(update={'authorization_ref': auth_ref}))
     request, manifest = HoldoutRequest.model_validate_json(graph[0]), _read(store, manifest_ref, HoldoutManifest)
     monkeypatch.setattr(holdout, 'validate_holdout_operation_input', lambda *args, **kwargs: (request, manifest))
     endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1', socket_path='/run/p3/custodian.sock',
@@ -324,6 +336,7 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     monkeypatch.setattr(WorkerRepository, 'consume_p3_holdout', lambda *args, **kwargs: events.append('consume'))
     def bundle(*args, **kwargs):
         nonlocal current
+        assert kwargs['io_deadline'] == (authorization.expires_at if fault == 'local' else None)
         kwargs['fence'](); kwargs['consume']()
         events.append('bundle')
         if fault == 'after_bundle': current = False
@@ -346,7 +359,7 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     def release():
         return wire.release_holdout_view(claim, object.__new__(WorkerRepository), store,
             endpoint=endpoint, fence=fence, trace_id='test:retention')
-    if fault:
+    if fault and fault != 'local':
         with pytest.raises(ValueError, match='revoked'): release()
         assert len(writes) == {'after_bundle': 0, 'between_metadata': 1, 'after_view': 2}[fault]
         for value in views:
@@ -376,3 +389,20 @@ def test_custodian_credentials_use_fixed_separate_role(monkeypatch):
     assert set(calls)==set(credentials)
     assert 'private-test-value' not in repr(repository._settings)
     assert 'trading_p3_custodian' not in JOB_PLANE_DATABASE_USERS
+
+
+def test_local_io_budget_is_fresh_expiry_bounded_and_keeps_historical_default(monkeypatch):
+    from datetime import UTC,datetime,timedelta
+    from services.job_worker import p3_holdout_release as wire
+    now=datetime.now(UTC)
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return now
+    monkeypatch.setattr(wire,'datetime',Clock)
+    assert wire._io_timeout(None)==5
+    assert wire._io_timeout(now+timedelta(seconds=10))==10
+    assert wire._io_timeout(now+timedelta(hours=1))==300
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now)
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now-timedelta(seconds=1))
+    now+=timedelta(seconds=11)
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now-timedelta(seconds=1))

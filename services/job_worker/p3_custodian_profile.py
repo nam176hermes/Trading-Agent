@@ -94,6 +94,11 @@ def serve_profiled_release(channel: socket.socket,*,profile_path: Path,profile_d
     repository=CustodianReleaseRepository.from_systemd_credentials(
         {'CREDENTIALS_DIRECTORY':profile.credentials_directory},
         session=profile.schema_version in {'p3-custodian-session-profile-v1','p3-local-custodian-profile-v1'})
-    serve_release(channel,profile.endpoint,LocalArtifactStore(root),repository=repository,
+    store=LocalArtifactStore(root)
+    io_deadline=None
+    if isinstance(profile,LocalCustodianProfile):
+        from packages.alpha_lifecycle.replica_store import _read
+        io_deadline=_read(store,profile.authorization_ref,LocalRunAuthorization).expires_at
+    serve_release(channel,profile.endpoint,store,repository=repository,
         request_sha256=hashlib.sha256(canonical_json_bytes(profile.request)).hexdigest(),
-        read_plaintext=read_plaintext,recheck_profile=recheck)
+        read_plaintext=read_plaintext,recheck_profile=recheck,io_deadline=io_deadline)

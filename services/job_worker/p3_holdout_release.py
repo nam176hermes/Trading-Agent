@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord
+from packages.alpha_lifecycle.contracts.authority import CustodyRecord, LocalRunAuthorization
 from packages.alpha_lifecycle.contracts.models import StrictModel, Token
 from packages.alpha_lifecycle.custody import CustodianAttestation, ReleaseRequest, validate_release_request
 from packages.alpha_lifecycle.replica_store import ArtifactStore, _read
@@ -60,8 +60,16 @@ def _request_identity(request: ReleaseRequest, endpoint: CustodianEndpoint) -> N
         raise ValueError('release request differs from the protected endpoint')
 
 
+def _io_timeout(deadline: datetime | None) -> float:
+    """LOCAL admission can exceed five seconds; IO remains bounded by its authority."""
+    if deadline is None:return 5
+    remaining=(deadline-datetime.now(UTC)).total_seconds()
+    if remaining<=0:raise ValueError('custody operation authority expired')
+    return min(300,remaining)
+
+
 def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
-    fence: Callable[[],None], consume: Callable[[],None],
+    fence: Callable[[],None], consume: Callable[[],None], io_deadline: datetime | None = None,
 ) -> bytes:
     """Research parent only, after metadata admission and committed disclosure.
 
@@ -85,7 +93,7 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
             or stat.S_IMODE(before.st_mode)!=0o660):
             raise ValueError('custody socket ownership or mode differs')
         with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as channel:
-            channel.settimeout(5)
+            channel.settimeout(_io_timeout(io_deadline))
             channel.connect(f'/proc/self/fd/{current}/{path.name}')
             _peer(channel,endpoint.custodian_uid)
             after=os.stat(path.name,dir_fd=current,follow_symlinks=False)
@@ -97,6 +105,7 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
             consume()
             fence()
             raw=canonical_json_bytes(request)
+            channel.settimeout(_io_timeout(io_deadline))
             if channel.send(raw,socket.MSG_NOSIGNAL)!=len(raw):raise ValueError('incomplete custody request')
             bundle=receive_bundle(channel,hashlib.sha256(raw).hexdigest())
             fence()
@@ -145,7 +154,8 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     validate_release_request(release,attestation,custody)
     def consume() -> None:
         _ = repository.consume_p3_holdout(claim,store,trace_id=trace_id)
-    raw=request_bundle(endpoint,release,fence=fence,consume=consume)
+    raw=request_bundle(endpoint,release,fence=fence,consume=consume,
+        io_deadline=authorization.expires_at if isinstance(authorization,LocalRunAuthorization) else None)
     fence()
     request_ref=store.put_bytes(canonical_json_bytes(request),media_type='application/json')
     fence()
@@ -164,7 +174,7 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
     repository: CustodianReleaseRepository,
     request_sha256: str,
     read_plaintext: Callable[[CustodyRecord],bytes],
-    recheck_profile: Callable[[],CustodianEndpoint],
+    recheck_profile: Callable[[],CustodianEndpoint], io_deadline: datetime | None = None,
 ) -> None:
     """One accepted connection in the independent custodian; never a daemon.
 
@@ -177,7 +187,7 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
         raise ValueError('custodian requires its concrete SQL release owner')
     if os.geteuid()!=endpoint.custodian_uid:raise ValueError('unapproved custodian UID')
     _peer(channel,endpoint.research_uid)
-    channel.settimeout(5)
+    channel.settimeout(_io_timeout(io_deadline))
     # recvmsg rather than recv ensures even rejected request-side FDs are closed.
     descriptors: list[int]=[]
     try:
@@ -206,6 +216,7 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
             raise ValueError('custodian plaintext differs from commitment')
         if recheck_profile()!=endpoint:raise ValueError('custodian profile changed')
         repository.fence(request)
+        channel.settimeout(_io_timeout(io_deadline))
         send_bundle(channel,hashlib.sha256(raw).hexdigest(),plaintext)
     finally:
         for descriptor in descriptors:os.close(descriptor)
