@@ -126,7 +126,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
         '--job-id', job.job_id, '--output', str(output), '--holdout-view', str(view_path)]
     monkeypatch.setattr(sys, 'argv', argv)
     grants = []
-    monkeypatch.setattr(command, 'parent_replica_fence', lambda: lambda: grants.append(True))
+    monkeypatch.setattr(command, 'parent_replica_fence', lambda *, expires_at: lambda: grants.append(expires_at))
     monkeypatch.setattr(sandbox, 'require_official_sandbox', lambda path: path)
     def child_argv(self, manifest, result, output_dir, seccomp_fd, view_fd=None):
         return (sys.executable, '-I', '-B', str(root/'scripts/run_p3_evaluation_child.py'),
@@ -136,7 +136,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
         (x.store._root/ref.locator).unlink()
     before = set(x.store._root.iterdir())
     command.main()
-    assert grants and set(x.store._root.iterdir()) == before
+    assert grants and set(grants) == {auth.expires_at} and set(x.store._root.iterdir()) == before
     assert 'p3-holdout-operation-result-v1' in capsys.readouterr().out
     private = LocalArtifactStore(output/'artifacts')
     if extra:

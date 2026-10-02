@@ -3,6 +3,7 @@
 import os
 import select
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 _REQUEST = b'\x00P3_REPLICA_FENCE_V1:'
 _ACK = b'P3_REPLICA_GO_V1:'
@@ -57,11 +58,13 @@ def replica_fence_ack(sequence: int) -> bytes:
     return _ACK + str(sequence).encode('ascii') + b'\n'
 
 
-def parent_replica_fence() -> Callable[[], None]:
+def parent_replica_fence(*, expires_at: datetime | None = None) -> Callable[[], None]:
     """Block each replica until its own worker pipe returns a fresh grant.
 
     Replica children use DEVNULL streams and cannot inherit this handshake.
     The grant is not an execution receipt or a reusable authority artifact.
+    Official callers carry their validated authorization deadline: full-source
+    parent checks may exceed30s, but a wait never exceeds300s or that deadline.
     """
     sequence = 0
 
@@ -70,10 +73,17 @@ def parent_replica_fence() -> Callable[[], None]:
         sequence += 1
         request = _REQUEST + str(sequence).encode('ascii') + b'\n'
         expected = replica_fence_ack(sequence)
+        timeout = 30.0
+        if expires_at is not None:
+            timeout = min(300.0, (expires_at-datetime.now(UTC)).total_seconds())
+            if timeout <= 0:
+                raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'replica authorization expired')
         try:
-            if (os.write(2, request) != len(request) or not select.select([0], [], [], 30)[0]
+            if (os.write(2, request) != len(request) or not select.select([0], [], [], timeout)[0]
                 or os.read(0, len(expected)+1) != expected):
                 raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'parent did not grant the current replica')
+            if expires_at is not None and datetime.now(UTC) >= expires_at:
+                raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'replica authorization expired')
         except OSError as error:
             raise P3SpawnError('P3_REPLICA_FENCE_REJECTED', 'parent fence pipe is unavailable') from error
 
