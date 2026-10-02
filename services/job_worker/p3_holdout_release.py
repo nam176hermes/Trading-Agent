@@ -89,7 +89,10 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
             channel.connect(f'/proc/self/fd/{current}/{path.name}')
             _peer(channel,endpoint.custodian_uid)
             after=os.stat(path.name,dir_fd=current,follow_symlinks=False)
-            if before!=after:raise ValueError('custody socket changed during connect')
+            # Connecting can update access time; all other socket metadata must stay pinned.
+            if any(getattr(before,key)!=getattr(after,key) for key in
+                ('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns')):
+                raise ValueError('custody socket changed during connect')
             fence()
             consume()
             fence()

@@ -1,4 +1,6 @@
 """Private synthetic custody transport; never cross-UID/runtime qualification."""
+
+
 import hashlib
 import os
 import shutil
@@ -15,6 +17,64 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_worker.engine_spawn import _sealed_memfd, _memfd_create
 from tests.p3.test_reference_input import reference_seed  # noqa: F401
 from tests.p3.test_holdout_disclosure_client import disclosure  # noqa: F401
+
+
+@pytest.mark.parametrize('changed_field', [None, 'st_dev', 'st_ino', 'st_uid', 'st_gid',
+                                          'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'])
+def test_socket_connect_allows_access_time_only_and_rejects_identity_drift(release_request, monkeypatch, changed_field):
+    """Synthetic OS/socket: no connection, plaintext or durable disclosure is opened."""
+    import stat
+    from types import SimpleNamespace
+    from services.job_worker import p3_holdout_release as wire
+    endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1',
+        socket_path='/run/p3/custodian.sock', custodian_uid=17001, research_uid=17002,
+        custodian_identity='custodian', research_identity='research')
+    values = dict(st_dev=1, st_ino=2, st_uid=17001, st_gid=17002, st_mode=stat.S_IFSOCK | 0o660,
+                  st_nlink=1, st_size=0, st_mtime_ns=10_000_000_000, st_ctime_ns=10_000_000_000, st_atime_ns=10_000_000_000)
+    def observation(values):
+        return os.stat_result(tuple(values[key] for key in
+            ('st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid', 'st_gid', 'st_size')) +
+            tuple(values[key] // 1_000_000_000 for key in ('st_atime_ns', 'st_mtime_ns', 'st_ctime_ns')),
+            {key: values[key] for key in ('st_atime_ns', 'st_mtime_ns', 'st_ctime_ns')})
+    before = observation(values)
+    values['st_atime_ns'] += 1_000_000_000
+    if changed_field:
+        values[changed_field] += 1
+    after = observation(values)
+    observations = iter((before, after))
+    root_stat = os.stat('/')
+    events = []
+    monkeypatch.setattr(wire, 'os', SimpleNamespace(
+        geteuid=lambda: 17002, fsencode=os.fsencode, O_RDONLY=os.O_RDONLY, O_DIRECTORY=os.O_DIRECTORY,
+        O_NOFOLLOW=os.O_NOFOLLOW, O_CLOEXEC=os.O_CLOEXEC,
+        open=lambda *args, **kwargs: 101, fstat=lambda fd: root_stat,
+        stat=lambda *args, **kwargs: next(observations), close=lambda fd: None))
+    class Channel:
+        family = socket.AF_UNIX
+        type = socket.SOCK_SEQPACKET
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def settimeout(self, seconds): assert seconds == 5
+        def connect(self, path): events.append('connect')
+        def getsockopt(self, *args): return struct.pack('3i', 123, 17001, 17001)
+        def send(self, raw, flags):
+            assert raw == canonical_json_bytes(release_request)
+            events.append('send')
+            return len(raw)
+    monkeypatch.setattr(wire, 'socket', SimpleNamespace(
+        socket=lambda *args: Channel(), AF_UNIX=socket.AF_UNIX, SOCK_SEQPACKET=socket.SOCK_SEQPACKET,
+        SOL_SOCKET=socket.SOL_SOCKET, SO_PEERCRED=socket.SO_PEERCRED, MSG_NOSIGNAL=socket.MSG_NOSIGNAL))
+    monkeypatch.setattr(wire, 'receive_bundle', lambda *args: b'synthetic bundle')
+    def run():
+        return wire.request_bundle(endpoint, release_request,
+            fence=lambda: events.append('fence'), consume=lambda: events.append('consume'))
+    if changed_field:
+        with pytest.raises(ValueError, match='socket changed'):
+            run()
+        assert events == ['connect']
+    else:
+        assert run() == b'synthetic bundle'
+        assert events == ['connect', 'fence', 'consume', 'fence', 'send', 'fence']
 
 
 @pytest.fixture
