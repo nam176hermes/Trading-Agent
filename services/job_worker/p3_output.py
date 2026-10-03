@@ -187,17 +187,25 @@ class P3OutputCustody:
                 self._before_retain({relative+'/'+name: ref for relative, name, _, ref in files}, PinnedReader())
                 check()
             inventory=[]
+            retained_refs: set[ArtifactRefV1] = set()
             for relative,name,expected,ref in files:
                 check()
                 raw=self._read(directories[relative],name,expected)
-                if self._before_write is not None:
-                    self._before_write()
+                if ref not in retained_refs:
+                    if self._before_write is not None:
+                        self._before_write()
+                        check()
+                    retained=self._store.put_bytes(raw,media_type=ref.media_type)
                     check()
-                retained=self._store.put_bytes(raw,media_type=ref.media_type)
-                check()
-                if retained != ref or self._store.read_bytes(ref) != raw:
+                    if retained != ref:
+                        raise ValueError('P3 retained output reference differs')
+                # Replicas retain every pinned private path. Only a reference
+                # already published and read back in this call can avoid a
+                # repeated write; both private and retained bytes stay checked.
+                if self._store.read_bytes(ref) != raw:
                     raise ValueError('P3 retained output readback differs')
                 check()
+                retained_refs.add(ref)
                 inventory.append(dict(path=relative+'/'+name,artifact_ref=ref))
             inventory_raw=canonical_json_bytes(inventory)
             if len(inventory_raw) > MAX_OUTPUT_INVENTORY_BYTES:

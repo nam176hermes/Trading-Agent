@@ -786,7 +786,7 @@ services/job_worker/p3_native_runner.py|189|BaseException|PRODUCTION_CRITICAL|RA
 services/job_worker/p3_native_spawn.py|127|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_official.py|240|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|49|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_output.py|216|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_output.py|224|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_session.py|277|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_session.py|404|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_session.py|482|BaseException|PRODUCTION_CRITICAL|RAISE
