@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
     from .p3_host_profile import ANY_OFFICIAL_PROFILE
+    from .p3_spawn import CompleteP3Closure
     from .p3_native_spawn import P3NativeSpawnProvider
     from .p3_native_runner import NativeReplica
     from .process_runner import HeartbeatDecision, HeartbeatInstruction
@@ -379,6 +380,9 @@ class P3HoldoutSession:
 
     def fence(self) -> None:
         """Call before each replica and durable write, using this stage's lease."""
+        self._fence_closure()
+
+    def _fence_closure(self) -> 'CompleteP3Closure':
         try:
             self._check_view_access()
             active = self._active
@@ -390,17 +394,18 @@ class P3HoldoutSession:
                 raise ValueError('session profile changed')
             if read_protected_canonical_json_current(self._path.with_name('stage.json'))[1] != self._stage_digest:
                 raise ValueError('session protected attempt chain changed')
-            _ = self._host(claim, digest)
+            _, closure = self._host(claim, digest)
             identity = (authorization.identity if isinstance(authorization,LocalRunAuthorization)
                 else (authorization.issuer_run_id,authorization.issuer_attempt))
             if identity != session_identity(self.profile):
                 raise ValueError('stage belongs to another workflow attempt')
             self._check_view_access()
+            return closure
         except BaseException:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> 'ANY_OFFICIAL_PROFILE':
+    def _host(self, claim: ClaimedJob, digest: str) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
             job_id=claim.job_id, payload=claim.payload, context=os.environ)
@@ -412,7 +417,7 @@ class P3HoldoutSession:
             raise ValueError('session source, environment, runtime or transport changed')
         if self._host_identity is None:
             self._host_identity = identity
-        return profile
+        return profile, closure
 
     @contextmanager
     def stage(self, claim: ClaimedJob, *, fence: Callable[[], None]) -> Generator['P3HoldoutSession', None, None]:
@@ -491,7 +496,7 @@ class P3HoldoutSession:
             raise ValueError('session permits exactly one holdout release attempt')
         self._release_attempted = True  # Uncertain acknowledgement never permits a second request.
         try:
-            profile = self._host(active[0], active[2])
+            profile, _ = self._host(active[0], active[2])
             if profile.custodian_endpoint is None:
                 raise ValueError('session has no protected custodian endpoint')
             view, request_ref, manifest_ref = release_holdout_view(active[0], repository, self._store,
@@ -520,12 +525,14 @@ class P3HoldoutSession:
             self.close()
             raise
 
-    def spawn_inputs(self, claim: ClaimedJob) -> tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]:
-        self.fence()
+    def spawn_inputs(self, claim: ClaimedJob) -> tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1, 'CompleteP3Closure']:
+        closure = self._fence_closure()
+        if self._view is None:
+            raise ValueError('session has no released view')
         if (self._active is None or self._active[0] != claim or self._active[3].operation != 'HOLDOUT'
             or self._request is None or self._manifest is None or self._spec is None):
             raise ValueError('holdout driver differs from its released current claim')
-        return self.view, self._request, self._manifest, self._spec
+        return self._view, self._request, self._manifest, self._spec, closure
 
     @property
     def view(self) -> HoldoutCalculationView:
@@ -582,7 +589,7 @@ class P3HoldoutSession:
             active = self._active
             if active is None:
                 raise ValueError('native execution requires the active parity stage')
-            profile = self._host(active[0], active[2])
+            profile, _ = self._host(active[0], active[2])
             runs = run_native_replicas(provider, view=self.view, output=self,
                 artifact_root=Path(profile.output_root)/'native', heartbeat=heartbeat, preflight=preflight)
             self.native_parent_proof_ref, self._native_receipts = retain_native_proof(provider, runs, self)
@@ -627,7 +634,7 @@ class P3HoldoutSession:
             native_parent_proof_ref=self.native_parent_proof_ref)
         self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
         if isinstance(self.profile, LocalSessionProfile):
-            publish_session_ref(self._host(active[0], active[2]).output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
+            publish_session_ref(self._host(active[0], active[2])[0].output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
         return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:

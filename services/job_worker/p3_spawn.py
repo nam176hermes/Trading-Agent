@@ -250,7 +250,7 @@ def _file_bytes(path: Path, identity: tuple[int, int], size: int, mode: int, dig
 
 class P3SpawnProvider:
     def __init__(self, *, attest_closure: Callable[[], CompleteP3Closure], store: LocalArtifactStore,
-        store_root: Path, output_root: Path, holdout_inputs: Callable[[ClaimedJob], tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]] | None = None) -> None:
+        store_root: Path, output_root: Path, holdout_inputs: Callable[[ClaimedJob], tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1, CompleteP3Closure]] | None = None) -> None:
         if not callable(attest_closure):
             raise TypeError('complete P3 attestor is required')
         if type(store) is not LocalArtifactStore or store._root != store_root:
@@ -415,7 +415,7 @@ class P3SpawnProvider:
             references = {'manifest-ref':payload.manifest_ref,'source':closure.source,
                 'environment-ref':closure.environment_ref,'authorization-ref':payload.authorization_ref}
             if self._holdout_inputs is not None:
-                view, request_ref, manifest_ref, spec_ref = self._holdout_inputs(job)
+                view, request_ref, manifest_ref, spec_ref, _ = self._holdout_inputs(job)
                 references.update({'holdout-manifest-ref':manifest_ref,
                     'holdout-request-ref':request_ref, 'instrument-spec-ref':spec_ref})
                 view_fd = _sealed_memfd('p3-holdout-view', view.raw, mode=0o400)
@@ -474,7 +474,7 @@ class P3SpawnProvider:
                 owner = self._holdout_inputs
                 def validate_outputs(inventory, outputs):
                     from .p3_output_validation import validate_holdout_output
-                    view, _, manifest_ref, _ = owner(job)
+                    view, _, manifest_ref, _, _ = owner(job)
                     # Pure recomputation reads keep the view's current lifetime;
                     # the pinned output reader owns lease/safety progress. Full
                     # host admission runs again before every durable CAS write.
@@ -491,12 +491,12 @@ class P3SpawnProvider:
             descriptors.remove(output_parent)
             output_parent = -1
             def replica_fence() -> None:
-                # SQL lease/safety belongs to the heartbeat before each grant.
-                if (self._attest_closure() != closure
+                # The HOLDOUT owner returns this borrow's complete fresh attestation.
+                current = (self._attest_closure() if self._holdout_inputs is None
+                    else self._holdout_inputs(job)[4])
+                if (current != closure
                     or tuple(_directory_identity(p) for p in (self._store_root,self._output_root)) != identities):
                     raise ValueError('P3 replica profile or transport changed')
-                if self._holdout_inputs is not None:
-                    self._holdout_inputs(job)
 
             return P3BuiltSpawn(job.job_id,job.attempt_id,tuple(argv),Path('/'),MappingProxyType({}),tuple(descriptors),tuple(descriptors),
                 spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,

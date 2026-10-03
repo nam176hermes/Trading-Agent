@@ -198,6 +198,34 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
             pass
 
 
+@pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
+def test_spawn_inputs_uses_one_fresh_host_admission_per_borrow(session_inputs, monkeypatch):
+    from services.job_store.worker_repository import WorkerRepository
+    x = session_inputs
+    claim = x.claim('HOLDOUT')
+    with pytest.raises(ValueError, match='session closed'), x.session.stage(claim, fence=lambda: None):
+        x.session.release(object.__new__(WorkerRepository), trace_id='test:borrow')
+        host = x.session._host
+        admissions = []
+        def observe(*args):
+            admissions.append(args)
+            return host(*args)
+        monkeypatch.setattr(x.session, '_host', observe)
+        view, request, manifest, spec, closure = x.session.spawn_inputs(claim)
+        assert closure.source == x.session.profile.source
+        assert manifest == x.manifest and spec == x.spec and request is not None
+        assert view.read_bytes(manifest)
+        assert len(admissions) == 1
+        assert x.session.spawn_inputs(claim)[0] is view
+        assert len(admissions) == 2
+        # A completed admission is never reused for the next access.
+        x.profile['closure_sha256'] = '0' * 64
+        with pytest.raises(ValueError, match='session profile changed'):
+            x.session.spawn_inputs(claim)
+        with pytest.raises(ValueError, match='closed'):
+            view.read_bytes(manifest)
+
+
 @pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
 def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
     import os

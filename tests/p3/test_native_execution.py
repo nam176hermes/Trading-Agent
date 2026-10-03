@@ -13,6 +13,14 @@ from tests.p3.test_holdout_session import session_inputs  # noqa: F401
 from tests.p3.test_reference_input import reference_seed  # noqa: F401
 
 
+@pytest.mark.parametrize('session_inputs', ['LOCAL'], indirect=True)
+def test_local_parity_note_uses_the_admitted_host_profile(native_provider, tmp_path, monkeypatch):
+    test_native_execution_owns_six_distinct_children_and_stops_on_failure(
+        native_provider, tmp_path, monkeypatch, None)
+    provider, x, _, _ = native_provider
+    assert (x.output_root / provider._claim.job_id / 'session-refs' / 'parity-pair.log').is_file()
+
+
 @pytest.mark.parametrize('fault', [None, 'real_processes', 'cancel', 'exit', 'identity', 'lineage',
     'fingerprint', 'request', 'truncated', 'output', 'revoked'])
 def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
@@ -156,8 +164,8 @@ def test_session_revokes_view_when_native_execution_fails(native_provider, tmp_p
     alias = x.session.view
     original_host = x.session._host
     def host(*args):
-        original_host(*args)
-        return SimpleNamespace(output_root=str(tmp_path/'protected-output'))
+        _, closure = original_host(*args)
+        return SimpleNamespace(output_root=str(tmp_path/'protected-output')), closure
     monkeypatch.setattr(x.session, '_host', host)
     monkeypatch.setattr(x.session, 'native_spawn_provider', lambda: provider)
     def fail(actual, **kwargs):

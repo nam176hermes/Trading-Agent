@@ -91,6 +91,41 @@ def test_forged_p3_capability_cannot_be_consumed():
         consume_prepared_p3_spawn(PreparedP3Spawn())
 
 
+@pytest.mark.parametrize('fault', [None, 'inode', 'owner'])
+def test_holdout_replica_uses_the_current_owner_admission(synthetic_provider, fault):
+    from services.job_worker.p3_spawn import consume_prepared_p3_spawn
+    provider, job, closure = synthetic_provider
+    built = consume_prepared_p3_spawn(provider.prepare(job))
+    admissions, redundant = [], []
+    def admitted(claim):
+        assert claim == job
+        admissions.append(claim)
+        if fault == 'owner':
+            raise ValueError('owner revoked')
+        current = closure
+        if fault == 'inode':
+            mount = closure.mounts[0]
+            current = replace(closure, mounts=(replace(mount, identity=(mount.identity[0], mount.identity[1]+1)), *closure.mounts[1:]))
+        return None, None, None, None, current
+    provider._holdout_inputs = admitted
+    def repeated():
+        redundant.append(True)
+        return closure
+    provider._attest_closure = repeated
+    try:
+        if fault:
+            with pytest.raises(ValueError):
+                built.replica_fence()
+        else:
+            built.replica_fence()
+            assert redundant == []
+        assert admissions == [job]
+    finally:
+        for fd in built.pass_fds:
+            os.close(fd)
+        built.output_custody.abandon()
+
+
 def test_fixed_oos_workflows_consume_the_same_reviewed_driver_capability(synthetic_provider):
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
     from packages.alpha_lifecycle.contracts.authority import RunAuthorization

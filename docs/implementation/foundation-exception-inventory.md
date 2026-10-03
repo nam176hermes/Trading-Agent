@@ -787,11 +787,11 @@ services/job_worker/p3_native_spawn.py|127|BaseException|PRODUCTION_CRITICAL|RAI
 services/job_worker/p3_official.py|240|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|49|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|216|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|276|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|399|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|477|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|519|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|590|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|277|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|404|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|482|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|524|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|597|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|319|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|504|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|95|BaseException|PRODUCTION_CRITICAL|RAISE
