@@ -482,13 +482,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         started = True
         inspector = ProcProcessInspector()
         identity = inspector.inspect(process.pid)
+        initial_identity = identity
         descriptor = pidfd_open(process.pid,0)
         try:
-            if (identity is None or identity.pid != identity.process_group
-                or inspector.inspect(process.pid) != identity or process.poll() is not None):
-                raise RuntimeError('PostgreSQL process identity changed before fencing')
-            pidfd_signal(descriptor,0,None,0)
-            mark('SQL_PROCESS_IDENTITY_BOUND_PASS' if heartbeat is not None else 'SQL_PROCESS_IDENTITY_OBSERVED_PASS')
             deadline = time.monotonic() + 30
             while True:
                 ready = subprocess.run([str(BIN/'pg_isready'),'-h',str(sock),'-U','postgres'],
@@ -499,6 +495,16 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
                     raise RuntimeError('PostgreSQL fixture startup failed')
                 progress()
                 time.sleep(.05)
+            # Startup may briefly expose empty argv; bind the ready server while
+            # preserving the spawned kernel identity and all fencing checks.
+            identity = inspector.inspect(process.pid)
+            if (identity is None or initial_identity is None or identity.pid != identity.process_group
+                or (identity.pid, identity.process_group, identity.start_ticks)
+                != (initial_identity.pid, initial_identity.process_group, initial_identity.start_ticks)
+                or inspector.inspect(process.pid) != identity or process.poll() is not None):
+                raise RuntimeError('PostgreSQL process identity changed before fencing')
+            pidfd_signal(descriptor,0,None,0)
+            mark('SQL_PROCESS_IDENTITY_BOUND_PASS' if heartbeat is not None else 'SQL_PROCESS_IDENTITY_OBSERVED_PASS')
         finally:
             os.close(descriptor)
         passwords = {role: secrets.token_hex(24) for role in ('owner','migrator','reader','jobs')}
