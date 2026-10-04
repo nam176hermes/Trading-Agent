@@ -549,6 +549,12 @@ class JobWorker:
                 raise ResultValidationError('P3 post-run deadline expired',
                     reconciliation_required=True) from exc
         try:
+            # Complete view admission before the mandatory worker boundary so
+            # validation starts with fresh safety/control and its callback cadence.
+            holdout_view = (
+                self._p3_session.view
+                if self._p3_profile and self._p3_session is not None else None
+            )
             self._validation_progress(claimed, safety_preflight)
             if self._p3_profile:
                 next_progress = time.monotonic() + 1
@@ -654,7 +660,7 @@ class JobWorker:
                     output_custody=outcome.p3_output_custody,
                     output_inventory_ref=outcome.p3_output_inventory_ref,
                     progress=p3_progress,
-                    **({'holdout_view': self._p3_session.view} if self._p3_session is not None else {}),
+                    **({'holdout_view': holdout_view} if self._p3_session is not None else {}),
                 )
             else:
                 result = self._validator.validate(
