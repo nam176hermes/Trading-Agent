@@ -527,8 +527,11 @@ class JobWorker:
             return True
         p3_custody = outcome.p3_output_custody
         next_progress = 0.0
+        # Full boundary checks also satisfy the one-second callback cadence.
+        # The first callback still reads current SQL control after each boundary.
+        control_after_boundary = False
         def p3_progress():
-            nonlocal next_progress
+            nonlocal next_progress, control_after_boundary
             try:
                 if p3_custody is not None:
                     p3_custody.check_deadline()
@@ -536,6 +539,10 @@ class JobWorker:
                 if now >= next_progress:
                     self._validation_progress(claimed, safety_preflight)
                     next_progress = time.monotonic() + 1
+                    control_after_boundary = False
+                elif control_after_boundary:
+                    self._validation_control(claimed)
+                    control_after_boundary = False
                 if p3_custody is not None:
                     p3_custody.check_deadline()
             except TimeoutError as exc:
@@ -543,6 +550,9 @@ class JobWorker:
                     reconciliation_required=True) from exc
         try:
             self._validation_progress(claimed, safety_preflight)
+            if self._p3_profile:
+                next_progress = time.monotonic() + 1
+                control_after_boundary = True
             if engine_request is not None:
                 from packages.engine_event_ledger import (
                     EngineEventConflictError,
@@ -685,6 +695,8 @@ class JobWorker:
             # expire. Recheck once more before any SUCCEEDED transition.
             self._validation_progress(claimed, safety_preflight)
             if self._p3_profile:
+                next_progress = time.monotonic() + 1
+                control_after_boundary = True
                 p3_progress()
             outcome = bind_latest_safety(outcome)
         except ResultValidationError as exc:
@@ -1075,6 +1087,9 @@ class JobWorker:
             (safety_preflight or self._safety_preflight)()
         except WorkerBlockedError as exc:
             raise _ValidationSafetyDrift(exc.reason_code) from exc
+        self._validation_control(claimed)
+
+    def _validation_control(self, claimed) -> None:
         control = WorkerControl(self._repository_call("heartbeat_control",
             claimed.job_id, claimed.attempt_id, self._worker_id,
             claimed.lease_token, self._lease_seconds,

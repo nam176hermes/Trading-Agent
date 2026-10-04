@@ -479,7 +479,7 @@ packages/p3_provenance.py|46|Exception|PRODUCTION_CRITICAL|RETURN
 packages/p3_provenance.py|54|Exception|PRODUCTION_CRITICAL|RETURN
 packages/p3_provenance.py|99|Exception|PRODUCTION_CRITICAL|RETURN
 packages/p3_status.py|86|Exception|PRODUCTION_CRITICAL|OTHER
-packages/pre_p3_provenance.py|263|Exception|PRODUCTION_CRITICAL|RETURN
+packages/pre_p3_provenance.py|269|Exception|PRODUCTION_CRITICAL|RETURN
 packages/research_validation/producers.py|891|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|970|Exception|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|1424|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -819,12 +819,12 @@ services/job_worker/safety_state.py|153|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/safety_state.py|353|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/worker.py|342|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/worker.py|418|Exception|PRODUCTION_CRITICAL|RETURN
-services/job_worker/worker.py|601|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/worker.py|611|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|666|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|974|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|997|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/worker.py|1022|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|621|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|676|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|986|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|1009|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|1034|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
 services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE

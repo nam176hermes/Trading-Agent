@@ -11,6 +11,7 @@ import re
 import stat
 import struct
 import subprocess
+from tempfile import TemporaryFile
 from typing import Any
 import unicodedata
 
@@ -105,20 +106,25 @@ def _git(root: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
-        result = subprocess.run(
-            ("git", *args),
-            cwd=root,
-            input=input_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-            check=False,
-        )
+        # Source blob batches are large. An anonymous file avoids a readiness
+        # dispatch for every pipe chunk while preserving a fresh Git read.
+        with TemporaryFile() as output:
+            result = subprocess.run(
+                ("git", *args),
+                cwd=root,
+                input=input_bytes,
+                stdout=output,
+                stderr=subprocess.PIPE,
+                env=environment,
+                check=False,
+            )
+            output.seek(0)
+            stdout = output.read()
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProvenanceError("git source authority is unavailable") from exc
     if result.returncode:
         raise ProvenanceError("git source authority is unavailable")
-    return result.stdout
+    return stdout
 
 
 def _normalized_path(raw: bytes) -> str:
