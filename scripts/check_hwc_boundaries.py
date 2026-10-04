@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
@@ -54,13 +55,21 @@ def _strict_json(path: Path) -> dict[str, object]:
     return value
 
 
-def _imports(path: Path) -> Iterable[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+@lru_cache(maxsize=128)
+def _source_imports(source: str, filename: str) -> tuple[str, ...]:
+    """Only immutable parsing facts are reused; callers always read current bytes."""
+    tree = ast.parse(source, filename=filename)
+    names: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            yield from (alias.name for alias in node.names)
+            names.extend(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            yield node.module
+            names.append(node.module)
+    return tuple(names)
+
+
+def _imports(path: Path) -> Iterable[str]:
+    return _source_imports(path.read_text(encoding="utf-8"), str(path))
 
 
 def _git(root: Path, *arguments: str) -> str:

@@ -294,6 +294,49 @@ def test_wait_rechecks_protected_source_before_any_job_read(dispatch_fixture,mon
     assert calls==[('POST','/v1/jobs')]
 
 
+@pytest.mark.parametrize('terminal', ['SUCCEEDED', None, 'BLOCKED'])
+def test_holdout_observation_covers_declared_execution_and_postrun(dispatch_fixture, monkeypatch, terminal):
+    """An observation timeout cannot be shorter than the admitted operation's budgets."""
+    import json
+    from types import SimpleNamespace
+    from packages.job_contracts import payload_fingerprint
+    command, args, kwargs, calls, state = dispatch_fixture
+    job_id, body, operator = command.enqueue(*args, **kwargs)
+    payload = body.payload.model_copy(update={
+        'operation': AlphaCampaignOperation.HOLDOUT,
+        'logical_trial_id': 'p3-holdout-primary-v1',
+    })
+    body = body.model_copy(update={'payload': payload})
+    original = command._request_json
+    clock = [0.0]
+
+    def sleep(seconds):
+        clock[0] += 60
+
+    def response(*values, **options):
+        state.worker_ran = True
+        result = original(*values, **options)
+        job = result['data']['job']
+        job['payload'] = payload.model_dump(mode='json')
+        job['payload_fingerprint'] = payload_fingerprint(payload)
+        job['state'] = terminal if terminal is not None and clock[0] >= 1320 else 'RUNNING'
+        return result
+
+    monkeypatch.setattr(command, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(command, '_request_json', response)
+    if terminal == 'SUCCEEDED':
+        command._wait(job_id, body, operator, args[1], args[2])
+        assert json.loads((args[2]/'job-result.json').read_bytes())['data']['job']['state'] == terminal
+        assert clock[0] == 1320
+    else:
+        expected = 'bounded wait expired' if terminal is None else 'terminal state BLOCKED'
+        with pytest.raises(RuntimeError, match=expected):
+            command._wait(job_id, body, operator, args[1], args[2])
+        assert clock[0] == (1500 if terminal is None else 1320)
+    assert calls.count(('POST', '/v1/jobs')) == 1
+    assert all(method == 'GET' for method, _ in calls[1:])
+
+
 @pytest.mark.parametrize('fault',[None,'GITHUB_REPOSITORY','GITHUB_REF','GITHUB_SHA','GITHUB_RUN_ID',
     'GITHUB_RUN_ATTEMPT','GITHUB_ACTIONS','GITHUB_REF_PROTECTED','GITHUB_EVENT_NAME','GITHUB_WORKFLOW_REF',
     'rejected','subject','expired','same_actor','source','policy'])

@@ -252,8 +252,12 @@ def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_op
 
 
 def _wait(job_id, body, operator, token_file, output_dir):
+    from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY
+    from services.job_worker.command_registry import p3_command_spec
+
     token = _read_token(token_file)
-    deadline = time.monotonic() + 900
+    wait_seconds = max(900, p3_command_spec(body.payload).timeout_seconds + CHILD_POLICY['child_wall_seconds'])
+    deadline = time.monotonic() + wait_seconds
     while True:
         detail_raw = _request_json("GET", f"/v1/jobs/{job_id}", token)
         try:
