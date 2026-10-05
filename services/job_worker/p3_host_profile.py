@@ -256,7 +256,11 @@ def read_official_profile(
     source=SourceIdentity.model_validate(canonical_source_identity(ROOT))
     if source!=payload.expected_source:
         raise ValueError('P3 protected profile source is not current')
-    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,LocalOfficialHostProfileLane) else None)
+    # LOCAL issuer admission below already authenticates current prerequisites
+    # against the exact authorization identity, source and expiry. GITHUB issuer
+    # validation only checks workflow context and still needs this source gate.
+    if not isinstance(profile,LocalOfficialHostProfileLane):
+        require_p3_source_ready(ROOT)
     store_root,output_root,python_root=map(_absolute,(profile.store_root,profile.output_root,profile.python_root))
     if (_directory_identity(store_root)==_directory_identity(output_root)
         or store_root in output_root.parents or output_root in store_root.parents):

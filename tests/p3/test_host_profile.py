@@ -156,9 +156,11 @@ def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profil
     elif fault=='unknown_lane':document['schema_version']='p3-local-official-host-profile-v2'
     elif fault=='wrong_identity':document['identity']={**identity,'attempt':2}
     checked=[]
-    def gates(root,expected): checked.append(('gates',expected))
+    def gates(root,expected=None): checked.append(('gates',expected))
     def issuer(authorization,source,**kwargs):
         assert source==closure.source and authorization==auth and kwargs['context']=={}
+        # The real LOCAL issuer authenticates prerequisites before returning.
+        gates(kwargs['root'],authorization.identity)
         checked.append(('issuer',authorization.identity))
         if fault=='revoked':raise module.AuthorityHeld('revoked')
     monkeypatch.setattr(module,'require_p3_source_ready',gates)
