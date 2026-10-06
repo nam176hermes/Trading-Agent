@@ -64,12 +64,15 @@ def main() -> int:
         raise SystemExit(128 + signum)
 
     previous = signal.signal(signal.SIGTERM, terminated)
+    cleanup_safe = True
+    cleanup_error: OSError | None = None
     try:
         environment = os.environ.copy()
         environment.pop("VIRTUAL_ENV", None)
         if arguments.native_custody:
             prepare_native_custody(environment, session.path)
         with subprocess.Popen(command, cwd=arguments.cwd, env=environment, start_new_session=True) as child:
+            cleanup_safe = False
             try:
                 return child.wait()
             finally:
@@ -78,19 +81,37 @@ def main() -> int:
                     os.killpg(child.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
+                except OSError as error:
+                    cleanup_error = error
                 try:
                     child.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
+                except OSError as error:
+                    cleanup_error = cleanup_error or error
                 # A descendant can ignore TERM after the group leader has exited.
                 try:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                child.wait()
+                except OSError as error:
+                    cleanup_error = cleanup_error or error
+                try:
+                    child.wait()
+                except OSError as error:
+                    cleanup_error = cleanup_error or error
+                if cleanup_error is not None:
+                    cleanup_error.add_note("owned test group cleanup failed; private temporary files retained")
+                    raise cleanup_error
+                cleanup_safe = True
+    except OSError as error:
+        if cleanup_error is not None and cleanup_error is not error:
+            raise cleanup_error from error
+        raise
     finally:
         signal.signal(signal.SIGTERM, previous)
-        session.cleanup()
+        if cleanup_safe:
+            session.cleanup()
 
 
 if __name__ == "__main__":

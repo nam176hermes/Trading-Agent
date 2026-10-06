@@ -242,15 +242,16 @@ def parity_body(holdout_result_ref, native_commitment_ref, *, store):
 
 def phase_exit_body(primary_selection_ref, holdout_result_ref, parity_pair_ref, *, store):
     """Derive the PHASE_EXIT body from the selection, the HOLDOUT result and the session's parity-pair note."""
+    from pydantic import TypeAdapter
     from packages.alpha_lifecycle.contracts.authority import FamilyReview, PrimarySelection
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
     from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport, RegistrationProof
     from packages.alpha_lifecycle.holdout import HoldoutOperationResult
-    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.parity import ParityPair, SessionParityPair
     held = _read(store, holdout_result_ref, HoldoutOperationResult)
     manifest = _read(store, held.holdout_manifest_ref, HoldoutManifest)
     primary = _read(store, primary_selection_ref, PrimarySelection)
-    pair = _read(store, parity_pair_ref, ParityPair)
+    pair = _read(store, parity_pair_ref, TypeAdapter(ParityPair | SessionParityPair))
     if (manifest.primary_selection_ref != primary_selection_ref or primary.primary_alpha_id is None
         or primary.primary_candidate_head_ref is None or pair.manifest_ref != held.holdout_manifest_ref
         or (pair.primary_reference_ref, pair.baseline_reference_ref) != (held.executable_ref, held.baseline_executable_ref)):

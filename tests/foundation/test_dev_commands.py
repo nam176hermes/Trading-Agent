@@ -136,3 +136,68 @@ def test_wrapper_reaps_children_before_cleaning_private_storage(tmp_path, stubbo
             if wrapper.poll() is None:
                 wrapper.kill()
                 wrapper.wait()
+
+
+@pytest.mark.parametrize("failure", ["TERM", "KILL", "both", "wait", "reap", "TERM-reap"])
+def test_wrapper_retains_private_storage_when_cleanup_fails(monkeypatch, failure):
+    import signal
+
+    from scripts import run_with_trusted_test_tmp as wrapper
+    from scripts.trusted_test_tmp import prepare_trusted_test_tmp
+
+    session = prepare_trusted_test_tmp("cleanup-failure-test")
+    witness = session.path / "owned-witness"
+    witness.write_text("disposable test data")
+    signals = []
+    errors = {
+        "TERM": PermissionError("controlled TERM refusal"),
+        "KILL": PermissionError("controlled KILL refusal"),
+        "wait": ChildProcessError("controlled bounded wait failure"),
+        "reap": ChildProcessError("controlled final reap failure"),
+    }
+    first_error = errors["TERM" if failure in ("both", "TERM-reap") else failure]
+    previous_handler = signal.getsignal(signal.SIGTERM)
+
+    class Child:
+        pid = 424242
+        unbounded_waits = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.wait()
+
+        def wait(self, timeout=None):
+            if timeout is None:
+                self.unbounded_waits += 1
+                if failure == "reap" and self.unbounded_waits == 2:
+                    raise errors["reap"]
+            elif failure == "wait":
+                raise errors["wait"]
+            if failure == "TERM-reap" and (timeout is not None or self.unbounded_waits > 1):
+                raise errors["reap"]
+            return 0
+
+    def signal_group(pid, signum):
+        assert pid == Child.pid
+        name = "TERM" if signum == signal.SIGTERM else "KILL"
+        signals.append(signum)
+        if failure in (name, "both") or (failure == "TERM-reap" and name == "TERM"):
+            raise errors[name]
+
+    monkeypatch.setattr(wrapper, "prepare_trusted_test_tmp", lambda component: session)
+    monkeypatch.setattr(wrapper.subprocess, "Popen", lambda *args, **kwargs: Child())
+    monkeypatch.setattr(wrapper.os, "killpg", signal_group)
+    monkeypatch.setattr(wrapper.sys, "argv", ["wrapper", "--component", "cleanup-failure-test", "--", "controlled-child"])
+    try:
+        with pytest.raises(OSError) as raised:
+            wrapper.main()
+        assert witness.read_text() == "disposable test data"
+        assert signals == [signal.SIGTERM, signal.SIGKILL]
+        assert raised.value is first_error
+        assert "owned test group cleanup failed; private temporary files retained" in raised.value.__notes__
+        assert signal.getsignal(signal.SIGTERM) is previous_handler
+    finally:
+        # Only controlled children exist; release this test's exact real directory.
+        session.cleanup()

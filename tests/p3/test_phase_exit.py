@@ -528,3 +528,57 @@ def test_session_parity_pair_note_reads_back_with_native_parent_proof(exit_graph
     publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
     assert read_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', worker_uid=os.geteuid(),
                             store=store, expected_source=source) == ref
+
+
+def test_phase_exit_derives_from_plain_pair_and_retained_session_pair(exit_graph, tmp_path):
+    import os
+    from packages.alpha_lifecycle.local_campaign import phase_exit_body
+    from packages.alpha_lifecycle.operation_input import PhaseExitInput
+    from packages.alpha_lifecycle.parity import SessionParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from scripts.p3_local_controller import derive_body
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    from tests.p3.test_parity_pair import _change
+    store, intent, source, _ = exit_graph
+    held_ref, _ = _holdout_result(store, intent)
+    plain_body = phase_exit_body(intent.body.primary_selection_ref, held_ref, intent.body.parity_ref, store=store)
+    assert PhaseExitInput.model_validate(plain_body) == intent.body
+    # Declared unit placeholder, as in the session-note test above; no native proof authority.
+    pair_ref = _change(store, intent.body.parity_ref, native_parent_proof_ref=intent.body.holdout_replay_ref)
+    publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', pair_ref)
+    observed_ref = read_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', worker_uid=os.geteuid(),
+                                   store=store, expected_source=source)
+    assert observed_ref == pair_ref
+    request = derive_body(dict(workflow_operation='p3-phase-exit-v1', input_set_ref=intent.input_set_ref,
+        refs=dict(primary_selection_ref=intent.body.primary_selection_ref, holdout_result_ref=held_ref,
+                  parity_pair_ref=observed_ref)), source=source, store=store)
+    assert request['primary_alpha_id'] == intent.allowed_alpha_ids[0]
+    assert PhaseExitInput.model_validate(request['body']) == intent.body.model_copy(update={'parity_ref': pair_ref})
+    assert _read(store, request['body']['parity_ref'], SessionParityPair).native_parent_proof_ref == intent.body.holdout_replay_ref
+
+
+@pytest.mark.parametrize('fault', ['digest', 'unknown_field', 'parent_type', 'manifest', 'primary', 'baseline', 'noncanonical'])
+def test_phase_exit_rejects_invalid_session_pair(exit_graph, fault):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.local_campaign import phase_exit_body
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from tests.p3.test_parity_pair import _change
+    store, intent, _, _ = exit_graph
+    held_ref, held = _holdout_result(store, intent)
+    changes = dict(native_parent_proof_ref=intent.body.holdout_replay_ref)
+    if fault == 'unknown_field':
+        changes['unexpected'] = 'untrusted'
+    elif fault == 'parent_type':
+        changes['native_parent_proof_ref'] = None
+    elif fault in {'manifest', 'primary', 'baseline'}:
+        field = {'manifest': 'manifest_ref', 'primary': 'primary_reference_ref', 'baseline': 'baseline_reference_ref'}[fault]
+        changes[field] = held.holdout_replay_ref
+    pair_ref = _change(store, intent.body.parity_ref, **changes)
+    if fault in {'digest', 'noncanonical'}:
+        value = json.loads(store.read_bytes(pair_ref))
+        if fault == 'digest':
+            value['digest'] = '0' * 64
+        raw = canonical_json_bytes(value) if fault == 'digest' else json.dumps(value).encode()
+        pair_ref = store.put_bytes(raw, media_type='application/json')
+    with pytest.raises(ValidationError if fault in {'digest', 'unknown_field', 'parent_type'} else ValueError):
+        phase_exit_body(intent.body.primary_selection_ref, held_ref, pair_ref, store=store)
