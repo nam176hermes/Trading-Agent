@@ -299,7 +299,7 @@ def _read_proc_member(pid: int, *, allow_zombie: bool) -> SessionMember | None:
     try:
         descriptor = os.open(f"/proc/{pid}/stat", flags)
         raw = os.read(descriptor, 4096)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     finally:
         if descriptor >= 0:

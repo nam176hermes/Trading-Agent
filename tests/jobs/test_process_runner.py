@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import signal
@@ -1611,6 +1612,82 @@ def test_leader_proc_reader_accepts_matching_zombie_evidence(monkeypatch) -> Non
     monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
 
     assert process_runner._read_leader_proc(417) == SessionMember(417, 417, 417, 99)
+
+
+def test_proc_reader_accepts_native_exit_after_stat_open(monkeypatch) -> None:
+    from services.job_worker import process_runner
+
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, start_new_session=True,
+    )
+    descriptor = -1
+    closed = False
+    native_close = os.close
+    try:
+        descriptor = os.open(f"/proc/{child.pid}/stat", os.O_RDONLY | os.O_NOFOLLOW)
+        child.communicate(input=b"x", timeout=5)
+        assert child.returncode == 0
+
+        def open_held_stat(path, _flags):
+            assert path == f"/proc/{child.pid}/stat"
+            return descriptor
+
+        def close_held_stat(fd):
+            nonlocal closed
+            assert fd == descriptor
+            native_close(fd)
+            closed = True
+
+        with monkeypatch.context() as patch:
+            patch.setattr(process_runner.os, "open", open_held_stat)
+            patch.setattr(process_runner.os, "close", close_held_stat)
+            try:
+                assert process_runner._read_member_proc(child.pid) is None
+            finally:
+                print({"native_child_pid": child.pid, "child_exit": child.returncode, "descriptor_closed": closed})
+        assert closed
+    finally:
+        if descriptor >= 0 and not closed:
+            native_close(descriptor)
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("error_number", [errno.EPERM, errno.EIO])
+def test_proc_reader_rejects_non_exit_errors_and_closes_fd(monkeypatch, error_number) -> None:
+    from services.job_worker import process_runner
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    failure = OSError(error_number, "controlled non-exit proc read failure")
+
+    def failed_read(_fd, _size):
+        raise failure
+
+    monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
+    monkeypatch.setattr(process_runner.os, "read", failed_read)
+    with pytest.raises(OSError) as raised:
+        process_runner._read_leader_proc(417)
+    assert raised.value is failure
+    with pytest.raises(OSError) as closed:
+        os.fstat(read_fd)
+    assert closed.value.errno == errno.EBADF
+
+
+def test_proc_reader_rejects_malformed_stat_and_closes_fd(monkeypatch) -> None:
+    from services.job_worker import process_runner
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"417 (worker) S 1")
+    os.close(write_fd)
+    monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
+    with pytest.raises(OSError, match="proc stat shape is unsafe"):
+        process_runner._read_member_proc(417)
+    with pytest.raises(OSError) as closed:
+        os.fstat(read_fd)
+    assert closed.value.errno == errno.EBADF
 
 
 def test_mocked_fast_exit_keeps_zombie_for_leader_but_not_session_scan(monkeypatch) -> None:
