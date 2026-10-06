@@ -464,6 +464,7 @@ def derive_body(document, *, source, store):
     """Turn committed result references into an exact propose-operation request; grants nothing."""
     from packages.alpha_lifecycle import local_campaign as campaign
     from packages.alpha_lifecycle.contracts.authority import PrimarySelection
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
     operation = document.get('workflow_operation')
     if operation not in _BODY_REFS or set(document) != {'workflow_operation', 'input_set_ref', 'refs'}:
         raise ValueError('body derivation request differs')
@@ -484,6 +485,8 @@ def derive_body(document, *, source, store):
         body = campaign.family_review_body(disclosure, ref('review_ref'), source=source, store=store)
     elif operation == 'p3-native-parity-v1':
         body = campaign.parity_body(ref('holdout_result_ref'), ref('native_commitment_ref'), store=store)
+        manifest = _read(store, body['holdout_manifest_ref'], HoldoutManifest)
+        primary_alpha_id = _read(store, manifest.primary_selection_ref, PrimarySelection).primary_alpha_id
     else:
         primary_alpha_id = _read(store, ref('primary_selection_ref'), PrimarySelection).primary_alpha_id
         body = (campaign.holdout_body(input_set_ref, ref('primary_selection_ref'), custody_record_ref=ref('custody_record_ref'),

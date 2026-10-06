@@ -441,10 +441,13 @@ def _holdout_result(store, intent):
 
 
 def test_parity_and_exit_bodies_derive_from_committed_holdout_and_session_notes(exit_graph):
+    from pydantic import ValidationError
     from packages.alpha_lifecycle.local_campaign import parity_body, phase_exit_body, propose_operation
     from packages.alpha_lifecycle.native_request import prepare_native_commitment
+    from packages.alpha_lifecycle.operation_input import NativeParityInput
     from packages.engine_contracts.serialization import canonical_json_bytes
-    store, intent, _, view = exit_graph
+    from scripts.p3_local_controller import derive_body
+    store, intent, source, view = exit_graph
     from packages.alpha_lifecycle.parity import ParityPair
     from packages.alpha_lifecycle.replica_store import _read
     held_ref, held = _holdout_result(store, intent)
@@ -455,12 +458,49 @@ def test_parity_and_exit_bodies_derive_from_committed_holdout_and_session_notes(
     assert parity == dict(holdout_manifest_ref=held.holdout_manifest_ref, primary_reference_ref=held.executable_ref,
         baseline_reference_ref=held.baseline_executable_ref, instrument_spec_ref=spec_ref,
         native_request_ref=commitment_ref)
+    with pytest.raises(ValidationError) as missing_id:
+        propose_operation('p3-native-parity-v1', intent.input_set_ref, parity, store=store)
+    assert missing_id.value.errors()[0]['loc'] == ('allowed_alpha_ids', 0)
+    assert missing_id.value.errors()[0]['input'] is None
+    request = derive_body(dict(workflow_operation='p3-native-parity-v1', input_set_ref=intent.input_set_ref,
+        refs=dict(holdout_result_ref=held_ref, native_commitment_ref=commitment_ref)), source=source, store=store)
+    parity_intent = propose_operation(request['workflow_operation'], request['input_set_ref'], request['body'],
+        store=store, primary_alpha_id=request.get('primary_alpha_id'))
+    assert parity_intent.allowed_alpha_ids == intent.allowed_alpha_ids
+    assert parity_intent.body == NativeParityInput.model_validate(parity)
     body = phase_exit_body(intent.body.primary_selection_ref, held_ref, intent.body.parity_ref, store=store)
     from packages.alpha_lifecycle.operation_input import PhaseExitInput
     assert PhaseExitInput.model_validate(body) == intent.body
     exit_intent = propose_operation('p3-phase-exit-v1', intent.input_set_ref, body, store=store,
                                     primary_alpha_id=intent.allowed_alpha_ids[0])
     assert exit_intent == intent
+
+
+@pytest.mark.parametrize('reference', ['manifest', 'selection'])
+@pytest.mark.parametrize('fault', ['missing', 'wrong_type'])
+def test_parity_body_derivation_rejects_unavailable_or_wrong_typed_primary_chain(exit_graph, reference, fault):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.native_request import prepare_native_commitment
+    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.data_catalog.artifact_store import ArtifactIntegrityError
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from scripts.p3_local_controller import derive_body
+    from tests.p3.test_parity_pair import _change
+    store, intent, source, view = exit_graph
+    held_ref, held = _holdout_result(store, intent)
+    spec_ref = _read(store, intent.body.parity_ref, ParityPair).instrument_spec_ref
+    commitment_ref = store.put_bytes(canonical_json_bytes(
+        prepare_native_commitment(held.holdout_manifest_ref, spec_ref, view)), media_type='application/json')
+    bad_ref = (held.holdout_manifest_ref.model_copy(update={'content_sha256':'0'*64, 'locator':'0'*64+'.blob'})
+        if fault == 'missing' else store.put_bytes(canonical_json_bytes({}), media_type='application/json'))
+    manifest_ref = (bad_ref if reference == 'manifest' else
+        _change(store, held.holdout_manifest_ref, primary_selection_ref=bad_ref))
+    held_ref = _change(store, held_ref, holdout_manifest_ref=manifest_ref)
+    commitment_ref = _change(store, commitment_ref, manifest_ref=manifest_ref)
+    with pytest.raises(ArtifactIntegrityError if fault == 'missing' else ValidationError):
+        derive_body(dict(workflow_operation='p3-native-parity-v1', input_set_ref=intent.input_set_ref,
+            refs=dict(holdout_result_ref=held_ref, native_commitment_ref=commitment_ref)), source=source, store=store)
 
 
 def test_parity_body_refuses_a_commitment_for_another_manifest(exit_graph):
