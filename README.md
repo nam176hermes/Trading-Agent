@@ -1,4 +1,99 @@
-# Trading Agent Canonical Source
+# Trading Agent
+
+**AI-assisted market research with traceable decisions and explicit risk controls.**
+
+[Explore the dashboard](https://tradingcompanydirect.com/dashboard) ·
+[Architecture](docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md) ·
+[Local setup](#local-setup) ·
+[Validation](#safe-validation)
+
+Trading Agent is an early-stage research workspace for independent researchers
+and small trading teams. It brings market observations, recorded agent reasoning
+and risk assessments into one place, so a researcher can inspect the evidence
+behind a decision instead of relying on a signal alone.
+
+The product goal is to make research easier to review, reproduce and challenge.
+AI-generated analysis is treated as untrusted input; deterministic controls and
+explicit operator authority govern execution.
+
+## Explore the public preview
+
+The [Hermes research dashboard](https://tradingcompanydirect.com/dashboard)
+is available without signing in, in **read-only mode**.
+
+1. Open **Overview** to see the report timestamp, covered assets and decision archive.
+2. Visit **Signals** to filter assets and inspect their recorded rationale.
+3. Use **Risk** to review historical asset assessments.
+4. Open **History** to filter decisions, page through records and inspect evidence.
+5. Check **System & data** for API connectivity, execution mode and cost evidence.
+
+The interface supports desktop and mobile layouts, explicit loading/error states
+and manual refresh. Research timestamps remain visible throughout the workflow.
+
+> **Preview status — 8 October 2026:** the connected dataset contains 10 assets
+> and 16,517 historical decisions; the latest research report is dated 25 June
+> 2026. These are historical observations, not current market prices or verified
+> investment returns. The preview is PAPER/read-only, with both live-trading
+> approvals disabled.
+
+| Area | Current public preview |
+| --- | --- |
+| Market observations and signals | Connected historical reports with asset search and recorded rationale |
+| Decision history | Filters, pagination and evidence inspection; latest 500 records loaded for browsing |
+| Risk assessments | Recorded per-asset research assessments, not active account limits |
+| System and cost evidence | Read API status and available source evidence; missing values remain unknown |
+| Execution, portfolio and performance | Not connected; no orders, balances, equity curve or returns claimed |
+| New research jobs | Unavailable in the public preview; requires authenticated operator access and the job service |
+
+The hosted preview is deployed separately from this repository's tracked dashboard
+snapshot. Its current UI includes deployment changes that have not yet been
+published here; cloning this repository does not reproduce that exact preview.
+
+## How Claude fits the roadmap
+
+We plan to use Claude for source-grounded research summaries, alternative
+hypotheses and explanations of recorded results. The intended workflow is:
+**select an asset → review timestamped evidence → generate and challenge a
+research thesis → save a report that can be inspected later**.
+
+End-to-end Claude integration is a development milestone, not a capability
+claimed by the current public demo. Planned evaluation covers evidence citation,
+unsupported claims, missing-data handling, latency and token cost. Prices,
+portfolio arithmetic, risk limits and execution permissions remain deterministic
+system responsibilities.
+
+## Architecture
+
+| Component | Responsibility |
+| --- | --- |
+| [Dashboard](apps/dashboard) | Next.js client for research and operational views |
+| [Control API](apps/control_api) | Read-only access to canonical state |
+| [Job API](apps/job_api) | Durable research-job boundary |
+| [Operator API](apps/operator_api) and [CLI](apps/operator_cli) | Bounded, authenticated operator commands |
+| [Research backend](legacy/research-backend) | Preserved research pipeline, isolated from the core Python process |
+| [Domain](packages/domain) and [event ledger](packages/event_ledger) | Fixed-precision contracts, deterministic replay and auditability |
+
+The core uses Python 3.11 and PostgreSQL; the dashboard uses Next.js and TypeScript.
+Each component retains its own dependency lockfile. See the
+[headless architecture](docs/adr/ADR-HWC-HEADLESS-OPERATOR-BOUNDARIES.md) for ownership
+and API boundaries.
+
+## Next milestones
+
+- Complete and evaluate the Claude research-to-report workflow.
+- Add an authorized data-refresh workflow with visible provenance and freshness.
+- Connect verified paper portfolio and performance read models.
+- Test the research workflow with prospective users and measure task completion,
+  usefulness and time saved.
+
+These are planned milestones, not claims of deployed functionality or customer
+traction. Research completion, paper qualification and live activation are
+separate acceptance decisions.
+
+## Engineering reference
+
+The following setup, validation and authority notes describe the canonical source
+repository. They do not grant deployment or live-trading permission.
 
 This standalone repository is the single source root for the trading-agent
 control plane, preserved research backend, and dashboard. It consolidates
