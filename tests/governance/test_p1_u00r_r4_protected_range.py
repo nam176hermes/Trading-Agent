@@ -18,7 +18,7 @@ P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
 # R05 operator-approved distro bubblewrap re-pin; retain exact policy bytes/mode.
 # Owner A: exact cache exception; all other ACCEPTED_A entries remain unchanged.
 P3_PROTECTED149_INPUT_CACHE_BLOB = "99f81a613afb160ffb2122b9706d0916f026a9fe"
-P3_SEALED_UV_POLICY_BLOB = "01e52ade9bfb40dc53433b44b788df243f896e2e"
+P3_SEALED_UV_POLICY_BLOB = "825316c8ab8742ac7212a9638ed0a91f44287f81"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
 # Approved one-entry offset cache; extraction bytes remain regression-tested.
 CURRENT_EXTRACTOR_BLOB = "2924016c660796c110ddcec76effee69df812039"

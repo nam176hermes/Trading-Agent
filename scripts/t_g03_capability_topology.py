@@ -3643,7 +3643,7 @@ def _nautilus_sandbox_authority_is_valid(
         sandbox["regular_file_status"]
         == "ROOT_OWNED_POLICY_BOUND_EXECUTABLE"
         and sandbox["policy_sha256"]
-        == "b4cba780e6011b81e57b9ece34fa2f26bbea5f005d316c97c7f9e7eab80ef8cb"
+        == "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
         and sandbox["expected_sha256"]
         == "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71"
         and sandbox["observed_sha256"] == sandbox["expected_sha256"]
@@ -3689,7 +3689,7 @@ def _native_multi_authority_can_defer(
         {
             "regular_file_status": "ABSENT",
             "policy_sha256": (
-                "b4cba780e6011b81e57b9ece34fa2f26bbea5f005d316c97c7f9e7eab80ef8cb"
+                "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
             ),
             "expected_sha256": (
                 "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71"
@@ -5030,7 +5030,7 @@ def _sandbox_authority_from_session(
     if (
         bwrap_policy_path == TRUSTED_BWRAP_POLICY
         and policy_sha256
-        != "b4cba780e6011b81e57b9ece34fa2f26bbea5f005d316c97c7f9e7eab80ef8cb"
+        != "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
     ):
         raise TopologyError("Nautilus sandbox policy identity drift")
     policy = session.policy or {}
