@@ -394,21 +394,9 @@ def owner_database_settings(credentials, host, expires_at):
     return settings, runtime, deadline
 
 
-def install_stage(request_path, credentials):
-    """Read the current claim with the owner role; never claim or expose lease tokens."""
-    import time
+def _observe_stage_claim(settings, host, operation):
     import psycopg
-    from scripts.p3_local_transport import _runtime_authority
-    from services.job_worker.p3_session import LocalSessionProfile, SessionAttempt, SessionStageProfile
-    from services.job_worker.recovery import ProcProcessInspector
-    request, directory, host, host_digest = _session_context(request_path)
-    session_doc, session_digest = read_protected_canonical_json_current(directory/'session.json')
-    session = LocalSessionProfile.model_validate_json(canonical_json_bytes(session_doc))
-    if (session.identity != request.authorization.identity or session.source != request.execution_source
-        or session.parent != ProcProcessInspector().inspect(session.parent.pid)
-        or not session.issued_at <= datetime.now(UTC) < session.expires_at):
-        raise ValueError('stage session owner or deadline differs')
-    settings, runtime, deadline = owner_database_settings(credentials, host, session.expires_at)
+    from services.job_worker.p3_session import SessionAttempt
     with psycopg.connect(settings.conninfo(), connect_timeout=10,
             options='-c default_transaction_read_only=on -c statement_timeout=5000') as connection:
         if connection.execute('SELECT session_user,current_user').fetchone() != ('trading_owner','trading_owner'):
@@ -424,18 +412,97 @@ def install_stage(request_path, credentials):
             """, (host.job_id, canonical_json_bytes(host.payload).decode())).fetchone()
     if row is None:
         raise ValueError('exact current SQL claim is unavailable; no synthetic claim allowed')
-    current = SessionAttempt(operation=request.authorization.operation, job_id=host.job_id,
+    return SessionAttempt(operation=operation, job_id=host.job_id,
         attempt_id=row[0], worker_id=row[1], lease_token_sha256=row[2])
-    path = directory/'stage.json'
-    with AuthorityStore(session.identity.issuer_identity).locked():
-        previous = _protected_model(path, SessionStageProfile) if path.exists() else None
-        stage = next_stage(previous, current, session_digest=session_digest, host_digest=host_digest)
+
+
+def _prepare_native_profile(request, host, session, session_digest, current, previous, config, runtime, deadline):
+    from scripts.p3_local_host import as_worker
+    from packages.runtime_release.config import _absolute
+    from services.job_worker.nautilus_closure import NautilusClosureConfig
+    from services.job_worker.p3_native_spawn import NativeLaunchProfile
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    from packages.alpha_lifecycle.operation_input import NativeParityInput
+    if (type(config) is not NautilusClosureConfig or not isinstance(host, LocalOfficialHostProfileV2)
+        or not isinstance(request.operation_input.body, NativeParityInput)
+        or previous is None or len(previous.attempts) != 1
+        or runtime['uid'] != host.image.worker_uid
+        or runtime['identity'] != session.identity.model_dump(mode='json')
+        or runtime['source'] != session.source.model_dump(mode='json')
+        or str(config.sandbox_executable) != host.sandbox_executable):
+        raise ValueError('native owner inputs or session binding differ')
+    roots = {name:str(_absolute(str(getattr(config, name))))
+             for name in ('runtime_root', 'artifact_directory', 'sandbox_executable')}
+    expected = NativeLaunchProfile(schema_version='p3-native-launch-profile-v1', source=session.source,
+        session_sha256=session_digest, native_commitment_ref=checked_session_ref(
+            request.operation_input.body.native_request_ref.model_dump(mode='json')),
+        job_id=current.job_id, attempt_id=current.attempt_id, sandbox_sha256=host.sandbox_sha256, **roots)
+    environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
+        P3_APPLICATION_ROOT=str(_absolute(runtime['application_root'])),
+        P3_APPLICATION_PYTHON=str(_absolute(runtime['application_python'])))
+    observed = as_worker(host.image.worker_uid, host.image.worker_gid, deadline, environment, dict(
+        action='native-profile', profile=expected.model_dump(mode='json'),
+        payload=host.payload.model_dump(mode='json'), intent=request.operation_input.model_dump(mode='json'),
+        environment_ref=session.environment_ref.model_dump(mode='json'),
+        previous_job_id=previous.attempts[0].job_id, output_root=host.output_root, store_root=host.store_root))
+    profile = NativeLaunchProfile.model_validate_json(canonical_json_bytes(observed))
+    if profile != expected:
+        raise ValueError('native worker readback differs from the owner binding')
+    return profile
+
+
+def install_stage(request_path, credentials, *, native_closure=None):
+    """Bind the exact claim; PARITY also requires qualified native readiness before admission."""
+    import time
+    from scripts.p3_local_transport import _runtime_authority
+    from services.job_worker.p3_session import LocalSessionProfile, SessionStageProfile
+    from services.job_worker.p3_native_spawn import NativeLaunchProfile
+    from services.job_worker.recovery import ProcProcessInspector
+    request, directory, host, host_digest = _session_context(request_path)
+    session_doc, session_digest = read_protected_canonical_json_current(directory/'session.json')
+    session = LocalSessionProfile.model_validate_json(canonical_json_bytes(session_doc))
+    if (session.identity != request.authorization.identity or session.source != request.execution_source
+        or session.parent != ProcProcessInspector().inspect(session.parent.pid)
+        or not session.issued_at <= datetime.now(UTC) < session.expires_at):
+        raise ValueError('stage session owner or deadline differs')
+    parity = request.authorization.operation == 'PARITY'
+    if not parity and native_closure is not None:
+        raise ValueError('native inputs are only valid for PARITY')
+    if parity and native_closure is None:
+        raise ValueError('native qualified owner inputs are required before PARITY admission')
+    settings, runtime, deadline = owner_database_settings(credentials, host, session.expires_at)
+    current = _observe_stage_claim(settings, host, request.authorization.operation)
+    def check_authority():
         if (_session_context(request_path) != (request, directory, host, host_digest)
             or read_protected_canonical_json_current(directory/'session.json')[1] != session_digest
             or ProcProcessInspector().inspect(session.parent.pid) != session.parent
             or datetime.now(UTC) >= session.expires_at or time.monotonic() >= deadline
-            or _runtime_authority(dict(identity=host.identity.model_dump(mode='json'))) != runtime):
+            or _runtime_authority(dict(identity=host.identity.model_dump(mode='json'))) != runtime
+            or parity and _observe_stage_claim(settings, host, request.authorization.operation) != current):
             raise ValueError('stage authority changed before publication')
+    path = directory/'stage.json'
+    with AuthorityStore(session.identity.issuer_identity).locked():
+        previous = _protected_model(path, SessionStageProfile) if path.exists() else None
+        stage = next_stage(previous, current, session_digest=session_digest, host_digest=host_digest)
+        if parity:
+            native = _prepare_native_profile(request, host, session, session_digest, current, previous,
+                native_closure, runtime, deadline)
+            check_authority()
+            # Re-observe private commitment and qualified closure after the issuer/claim fence.
+            if _prepare_native_profile(request, host, session, session_digest, current, previous,
+                    native_closure, runtime, deadline) != native:
+                raise ValueError('native readiness changed before publication')
+            check_authority()
+            native_path = directory/'native.json'
+            if native_path.exists():
+                if _protected_model(native_path, NativeLaunchProfile) != native:
+                    raise ValueError('existing native profile has a different binding')
+            else:
+                publish_protected(native_path, canonical_json_bytes(native)+b'\n')
+            document, _ = read_protected_canonical_json_current(native_path)
+            if NativeLaunchProfile.model_validate_json(canonical_json_bytes(document)) != native:
+                raise ValueError('native profile changed before stage publication')
+        check_authority()
         publish_protected(path, canonical_json_bytes(stage)+b'\n', replace=previous is not None)
     return stage
 
@@ -567,6 +634,8 @@ def main(argv=None):
     stage = commands.add_parser('install-stage')
     stage.add_argument('--request', type=Path, required=True)
     stage.add_argument('--owner-credentials', type=Path, required=True)
+    for arg in ('p1-closure-root', 'p1-closure-artifacts', 'bubblewrap'):
+        stage.add_argument('--'+arg, type=Path)
     next_host = commands.add_parser('install-next-host')
     for arg in ('request', 'preflight', 'manifest', 'review'):
         next_host.add_argument('--'+arg, type=Path, required=True)
@@ -584,7 +653,12 @@ def main(argv=None):
     elif args.command == 'install-session':
         result = install_session(args.request, args.proof_root)
     elif args.command == 'install-stage':
-        result = install_stage(args.request, args.owner_credentials)
+        from services.job_worker.nautilus_closure import NautilusClosureConfig
+        roots = (args.p1_closure_root, args.p1_closure_artifacts, args.bubblewrap)
+        if any(value is not None for value in roots) and any(value is None for value in roots):
+            parser.error('native P1 inputs require closure root, artifact directory and bubblewrap together')
+        native = None if all(value is None for value in roots) else NautilusClosureConfig(*roots)
+        result = install_stage(args.request, args.owner_credentials, native_closure=native)
     elif args.command == 'install-next-host':
         from scripts.p3_local_host import install_next_host
         result = install_next_host(args.request, args.preflight, args.manifest, args.review)

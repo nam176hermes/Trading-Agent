@@ -7,6 +7,232 @@ import pytest
 from packages.alpha_lifecycle.contracts.authority import ReviewApproval
 from packages.engine_contracts.serialization import canonical_json_bytes
 from tests.p3.test_local_research_admission import sealed
+from tests.p3.test_local_host_producer import native_profile_inputs  # noqa: F401
+
+
+@pytest.fixture
+def parity_stage_owner(tmp_path, monkeypatch):
+    """Real stage ordering; SQL, protected IO and issuer authority are synthetic."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    import time
+    import psycopg
+    from scripts import p3_local_controller as module, p3_local_transport as transport
+    from services.job_worker.p3_session import LocalSessionProfile, SessionAttempt
+    from services.job_worker.recovery import ProcProcessInspector
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    from tests.p3.test_host_profile import _host_profile_document, _image_descriptor
+    from tests.p3.test_local_transport_fences import _identity
+    document = _host_profile_document('p3-local-official-host-profile-v2',
+        identity=_identity(), image=_image_descriptor())
+    document['payload']['operation'] = 'PARITY'
+    host = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(document))
+    parent = SimpleNamespace(pid=123)
+    now = datetime.now(UTC)
+    session = SimpleNamespace(identity=host.identity, source=host.payload.expected_source, parent=parent,
+        environment_ref=host.environment_ref, issued_at=now-timedelta(seconds=1),
+        expires_at=now+timedelta(seconds=60))
+    request = SimpleNamespace(authorization=SimpleNamespace(identity=host.identity, operation='PARITY'),
+        execution_source=session.source, payload=host.payload)
+    prior = SessionAttempt(operation='HOLDOUT', job_id='job_'+'0'*32,
+        attempt_id='attempt_'+'0'*32, worker_id='worker', lease_token_sha256='c'*64)
+    previous = module.next_stage(None, prior, session_digest='a'*64, host_digest='d'*64)
+    (tmp_path/'stage.json').touch()
+    context = (request, tmp_path, host, 'b'*64)
+    monkeypatch.setattr(module, '_session_context', lambda _: context)
+    monkeypatch.setattr(LocalSessionProfile, 'model_validate_json', lambda *_: session)
+    monkeypatch.setattr(module, '_protected_model', lambda *_: previous)
+    monkeypatch.setattr(module, 'read_protected_canonical_json_current', lambda _: ({}, 'a'*64))
+    monkeypatch.setattr(ProcProcessInspector, 'inspect', lambda *_: parent)
+    runtime = {'generation': 'admitted'}
+    deadline = time.monotonic()+30
+    monkeypatch.setattr(module, 'owner_database_settings', lambda *_:
+        (SimpleNamespace(conninfo=lambda: 'synthetic-not-a-connection'), runtime, deadline))
+    current_runtime = [runtime]
+    monkeypatch.setattr(transport, '_runtime_authority', lambda _: current_runtime[0])
+    queries = []
+    class Connection:
+        def execute(self, sql, parameters=None):
+            queries.append(sql)
+            if 'session_user' in sql:
+                return SimpleNamespace(fetchone=lambda: ('trading_owner', 'trading_owner'))
+            assert parameters == (host.job_id, canonical_json_bytes(request.payload).decode())
+            return SimpleNamespace(fetchone=lambda: ('attempt_'+'1'*32, 'worker', 'c'*64))
+    def connect(_conninfo, **kwargs):
+        assert kwargs['options'] == '-c default_transaction_read_only=on -c statement_timeout=5000'
+        return nullcontext(Connection())
+    monkeypatch.setattr(psycopg, 'connect', connect)
+    monkeypatch.setattr(module, 'AuthorityStore', lambda _: SimpleNamespace(locked=lambda: nullcontext()))
+    published = []
+    monkeypatch.setattr(module, 'publish_protected', lambda *args, **kwargs: published.append(args))
+    return SimpleNamespace(module=module, request_path=tmp_path/'request', credentials=tmp_path/'observer',
+        host=host, session=session, previous=previous, published=published, queries=queries, runtime=runtime,
+        request=request, directory=tmp_path, current_runtime=current_runtime)
+
+
+def test_parity_stage_requires_native_readiness_before_publication(parity_stage_owner):
+    x = parity_stage_owner
+    with pytest.raises(ValueError, match='native'):
+        x.module.install_stage(x.request_path, x.credentials)
+    assert not x.published
+
+
+@pytest.fixture
+def qualified_parity_owner(parity_stage_owner, native_profile_inputs, monkeypatch):
+    import hashlib
+    from services.job_worker.nautilus_closure import NautilusClosureConfig
+    from services.job_worker.p3_native_spawn import NativeLaunchProfile
+    from scripts import p3_local_host as worker
+    x, native = parity_stage_owner, native_profile_inputs
+    x.host = x.host.model_copy(update=dict(payload=native.payload, store_root=str(native.store_root),
+        output_root=str(native.output)))
+    x.request.operation_input = native.intent
+    x.request.payload = x.host.payload
+    x.runtime.update(uid=x.host.image.worker_uid, identity=x.host.identity.model_dump(mode='json'),
+        source=x.session.source.model_dump(mode='json'),
+        application_root='/qualified/app', application_python='/qualified/python')
+    monkeypatch.setattr(x.module, '_session_context', lambda _: (x.request, x.directory, x.host, 'b'*64))
+    x.files = {}
+    def read(path):
+        if path.name == 'session.json':
+            return {}, 'a'*64
+        raw = x.files[path.name]
+        return __import__('json').loads(raw), hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(x.module, 'read_protected_canonical_json_current', read)
+    def publish(path, raw, **kwargs):
+        x.published.append((path, raw, kwargs))
+        x.files[path.name] = raw
+    monkeypatch.setattr(x.module, 'publish_protected', publish)
+    def model(path, cls):
+        return NativeLaunchProfile.model_validate_json(x.files[path.name]) if path.name == 'native.json' else x.previous
+    monkeypatch.setattr(x.module, '_protected_model', model)
+    x.helper_calls = []
+    def as_worker(uid, gid, deadline, environment, command):
+        assert (uid, gid) == (x.host.image.worker_uid, x.host.image.worker_gid)
+        assert command['previous_job_id'] == x.previous.attempts[0].job_id
+        x.helper_calls.append(command)
+        return worker.native_profile_action(command)
+    monkeypatch.setattr(worker, 'as_worker', as_worker)
+    x.config = NautilusClosureConfig(Path('/qualified/p1/runtime'), Path('/qualified/p1/artifacts'),
+                                    Path(x.host.sandbox_executable))
+    x.native = native
+    return x
+
+
+def test_parity_owner_publishes_exact_native_profile_before_stage(qualified_parity_owner):
+    import json
+    x = qualified_parity_owner
+    stage = x.module.install_stage(x.request_path, x.credentials, native_closure=x.config)
+    assert [p.name for p, _, _ in x.published] == ['native.json', 'stage.json']
+    native = json.loads(x.files['native.json'])
+    assert (native['job_id'], native['attempt_id']) == (stage.attempts[-1].job_id, stage.attempts[-1].attempt_id)
+    assert native['session_sha256'] == stage.session_sha256
+    assert native['native_commitment_ref'] == x.native.ref.model_dump(mode='json')
+    assert len(x.helper_calls) == 2
+    assert all('SELECT' in query for query in x.queries)
+
+
+@pytest.mark.parametrize('native_inputs', [False, True])
+@pytest.mark.parametrize('operation', ['HOLDOUT', 'PHASE_EXIT'])
+def test_other_stage_owners_require_no_native_inputs(qualified_parity_owner, monkeypatch, operation, native_inputs):
+    from services.job_worker.p3_session import SessionAttempt
+    x = qualified_parity_owner
+    x.request.authorization.operation = operation
+    payload = type(x.host.payload).model_validate_json(canonical_json_bytes(dict(
+        x.host.payload.model_dump(mode='json'), operation=operation)))
+    x.host = x.host.model_copy(update=dict(payload=payload))
+    x.request.payload = x.host.payload
+    if operation == 'HOLDOUT':
+        (x.directory/'stage.json').unlink()
+    else:
+        prior = SessionAttempt(operation='PARITY', job_id='job_'+'9'*32, attempt_id='attempt_'+'9'*32,
+            worker_id='worker', lease_token_sha256='c'*64)
+        x.previous = x.module.next_stage(x.previous, prior, session_digest='a'*64, host_digest='d'*64)
+    if native_inputs:
+        database_calls = []
+        settings = x.module.owner_database_settings
+        monkeypatch.setattr(x.module, 'owner_database_settings',
+            lambda *args: (database_calls.append(args) or settings(*args)))
+        with pytest.raises(ValueError, match='native inputs are only valid for PARITY'):
+            x.module.install_stage(x.request_path, x.credentials, native_closure=x.config)
+        assert not database_calls and not x.queries and not x.helper_calls and not x.published
+        return
+    stage = x.module.install_stage(x.request_path, x.credentials)
+    assert stage.attempts[-1].operation == operation
+    assert [p.name for p, _, _ in x.published] == ['stage.json']
+    assert not x.helper_calls
+
+
+def test_stage_cli_passes_explicit_p1_config_and_rejects_partial_inputs(monkeypatch):
+    from scripts import p3_local_controller as module
+    seen = []
+    monkeypatch.setattr(module, 'install_stage', lambda *a, **kw:
+        (seen.append((a, kw)) or {}))
+    args = ['install-stage', '--request', '/synthetic/request', '--owner-credentials', '/synthetic/observer']
+    module.main(args)
+    assert seen[-1][1]['native_closure'] is None
+    module.main(args+['--p1-closure-root', '/qualified/runtime', '--p1-closure-artifacts',
+                     '/qualified/artifacts', '--bubblewrap', '/qualified/bwrap'])
+    assert seen[-1][1]['native_closure'].artifact_directory == Path('/qualified/artifacts')
+    with pytest.raises(SystemExit):
+        module.main(args+['--p1-closure-root', '/qualified/runtime'])
+    assert len(seen) == 2
+
+
+@pytest.mark.parametrize('fault', ['missing-root', 'wrong-sandbox', 'worker-binding', 'session',
+                                  'runtime', 'claim', 'expiry', 'closure', 'publication', 'readback', 'existing'])
+def test_parity_owner_never_admits_unready_stage(qualified_parity_owner, monkeypatch, fault):
+    import json
+    from dataclasses import replace
+    from services.job_worker import p1_nautilus_closure
+    from scripts import p3_local_host as worker
+    x = qualified_parity_owner
+    config = x.config
+    if fault == 'missing-root':
+        config = replace(config, artifact_directory=Path('relative'))
+    elif fault == 'wrong-sandbox':
+        config = replace(config, sandbox_executable=Path('/unqualified/bwrap'))
+    elif fault == 'closure':
+        def reject(_):
+            raise ValueError('synthetic pinned closure rejected')
+        monkeypatch.setattr(p1_nautilus_closure, 'attest_p1_nautilus_closure', reject)
+    elif fault in {'publication', 'readback', 'existing'}:
+        publish = x.module.publish_protected
+        if fault == 'existing':
+            (x.directory/'native.json').touch()
+            x.files['native.json'] = canonical_json_bytes({**x.native.command['profile'], 'attempt_id':'stale'})
+        def publish_fault(path, raw, **kwargs):
+            if path.name == 'native.json' and fault == 'publication':
+                raise ValueError('synthetic publication failed')
+            publish(path, raw, **kwargs)
+            if path.name == 'native.json' and fault == 'readback':
+                document = json.loads(raw)
+                document['session_sha256'] = 'e'*64
+                x.files[path.name] = canonical_json_bytes(document)
+        monkeypatch.setattr(x.module, 'publish_protected', publish_fault)
+    else:
+        helper = worker.as_worker
+        def changed(*args):
+            result = helper(*args)
+            if fault == 'worker-binding':
+                result['attempt_id'] = 'substituted'
+            elif fault == 'session':
+                read = x.module.read_protected_canonical_json_current
+                monkeypatch.setattr(x.module, 'read_protected_canonical_json_current',
+                    lambda path: ({}, 'e'*64) if path.name == 'session.json' else read(path))
+            elif fault == 'runtime':
+                x.current_runtime[0] = {'generation':'replaced'}
+            elif fault == 'claim':
+                observed = x.module._observe_stage_claim
+                monkeypatch.setattr(x.module, '_observe_stage_claim',
+                    lambda *a: observed(*a).model_copy(update={'attempt_id':'replaced'}))
+            elif fault == 'expiry':
+                x.session.expires_at = datetime.now(UTC)-timedelta(seconds=1)
+            return result
+        monkeypatch.setattr(worker, 'as_worker', changed)
+    with pytest.raises(ValueError):
+        x.module.install_stage(x.request_path, x.credentials, native_closure=config)
+    assert not any(p.name == 'stage.json' for p, *_ in x.published)
 
 
 def test_research_review_requires_exact_subjects_and_full_validity():

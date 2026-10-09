@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Protocol, Sequence, cast
 
-from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter
+from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter, _close_descriptors
 from .command_registry import (
     PAPER_COMMAND_ARGV_PREFIX,
     CommandLineage,
@@ -620,15 +620,18 @@ class ProcessRunner:
                     except OSError:
                         pass
                 close_after_spawn_fds = ()
-        except BaseException:
+        except BaseException as error:
+            pending_fds = (*close_after_spawn_fds, reserve_fd)
+            close_after_spawn_fds = ()
+            reserve_fd = -1
+            pre_spawn_cleanup_errors: list[BaseException] = []
             if p3_output is not None:
-                p3_output.abandon()
-            for descriptor in close_after_spawn_fds:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            os.close(reserve_fd)
+                self._best_effort(p3_output.abandon, pre_spawn_cleanup_errors)
+            self._best_effort(lambda: _close_descriptors(*pending_fds), pre_spawn_cleanup_errors)
+            if pre_spawn_cleanup_errors:
+                cleanup_error = pre_spawn_cleanup_errors[0]
+                cleanup_error.__cause__ = error.__cause__
+                raise error from cleanup_error
             raise
         original_streams = (getattr(process, "stdout", None), getattr(process, "stderr", None))
 
@@ -639,6 +642,7 @@ class ProcessRunner:
         session_cleanup = _SessionCleanupState({})
         reaped = False
         suppress_child_signal = False
+        primary_error: BaseException | None = None
         try:
             identity = self._inspector.inspect(process.pid)
             if identity is None or identity.pid != process.pid or identity.process_group != process.pid:
@@ -649,8 +653,9 @@ class ProcessRunner:
 
             leader_pidfd = -1
             try:
-                os.close(reserve_fd)
+                closing_reserve = reserve_fd
                 reserve_fd = -1
+                os.close(closing_reserve)
                 leader_pidfd = self._pidfd_open(identity.pid, 0)
                 leader_member = self._leader_inspector(identity.pid)
                 if (
@@ -885,7 +890,8 @@ class ProcessRunner:
             if inventory_ref is not None:
                 p3_output = None
             return result
-        except BaseException:
+        except BaseException as error:
+            primary_error = error
             if identity is not None:
                 self._cleanup_session_bounded(identity, session_cleanup, cleanup_errors)
             elif not suppress_child_signal:
@@ -894,16 +900,27 @@ class ProcessRunner:
         finally:
             if p3_authority and (grant_pipe := getattr(process, 'stdin', None)) is not None:
                 self._best_effort(grant_pipe.close, cleanup_errors)
+            output_cleanup_error: BaseException | None = None
             if p3_output is not None:
-                p3_output.abandon()
+                try:
+                    p3_output.abandon()
+                except BaseException as exc:
+                    output_cleanup_error = exc
             if reserve_fd >= 0:
-                self._best_effort(lambda fd=reserve_fd: os.close(fd), cleanup_errors)
+                closing_reserve = reserve_fd
+                reserve_fd = -1
+                self._best_effort(lambda: os.close(closing_reserve), cleanup_errors)
             if identity is not None and not session_cleanup.complete:
                 self._cleanup_session_bounded(identity, session_cleanup, cleanup_errors)
             self._close_member_handles(session_cleanup, cleanup_errors)
             self._close_selector_and_streams(selector, states, original_streams, cleanup_errors)
             if not reaped:
                 self._wait_bounded(process, cleanup_errors)
+            if output_cleanup_error is not None:
+                if primary_error is not None:
+                    output_cleanup_error.__cause__ = primary_error.__cause__
+                    raise primary_error from output_cleanup_error
+                raise output_cleanup_error
 
     @staticmethod
     def _decision_reason(decision: HeartbeatDecision) -> str:

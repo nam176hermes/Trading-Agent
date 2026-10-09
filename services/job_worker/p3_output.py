@@ -14,6 +14,7 @@ from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES
+from .artifacts import _close_descriptors
 
 _MAX_FILES = 8192
 _FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -62,18 +63,15 @@ class P3OutputCustody:
             or any(info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700 for info in (current,opened))):
             raise ValueError('P3 output directory identity changed')
 
-    def _close(self) -> None:
+    def _close(self, *descriptors: int) -> None:
+        opened=list(descriptors)
         if self._retained is not None:
             directories=self._retained[0]
             self._retained=None
-            for relative,fd in directories.items():
-                if relative:
-                    os.close(fd)
-        for name in ('_output','_parent'):
-            fd=getattr(self,name)
-            setattr(self,name,-1)
-            if fd >= 0:
-                os.close(fd)
+            opened.extend(fd for relative,fd in directories.items() if relative)
+        opened.extend((self._output,self._parent))
+        self._output=self._parent=-1
+        _close_descriptors(*opened)
 
     def abandon(self) -> None:
         try:
@@ -233,10 +231,7 @@ class P3OutputCustody:
             self._retained=(directories,listing,files,inventory_ref)
             return inventory_ref
         except BaseException:
-            for relative,fd in directories.items():
-                if relative:
-                    os.close(fd)
-            self._close()
+            self._close(*(fd for relative,fd in directories.items() if relative))
             raise
 
     @property

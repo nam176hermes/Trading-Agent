@@ -16,6 +16,8 @@ P3_REVIEWED_MAKEFILE_BLOB = "b2cf2dcea80400b9c8ca3dcd4ed4d1f5dd91ceaf"
 P3_ROOT_MANIFEST_BLOB = "2c1ff193803bcb0d94e1b06cfa71de19ab7ce579"
 P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
 # R05 operator-approved distro bubblewrap re-pin; retain exact policy bytes/mode.
+# Owner A: exact cache exception; all other ACCEPTED_A entries remain unchanged.
+P3_PROTECTED149_INPUT_CACHE_BLOB = "99f81a613afb160ffb2122b9706d0916f026a9fe"
 P3_SEALED_UV_POLICY_BLOB = "01e52ade9bfb40dc53433b44b788df243f896e2e"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
 # Approved one-entry offset cache; extraction bytes remain regression-tested.
@@ -72,7 +74,10 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
-        assert _entry(head, path) == _entry(ACCEPTED_A, path)
+        if path == "scripts/prepare_nautilus_input_cache.py":
+            assert _entry(head, path) == f"100644 blob {P3_PROTECTED149_INPUT_CACHE_BLOB}\t{path}"
+        else:
+            assert _entry(head, path) == _entry(ACCEPTED_A, path)
     assert _entry(head, "engines/nautilus/sealed-uv-exec-policy.json") == (
         f"100644 blob {P3_SEALED_UV_POLICY_BLOB}\t"
         "engines/nautilus/sealed-uv-exec-policy.json"

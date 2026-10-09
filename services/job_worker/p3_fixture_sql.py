@@ -8,7 +8,6 @@ import json
 import secrets
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from datetime import UTC, datetime
@@ -437,6 +436,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
     process = identity = None
     checks = []
     started_at = datetime.now(UTC).isoformat()
+    primary_error: BaseException | None = None
 
     def mark(name, *, flush=True):
         if name!='OPERATION_AUTHORIZATION_EXPIRY_WAIT':
@@ -750,8 +750,10 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
 
 
 
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        primary_error = sys.exception()
         if primary_error is not None:
             setattr(primary_error, 'last_check', checks[-1] if checks else None)
         try:

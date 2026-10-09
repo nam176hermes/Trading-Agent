@@ -10,6 +10,105 @@ from tests.p3.test_host_profile import _host_profile_document, _image_descriptor
 from tests.p3.test_local_transport_fences import _identity
 
 
+@pytest.fixture
+def native_profile_inputs(tmp_path, monkeypatch):
+    """Synthetic worker CAS/note; closure attestation never touches an actual P1 root."""
+    from packages.alpha_lifecycle.operation_input import P3OperationInput, FAMILY_IDS
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_worker.p3_session import publish_session_ref
+    from services.job_worker import p1_nautilus_closure, p1_engine_spawn
+    from tests.p3.test_local_research_admission import sealed
+    from scripts import p3_local_host as module
+    host = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(
+        _host_profile_document('p3-local-official-host-profile-v2', identity=_identity(), image=_image_descriptor())))
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    manifest, spec = host.inventory_ref, host.integration_receipt_ref
+    commitment = NativeCommitment.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-native-commitment-v1', source=host.payload.expected_source.model_dump(mode='json'),
+        environment_ref=host.environment_ref.model_dump(mode='json'), manifest_ref=manifest.model_dump(mode='json'),
+        instrument_spec_ref=spec.model_dump(mode='json'), primary_request_sha256='a'*64,
+        baseline_request_sha256='b'*64))))
+    ref = store.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
+    intent = P3OperationInput.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-operation-input-v1', workflow_operation='p3-native-parity-v1', operation='PARITY',
+        input_set_ref=host.environment_ref.model_dump(mode='json'), allowed_alpha_ids=[FAMILY_IDS[0]],
+        body=dict(holdout_manifest_ref=manifest.model_dump(mode='json'), instrument_spec_ref=spec.model_dump(mode='json'),
+            primary_reference_ref=host.inventory_ref.model_dump(mode='json'),
+            baseline_reference_ref=host.inventory_ref.model_dump(mode='json'), native_request_ref=ref.model_dump(mode='json'))))))
+    intent_ref = store.put_bytes(canonical_json_bytes(intent), media_type='application/json')
+    from packages.job_contracts import AlphaCampaignPayload
+    payload = AlphaCampaignPayload.model_validate_json(canonical_json_bytes(dict(
+        host.payload.model_dump(mode='json'), operation='PARITY', manifest_ref=intent_ref)))
+    previous_job = 'job_'+'0'*32
+    output = tmp_path/'output'
+    publish_session_ref(output, previous_job, 'NATIVE_COMMITMENT', ref)
+    profile = dict(schema_version='p3-native-launch-profile-v1', source=host.payload.expected_source.model_dump(mode='json'),
+        session_sha256='a'*64, native_commitment_ref=ref.model_dump(mode='json'),
+        job_id=host.job_id, attempt_id='attempt_'+'1'*32, runtime_root='/qualified/p1/runtime',
+        artifact_directory='/qualified/p1/artifacts', sandbox_executable=host.sandbox_executable,
+        sandbox_sha256=host.sandbox_sha256)
+    command = dict(action='native-profile', profile=profile, payload=payload.model_dump(mode='json'),
+        intent=intent.model_dump(mode='json'), environment_ref=host.environment_ref.model_dump(mode='json'),
+        previous_job_id=previous_job, output_root=str(output), store_root=str(tmp_path/'cas'))
+    calls = []
+    closure = SimpleNamespace(sandbox=SimpleNamespace(version=host.sandbox_version,
+        executable_sha256=host.sandbox_sha256))
+    def attest(config):
+        calls.append(config)
+        return closure
+    monkeypatch.setattr(p1_nautilus_closure, 'attest_p1_nautilus_closure', attest)
+    monkeypatch.setattr(p1_engine_spawn, 'validate_p1_engine_closure_attestation', lambda value: value)
+    return SimpleNamespace(module=module, host=host, store=store, intent=intent, payload=payload,
+        commitment=commitment, ref=ref, command=command, closure=closure, calls=calls, output=output,
+        store_root=tmp_path/'cas')
+
+
+def test_native_profile_authenticates_worker_note_intent_and_qualified_closure(native_profile_inputs):
+    x = native_profile_inputs
+    assert x.module.native_profile_action(x.command) == x.command['profile']
+    assert len(x.calls) == 1
+    assert x.calls[0].runtime_root == Path('/qualified/p1/runtime')
+    assert x.calls[0].artifact_directory == Path('/qualified/p1/artifacts')
+
+
+@pytest.mark.parametrize('fault', ['note-custody', 'note-job', 'intent-ref', 'source', 'environment',
+                                  'manifest', 'spec', 'sandbox-hash', 'sandbox-version', 'closure', 'extra'])
+def test_native_profile_rejects_unqualified_or_unbound_inputs(native_profile_inputs, monkeypatch, fault):
+    from services.job_worker import p1_nautilus_closure
+    x = native_profile_inputs
+    command = x.command
+    if fault == 'note-custody':
+        (x.output/command['previous_job_id']/'session-refs'/'native-commitment.log').chmod(0o644)
+    elif fault == 'note-job':
+        command['previous_job_id'] = 'job_'+'9'*32
+    elif fault == 'intent-ref':
+        command['profile']['native_commitment_ref'] = x.host.inventory_ref.model_dump(mode='json')
+    elif fault == 'source':
+        command['profile']['source']['tree_sha'] = 'f'*40
+    elif fault == 'environment':
+        command['environment_ref'] = x.host.inventory_ref.model_dump(mode='json')
+    elif fault in {'manifest', 'spec'}:
+        field = 'holdout_manifest_ref' if fault == 'manifest' else 'instrument_spec_ref'
+        # A changed protected intent is not the authenticated CAS intent.
+        from tests.p3.test_local_research_admission import sealed
+        command['intent']['body'][field] = x.host.qualification_job_detail_ref.model_dump(mode='json')
+        command['intent'] = sealed(command['intent'])
+    elif fault == 'sandbox-hash':
+        x.closure.sandbox.executable_sha256 = 'f'*64
+    elif fault == 'sandbox-version':
+        x.closure.sandbox.version = 'bubblewrap 0.0.0'
+    elif fault == 'closure':
+        def reject(_):
+            raise ValueError('synthetic pinned closure rejected')
+        monkeypatch.setattr(p1_nautilus_closure, 'attest_p1_nautilus_closure', reject)
+    else:
+        command['argv'] = ['untrusted']
+    with pytest.raises(ValueError):
+        x.module.native_profile_action(command)
+
+
 def test_mounted_profile_uses_host_inventory_and_preserves_image_inventory():
     from scripts.p3_local_host import assemble_profile, host_inventory, HostInputs
     from packages.data_contracts import ArtifactRefV1

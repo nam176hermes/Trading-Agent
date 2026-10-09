@@ -98,3 +98,77 @@ def test_sql_startup_still_rejects_identity_faults_before_binding(monkeypatch, p
         fixture.run_sql_fixture(None, owned_root=root, heartbeat=heartbeat)
     assert "bound" not in events and "pidfd_fence" not in events
     assert events[-1] == "cleanup" and not root.exists()
+
+
+@pytest.mark.parametrize('ambient', [False, True])
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+@pytest.mark.parametrize('outcome', ['success', 'error', 'cancel'])
+def test_sql_cleanup_uses_only_own_primary(monkeypatch, outcome, cleanup_fails, ambient):
+    """Exact source cleanup seam only; SQL body replaced, no SQL/process/socket IO."""
+    import ast
+    import copy
+    import inspect
+
+    original = ast.parse(inspect.getsource(fixture.run_sql_fixture)).body[0]
+    owning_try, = [node for node in original.body if isinstance(node, ast.Try) and node.finalbody]
+    seam = ast.parse('''
+def cleanup_seam(body):
+    root = Path('/synthetic-owned-sql-fixture')
+    data, sock = root / 'data', root / 'socket'
+    started = False
+    process = identity = None
+    run = None
+    checks = ['SYNTHETIC_CHECK_PASS']
+''').body[0]
+    # Preserve the production initializer, handlers and finally verbatim; replace only SQL body.
+    seam.body.extend(copy.deepcopy(node) for node in original.body if
+        isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        and node.target.id == 'primary_error')
+    extracted = copy.deepcopy(owning_try)
+    extracted.body = ast.parse('body()').body
+    seam.body.append(extracted)
+    calls = []
+    cleanup = RuntimeError('synthetic cleanup failure')
+    primary = (KeyboardInterrupt('synthetic cancellation') if outcome == 'cancel'
+               else ValueError('synthetic local failure'))
+    origin = RuntimeError('synthetic original cause')
+    primary.__cause__ = origin
+    unrelated = KeyError('synthetic unrelated caller exception')
+
+    def clean(*args, **kwargs):
+        calls.append((args, kwargs))
+        if cleanup_fails: raise cleanup
+
+    def body():
+        if outcome != 'success': raise primary
+
+    monkeypatch.setattr(fixture, '_cleanup_cluster', clean)
+    namespace = dict(vars(fixture))
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[seam], type_ignores=[])),
+                 inspect.getsourcefile(fixture.run_sql_fixture), 'exec'), namespace)
+    raised = None
+    try:
+        if ambient: raise unrelated
+        namespace['cleanup_seam'](body)
+    except KeyError:
+        try: namespace['cleanup_seam'](body)
+        except BaseException as error: raised = error
+    except BaseException as error:
+        raised = error
+    assert len(calls) == 1
+    assert calls[0][0][:4] == (Path('/synthetic-owned-sql-fixture'),
+        Path('/synthetic-owned-sql-fixture/data'), Path('/synthetic-owned-sql-fixture/socket'), False)
+    assert calls[0][1] == dict(process=None, identity=None)
+    if cleanup_fails:
+        assert isinstance(raised, fixture.SQLFixtureCleanupError)
+        if outcome == 'success':
+            assert raised.__cause__ is cleanup
+        else:
+            assert isinstance(raised.__cause__, BaseExceptionGroup)
+            assert raised.__cause__.exceptions == (primary, cleanup)
+    else:
+        assert raised is (None if outcome == 'success' else primary)
+    assert not hasattr(unrelated, 'last_check'), 'caller exception must not acquire fixture metadata'
+    if outcome != 'success':
+        assert primary.last_check == 'SYNTHETIC_CHECK_PASS'
+        assert primary.__cause__ is origin

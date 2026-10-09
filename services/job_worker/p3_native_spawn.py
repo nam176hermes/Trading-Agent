@@ -33,6 +33,7 @@ from .nautilus_closure import NautilusClosureConfig
 from .p1_nautilus_closure import attest_p1_nautilus_closure
 from .p1_engine_spawn import validate_p1_engine_closure_attestation
 from .p3_spawn_interface import P3NativePreparedSpawnMarker
+from .artifacts import _close_descriptors
 
 if TYPE_CHECKING:
     from .p1_closure_attestation import P1EngineClosureAttestation
@@ -145,6 +146,7 @@ class P3NativeSpawnProvider:
         request, replica, closure, sources, deadline = record
         descriptors: list[int] = []
         transferred = False
+        primary_error: BaseException | None = None
         try:
             if ((job_id, attempt_id) != (self._claim.job_id, self._claim.attempt_id)
                 or time.monotonic() >= deadline or self._current() != (closure, sources)):
@@ -197,12 +199,21 @@ class P3NativeSpawnProvider:
             self._last_launch = fingerprint, result.lineage.as_metadata()
             transferred = True
             return result
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
             with self._lock:
                 self._pending = False
                 self._failed = not transferred
             if not transferred:
-                for fd in descriptors: os.close(fd)
+                try:
+                    _close_descriptors(*descriptors)
+                except OSError as cleanup_error:
+                    if primary_error is not None:
+                        cleanup_error.__cause__ = primary_error.__cause__
+                        raise primary_error from cleanup_error
+                    raise
 
 
 def consume_prepared_p3_native_spawn(token: PreparedP3NativeSpawn, *, job_id: str, attempt_id: str) -> EngineBuiltSpawn:

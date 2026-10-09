@@ -49,6 +49,7 @@ from .command_registry import CommandSpec, p3_command_spec
 from .engine_spawn import _sealed_memfd
 from .p3_spawn_interface import P3PreparedSpawnMarker, P3SpawnError
 from .p3_output import P3OutputCustody
+from .artifacts import _close_descriptors
 from .results import _open_directory_chain
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -487,9 +488,10 @@ class P3SpawnProvider:
                 before_write = write_fence
             custody = P3OutputCustody(output_parent,output_fd,run_name,self._store,
                 before_retain=before_retain, before_write=before_write)
-            os.close(output_parent)
             descriptors.remove(output_parent)
+            closing_parent = output_parent
             output_parent = -1
+            os.close(closing_parent)
             def replica_fence() -> None:
                 # The HOLDOUT owner returns this borrow's complete fresh attestation.
                 current = (self._attest_closure() if self._holdout_inputs is None
@@ -502,19 +504,28 @@ class P3SpawnProvider:
                 spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,
                 P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody,replica_fence)
         except BaseException as error:
-            if custody is not None:
-                custody.abandon()
-            elif created_output is not None:
-                try:
-                    os.rmdir(created_output,dir_fd=output_parent)
-                except OSError:
-                    # Preserve unexpected contents; only an empty task directory is ours to remove.
-                    pass
-            for fd in descriptors:
-                os.close(fd)
+            cleanup_error: BaseException | None = None
+            try:
+                if custody is not None:
+                    custody.abandon()
+                elif created_output is not None:
+                    try:
+                        os.rmdir(created_output,dir_fd=output_parent)
+                    except OSError:
+                        # Preserve unexpected contents; only an empty task directory is ours to remove.
+                        pass
+            except BaseException as exc:
+                cleanup_error = exc
+            try:
+                _close_descriptors(*descriptors)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
             if not isinstance(error, Exception):
+                if cleanup_error is not None:
+                    cleanup_error.__cause__ = error.__cause__
+                    raise error from cleanup_error
                 raise
-            raise P3SpawnError('P3_SPAWN_HELD','P3 capability consumption failed') from error
+            raise P3SpawnError('P3_SPAWN_HELD','P3 capability consumption failed') from (cleanup_error or error)
 
 
 def consume_prepared_p3_spawn(token: PreparedP3Spawn) -> P3BuiltSpawn:

@@ -326,6 +326,45 @@ def session_ref_action(command):
         expected_source=SourceIdentity.model_validate(command['expected_source'])).model_dump(mode='json')
 
 
+def native_profile_action(command):
+    """Worker-UID custody and pinned closure checks; return only the finite launch profile."""
+    from packages.alpha_lifecycle.operation_input import NativeParityInput
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.job_contracts import AlphaCampaignPayload
+    from services.job_worker.p3_session import read_session_ref
+    from services.job_worker.p3_native_spawn import NativeLaunchProfile
+    from services.job_worker.nautilus_closure import NautilusClosureConfig
+    from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
+    from services.job_worker.p1_engine_spawn import validate_p1_engine_closure_attestation
+    from packages.alpha_lifecycle.sandbox_policy import BWRAP_VERSION
+    fields = {'action', 'profile', 'payload', 'intent', 'environment_ref',
+              'previous_job_id', 'output_root', 'store_root'}
+    if set(command) != fields or command['action'] != 'native-profile':
+        raise ValueError('native profile read accepts only its fixed fields')
+    profile = NativeLaunchProfile.model_validate_json(canonical_json_bytes(command['profile']))
+    payload = AlphaCampaignPayload.model_validate_json(canonical_json_bytes(command['payload']))
+    intent = P3OperationInput.model_validate_json(canonical_json_bytes(command['intent']))
+    store = LocalArtifactStore(_absolute(command['store_root']))
+    if (_read(store, payload.manifest_ref, P3OperationInput) != intent
+        or payload.operation != 'PARITY' or payload.expected_source != profile.source
+        or intent.operation != 'PARITY' or not isinstance(intent.body, NativeParityInput)):
+        raise ValueError('native profile differs from the admitted PARITY intent')
+    ref = read_session_ref(_absolute(command['output_root']), command['previous_job_id'], 'NATIVE_COMMITMENT',
+        worker_uid=os.geteuid(), store=store, expected_source=profile.source)
+    commitment = _read(store, ref, NativeCommitment)
+    environment_ref = ArtifactRefV1.model_validate_json(canonical_json_bytes(command['environment_ref']))
+    if (ref != profile.native_commitment_ref or ref != intent.body.native_request_ref
+        or commitment.source != profile.source or commitment.environment_ref != environment_ref
+        or commitment.manifest_ref != intent.body.holdout_manifest_ref
+        or commitment.instrument_spec_ref != intent.body.instrument_spec_ref):
+        raise ValueError('native commitment differs from the held session and PARITY intent')
+    closure = validate_p1_engine_closure_attestation(attest_p1_nautilus_closure(NautilusClosureConfig(
+        _absolute(profile.runtime_root), _absolute(profile.artifact_directory), _absolute(profile.sandbox_executable))))
+    if closure.sandbox.version != BWRAP_VERSION or closure.sandbox.executable_sha256 != profile.sandbox_sha256:
+        raise ValueError('native qualified sandbox differs from the admitted host')
+    return profile.model_dump(mode='json')
+
+
 def main():
     """Fixed worker-UID helper in the qualified application, never an alternate launcher."""
     raw = sys.stdin.buffer.read(4194305)
@@ -346,6 +385,8 @@ def main():
             job_id=profile.job_id, payload=profile.payload, context=os.environ)
     elif command['action'] == 'session-ref':
         result = session_ref_action(command)
+    elif command['action'] == 'native-profile':
+        result = native_profile_action(command)
     elif command['action'] == 'database-identity':
         from services.job_store.config import read_systemd_credential
         if set(command) != {'action', 'credentials_directory'}:

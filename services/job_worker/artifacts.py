@@ -14,6 +14,17 @@ MAX_STREAM_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", re.ASCII)
 
 
+def _close_descriptors(*descriptors: int) -> None:
+    first_error: OSError | None = None
+    for descriptor in dict.fromkeys(fd for fd in descriptors if fd >= 0):
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            first_error = first_error or exc
+    if first_error is not None:
+        raise first_error
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactMetadata:
     artifact_type: str

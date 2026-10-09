@@ -26,6 +26,7 @@ from services.job_store.records import ClaimedJob
 from services.job_store.worker_repository import WorkerRepository
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.data_contracts import ArtifactRefV1
+from .artifacts import _close_descriptors
 
 
 class CustodianEndpoint(StrictModel):
@@ -82,6 +83,7 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
     path=Path(endpoint.socket_path)
     flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC
     directories: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         current=os.open('/',flags);directories.append(current)
         if not _safe_directory(os.fstat(current)):raise ValueError('unprotected custody ancestor')
@@ -110,8 +112,17 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
             bundle=receive_bundle(channel,hashlib.sha256(raw).hexdigest())
             fence()
             return bundle
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for descriptor in reversed(directories):os.close(descriptor)
+        try:
+            _close_descriptors(*reversed(directories))
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store: ArtifactStore, *,
@@ -190,6 +201,7 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
     channel.settimeout(_io_timeout(io_deadline))
     # recvmsg rather than recv ensures even rejected request-side FDs are closed.
     descriptors: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         raw,ancillary,flags=channel.recvmsg(65537,socket.CMSG_SPACE(16*4),socket.MSG_CMSG_CLOEXEC)[:3]
         for level,kind,value in ancillary:
@@ -218,8 +230,17 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
         repository.fence(request)
         channel.settimeout(_io_timeout(io_deadline))
         send_bundle(channel,hashlib.sha256(raw).hexdigest(),plaintext)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for descriptor in descriptors:os.close(descriptor)
+        try:
+            _close_descriptors(*descriptors)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
@@ -229,6 +250,7 @@ def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
     Linux closes descriptors truncated out of the receive buffer itself.
     """
     descriptors: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         packet,ancillary,flags=channel.recvmsg(513,socket.CMSG_SPACE(16*struct.calcsize('i')),
             socket.MSG_CMSG_CLOEXEC)[:3]
@@ -256,9 +278,17 @@ def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
         if len(raw)!=info.st_size:
             raise ValueError('custody descriptor size changed')
         return raw
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for fd in descriptors:
-            os.close(fd)
+        try:
+            _close_descriptors(*descriptors)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def send_bundle(channel: socket.socket, request_sha256: str, raw: bytes) -> None:
@@ -266,10 +296,20 @@ def send_bundle(channel: socket.socket, request_sha256: str, raw: bytes) -> None
     if type(raw) is not bytes or not 0<len(raw)<=MAX_VIEW_BYTES:
         raise ValueError('custody bundle is outside its byte bound')
     fd=_sealed_memfd('p3-holdout-release',raw,mode=0o400)
+    primary_error: BaseException | None = None
     try:
         packet=canonical_json_bytes({'request_sha256':request_sha256})
         count=channel.sendmsg([packet],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('i',fd))],socket.MSG_NOSIGNAL)
         if count!=len(packet):
             raise ValueError('custody response was not sent completely')
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        os.close(fd)
+        try:
+            _close_descriptors(fd)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise

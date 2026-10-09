@@ -246,6 +246,191 @@ def prepared_engine_spawn() -> PreparedEngineSpawn:
     return object.__new__(PreparedEngineSpawn)
 
 
+@pytest.mark.parametrize('close_errno', [errno.EIO, errno.EPERM], ids=['EIO', 'EPERM'])
+def test_identity_proven_reserve_close_does_not_close_reused_fd(monkeypatch, tmp_path, close_errno):
+    from services.job_worker import p3_output, process_runner as module
+    from services.job_worker.p3_spawn import P3BuiltSpawn, P3SpawnLineage, PreparedP3Spawn
+
+    owned = [os.open('/dev/null', os.O_RDONLY) for _ in range(2)]
+    attempts, reserve, replacement, consumed, abandoned, spawned, inspected = [], [], [], [], [], [], []
+    real_open, real_close = os.open, os.close
+    first = OSError(close_errno, 'synthetic reserve close failure after release')
+
+    class Custody:
+        def matches(self, job_id, attempt_id):
+            return (job_id, attempt_id) == (JOB_ID, ATTEMPT_ID)
+
+        def abandon(self):
+            abandoned.append(True)
+
+    prepared = object.__new__(PreparedP3Spawn)
+    built = P3BuiltSpawn(
+        JOB_ID, ATTEMPT_ID, (f'/proc/self/fd/{owned[0]}',), Path('/'), {},
+        tuple(owned), tuple(owned), 10, 'p3-fixture', '9' * 64, BACKEND_COMMIT,
+        P3SpawnLineage('a' * 64, 'b' * 64, 'c' * 64, 'd' * 64), Custody(), lambda: None,
+    )
+    process = FakeProcess([])
+    process._last = 0
+    runner_instance = runner(tmp_path, process, Inspector([identity()]), spawned)
+    inspect = runner_instance._inspector.inspect
+
+    def prove_identity(pid):
+        proven = inspect(pid)
+        inspected.append(proven)
+        return proven
+
+    def reserve_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == '/dev/null' and not reserve:
+            reserve.append(fd)
+        return fd
+
+    def close(fd):
+        if fd in owned or fd in reserve:
+            attempts.append(fd)
+        if reserve and fd == reserve[0] and not replacement:
+            assert inspected == [identity()]
+            old_identity = os.fstat(fd)
+            real_close(fd)
+            # Reallocate the exact number to a real, unrelated object before
+            # close reports failure. A retry would destroy this new owner.
+            fresh, peer = os.pipe()
+            if fresh != fd:
+                os.dup2(fresh, fd)
+                real_close(fresh)
+            real_close(peer)
+            replacement.append(os.fstat(fd))
+            assert replacement[0] != old_identity
+            raise first
+        real_close(fd)
+
+    monkeypatch.setattr(p3_output, 'P3OutputCustody', Custody)
+    monkeypatch.setattr(module, 'consume_prepared_p3_spawn', lambda token: consumed.append(token) or built)
+    monkeypatch.setattr(runner_instance._inspector, 'inspect', prove_identity)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'open', reserve_open)
+        patch.setattr(os, 'close', close)
+        try:
+            with pytest.raises(RuntimeError, match='PROCESS_GROUP_CLEANUP_UNPROVEN') as failure:
+                runner_instance.run(lambda: prepared, None, None,
+                    lambda _: HeartbeatDecision.CONTINUE, job_id=JOB_ID, attempt_id=ATTEMPT_ID)
+            assert failure.value.__cause__ is first
+            assert len(spawned) == 1 and inspected == [identity()]
+            assert consumed == [prepared] and abandoned == [True]
+            assert process.stdout.closed and process.stderr.closed
+            assert process.wait_timeout is not None
+            assert attempts == [*owned, *reserve]
+            assert os.fstat(reserve[0]) == replacement[0]
+            for fd in owned:
+                with pytest.raises(OSError) as closed:
+                    os.fstat(fd)
+                assert closed.value.errno == errno.EBADF
+        finally:
+            # Only these test-owned descriptors; RED may already close the
+            # replacement, and GREEN leaves it for its actual owner here.
+            for fd in {*owned, *reserve}:
+                try:
+                    real_close(fd)
+                except OSError as exc:
+                    assert exc.errno == errno.EBADF
+            process.stdout.close()
+            process.stderr.close()
+
+
+@pytest.mark.parametrize('phase', ['preflight', 'postspawn'])
+def test_p3_abandon_failure_still_closes_runner_owned_fds(monkeypatch, tmp_path, phase):
+    from services.job_worker import p3_output, process_runner as module
+    from services.job_worker.p3_spawn import P3BuiltSpawn, P3SpawnLineage, PreparedP3Spawn
+
+    primary = ValueError('synthetic runner refusal')
+    origin = RuntimeError('synthetic original refusal cause')
+    first = OSError(errno.EIO, 'synthetic custody abandon failure')
+    later = OSError(errno.EPERM, 'synthetic runner close failure')
+    owned = [os.open('/dev/null', os.O_RDONLY) for _ in range(2)]
+    attempted, consumed, abandoned, spawned = [], [], [], []
+    real_open, real_close = os.open, os.close
+
+    class Custody:
+        def matches(self, job_id, attempt_id):
+            return (job_id, attempt_id) == (JOB_ID, ATTEMPT_ID)
+
+        def abandon(self):
+            abandoned.append(True)
+            raise first
+
+    custody = Custody()
+    prepared = object.__new__(PreparedP3Spawn)
+    built = P3BuiltSpawn(
+        JOB_ID, ATTEMPT_ID, (f'/proc/self/fd/{owned[0]}',), Path('/'), {},
+        tuple(owned), tuple(owned), 10, 'p3-fixture', '9' * 64, BACKEND_COMMIT,
+        P3SpawnLineage('a' * 64, 'b' * 64, 'c' * 64, 'd' * 64), custody, lambda: None,
+    )
+    process = FakeProcess([])
+    process._last = 0
+    runner_instance = runner(tmp_path, process, Inspector([]), spawned)
+    safety_calls = 0
+
+    def refuse(*args):
+        raise primary from origin
+
+    def preflight():
+        nonlocal safety_calls
+        safety_calls += 1
+        if phase == 'preflight' and safety_calls == 2:
+            refuse()
+        return safety_evidence('3' * 64)
+
+    def reserve_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == '/dev/null':
+            owned.append(fd)
+        return fd
+
+    def close(fd):
+        if fd in owned:
+            attempted.append(fd)
+            real_close(fd)
+            if fd == owned[0] or (phase == 'postspawn' and fd == owned[-1]):
+                raise later
+        else:
+            real_close(fd)
+
+    monkeypatch.setattr(p3_output, 'P3OutputCustody', Custody)
+    monkeypatch.setattr(module, 'consume_prepared_p3_spawn', lambda token: consumed.append(token) or built)
+    if phase == 'postspawn':
+        monkeypatch.setattr(runner_instance._inspector, 'inspect', refuse)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'open', reserve_open)
+        patch.setattr(os, 'close', close)
+        try:
+            with pytest.raises(BaseException) as failure:
+                runner_instance.run(lambda: prepared, None, None,
+                    lambda _: HeartbeatDecision.CONTINUE, job_id=JOB_ID,
+                    attempt_id=ATTEMPT_ID, preflight=preflight)
+            assert len(owned) == 3
+            assert sorted(attempted) == sorted(owned)
+            for fd in owned:
+                with pytest.raises(OSError) as closed:
+                    os.fstat(fd)
+                assert closed.value.errno == errno.EBADF
+            assert consumed == [prepared] and abandoned == [True]
+            assert failure.value is primary
+            assert failure.value.__cause__ is first
+            assert first.__cause__ is origin
+            assert first is not later
+            if phase == 'preflight':
+                assert not spawned
+            else:
+                assert len(spawned) == 1
+                assert process.stdout.closed and process.stderr.closed
+                assert process.wait_timeout is not None
+        finally:
+            for fd in set(owned) - set(attempted):
+                real_close(fd)
+            process.stdout.close()
+            process.stderr.close()
+
+
 def test_engine_routing_marker_cannot_authorize_a_forged_spawn(
     monkeypatch, tmp_path
 ) -> None:

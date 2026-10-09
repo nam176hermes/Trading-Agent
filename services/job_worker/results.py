@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from services.job_store.p3_sql import DomainAppendEntry
 
 from packages.job_contracts import AlphaCampaignPayload, ReplayPayload
-from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata
+from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, _close_descriptors
 
 MAX_RESULT_CANDIDATES = 64
 MAX_RESULT_ENTRIES = 10_000
@@ -84,17 +84,6 @@ class ValidatedP3Publication:
 
 def _directory_flags() -> int:
     return os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-
-
-def _close_descriptors(*descriptors: int) -> None:
-    first_error: OSError | None = None
-    for descriptor in dict.fromkeys(fd for fd in descriptors if fd >= 0):
-        try:
-            os.close(descriptor)
-        except OSError as exc:
-            first_error = first_error or exc
-    if first_error is not None:
-        raise first_error
 
 
 def _cleanup_temp(directory_fd: int, filename: str, descriptor: int) -> None:
