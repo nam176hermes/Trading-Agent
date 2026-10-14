@@ -10,7 +10,8 @@ ENTRY = '/p3-native/entry.py'
 ADAPTER = '/p3-native/adapter.py'
 REQUEST = '/inputs/p3-native.json'
 COMMAND = ('/usr/bin/python3.12', '-I', '-B', '-S', ENTRY)
-ENVIRONMENT = dict(HOME='/tmp', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
+# Bubblewrap adds PWD for its fixed --chdir even after --clearenv.
+ENVIRONMENT = dict(PWD='/', HOME='/tmp', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
     PYTHONHASHSEED='0', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1')
 MAX_REQUEST_BYTES = 131072
 RESOURCE_LIMITS = dict(RLIMIT_CPU=240, RLIMIT_AS=2147483648, RLIMIT_NOFILE=256,

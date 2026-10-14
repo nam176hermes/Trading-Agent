@@ -199,7 +199,8 @@ def test_existing_process_runner_consumes_native_authority_and_closes_fds(native
         child.stdout.close(); child.stderr.close()
 
 
-@pytest.mark.parametrize('fault', [None, 'argv', 'version', 'isolation', 'environment', 'cwd',
+@pytest.mark.parametrize('fault', [None, 'argv', 'version', 'isolation', 'environment',
+    'missing_pwd', 'wrong_pwd', 'extra_environment', 'cwd',
     'linked', 'mode', 'oversized', 'empty', 'short_read', 'adapter'])
 def test_native_entry_checks_transport_before_loading_adapter(tmp_path, monkeypatch, fault):
     import os
@@ -227,10 +228,14 @@ def test_native_entry_checks_transport_before_loading_adapter(tmp_path, monkeypa
         assert flags == os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
         descriptor = os.dup(source); opened.append(descriptor)
         return descriptor
+    environment = dict(entry.ENVIRONMENT)
+    if fault == 'missing_pwd': environment.pop('PWD', None)
+    if fault == 'wrong_pwd': environment['PWD'] = '/tmp'
+    if fault == 'extra_environment': environment['UNEXPECTED'] = '1'
     monkeypatch.setattr(entry, 'os', SimpleNamespace(**{name:getattr(os, name) for name in
         ('O_RDONLY', 'O_NOFOLLOW', 'O_CLOEXEC', 'O_NONBLOCK', 'fstat', 'close')},
         open=open_request, pread=(lambda *args: b'') if fault == 'short_read' else os.pread,
-        environ={} if fault == 'environment' else entry.ENVIRONMENT,
+        environ={} if fault == 'environment' else environment,
         getcwd=lambda: '/tmp' if fault == 'cwd' else '/'))
     monkeypatch.setattr(entry, 'resource', SimpleNamespace(**{name:getattr(resource, name)
         for name in entry.RESOURCE_LIMITS}, setrlimit=lambda *args: limits.append(args)))
@@ -262,3 +267,30 @@ def test_native_entry_checks_transport_before_loading_adapter(tmp_path, monkeypa
     finally:
         os.close(source)
         if state.stdin is not None: state.stdin.close()
+
+
+@pytest.mark.host_coupled
+def test_native_entry_accepts_actual_bubblewrap_environment():
+    """Exercise the real entry up to missing input, without running an engine."""
+    from pathlib import Path
+    import subprocess
+    from packages.alpha_lifecycle.sandbox_policy import (
+        BWRAP_VERSION, ENVIRONMENT_ARGS, FILESYSTEM_ARGS, ROOT_READONLY_ARGS, SANDBOX_ARGS,
+    )
+    from scripts import run_p3_native_child as entry
+
+    sandbox = '/usr/bin/bwrap'
+    if not Path(sandbox).is_file() or not Path(entry.COMMAND[0]).is_file():
+        pytest.skip('requires pinned Linux bubblewrap and Python 3.12')
+    version = subprocess.run([sandbox, '--version'], capture_output=True, text=True,
+        timeout=5, check=True)
+    assert version.stdout.strip() == BWRAP_VERSION
+    # Host stdlib mounts isolate the entry contract; sealed engine readiness is separate.
+    argv = [sandbox, *SANDBOX_ARGS, '--ro-bind', '/usr', '/usr',
+        '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64',
+        *FILESYSTEM_ARGS, '--dir', '/p3-native',
+        '--ro-bind', str(Path(entry.__file__).resolve()), entry.ENTRY,
+        *ROOT_READONLY_ARGS, '--chdir', '/', *ENVIRONMENT_ARGS, *entry.COMMAND]
+    result = subprocess.run(argv, cwd='/', env={}, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 1 and not result.stdout
+    assert 'FileNotFoundError' in result.stderr and entry.REQUEST in result.stderr, result.stderr
