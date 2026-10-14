@@ -853,6 +853,20 @@
       "security_critical": true,
       "target_phase": "SV01 projection recovery proof on the qualified candidate",
       "test_node_id": "tests/jobs/test_engine_projection_recovery_postgres_runtime.py::test_repair_refuses_a_drifted_parent_catalog_and_changes_nothing"
+    },
+    {
+      "allowed_in_ci": true,
+      "approval_record_type": "host-capability-review-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "release-engineering",
+      "reason": "marker expression deselected: host_coupled",
+      "reason_category": "MISSING_HOST_CAPABILITY",
+      "required_binary_or_service": "pinned Linux bubblewrap 0.9.0, Python 3.12 and user namespaces",
+      "review_by": "2026-10-31",
+      "security_critical": false,
+      "target_phase": "P3 native entry-contract host check; separate from protected parity",
+      "test_node_id": "tests/p3/test_native_spawn.py::test_native_entry_accepts_actual_bubblewrap_environment"
     }
   ],
   "schema_version": 1

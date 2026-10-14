@@ -200,11 +200,11 @@ def test_allowlist_schema_is_exact_and_unknown_is_never_accepted() -> None:
         and item["approval_record_type"] == "disposable-postgres-test-approval-v1"
     ]
     assert migrated_pg_skips == []
-    assert len(tracked) == 61
+    assert len(tracked) == 62
     assert sum(
         item["component"] == "root" and item["outcome"] == "deselected"
         for item in tracked
-    ) == 59                          # includes the 7 SV01 runtime_postgres marker deselections (R8 governance)
+    ) == 60                          # includes the 7 SV01 runtime_postgres marker deselections (R8 governance)
     assert sum(
         item["component"] == "legacy" and item["outcome"] == "skipped"
         for item in tracked
@@ -1340,7 +1340,7 @@ def test_critical_coverage_leaves_native_nodes_in_the_governed_capability_lane(t
 def test_p3_separate_runtime_tests_have_exact_portable_deselection_records(tmp_path):
     paths = ('tests/p3/test_custodian_release_sql.py', 'tests/p3/test_native_next_open.py',
         'tests/p3/test_native_request.py', 'tests/p3/test_native_process_identity.py',
-        'tests/p3/test_session_holdout_claim.py')
+        'tests/p3/test_session_holdout_claim.py', 'tests/p3/test_native_spawn.py')
     report = tmp_path / 'p3-collection.json'
     environment = {key:value for key,value in os.environ.items() if not key.startswith('TEST_GOVERNANCE_')}
     environment.update(TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT='root',
@@ -1350,7 +1350,7 @@ def test_p3_separate_runtime_tests_have_exact_portable_deselection_records(tmp_p
         cwd=test_governance.ROOT, env=environment, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     observed = [row for row in json.loads(report.read_text())['tests'] if row['outcome']=='deselected']
-    assert len(observed) == 10
+    assert len(observed) == 11
     entries = validate_allowlist_document(json.loads(test_governance.DEFAULT_ALLOWLIST.read_text()))
     scoped = [row for row in entries if row['test_node_id'].split('::')[0] in paths]
     compare_inventory(observed, scoped)
