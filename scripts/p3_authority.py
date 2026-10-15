@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -220,7 +221,7 @@ def _enqueue_job_id(enqueue_raw, body, operator):
 def wait_for_result(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
     job_id,body,operator=read_enqueued_job(request_file,output_dir,workflow_operation,
         artifact_root=artifact_root,manifest_file=manifest_file,review_file=review_file)
-    _wait(job_id,body,operator,token_file,output_dir)
+    _wait(job_id,body,operator,token_file,output_dir,request_file=request_file)
 
 
 def read_enqueued_job(request_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path):
@@ -248,17 +249,19 @@ def read_enqueued_job(request_file: Path, output_dir: Path, workflow_operation: 
 def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
     job_id, body, operator = enqueue(request_file, token_file, output_dir, workflow_operation,
         artifact_root=artifact_root, manifest_file=manifest_file, review_file=review_file)
-    _wait(job_id, body, operator, token_file, output_dir)
+    _wait(job_id, body, operator, token_file, output_dir, request_file=request_file)
 
 
-def _wait(job_id, body, operator, token_file, output_dir):
-    from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY
-    from services.job_worker.command_registry import p3_command_spec
-
+def _wait(job_id, body, operator, token_file, output_dir, *, request_file):
+    started, now = time.monotonic(), datetime.now(UTC)
+    request, payload = _validated_request(request_file, body.payload.logical_trial_id)
+    if build_enqueue_body(payload, request.authorization.nonce) != body:
+        raise RuntimeError("HELD E_JOB_API: wait request differs from the authorized job")
+    authorization = request.authorization
     token = _read_token(token_file)
-    wait_seconds = max(900, p3_command_spec(body.payload).timeout_seconds + CHILD_POLICY['child_wall_seconds'])
-    deadline = time.monotonic() + wait_seconds
-    while True:
+    # Observation includes preparation and retention, not only one child command.
+    deadline = started + (authorization.expires_at - now).total_seconds()
+    while time.monotonic() < deadline and authorization.issued_at <= datetime.now(UTC) < authorization.expires_at:
         detail_raw = _request_json("GET", f"/v1/jobs/{job_id}", token)
         try:
             detail = JobDetailEnvelope.model_validate(detail_raw)
@@ -266,14 +269,15 @@ def _wait(job_id, body, operator, token_file, output_dir):
             state = detail.data.job.state.value
         except Exception as error:
             raise RuntimeError("HELD E_JOB_API: detail response contract is invalid") from error
+        if time.monotonic() >= deadline or not authorization.issued_at <= datetime.now(UTC) < authorization.expires_at:
+            break
         if state in TERMINAL_STATES:
             _write(output_dir, "job-result.json", detail)
             if state != "SUCCEEDED":
                 raise RuntimeError(f"HELD E_P3_JOB: terminal state {state}")
             return
-        if time.monotonic() >= deadline:
-            raise RuntimeError("HELD E_P3_JOB: bounded wait expired")
         time.sleep(1)
+    raise RuntimeError("HELD E_P3_JOB: authorization wait expired")
 
 
 if __name__ == "__main__":

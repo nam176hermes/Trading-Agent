@@ -179,6 +179,11 @@ result refs for the next operation; never substitute fixture publication entries
    REQUEST_NAME.json`; this delegates to the existing transport, requiring its
    request operation to be `run`. It does not enqueue, retry or reset a database.
    Use `scripts/p3_authority.py wait` for the original enqueue's terminal readback.
+   The observer revalidates that request and waits only within its original
+   authorization lifetime, using both wall time and a nonextending monotonic
+   deadline. A single command budget does not cover job preparation and result
+   retention. The enclosing SESSION/resource deadline and worker safety limits
+   remain independently enforced; observation never extends or renews them.
 
 `REQUEST_NAME.json` is a **bare filename** within the transport's protected
 `REQUEST_PARENT`, not an absolute path. Pin the exact returned job ID, current

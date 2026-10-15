@@ -200,7 +200,7 @@ def dispatch_fixture(tmp_path,monkeypatch):
         monkeypatch.setenv(name,value)
     record=replace(job_record(),job_type='ALPHA_CAMPAIGN',payload=payload,payload_fingerprint=payload_fingerprint(payload),priority=0)
     calls=[]
-    state=SimpleNamespace(worker_ran=False)
+    state=SimpleNamespace(worker_ran=False, request_json=command._request_json)
     def api(method,path,token,body=None):
         calls.append((method,path))
         envelope=dict(schema_version='1.0.0',trace_id='synthetic.flow',generated_at=utc(now))
@@ -294,6 +294,36 @@ def test_wait_rechecks_protected_source_before_any_job_read(dispatch_fixture,mon
     assert calls==[('POST','/v1/jobs')]
 
 
+def test_wait_observes_authorized_job_beyond_single_command_budget(dispatch_fixture, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    import json
+
+    command, args, kwargs, calls, state = dispatch_fixture
+    command.enqueue(*args, **kwargs)
+    state.worker_ran = True
+    original = command._request_json
+    started = datetime.now(UTC)
+    elapsed = [0.0]
+
+    def response(*values, **options):
+        result = original(*values, **options)
+        result['data']['job']['state'] = 'SUCCEEDED' if elapsed[0] >= 1800 else 'RUNNING'
+        return result
+
+    def sleep(seconds):
+        elapsed[0] += 60
+
+    monkeypatch.setattr(command, '_request_json', response)
+    monkeypatch.setattr(command, 'time', SimpleNamespace(monotonic=lambda: elapsed[0], sleep=sleep))
+    monkeypatch.setattr(command, 'datetime', SimpleNamespace(now=lambda tz: started + timedelta(seconds=elapsed[0])), raising=False)
+    command.wait_for_result(*args, **kwargs)
+    assert elapsed[0] == 1800
+    assert json.loads((args[2]/'job-result.json').read_bytes())['data']['job']['state'] == 'SUCCEEDED'
+    assert calls.count(('POST', '/v1/jobs')) == 1
+    assert all(method == 'GET' for method, _ in calls[1:])
+
+
 @pytest.mark.parametrize('terminal', ['SUCCEEDED', None, 'BLOCKED'])
 def test_holdout_observation_covers_declared_execution_and_postrun(dispatch_fixture, monkeypatch, terminal):
     """An observation timeout cannot be shorter than the admitted operation's budgets."""
@@ -306,7 +336,9 @@ def test_holdout_observation_covers_declared_execution_and_postrun(dispatch_fixt
         'operation': AlphaCampaignOperation.HOLDOUT,
         'logical_trial_id': 'p3-holdout-primary-v1',
     })
-    body = body.model_copy(update={'payload': payload})
+    request, _ = command._validated_request(args[0], args[3])
+    body = command.build_enqueue_body(payload, request.authorization.nonce)
+    monkeypatch.setattr(command, '_validated_request', lambda *values: (request, payload))
     original = command._request_json
     clock = [0.0]
 
@@ -325,16 +357,101 @@ def test_holdout_observation_covers_declared_execution_and_postrun(dispatch_fixt
     monkeypatch.setattr(command, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
     monkeypatch.setattr(command, '_request_json', response)
     if terminal == 'SUCCEEDED':
-        command._wait(job_id, body, operator, args[1], args[2])
+        command._wait(job_id, body, operator, args[1], args[2], request_file=args[0])
         assert json.loads((args[2]/'job-result.json').read_bytes())['data']['job']['state'] == terminal
         assert clock[0] == 1320
     else:
-        expected = 'bounded wait expired' if terminal is None else 'terminal state BLOCKED'
+        expected = 'authorization wait expired' if terminal is None else 'terminal state BLOCKED'
         with pytest.raises(RuntimeError, match=expected):
-            command._wait(job_id, body, operator, args[1], args[2])
-        assert clock[0] == (1500 if terminal is None else 1320)
+            command._wait(job_id, body, operator, args[1], args[2], request_file=args[0])
+        assert clock[0] == (3600 if terminal is None else 1320)
     assert calls.count(('POST', '/v1/jobs')) == 1
     assert all(method == 'GET' for method, _ in calls[1:])
+
+
+@pytest.mark.parametrize('fault', ['expiry', 'clock_forward', 'clock_back', 'late_terminal'])
+def test_wait_expiry_cannot_be_extended_or_accept_late_success(dispatch_fixture, monkeypatch, fault):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    command, args, kwargs, calls, state = dispatch_fixture
+    command.enqueue(*args, **kwargs)
+    state.worker_ran = True
+    original = command._request_json
+    started = datetime.now(UTC)
+    elapsed = [0.0]
+
+    def current_time(tz):
+        offset = (3600 if fault == 'clock_forward' and elapsed[0] else
+                  -900 if fault == 'clock_back' and elapsed[0] >= 1200 else 0)
+        return started + timedelta(seconds=elapsed[0] + offset)
+
+    def response(*values, **options):
+        result = original(*values, **options)
+        if fault == 'late_terminal':
+            elapsed[0] = 3600
+        result['data']['job']['state'] = 'SUCCEEDED' if fault == 'late_terminal' else 'RUNNING'
+        return result
+
+    def sleep(seconds):
+        elapsed[0] += 60
+
+    monkeypatch.setattr(command, '_request_json', response)
+    monkeypatch.setattr(command, 'time', SimpleNamespace(monotonic=lambda: elapsed[0], sleep=sleep))
+    monkeypatch.setattr(command, 'datetime', SimpleNamespace(now=current_time))
+    with pytest.raises(RuntimeError, match='authorization wait expired'):
+        command.wait_for_result(*args, **kwargs)
+    assert elapsed[0] == (60 if fault == 'clock_forward' else 3600)
+    assert not (args[2]/'job-result.json').exists()
+    assert calls.count(('POST', '/v1/jobs')) == 1
+    assert all(method == 'GET' for method, _ in calls[1:])
+
+
+def test_wait_revalidates_same_request_before_observation(dispatch_fixture, monkeypatch):
+    command, args, kwargs, calls, state = dispatch_fixture
+    command.enqueue(*args, **kwargs)
+    original = command._validated_request
+    observed = []
+
+    def changed(*values):
+        request, payload = original(*values)
+        observed.append(request)
+        if len(observed) == 2:
+            request = request.model_copy(update={'authorization': request.authorization.model_copy(
+                update={'nonce': UUID('00000000-0000-4000-8000-000000000002')})})
+        return request, payload
+
+    monkeypatch.setattr(command, '_validated_request', changed)
+    with pytest.raises(RuntimeError, match='wait request differs'):
+        command.wait_for_result(*args, **kwargs)
+    assert len(observed) == 2 and calls == [('POST', '/v1/jobs')]
+    assert not (args[2]/'job-result.json').exists()
+
+
+def test_dispatch_uses_bound_observer(dispatch_fixture):
+    import json
+    command, args, kwargs, calls, state = dispatch_fixture
+    state.worker_ran = True
+    command.dispatch(*args, **kwargs)
+    assert calls == [('POST', '/v1/jobs'), ('GET', '/v1/jobs/job_123')]
+    assert json.loads((args[2]/'job-result.json').read_bytes())['data']['job']['state'] == 'SUCCEEDED'
+
+
+def test_wait_stops_on_job_api_authentication_failure(dispatch_fixture, monkeypatch):
+    from urllib.error import HTTPError
+    command, args, kwargs, calls, state = dispatch_fixture
+    command.enqueue(*args, **kwargs)
+    monkeypatch.setattr(command, '_request_json', state.request_json)
+    requests = []
+
+    def revoked(request, **options):
+        requests.append(request.method)
+        raise HTTPError(request.full_url, 403, 'Forbidden', None, None)
+
+    monkeypatch.setattr(command, 'urlopen', revoked)
+    with pytest.raises(RuntimeError, match='loopback Job API request failed'):
+        command.wait_for_result(*args, **kwargs)
+    assert requests == ['GET'] and not (args[2]/'job-result.json').exists()
 
 
 @pytest.mark.parametrize('fault',[None,'GITHUB_REPOSITORY','GITHUB_REF','GITHUB_SHA','GITHUB_RUN_ID',
