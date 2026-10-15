@@ -13,7 +13,8 @@ from tests.jobs.test_worker_lifecycle import claim
 
 
 @pytest.mark.parametrize('fault', [None, 'owner', 'deadline', 'expired', 'guard'])
-def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('minutes', [37, 55])
+def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, monkeypatch, fault, minutes):
     from services.job_worker import p3_session as module
     from packages.runtime_release.config import ProtectedAuthorityError
     from packages.alpha_lifecycle.local_qualification import _host_identity
@@ -29,15 +30,33 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
     profile = SimpleNamespace(identity=identity, job_id=job.job_id, output_root=str(tmp_path),
         source=source, environment_ref=ref)
     closure = SimpleNamespace(source=source, closure_sha256='d'*64)
-    expiry = datetime.now(UTC) + timedelta(minutes=40)
+    expiry = datetime.now(UTC) + timedelta(minutes=minutes+3)
     issued = datetime.now(UTC)-timedelta(minutes=3)
-    deadline = issued+timedelta(minutes=37)
+    deadline = issued+timedelta(minutes=minutes)
     process = ProcProcessInspector().inspect(os.getpid())
     launch = dict(schema_version='p3-local-session-launch-v1', worker_pid=os.getpid(),
         worker_start_ticks=process.start_ticks, worker_uid=os.geteuid(), controller_pid=os.getppid(),
         identity=identity, source=source, job_id=job.job_id, host_profile_sha256='a'*64,
         issued_at=issued.isoformat().replace('+00:00','Z'),
         workflow_deadline=deadline.isoformat().replace('+00:00','Z'))
+    # Exercise the producer at the exact operation expiry, including clock-read latency.
+    from scripts import p3_local_transport as transport
+    from packages.runtime_release import config
+    observed = 1000.0
+    monotonic_end = observed+(deadline-datetime.now(UTC)).total_seconds()+0.25
+    produced = []
+    monkeypatch.setattr(transport, '_official_run_directory', lambda _:tmp_path)
+    monkeypatch.setattr(transport, 'time', SimpleNamespace(monotonic=lambda:observed))
+    monkeypatch.setattr(transport, 'os', SimpleNamespace(getpid=lambda:os.getppid()))
+    monkeypatch.setattr(transport, '_process_start_time', lambda _:process.start_ticks)
+    monkeypatch.setattr(config, 'read_protected_canonical_json_current', lambda _:(
+        dict(payload=dict(expected_source=source), job_id=job.job_id), 'a'*64))
+    monkeypatch.setattr(transport, '_durable_write', lambda _, raw, **__:produced.append(json.loads(raw)))
+    transport._publish_session_launch(dict(identity=identity), dict(worker_uid=os.geteuid()),
+        os.getpid(), monotonic_end, monotonic_end+1, issued, deadline)
+    assert produced == [json.loads(canonical_json_bytes(launch))]
+    launch = produced[0]
+    expiry = deadline
     reads = []
     original_link = os.link
     def link(source, destination, **kwargs):

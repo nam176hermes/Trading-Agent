@@ -217,26 +217,48 @@ def test_worker_helper_executes_qualified_stage_and_reaps_failures(monkeypatch, 
                              environment, dict(action=action))
 
 
-def test_run_prepares_host_before_image_and_passes_same_deadline(tmp_path, monkeypatch):
+@pytest.mark.parametrize('minutes', [50, 59, 70])
+def test_run_prepares_host_before_image_and_passes_same_deadline(tmp_path, monkeypatch, minutes):
+    from datetime import UTC, datetime, timedelta
+    import time
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle import authority
     from scripts import p3_local_transport as transport, p3_local_host as host
     from tests.p3.test_local_transport_fences import _run_request
     (tmp_path/'host-inputs.json').write_text('{}')
     events = []
-    environment = {'P3_APPLICATION_PYTHON':'/qualified/python'}
+    invoked = datetime.now(UTC)
+    original_expiry = invoked+timedelta(minutes=59)
+    deadline = time.monotonic()+59*60
+    operation_expiry = invoked+timedelta(minutes=minutes)
+    source = dict(commit_sha='a'*40, tree_sha='b'*40, closure_schema_version='v1',
+                  closure_policy_sha256='c'*64, closure_sha256='d'*64)
+    request = _run_request(source=source)
+    environment = {'P3_APPLICATION_PYTHON':'/qualified/python', 'P3_AUTHORITY_REQUEST_FILE':'/protected/op'}
     prepared = (None, 'digest', None, environment)
     monkeypatch.setattr(transport, '_official_run_directory', lambda _:tmp_path)
     monkeypatch.setattr(host, 'prepare_host', lambda *_:(events.append('host'),prepared)[1])
-    monkeypatch.setattr(transport, '_runtime_authority', lambda _:dict(expires_at='2099-01-01T00:00:00Z'))
+    monkeypatch.setattr(transport, '_runtime_authority', lambda _:dict(
+        expires_at=(invoked+timedelta(minutes=70)).isoformat().replace('+00:00', 'Z')))
+    def authorize(path, expected_source, operation):
+        assert str(path) == '/protected/op' and expected_source.model_dump() == source and operation == 'BASELINES'
+        events.append('authorized-operation')
+        return SimpleNamespace(authorization=SimpleNamespace(
+            expires_at=operation_expiry, identity=SimpleNamespace(model_dump=lambda **_:request['identity'])))
+    monkeypatch.setattr(authority, 'validate_request', authorize)
     monkeypatch.setattr(transport, '_prepare_image', lambda *_:(events.append('image'),dict(
         descriptor={}, inventory={}, summary={}))[1])
     def launch(*args, **kwargs):
         events.append('mount-and-worker')
-        assert kwargs['host_preparation'] is prepared and kwargs['invocation_deadline'] == 1000
-        assert args[2] == 1000
+        assert kwargs['host_preparation'] is prepared and kwargs['invocation_deadline'] == deadline
+        assert kwargs['invocation_started'] == invoked
+        assert kwargs['invocation_expires_at'] == min(original_expiry, operation_expiry)
+        assert args[2] <= deadline
+        assert 0 <= args[2]-time.monotonic() <= min(59, minutes)*60
         return {}
     monkeypatch.setattr(transport, 'run_session', launch)
-    transport._command_run(_run_request(), tmp_path, 1000)
-    assert events == ['host', 'image', 'mount-and-worker']
+    transport._command_run(request, tmp_path, deadline, invoked, original_expiry)
+    assert events == ['host', 'authorized-operation', 'image', 'mount-and-worker']
 
 
 def test_host_inputs_select_distinct_operation_staging_and_preflight(tmp_path, monkeypatch):

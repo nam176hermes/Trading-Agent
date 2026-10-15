@@ -177,7 +177,9 @@ staging documents from tests are not installable authority. Scope stays
 snapshot are unchanged. A bounded, approved owner must refresh actual safety
 observations and activation during a longer run; do not reuse the P1-only
 refresh capability or extend TTL. The session deadline must fit the approved
-runtime interval, even though its general upper bound is37minutes.
+runtime interval. LOCAL transport fixes the deadline from the admitted authority
+before preparation; later reads may shorten it but cannot grant a new interval.
+The hosted session's37-minute maximum is unchanged.
 
 For a host composition that owns the approved safety producer, construct
 `LocalRuntimeSafetyPreflight(authority, identity, source, deadline,

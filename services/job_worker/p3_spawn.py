@@ -213,14 +213,20 @@ def _release_files(source: SourceIdentity) -> dict[PurePosixPath, tuple[str, byt
     if _git(ROOT,'status','--porcelain') or SourceIdentity.model_validate(canonical_source_identity(ROOT)) != source:
         raise ValueError('P3 driver source differs from current source')
     entries = _parse_tree(_git(ROOT, 'ls-tree', '-rz', '--full-tree', source.commit_sha))
-    files = {p.decode():(mode,raw) for (mode,_,p),raw in zip(entries,_read_blobs(ROOT,entries),strict=True)}
-    inventory = json.loads(files['docs/implementation/p3/p3-driver-files-v1.json'][1])
+    by_path = {entry[2].decode():entry for entry in entries}
+    inventory_path = 'docs/implementation/p3/p3-driver-files-v1.json'
+    inventory_raw = _read_blobs(ROOT,[by_path[inventory_path]])[0]
+    inventory = json.loads(inventory_raw)
     paths = inventory['paths']
     if (set(inventory) != {'schema_version','paths'} or inventory['schema_version'] != 'p3-driver-source-files-v1'
         or not isinstance(paths,list) or paths != sorted(set(paths))
         or any(not isinstance(p,str) or p.startswith('/') or '..' in PurePosixPath(p).parts for p in paths)
-        or any(files[p][0] not in {'100644','100755'} for p in paths)):
+        or any(by_path[p][0] not in {'100644','100755'} for p in paths)):
         raise ValueError('P3 source projection differs from its reviewed inventory')
+    selected = [by_path[p] for p in paths if p != inventory_path]
+    files = {p.decode():(mode,raw) for (mode,_,p),raw in
+             zip(selected,_read_blobs(ROOT,selected) if selected else [],strict=True)}
+    files[inventory_path] = (by_path[inventory_path][0],inventory_raw)
     return {_RELEASE/p:files[p] for p in paths}
 
 

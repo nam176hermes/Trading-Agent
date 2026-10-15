@@ -298,8 +298,14 @@ for another disclosure.
 
 Before real disclosure, complete a synthetic official Job API/SQL/worker/native/
 custodian session with campaign-sized data, three native replicas per side,
-fault injection and committed readback. Finish within 32 minutes of the fixed
-37-minute deadline, retaining at least five minutes of margin.
+fault injection and committed readback. The LOCAL session uses the earliest
+admitted authority deadline, fixed before preparation and never extended during
+the session. Check the complete workload against the remaining interval before
+disclosure and retain at least five minutes for committed readback and cleanup.
+Measure the full completed workflow before setting a future performance budget;
+the previous 37-minute LOCAL estimate is not an additional authority limit.
+Hosted sessions retain their 37-minute maximum. Missing, expired or withdrawn
+authority still stops the affected operation.
 
 Run B0–B4, register the fixed family, retain all 28 A0–A3 outcomes and evaluate
 C01–C16 with the original validators. `NONE_QUALIFIED` skips official holdout.

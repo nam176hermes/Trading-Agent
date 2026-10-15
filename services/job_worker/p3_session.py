@@ -83,7 +83,7 @@ class _SessionProfileFields(StrictModel):
 
     @model_validator(mode='after')
     def _bounded(self) -> '_SessionProfileFields':
-        if not self.issued_at < self.expires_at <= self.workflow_deadline <= self.issued_at + timedelta(minutes=37):
+        if not self.issued_at < self.expires_at <= self.workflow_deadline:
             raise ValueError('session must fit its protected and enclosing workflow deadlines')
         return self
 
@@ -92,6 +92,12 @@ class SessionProfile(_SessionProfileFields):
     schema_version: Literal['p3-holdout-session-v1']
     workflow_run_id: Annotated[int, Field(gt=0)]
     workflow_attempt: Annotated[int, Field(gt=0)]
+
+    @model_validator(mode='after')
+    def _hosted_bound(self):
+        if self.workflow_deadline > self.issued_at + timedelta(minutes=37):
+            raise ValueError('hosted session exceeds its workflow maximum')
+        return self
 
 
 class LocalSessionProfile(_SessionProfileFields):
@@ -122,7 +128,7 @@ class LocalSessionOwnerObservation(StrictModel):
     @model_validator(mode='after')
     def _bounds(self):
         validate_p3_job_id(self.job_id)
-        if not self.issued_at < self.workflow_deadline <= self.issued_at + timedelta(minutes=37):
+        if not self.issued_at < self.workflow_deadline:
             raise ValueError('owner observation deadline is invalid')
         return self
 
@@ -174,8 +180,7 @@ def await_local_session_owner(profile, closure, *, host_profile_digest, expires_
         or launch.job_id != profile.job_id or launch.host_profile_sha256 != host_profile_digest
         or launch.worker_pid != os.getpid() or launch.worker_start_ticks != parent.start_ticks
         or launch.worker_uid != os.geteuid() or launch.controller_pid != os.getppid()
-        or not launch.issued_at <= datetime.now(UTC) < deadline <= expires_at
-        or deadline > launch.issued_at + timedelta(minutes=37)):
+        or not launch.issued_at <= datetime.now(UTC) < deadline <= expires_at):
         raise ValueError('session owner differs from protected transport launch')
     observation = LocalSessionOwnerObservation.model_validate_json(canonical_json_bytes(dict(
         schema_version='p3-local-session-owner-observation-v1', identity=profile.identity,

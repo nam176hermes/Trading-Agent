@@ -199,6 +199,26 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
 
 
 @pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'inverted', 'outside'])
+def test_local_session_uses_authority_window_while_hosted_stays_bounded(session_inputs, fault):
+    from datetime import datetime, timedelta
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    x = session_inputs
+    document = dict(x.profile)
+    issued = datetime.fromisoformat(document['issued_at'].replace('Z', '+00:00'))
+    end = issued + timedelta(minutes=55)
+    document['workflow_deadline'] = end.isoformat().replace('+00:00', 'Z')
+    expires = issued if fault == 'inverted' else end + timedelta(seconds=1 if fault == 'outside' else -1)
+    document['expires_at'] = expires.isoformat().replace('+00:00', 'Z')
+    if fault or document['schema_version'] == 'p3-holdout-session-v1':
+        with pytest.raises(ValueError):
+            x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+    else:
+        profile = x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+        assert profile.issued_at == issued and profile.workflow_deadline == end
+
+
+@pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
 def test_spawn_inputs_uses_one_fresh_host_admission_per_borrow(session_inputs, monkeypatch):
     from services.job_store.worker_repository import WorkerRepository
     x = session_inputs

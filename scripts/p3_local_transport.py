@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -71,10 +72,6 @@ MKSQUASHFS_OPTIONS = ('-noappend', '-no-recovery', '-no-xattrs', '-no-hardlinks'
     '-exit-on-error', '-no-progress')
 
 PREPARE_WALL_SECONDS = 300
-# The admitted workflow maximum the session profile already enforces. The controller does not
-# own the run's deadline -- the session does, and B3.5's limits say run keeps the existing
-# admitted policy limits -- so this only refuses to outlive it.
-WORKFLOW_DEADLINE_SECONDS = 37 * 60
 BUILDER_CPU_SECONDS = 120
 BUILDER_ADDRESS_SPACE = 2 * 1024**3
 BUILDER_FILE_SIZE = MAX_IMAGE_BYTES
@@ -1360,13 +1357,11 @@ def _exec_reporting_failure(descriptor: int, argv: list[str], environment: dict)
     os._exit(127)
 
 
-def _official_deadline(bound: float, expires_at: str) -> float:
+def _official_deadline(bound: float | None, expires_at: str) -> float:
     """The run's deadline is the admitting authority's, not a fresh allowance.
 
-    `bound` is the admitted workflow maximum measured from this invocation's start, so a
-    build that takes four minutes spends four of them. The authority's expiry can only
-    shorten that: a run must not outlive the approval that admitted it, and a retry must not
-    restart the clock.
+    An existing monotonic bound can only shorten the authority's expiry. With no prior
+    bound, the expiry supplies the finite deadline; preparation and retries cannot reset it.
     """
     from datetime import datetime                                    # noqa: PLC0415
     if not isinstance(expires_at, str) or not expires_at.endswith('Z'):
@@ -1375,10 +1370,12 @@ def _official_deadline(bound: float, expires_at: str) -> float:
         moment = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
     except ValueError as error:
         raise TransportHeld('admitting authority expiry is not a timestamp') from error
+    observed = time.monotonic()
     remaining = moment.timestamp() - time.time()
     if remaining <= 0:
         raise TransportHeld('the admitting authority has expired; no run deadline is granted')
-    return min(bound, time.monotonic() + remaining)
+    deadline = observed + remaining
+    return deadline if bound is None else min(bound, deadline)
 
 
 def reap_with_escalation(child: int, deadline: float) -> dict:
@@ -1746,18 +1743,20 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
         P3_APPLICATION_ROOT=application_root, P3_APPLICATION_PYTHON=application_python)
 
 
-def command_run(request: dict, root: Path, deadline: float) -> dict:
+def command_run(request: dict, root: Path, deadline: float, invocation_started: datetime,
+                invocation_expires_at: datetime) -> dict:
     # Research jobs share a run profile: serialize their complete transport lifetimes.
     directory = _official_run_directory(request)
     if (directory/'host-inputs.json').exists():
         from packages.runtime_release.config import read_protected_canonical_json_current
         read_protected_canonical_json_current(directory/'host-inputs.json')
         with TaskLock(directory):
-            return _command_run(request, root, deadline)
-    return _command_run(request, root, deadline)
+            return _command_run(request, root, deadline, invocation_started, invocation_expires_at)
+    return _command_run(request, root, deadline, invocation_started, invocation_expires_at)
 
 
-def _command_run(request: dict, root: Path, deadline: float) -> dict:
+def _command_run(request: dict, root: Path, deadline: float, invocation_started: datetime,
+                 invocation_expires_at: datetime) -> dict:
     """Build, mount, then become the worker entrypoint that already exists.
 
     Plan section 3.4 step 7: "start the existing worker entrypoint in that namespace, using
@@ -1782,7 +1781,18 @@ def _command_run(request: dict, root: Path, deadline: float) -> dict:
         environment = _worker_environment(request, mount, request['release_root'], private)
     # Re-read at admission rather than carried from the environment build: the contract wants
     # the authority revalidated at the moment it is used, not at the moment it was found.
-    granted = _official_deadline(deadline, _runtime_authority(request).get('expires_at'))
+    from packages.alpha_lifecycle.authority import validate_request, WORKFLOW_OPERATIONS
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    operation = validate_request(Path(environment['P3_AUTHORITY_REQUEST_FILE']),
+        SourceIdentity.model_validate_json(canonical_json_bytes(request['source'])),
+        WORKFLOW_OPERATIONS[_admitted_official_operation(request)])
+    if operation.authorization.identity.model_dump(mode='json') != request['identity']:
+        raise TransportHeld('current operation differs from transport identity')
+    runtime_expiry = _runtime_authority(request).get('expires_at')
+    granted = _official_deadline(deadline, runtime_expiry)
+    expires_at = min(invocation_expires_at, operation.authorization.expires_at,
+                     datetime.fromisoformat(runtime_expiry.replace('Z', '+00:00')))
+    granted = _official_deadline(granted, expires_at.isoformat().replace('+00:00', 'Z'))
     # The qualified control-plane stage runs the worker; the research image stays mounted in
     # this namespace for the profile and the spawn provider to read. Running the worker out of
     # the image would point its source identity at a tree with no Git metadata and bypass the
@@ -1791,7 +1801,9 @@ def _command_run(request: dict, root: Path, deadline: float) -> dict:
     prepared = _prepare_image(request, root, granted)
     session = run_session(request, root, granted, prepared['descriptor'], prepared['inventory'],
                           launch=_worker_launch, environment=environment, argv=argv,
-                          invocation_deadline=deadline, host_preparation=host_preparation)
+                          invocation_deadline=deadline, invocation_started=invocation_started,
+                          invocation_expires_at=expires_at,
+                          host_preparation=host_preparation)
     session['prepared'] = prepared['summary']
     return session
 
@@ -1872,25 +1884,27 @@ def _worker_launch(context: dict) -> dict:
     raise TransportHeld('worker entrypoint did not replace the process')   # unreachable
 
 
-def _publish_session_launch(request, descriptor, child, deadline, invocation_deadline):
+def _publish_session_launch(request, descriptor, child, deadline, invocation_deadline,
+                            invocation_started, invocation_expires_at):
     """Bind the actual fork child and the original pre-build budget for the worker."""
     from datetime import UTC, datetime, timedelta
     from packages.runtime_release.config import read_protected_canonical_json_current
     from services.job_worker.p3_session import LocalSessionLaunch
-    if invocation_deadline is None:
-        raise TransportHeld('official holdout lost its original transport deadline')
+    if invocation_deadline is None or invocation_started is None or invocation_expires_at is None:
+        raise TransportHeld('official holdout lost its original transport interval')
     directory = _official_run_directory(request)
     host, digest = read_protected_canonical_json_current(directory/'profile.json')
     now, observed = datetime.now(UTC), time.monotonic()
-    started = now-timedelta(seconds=WORKFLOW_DEADLINE_SECONDS-(invocation_deadline-observed))
-    expires = now+timedelta(seconds=deadline-observed)
-    if not started <= now < expires <= started+timedelta(seconds=WORKFLOW_DEADLINE_SECONDS):
+    if not invocation_started <= now or not observed < deadline <= invocation_deadline:
         raise TransportHeld('official holdout transport deadline invalid')
+    expires = min(invocation_expires_at, now+timedelta(seconds=deadline-observed))
+    if now >= expires:
+        raise TransportHeld('official holdout authority expired before launch publication')
     value = LocalSessionLaunch.model_validate_json(canonical_json_bytes(dict(
         schema_version='p3-local-session-launch-v1', identity=request['identity'],
         source=host['payload']['expected_source'], job_id=host['job_id'], host_profile_sha256=digest,
         worker_pid=child, worker_start_ticks=_process_start_time(child), worker_uid=descriptor['worker_uid'],
-        controller_pid=os.getpid(), issued_at=started.isoformat().replace('+00:00','Z'),
+        controller_pid=os.getpid(), issued_at=invocation_started.isoformat().replace('+00:00','Z'),
         workflow_deadline=expires.isoformat().replace('+00:00','Z'))))
     destination = directory/'session-launch.json'
     if destination.exists():
@@ -1901,7 +1915,8 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
 def run_session(request: dict, root: Path, deadline: float, descriptor: dict, inventory: dict,
                 launch=_probe_launch, environment: dict | None = None,
                 argv: list[str] | None = None, invocation_deadline: float | None = None,
-                host_preparation=None) -> dict:
+                invocation_started: datetime | None = None,
+                invocation_expires_at: datetime | None = None, host_preparation=None) -> dict:
     """Mount the image this session just built and run the startup probe as the worker.
 
     This is the acceptance the whole transport exists for: the complete closure reaching an
@@ -1997,7 +2012,8 @@ def run_session(request: dict, root: Path, deadline: float, descriptor: dict, in
             for closing in (write, out_write, err_write, exec_write):
                 os.close(closing)
             if environment is not None and environment.get('P3_OPERATION') == 'p3-holdout-primary-v1':
-                _publish_session_launch(request, descriptor, child, deadline, invocation_deadline)
+                _publish_session_launch(request, descriptor, child, deadline, invocation_deadline,
+                                        invocation_started, invocation_expires_at)
             streams = _read_streams(
                 dict(report=read, stdout=out_read, stderr=err_read, exec=exec_read), deadline,
                 fence=lambda: mount_fence(descriptor, image_fd, loop_fd, mount, rehash=False))
@@ -2158,12 +2174,14 @@ def main(argv: list[str]) -> int:
         request = read_request(argv[1])
         digest, identity = task_identity(request)
         root = open_task_root(digest)
-        # Measured from the invocation, so a build that takes four minutes spends four of
-        # them. `run` carries the admitted workflow maximum; everything else carries the
-        # prepare/probe total the contract sets.
+        # Pin the authority deadline before preparation; later reads may only shorten it.
         started = time.monotonic()
-        deadline = started + (WORKFLOW_DEADLINE_SECONDS
-                              if request['operation'] == 'run' else PREPARE_WALL_SECONDS)
+        invocation_started = datetime.now(UTC)
+        deadline = started + PREPARE_WALL_SECONDS
+        if request['operation'] == 'run':
+            expiry = _runtime_authority(request).get('expires_at')
+            deadline = _official_deadline(None, expiry)
+            invocation_expires_at = datetime.fromisoformat(expiry.replace('Z', '+00:00'))
         with TaskLock(root):
             operation = request['operation']
             # Before the claim check, so a refusal to take a task someone else owns does not
@@ -2175,7 +2193,7 @@ def main(argv: list[str]) -> int:
                 elif operation == 'probe':
                     result = command_probe(request, root, deadline)
                 elif operation == 'run':
-                    result = command_run(request, root, deadline)
+                    result = command_run(request, root, deadline, invocation_started, invocation_expires_at)
                 elif operation == 'inspect':
                     result = command_inspect(root)
                 elif operation == 'cleanup':

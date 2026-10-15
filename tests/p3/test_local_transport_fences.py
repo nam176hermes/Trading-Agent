@@ -1199,6 +1199,100 @@ def test_the_invocation_bound_still_applies_when_the_authority_outlives_it(tmp_p
     assert transport._official_deadline(bound, far) == bound
 
 
+def test_local_run_without_estimated_cap_still_uses_finite_authority(monkeypatch):
+    from datetime import UTC, datetime
+    monkeypatch.setattr(transport.time, 'time', lambda:1000000000.0)
+    monkeypatch.setattr(transport.time, 'monotonic', lambda:123.0)
+    expiry = datetime.fromtimestamp(1000000000+55*60, UTC).isoformat().replace('+00:00', 'Z')
+    assert transport._official_deadline(None, expiry) == 123+55*60
+    with pytest.raises(TransportHeld, match='authority has expired'):
+        transport._official_deadline(None, '2001-09-09T01:46:39Z')
+
+
+def test_authority_clock_conversion_does_not_add_clock_read_latency(monkeypatch):
+    from datetime import UTC, datetime
+    ticks = [123.0]
+    monkeypatch.setattr(transport.time, 'monotonic', lambda:ticks[0])
+    def wall():
+        ticks[0] += 0.25
+        return 1000000000.0
+    monkeypatch.setattr(transport.time, 'time', wall)
+    expiry = datetime.fromtimestamp(1000000000+55*60, UTC).isoformat().replace('+00:00', 'Z')
+    assert transport._official_deadline(None, expiry) <= 123+55*60
+
+
+@pytest.mark.parametrize('operation', ['run', 'prepare', 'probe'])
+def test_main_pins_run_authority_before_preparation(tmp_path, monkeypatch, operation):
+    from contextlib import nullcontext
+    from datetime import UTC, datetime
+    request = dict(operation=operation)
+    monkeypatch.setattr(transport.os, 'geteuid', lambda:0)
+    monkeypatch.setattr(transport.time, 'time', lambda:1000000000.0)
+    monkeypatch.setattr(transport.time, 'monotonic', lambda:123.0)
+    monkeypatch.setattr(transport, 'read_request', lambda _:request)
+    monkeypatch.setattr(transport, 'task_identity', lambda _:('task', {}))
+    monkeypatch.setattr(transport, 'open_task_root', lambda _:tmp_path)
+    events = []
+    expiry = datetime.fromtimestamp(1000000000+55*60, UTC).isoformat().replace('+00:00', 'Z')
+    monkeypatch.setattr(transport, '_runtime_authority', lambda _:(events.append('authority'), dict(expires_at=expiry))[1])
+    monkeypatch.setattr(transport, 'TaskLock', lambda _:nullcontext())
+    monkeypatch.setattr(transport, 'require_task_claim', lambda *_:events.append('claim'))
+    monkeypatch.setattr(transport, '_durable_terminal', lambda *_:events.append('terminal'))
+    def command(request, root, deadline, *invocation):
+        events.append('command')
+        assert root == tmp_path and deadline == 123+(55*60 if operation == 'run' else 300)
+        assert len(invocation) == (2 if operation == 'run' else 0)
+        if invocation:
+            assert invocation[0].tzinfo == UTC and invocation[0] <= datetime.now(UTC)
+            assert invocation[1] == datetime.fromisoformat(expiry.replace('Z', '+00:00'))
+        return {}
+    monkeypatch.setattr(transport, 'command_'+operation, command)
+    assert transport.main(['transport', 'request']) == 0
+    assert events == (['authority'] if operation == 'run' else [])+['claim', 'command', 'terminal']
+
+
+@pytest.mark.parametrize('fault', [None, 'missing-start', 'future-start', 'expired', 'extension', 'utc-expired'])
+def test_session_launch_keeps_original_start_and_authority_deadline(tmp_path, monkeypatch, fault):
+    from datetime import UTC, datetime, timedelta
+    from services.job_worker.p3_session import LocalSessionLaunch
+    from packages.runtime_release import config
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    source = dict(commit_sha='a'*40, tree_sha='b'*40, closure_schema_version='v1',
+                  closure_policy_sha256='c'*64, closure_sha256='d'*64)
+    monkeypatch.setattr(transport, '_official_run_directory', lambda _:tmp_path)
+    monkeypatch.setattr(config, 'read_protected_canonical_json_current', lambda _:(
+        dict(payload=dict(expected_source=source), job_id='job_holdout'), 'e'*64))
+    monkeypatch.setattr(transport.time, 'monotonic', lambda:1000.0)
+    monkeypatch.setattr(transport, '_process_start_time', lambda _:45)
+    writes = []
+    monkeypatch.setattr(transport, '_durable_write', lambda p, raw, **kw:writes.append((p, raw, kw)))
+    before = datetime.now(UTC)
+    started = None if fault == 'missing-start' else before+timedelta(seconds=60) if fault == 'future-start' else before-timedelta(seconds=120)
+    deadline = 999.0 if fault == 'expired' else 5001.0 if fault == 'extension' else 4000.0
+    exact_expiry = before+timedelta(seconds=-1 if fault == 'utc-expired' else 3000)
+    if fault:
+        with pytest.raises(TransportHeld):
+            transport._publish_session_launch(_run_request(), dict(worker_uid=980), 1234,
+                                              deadline, 5000.0, started, exact_expiry)
+        assert writes == []
+    else:
+        transport._publish_session_launch(_run_request(), dict(worker_uid=980), 1234,
+                                          deadline, 5000.0, started, exact_expiry)
+        after = datetime.now(UTC)
+        path, raw, options = writes[0]
+        result = LocalSessionLaunch.model_validate_json(raw)
+        assert result.issued_at == started
+        assert result.workflow_deadline == exact_expiry
+        assert result.worker_pid == 1234 and result.worker_start_ticks == 45 and result.worker_uid == 980
+        assert result.controller_pid == os.getpid() and result.source.model_dump() == source
+        assert path == tmp_path/'session-launch.json' and options == dict(mode=0o444)
+        path.write_bytes(canonical_json_bytes(result))
+        with pytest.raises(TransportHeld, match='already exists'):
+            transport._publish_session_launch(_run_request(), dict(worker_uid=980), 1234,
+                                              deadline, 5000.0, started, exact_expiry)
+        assert len(writes) == 1
+
+
 # ---------------------------------------------------------------------------
 # B3.4 The fence has to cover the run, not three moments in it
 # ---------------------------------------------------------------------------
