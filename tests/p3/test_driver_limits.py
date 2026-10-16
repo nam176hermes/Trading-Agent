@@ -59,6 +59,8 @@ def test_driver_entry_applies_bounds_and_exec_preserves_pid(tmp_path):
     entry = tmp_path/'scripts'/'run_p3_driver_entry.py'
     entry.parent.mkdir()
     entry.write_bytes(Path(module.__file__).read_bytes())
+    (entry.parent/'run_p3_native_child.py').write_bytes(
+        Path(module.__file__).with_name('run_p3_native_child.py').read_bytes())
     (entry.parent/'run_p3_alpha_campaign.py').write_text(
         "import json,os,resource\nprint(json.dumps(dict(pid=os.getpid(),cpu=resource.getrlimit(resource.RLIMIT_CPU),memory=resource.getrlimit(resource.RLIMIT_AS),files=resource.getrlimit(resource.RLIMIT_NOFILE),processes=resource.getrlimit(resource.RLIMIT_NPROC))))\n")
     process = subprocess.Popen((sys.executable,'-I','-B',str(entry)),

@@ -102,6 +102,7 @@ def _dispatch_inputs(tmp_path,monkeypatch):
     store = LocalArtifactStore(store_root)
     store.put_bytes(b'{"purpose":"synthetic-input-not-an-official-inputset"}',media_type='application/json')
     monkeypatch.setattr(dispatch,'preflight',lambda *args:(request,payload))
+    monkeypatch.setattr(dispatch,'_validated_request',lambda *args:(request,payload))
     monkeypatch.setattr(p3_integration,'_read_review',lambda *args:review)
     monkeypatch.setattr(p3_integration,'_read_authority_bytes',lambda *args:intent_raw.encode())
     monkeypatch.setattr(dispatch,'_read_token',lambda *args:'synthetic-api-token')
