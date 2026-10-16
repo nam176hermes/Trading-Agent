@@ -63,7 +63,13 @@ MAX_EXTERNAL_LIBRARY_TOTAL_BYTES = 268435456
 
 def _driver_profile(schema_version: str, runtime: str) -> dict[str, object]:
     local = schema_version == 'p3-bubblewrap-driver-profile-v2'
-    profile = dict(
+    outer: dict[str, object] = dict(
+        namespaces='UNSHARE_ALL',environment=ENVIRONMENT_ARGS,
+        inputs='READ_ONLY_DIRECTORY_DESCRIPTOR',outputs='EXCLUSIVE_ATTEMPT_DIRECTORY_DESCRIPTOR',
+        replica_fence='P3_REPLICA_FENCE_V1_STDERR_STDIN',
+        runtime=runtime,cpu_seconds=None if local else 960,wall_seconds=None if local else DRIVER_WALL_SECONDS,
+        memory_bytes=2147483648,open_files=256,processes=16,per_file_output_bytes=268435456,attempt_output_bytes=MAX_ATTEMPT_OUTPUT_BYTES)
+    profile: dict[str, object] = dict(
     schema_version=schema_version,policy_set_sha256=POLICY_SET_SHA256,
     bwrap_version=BWRAP_VERSION,bwrap_capabilities=BWRAP_CAPABILITIES,
     platform='linux-x86_64',sandbox_args=SANDBOX_ARGS,filesystem_args=FILESYSTEM_ARGS,root_readonly_args=ROOT_READONLY_ARGS,
@@ -71,11 +77,7 @@ def _driver_profile(schema_version: str, runtime: str) -> dict[str, object]:
     mount_flags=dict(sealed_files=RO_FILE_FLAG,inner_inputs=RO_PATH_FLAG,
         input_directory=RO_DIRECTORY_FLAG,output_directory=RW_DIRECTORY_FLAG,
         sealed_file_mode_flag='--perms',reference_mode='400',sandbox_mode='500'),
-    outer=dict(namespaces='UNSHARE_ALL',environment=ENVIRONMENT_ARGS,
-        inputs='READ_ONLY_DIRECTORY_DESCRIPTOR',outputs='EXCLUSIVE_ATTEMPT_DIRECTORY_DESCRIPTOR',
-        replica_fence='P3_REPLICA_FENCE_V1_STDERR_STDIN',
-        runtime=runtime,cpu_seconds=None if local else 960,wall_seconds=None if local else DRIVER_WALL_SECONDS,
-        memory_bytes=2147483648,open_files=256,processes=16,per_file_output_bytes=268435456,attempt_output_bytes=MAX_ATTEMPT_OUTPUT_BYTES),
+    outer=outer,
     child=dict(CHILD_POLICY, child_cpu_seconds=None, child_wall_seconds=None) if local else CHILD_POLICY,
     child_socket_filter_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest(),
     holdout_input_transport=dict(kind='SEALED_EXACT_CALCULATION_VIEW',mode='600',max_bytes=MAX_VIEW_BYTES),
@@ -83,7 +85,7 @@ def _driver_profile(schema_version: str, runtime: str) -> dict[str, object]:
 )
     if local:
         from scripts.run_p3_native_child import LOCAL_FLAG, LOCAL_POLICY
-        profile['outer']['execution_policy'] = dict(flag=LOCAL_FLAG,
+        outer['execution_policy'] = dict(flag=LOCAL_FLAG,
             path='/p3/inputs/local-work-policy', sha256=hashlib.sha256(LOCAL_POLICY).hexdigest(),
             transport='SEALED_PARENT_BYTES_READ_ONLY_ANONYMOUS_MOUNT')
     return profile
