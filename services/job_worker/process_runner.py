@@ -479,10 +479,13 @@ class ProcessRunner:
                     or any(type(fd) is not int or fd < 0 for fd in p3_built.pass_fds)
                     or p3_built.argv[0] != f'/proc/self/fd/{p3_built.pass_fds[0]}'
                     or type(p3_built.lineage) is not P3SpawnLineage
-                    or type(p3_built.timeout_seconds) is not int or p3_built.timeout_seconds <= 0
+                    or (p3_built.timeout_seconds is not None and (type(p3_built.timeout_seconds) is not int or p3_built.timeout_seconds <= 0))
                     or _COMMIT.fullmatch(p3_built.source_revision) is None
                     or timeout_seconds not in {None,p3_built.timeout_seconds}):
                     raise ValueError('attested P3 spawn shape is unsafe')
+                from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_V2_SHA256
+                if (p3_built.timeout_seconds is None) != (p3_built.lineage.sandbox_policy_sha256 == SANDBOX_PROFILE_V2_SHA256):
+                    raise ValueError('P3 work budget differs from the authenticated sandbox policy')
                 replica_fence = p3_built.replica_fence
                 timeout_seconds = p3_built.timeout_seconds
                 argv, cwd, child_environment, pass_fds = p3_built.argv,p3_built.cwd,p3_built.environment,p3_built.pass_fds
@@ -529,6 +532,10 @@ class ProcessRunner:
                 ):
                     raise ValueError("timeout must equal the attested command timeout")
                 timeout_seconds = engine_built.timeout_seconds
+                if timeout_seconds is None:
+                    from .p3_native_spawn import LOCAL_NATIVE_POLICY_SHA256
+                    if (not native_authority or engine_built.lineage.sandbox_profile_sha256 != LOCAL_NATIVE_POLICY_SHA256):
+                        raise ValueError('Only the authenticated LOCAL P3 native policy may omit its work budget')
                 if _SOURCE_REVISION.fullmatch(engine_built.source_revision) is None:
                     raise ValueError("attested engine source revision is invalid")
                 argv = engine_built.argv
@@ -591,7 +598,7 @@ class ProcessRunner:
                 result_validator_id = built.result_validator_id
                 source_revision = built.backend_revision
                 command_lineage = built.lineage.as_metadata()
-            assert timeout_seconds is not None
+            assert timeout_seconds is not None or p3_authority or native_authority
             # Current safety is the final authority read. Immutable/semantic
             # attestation and all local command validation have already
             # completed, so no potentially slow operation can age this proof
@@ -782,7 +789,7 @@ class ProcessRunner:
                         safety_reason_code = instruction.reason_code
                 if pending_fence is not None:
                     now = self._monotonic()
-                if reason is None and now - started >= timeout_seconds:
+                if reason is None and timeout_seconds is not None and now - started >= timeout_seconds:
                     reason = "TIMEOUT"
 
                 if pending_fence is not None and reason is None and not leader_exited:

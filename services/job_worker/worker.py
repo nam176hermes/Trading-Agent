@@ -1105,11 +1105,12 @@ class JobWorker:
         if control is WorkerControl.STALE:
             raise _ValidationStale("lease lost during result validation")
 
-    def _command_timeout(self, claimed: object) -> int:
+    def _command_timeout(self, claimed: object) -> int | None:
         from .command_registry import COMMAND_REGISTRY, p3_command_spec
 
         if self._p3_profile:
-            return p3_command_spec(getattr(claimed, "payload", None)).timeout_seconds
+            p3_command_spec(getattr(claimed, "payload", None))
+            return None  # The authenticated P3 provider selects the policy's work budget.
         return COMMAND_REGISTRY[getattr(claimed, "job_type")].timeout_seconds
 
     def _finalize_termination(

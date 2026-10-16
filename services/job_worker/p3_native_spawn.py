@@ -17,6 +17,7 @@ from packages.alpha_lifecycle.native_request import NativeCommitment, NativeRequ
 from packages.alpha_lifecycle.sandbox_policy import (
     SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, ROOT_READONLY_ARGS,
     BWRAP_VERSION, MAX_ARGV_BYTES, MAX_CLOSURE_FILES, MAX_CLOSURE_BYTES, socket_filter_bytes,
+    SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256,
 )
 from packages.data_contracts import ArtifactRefV1
 from packages.job_contracts import AlphaCampaignPayload, JobType
@@ -24,7 +25,7 @@ from packages.engine_contracts.serialization import canonical_json_bytes, payloa
 from packages.pre_p3_provenance import canonical_source_identity, _git
 from packages.runtime_release.config import _absolute, read_protected_canonical_json_current
 from services.job_store.records import ClaimedJob
-from scripts.run_p3_native_child import COMMAND as _COMMAND, MAX_REQUEST_BYTES, RESOURCE_LIMITS
+from scripts.run_p3_native_child import COMMAND as _COMMAND, MAX_REQUEST_BYTES, RESOURCE_LIMITS, LOCAL_FLAG, LOCAL_POLICY, LOCAL_POLICY_PATH
 from .engine_spawn import (
     EngineBuiltSpawn, EngineSpawnLineage, _closure_target_directories,
     _sealed_closure_file_snapshot, _sealed_memfd, _sealed_sandbox_snapshot,
@@ -34,6 +35,7 @@ from .p1_nautilus_closure import attest_p1_nautilus_closure
 from .p1_engine_spawn import validate_p1_engine_closure_attestation
 from .p3_spawn_interface import P3NativePreparedSpawnMarker
 from .artifacts import _close_descriptors
+from .p3_spawn import CompleteP3Closure
 
 if TYPE_CHECKING:
     from .p1_closure_attestation import P1EngineClosureAttestation
@@ -42,6 +44,21 @@ ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_FILES = (('scripts/run_p3_native_child.py', '/p3-native/entry.py'),
     ('engines/nautilus/p3_next_open.py', '/p3-native/adapter.py'))
 _ORDER = tuple((role, replica) for role in ('PRIMARY', 'SELECTED_BASELINE') for replica in ('R1', 'R2', 'R3'))
+
+
+def _native_policy(local: bool) -> str:
+    policy = dict(schema_version='p3-native-sandbox-v1', args=SANDBOX_ARGS,
+        filesystem=FILESYSTEM_ARGS, environment=ENVIRONMENT_ARGS, root=ROOT_READONLY_ARGS,
+        command=(*_COMMAND,LOCAL_FLAG) if local else _COMMAND,
+        resource_limits={k:v for k,v in RESOURCE_LIMITS.items() if k != 'RLIMIT_CPU'} if local else RESOURCE_LIMITS,
+        wall_seconds=None if local else 300, max_request_bytes=MAX_REQUEST_BYTES,
+        bwrap_version=BWRAP_VERSION, seccomp_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest())
+    if local:
+        policy.update(execution_policy_sha256=hashlib.sha256(LOCAL_POLICY).hexdigest())
+    return payload_digest(policy)
+
+
+LOCAL_NATIVE_POLICY_SHA256 = _native_policy(True)
 
 
 class NativeLaunchProfile(StrictModel):
@@ -65,9 +82,10 @@ class PreparedP3NativeSpawn(P3NativePreparedSpawnMarker):
 class P3NativeSpawnProvider:
     def __init__(self, profile_path: Path, claim: ClaimedJob, *, session_sha256: str,
         requests: tuple[NativeRequest, NativeRequest], commitment: NativeCommitment,
-        fence: Callable[[], None]) -> None:
+        fence: Callable[[], CompleteP3Closure | None]) -> None:
         self._claim: ClaimedJob = claim
-        self._fence: Callable[[], None] = fence
+        self._fence = fence
+        self._local_work: bool | None = None
         self._requests: tuple[NativeRequest, NativeRequest] = requests
         self._session_digest: str = session_sha256
         self._commitment: NativeCommitment = commitment
@@ -87,9 +105,21 @@ class P3NativeSpawnProvider:
             tuple[NativeRequest, str, P1EngineClosureAttestation, tuple[bytes, bytes], float]] = weakref.WeakKeyDictionary()
         _ = self._current()
 
+    def _check_fence_policy(self) -> None:
+        closure = self._fence()
+        local = False
+        if type(closure) is CompleteP3Closure:
+            expected = SANDBOX_PROFILE_V2_SHA256 if closure.image is not None else SANDBOX_PROFILE_SHA256
+            if closure.sandbox.profile_sha256 != expected or closure.source != self._profile.source:
+                raise ValueError('Native session sandbox policy differs')
+            local = expected == SANDBOX_PROFILE_V2_SHA256
+        if self._local_work is not None and self._local_work != local:
+            raise ValueError('Native session execution policy changed')
+        self._local_work = local
+
     def _current(self) -> tuple[P1EngineClosureAttestation, tuple[bytes, bytes]]:
         profile = self._profile
-        self._fence()
+        self._check_fence_policy()
         commitment = canonical_json_bytes(self._commitment)
         if (type(self._claim) is not ClaimedJob or self._claim.job_type is not JobType.ALPHA_CAMPAIGN
             or type(self._claim.payload) is not AlphaCampaignPayload or self._claim.payload.operation != 'PARITY'
@@ -114,7 +144,7 @@ class P3NativeSpawnProvider:
         if closure.sandbox.version != BWRAP_VERSION or closure.sandbox.executable_sha256 != profile.sandbox_sha256:
             raise ValueError('P3 native sandbox differs from the protected profile')
         first, second = (_git(ROOT, 'show', f'{profile.source.commit_sha}:{path}') for path, _ in _SOURCE_FILES)
-        self._fence()
+        self._check_fence_policy()
         return closure, (first, second)
 
     def prepare(self, role: NativeRole, replica: Literal['R1', 'R2', 'R3']) -> PreparedP3NativeSpawn:
@@ -173,17 +203,18 @@ class P3NativeSpawnProvider:
                 raise ValueError('P3 native steps exceed transport bound')
             fd = _sealed_memfd('p3-native-request', raw, mode=0o400); descriptors.append(fd)
             argv.extend(('--perms', '0400', '--ro-bind-data', str(fd), '/inputs/p3-native.json'))
+            if self._local_work:
+                fd = _sealed_memfd('p3-local-work-policy',LOCAL_POLICY,mode=0o400); descriptors.append(fd)
+                argv.extend(('--perms','0400','--ro-bind-data',str(fd),LOCAL_POLICY_PATH))
             seccomp = _sealed_memfd('p3-native-seccomp', socket_filter_bytes(), mode=0o400); descriptors.append(seccomp)
             argv.extend(('--seccomp', str(seccomp), *ROOT_READONLY_ARGS, '--chdir', '/', *ENVIRONMENT_ARGS, *_COMMAND))
-            self._fence()
+            if self._local_work:
+                argv.append(LOCAL_FLAG)
+            self._check_fence_policy()
             if (read_protected_canonical_json_current(self._path)[1] != self._profile_digest
                 or time.monotonic() >= deadline or sum(len(arg.encode())+1 for arg in argv) > MAX_ARGV_BYTES):
                 raise ValueError('P3 native preparation exceeded its bound')
-            policy = payload_digest(dict(schema_version='p3-native-sandbox-v1', args=SANDBOX_ARGS,
-                filesystem=FILESYSTEM_ARGS, environment=ENVIRONMENT_ARGS, root=ROOT_READONLY_ARGS,
-                command=_COMMAND, resource_limits=RESOURCE_LIMITS, wall_seconds=300,
-                max_request_bytes=MAX_REQUEST_BYTES, bwrap_version=BWRAP_VERSION,
-                seccomp_sha256=hashlib.sha256(socket_filter_bytes()).hexdigest()))
+            policy = _native_policy(bool(self._local_work))
             extension = payload_digest(dict(schema_version='p3-native-closure-v1', source=request.source,
                 engine_closure_sha256=closure.closure_sha256, policy_sha256=policy,
                 sandbox_sha256=closure.sandbox.executable_sha256,
@@ -194,7 +225,7 @@ class P3NativeSpawnProvider:
                 lease_sha256=self._claim.lease_token_sha256, request_sha256=request_sha, replica=replica,
                 profile_sha256=self._profile_digest, closure_sha256=extension))
             result = EngineBuiltSpawn(tuple(argv), Path('/'), MappingProxyType({}), tuple(descriptors),
-                tuple(descriptors), 300, 'p3-native-output-v1', fingerprint, request.source.commit_sha,
+                tuple(descriptors), None if self._local_work else 300, 'p3-native-output-v1', fingerprint, request.source.commit_sha,
                 EngineSpawnLineage(extension, policy, request_sha))
             self._last_launch = fingerprint, result.lineage.as_metadata()
             transferred = True

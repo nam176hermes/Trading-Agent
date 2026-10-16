@@ -236,7 +236,7 @@ class EngineBuiltSpawn:
     environment: Mapping[str, str]
     pass_fds: tuple[int, ...]
     close_after_spawn_fds: tuple[int, ...]
-    timeout_seconds: int
+    timeout_seconds: int | None
     result_validator_id: str
     capability_fingerprint: str
     source_revision: str

@@ -39,6 +39,10 @@ def test_projected_driver_imports(projected_release):
         'runpy.run_path(sys.argv[1]+"/scripts/run_p3_alpha_campaign.py")', str(projected_release)],
         cwd=projected_release, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
+    result = subprocess.run([sys.executable, '-I', '-B',
+        str(projected_release/'scripts/run_p3_driver_entry.py'), '--help'],
+        cwd=projected_release, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.host_coupled

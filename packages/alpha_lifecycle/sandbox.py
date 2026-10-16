@@ -22,7 +22,7 @@ from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, retain_
 from packages.alpha_lifecycle.replica_validation import validate_replica_result
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.alpha_lifecycle.pit_evidence import _reference
-from packages.alpha_lifecycle.sandbox_policy import SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, RO_PATH_FLAG, RO_FILE_FLAG, CHILD_ENTRY, ROOT_READONLY_ARGS, MAX_EXTERNAL_LIBRARIES, MAX_EXTERNAL_LIBRARY_BYTES, MAX_EXTERNAL_LIBRARY_TOTAL_BYTES
+from packages.alpha_lifecycle.sandbox_policy import SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, RO_PATH_FLAG, RO_FILE_FLAG, CHILD_ENTRY, ROOT_READONLY_ARGS, MAX_EXTERNAL_LIBRARIES, MAX_EXTERNAL_LIBRARY_BYTES, MAX_EXTERNAL_LIBRARY_TOTAL_BYTES, SANDBOX_PROFILE_V2_SHA256
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -152,9 +152,9 @@ class BubblewrapExecutor:
                 if self._instrument_spec_ref is not None else ()),
         )
 
-    @staticmethod
-    def _limits() -> None:
-        resource.setrlimit(resource.RLIMIT_CPU, (240, 240))
+    def _limits(self) -> None:
+        if self._sandbox_policy_digest != SANDBOX_PROFILE_V2_SHA256:
+            resource.setrlimit(resource.RLIMIT_CPU, (240, 240))
         resource.setrlimit(resource.RLIMIT_AS, (2_147_483_648, 2_147_483_648))
         resource.setrlimit(resource.RLIMIT_FSIZE, (268_435_456, 268_435_456))
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
@@ -253,7 +253,8 @@ class BubblewrapExecutor:
                 argv, env={}, cwd="/",
                 pass_fds=(*runtime_fds.values(), seccomp_fd, *((view_fd,) if view_fd>=0 else ())),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_fd,
-                timeout=300, check=False, preexec_fn=self._limits,
+                timeout=None if self._sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256 else 300,
+                check=False, preexec_fn=self._limits,
             )
             if completed.returncode != 0:
                 summary = _child_failure_summary(stderr_fd, completed.returncode)

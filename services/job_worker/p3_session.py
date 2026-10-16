@@ -581,7 +581,7 @@ class P3HoldoutSession:
             raise ValueError('native launch requires the active parity stage')
         return P3NativeSpawnProvider(self._path.with_name('native.json'), self._active[0],
             session_sha256=self._digest, requests=requests,
-            commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self.fence)
+            commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self._fence_closure)
 
     def execute_native(self, *,
         heartbeat: Callable[[ProcessIdentity], 'HeartbeatDecision | HeartbeatInstruction'],

@@ -152,6 +152,56 @@ def test_native_role_order_cannot_skip_a_replica(native_provider):
         x.session.native_spawn_provider()
 
 
+@pytest.mark.parametrize('fault', [None, 'cancel', 'policy_change'])
+def test_local_native_uses_fenced_policy_without_work_budget(native_provider, tmp_path, monkeypatch, fault):
+    import os
+    from dataclasses import replace
+    from services.job_worker import process_runner, p3_native_spawn as native
+    from tests.jobs.test_process_runner import runner, FakeProcess, Inspector, identity
+    from tests.p3.test_local_v2_transport import _closure_with
+    original, _, _, _ = native_provider
+    closure = replace(_closure_with((), image=True), source=original._profile.source)
+    current = [closure]
+    def fence():
+        original._fence()
+        return current[0]
+    provider = native.P3NativeSpawnProvider(original._path, original._claim,
+        session_sha256=original._session_digest, requests=original._requests,
+        commitment=original._commitment, fence=fence)
+    if fault == 'policy_change':
+        token = provider.prepare('PRIMARY', 'R1')
+        current[0] = replace(closure, image=None)
+        before = set(os.listdir('/proc/self/fd'))
+        with pytest.raises(ValueError, match='policy'):
+            native.consume_prepared_p3_native_spawn(token, job_id=provider._claim.job_id,
+                attempt_id=provider._claim.attempt_id)
+        assert set(os.listdir('/proc/self/fd')) == before
+        return
+    observed = []
+    consume = native.consume_prepared_p3_native_spawn
+    def inspect(*args, **kwargs):
+        built = consume(*args, **kwargs)
+        assert built.timeout_seconds is None
+        assert built.lineage.sandbox_profile_sha256 == native.LOCAL_NATIVE_POLICY_SHA256
+        fd = int(built.argv[built.argv.index(native.LOCAL_POLICY_PATH)-1])
+        assert os.pread(fd, 100, 0) == native.LOCAL_POLICY
+        observed.append(built)
+        return built
+    monkeypatch.setattr(native, 'consume_prepared_p3_native_spawn', inspect)
+    child, calls = FakeProcess([None, 0]), []
+    execution = runner(tmp_path, child, Inspector([identity()]), calls,
+                       clock_values=[0, 1201, 1202, 1203])
+    try:
+        result = execution.run(lambda: provider.prepare('PRIMARY', 'R1'), None, None,
+            lambda value: process_runner.HeartbeatDecision.CANCEL if fault else process_runner.HeartbeatDecision.CONTINUE,
+            job_id=provider._claim.job_id, attempt_id=provider._claim.attempt_id)
+        assert result.termination_reason == ('CANCELLED' if fault else None)
+        for fd in observed[0].close_after_spawn_fds:
+            with pytest.raises(OSError): os.fstat(fd)
+    finally:
+        child.stdout.close(); child.stderr.close()
+
+
 def test_dropped_native_token_cannot_skip_an_unlaunched_replica(native_provider):
     import gc
     provider, _, _, _ = native_provider

@@ -867,6 +867,34 @@
       "security_critical": false,
       "target_phase": "P3 native entry-contract host check; separate from protected parity",
       "test_node_id": "tests/p3/test_native_spawn.py::test_native_entry_accepts_actual_bubblewrap_environment"
+    },
+    {
+      "allowed_in_ci": true,
+      "approval_record_type": "host-capability-review-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "release-engineering",
+      "reason": "marker expression deselected: host_coupled",
+      "reason_category": "MISSING_HOST_CAPABILITY",
+      "required_binary_or_service": "pinned Linux bubblewrap 0.9.0, Python 3.12 and user namespaces",
+      "review_by": "2026-10-31",
+      "security_critical": false,
+      "target_phase": "P3 LOCAL timing policy host check; required before qualification, separate from protected parity",
+      "test_node_id": "tests/p3/test_local_timing.py::test_local_private_policy_checks_actual_bubblewrap_copy[True]"
+    },
+    {
+      "allowed_in_ci": true,
+      "approval_record_type": "host-capability-review-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "release-engineering",
+      "reason": "marker expression deselected: host_coupled",
+      "reason_category": "MISSING_HOST_CAPABILITY",
+      "required_binary_or_service": "pinned Linux bubblewrap 0.9.0, Python 3.12 and user namespaces",
+      "review_by": "2026-10-31",
+      "security_critical": false,
+      "target_phase": "P3 LOCAL timing policy host check; required before qualification, separate from protected parity",
+      "test_node_id": "tests/p3/test_local_timing.py::test_local_private_policy_checks_actual_bubblewrap_copy[False]"
     }
   ],
   "schema_version": 1

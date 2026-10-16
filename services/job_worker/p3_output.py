@@ -13,7 +13,7 @@ from packages.data_catalog.artifact_store import LocalArtifactStore, ArtifactInt
 from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES
+from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES, SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256
 from .artifacts import _close_descriptors
 
 _MAX_FILES = 8192
@@ -28,9 +28,14 @@ class P3OutputCustody:
     def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore, *,
         before_retain: Callable[[dict[str, ArtifactRefV1], ArtifactStore], None] | None = None,
         before_write: Callable[[], None] | None = None,
+        sandbox_policy_digest: str = SANDBOX_PROFILE_SHA256,
     ) -> None:
         if type(store) is not LocalArtifactStore or re.fullmatch('[0-9a-f]{64}',name) is None:
             raise ValueError('P3 output custody requires the retained store and exact attempt directory')
+        if sandbox_policy_digest not in {SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256}:
+            raise ValueError('P3 output requires an accepted sandbox policy')
+        self._local_work = sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256
+        self._postrun_started = False
         self._parent = self._output = -1
         self._retained = None
         self._postrun_deadline = None
@@ -109,19 +114,20 @@ class P3OutputCustody:
             os.close(fd)
 
     def begin_postrun(self) -> None:
-        if self._postrun_deadline is not None:
+        if self._postrun_started:
             raise ValueError('P3 post-run budget cannot be restarted')
-        self._postrun_deadline=time.monotonic()+CHILD_POLICY['child_wall_seconds']
+        self._postrun_started = True
+        self._postrun_deadline=None if self._local_work else time.monotonic()+CHILD_POLICY['child_wall_seconds']
 
     def check_deadline(self) -> None:
-        if self._postrun_deadline is None or time.monotonic() >= self._postrun_deadline:
+        if not self._postrun_started or (self._postrun_deadline is not None and time.monotonic() >= self._postrun_deadline):
             raise TimeoutError('P3 post-run deadline is absent or expired')
 
     def retain(self, *, progress: Callable[[], None] | None = None) -> ArtifactRefV1:
         if self._retained is not None:
             raise ValueError('P3 output was already retained')
         self._check()
-        if self._postrun_deadline is None:
+        if not self._postrun_started:
             self.begin_postrun()
         def check() -> None:
             self.check_deadline()

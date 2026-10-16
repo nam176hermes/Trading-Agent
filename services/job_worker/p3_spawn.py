@@ -51,6 +51,7 @@ from .p3_spawn_interface import P3PreparedSpawnMarker, P3SpawnError
 from .p3_output import P3OutputCustody
 from .artifacts import _close_descriptors
 from .results import _open_directory_chain
+from scripts.run_p3_native_child import LOCAL_FLAG, LOCAL_POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
 _TTL_NS = 5 * 60 * 1_000_000_000
@@ -175,7 +176,7 @@ class P3BuiltSpawn:
     environment: Mapping[str, str]
     pass_fds: tuple[int, ...]
     close_after_spawn_fds: tuple[int, ...]
-    timeout_seconds: int
+    timeout_seconds: int | None
     result_validator_id: str
     capability_fingerprint: str
     source_revision: str
@@ -451,10 +452,18 @@ class P3SpawnProvider:
             output_info = os.fstat(output_fd)
             if output_info.st_uid != os.geteuid() or stat.S_IMODE(output_info.st_mode) != 0o700:
                 raise ValueError('P3 attempt output directory is not private and owned')
+            local = environment.sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256
+            timeout = None if local else spec.timeout_seconds
+            if local:
+                fd = _sealed_memfd('p3-local-work-policy',LOCAL_POLICY,mode=0o400)
+                descriptors.append(fd)
+                argv.extend(('--perms','400',RO_FILE_FLAG,str(fd),'/p3/inputs/local-work-policy'))
             argv.extend((RO_DIRECTORY_FLAG,str(store_fd),'/p3/store',
                 RW_DIRECTORY_FLAG,str(output_fd),'/p3/output',
                 *ROOT_READONLY_ARGS,'--chdir','/p3/release',
                 *ENVIRONMENT_ARGS,*DRIVER_ENTRY))
+            if local:
+                argv.append(LOCAL_FLAG)
             for name in references:
                 argv.extend((f'--{name}',f'/p3/inputs/{name}.json'))
             if self._holdout_inputs is not None:
@@ -472,7 +481,7 @@ class P3SpawnProvider:
                 raise ValueError('P3 capability expired during final input validation')
             claim_digest = _digest(dict(job_id=job.job_id,attempt_id=job.attempt_id,worker_id=job.worker_id,
                 lease_token_sha256=job.lease_token_sha256,payload=job.payload,closure=fingerprint,
-                argv_prefix=spec.argv_prefix,timeout_seconds=spec.timeout_seconds,
+                argv_prefix=spec.argv_prefix,timeout_seconds=timeout,
                 result_validator=spec.result_validator_id,transport_identities=identities,
                 output_identity=(output_info.st_dev,output_info.st_ino)))
             before_write: Callable[[], None] | None = None
@@ -493,7 +502,8 @@ class P3SpawnProvider:
                     owner(job)
                 before_write = write_fence
             custody = P3OutputCustody(output_parent,output_fd,run_name,self._store,
-                before_retain=before_retain, before_write=before_write)
+                before_retain=before_retain, before_write=before_write,
+                sandbox_policy_digest=environment.sandbox_policy_digest)
             descriptors.remove(output_parent)
             closing_parent = output_parent
             output_parent = -1
@@ -507,7 +517,7 @@ class P3SpawnProvider:
                     raise ValueError('P3 replica profile or transport changed')
 
             return P3BuiltSpawn(job.job_id,job.attempt_id,tuple(argv),Path('/'),MappingProxyType({}),tuple(descriptors),tuple(descriptors),
-                spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,
+                timeout,spec.result_validator_id,claim_digest,closure.source.commit_sha,
                 P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody,replica_fence)
         except BaseException as error:
             cleanup_error: BaseException | None = None
