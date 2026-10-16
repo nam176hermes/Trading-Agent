@@ -116,6 +116,37 @@ def validate_local_environment(root: Path, environment_ref, *, store) -> None:
         raise ValueError('local qualification environment differs from current source and host')
 
 
+def validate_local_phase_binding(root: Path, identity, binding, ready, *, store) -> None:
+    """Link a campaign binding to freshly authenticated prerequisites without rebinding either."""
+    from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, InputSet
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256
+
+    policy = (root/POLICY_PATH).read_bytes()
+    if (binding.gate != 'P3_PHASE_EXIT' or ready.binding.gate != 'PRE_P3_READY'
+        or identity != ready.identity or binding.source != ready.binding.source
+        or ready.binding.policy_digest != hashlib.sha256(policy).hexdigest()
+        or binding.policy_digest != hashlib.sha256(canonical_json_bytes(json.loads(policy))).hexdigest()):
+        raise ValueError('local phase and prerequisite source or policy differ')
+    inputs = _read(store, binding.input_ref, InputSet)
+    if (inputs.source != binding.source or inputs.policy_digest != binding.policy_digest
+        or inputs.environment_ref != binding.environment_ref):
+        raise ValueError('local phase input set differs from its binding')
+    environment = _read(store, binding.environment_ref, EnvironmentIdentity)
+    if environment.sandbox_policy_digest not in (SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256):
+        raise ValueError('local phase sandbox is not an accepted LOCAL transport')
+    # LOCAL v2 changes only the sandbox transport; authenticate every other field via the v1 reference.
+    original = environment.model_dump(mode='json', exclude={'digest'})
+    original['sandbox_policy_digest'] = SANDBOX_PROFILE_SHA256
+    original['digest'] = hashlib.sha256(canonical_json_bytes(original)).hexdigest()
+    raw = canonical_json_bytes(original)
+    digest = hashlib.sha256(raw).hexdigest()
+    expected = ArtifactRefV1(content_sha256=digest, locator=digest+'.blob',
+        size_bytes=len(raw), media_type='application/json')
+    if expected != ready.binding.environment_ref:
+        raise ValueError('local phase environment differs from its qualified predecessor')
+
+
 def read_local_pre_p3(root: Path) -> dict[str, QualificationReceipt]:
     """Fresh admission from fixed protected expectations, never a generated status."""
     from packages.pre_p3_provenance import _git, canonical_source_identity

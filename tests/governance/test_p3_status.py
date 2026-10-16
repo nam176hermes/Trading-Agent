@@ -114,16 +114,10 @@ def test_local_status_keeps_economic_and_published_verdicts_separate(tmp_path,mo
     from services.job_store.config import JobStoreSettings
     from services.job_worker import p3_phase_readback
     from tests.p3.test_replay import _ref
-    policy=tmp_path/local_pre_p3.POLICY_PATH;policy.parent.mkdir(parents=True);policy.write_bytes(b'policy')
-    source=SourceIdentity(commit_sha='a'*40,tree_sha='b'*40,closure_schema_version='source-closure-v1',
-        closure_policy_sha256='c'*64,closure_sha256='d'*64)
-    identity=LocalRunIdentity(issuer_kind='LOCAL',issuer_identity='synthetic',run_id=uuid4(),attempt=1,
-        host_id='e'*64,boot_id=uuid4())
-    ref=_ref('f'*64)
-    binding=QualificationBinding(gate='P3_PHASE_EXIT',source=source,policy_digest=hashlib.sha256(b'policy').hexdigest(),
-        input_ref=ref,environment_ref=ref)
-    ready=SimpleNamespace(identity=identity,binding=binding)
-    store=tmp_path/'cas';store.mkdir(mode=0o700)
+    from tests.governance.test_local_phase_binding import phase_inputs
+    identity,ready,binding,artifact_store,store=phase_inputs(tmp_path)
+    source=binding.source
+    ref=binding.input_ref
     profile=p3_status.LocalPhaseProfile(schema_version='p3-local-phase-profile-v1',identity=identity,binding=binding,
         phase_receipt_ref=ref,store_root=str(store),worker_credentials_directory='/synthetic/credentials')
     prerequisite_reads=[]
@@ -155,10 +149,14 @@ def test_local_status_keeps_economic_and_published_verdicts_separate(tmp_path,mo
     monkeypatch.setattr(WorkerRepository,'__exit__',lambda *a:None)
     monkeypatch.setattr(WorkerRepository,'assert_session_runtime_identity',lambda self:None)
     monkeypatch.setattr(WorkerRepository,'alpha_publication_repository',lambda *a:None)
-    monkeypatch.setattr('packages.alpha_lifecycle.replica_store._read',lambda *a,**k:SimpleNamespace(outcome=outcome))
+    from packages.alpha_lifecycle import replica_store
+    from packages.p3_provenance import PhaseExitReceiptV2
+    real_read=replica_store._read
+    monkeypatch.setattr(replica_store,'_read',lambda store,ref,model:
+        SimpleNamespace(outcome=outcome) if model is PhaseExitReceiptV2 else real_read(store,ref,model))
     monkeypatch.setattr(p3_phase_readback,'validate_phase_exit_receipt',lambda *a,**k:SimpleNamespace(
         source=source.model_copy(update={'commit_sha':'0'*40}) if fault=='source' else source,identity=identity,
-        policy_digest=binding.policy_digest,input_ref=ref,environment_ref=ref,outcome=outcome,digest='9'*64))
+        policy_digest=binding.policy_digest,input_ref=ref,environment_ref=binding.environment_ref,outcome=outcome,digest='9'*64))
     result=p3_status.derive_local_p3_status(tmp_path)
     assert result.protected_promotion==result.published_complete=='HELD'
     assert result.source_qualification==('HELD' if fault and 'prerequisite' in fault else 'PASS')

@@ -296,10 +296,10 @@ def test_phase_qualification_proposal_preserves_held_economics(local,tmp_path,mo
     from packages.p3_status import LocalPhaseProfile
     from services.job_worker import p3_phase_readback
     from tests.p3.test_local_qualification import sealed
-    _,store,store_root,identity,binding,*_=local
-    binding={**binding,'gate':'P3_PHASE_EXIT','policy_digest':hashlib.sha256((producer.ROOT/local_pre_p3.POLICY_PATH).read_bytes()).hexdigest()}
-    expected=QualificationBinding.model_validate_json(canonical_json_bytes(binding))
-    run=LocalRunIdentity.model_validate_json(canonical_json_bytes(identity))
+    from tests.governance.test_local_phase_binding import phase_inputs
+    source_root=tmp_path/'source';source_root.mkdir()
+    run,ready,expected,store,store_root=phase_inputs(source_root)
+    monkeypatch.setattr(producer,'ROOT',source_root)
     phase=PhaseExitReceiptV2.model_validate_json(canonical_json_bytes(sealed(dict(
         schema_version='p3-phase-exit-v2',source=expected.source,identity=run,policy_digest=expected.policy_digest,
         input_ref=expected.input_ref,environment_ref=expected.environment_ref,job_id='job_'+'a'*32,
@@ -310,7 +310,7 @@ def test_phase_qualification_proposal_preserves_held_economics(local,tmp_path,mo
     profile=LocalPhaseProfile(schema_version='p3-local-phase-profile-v1',identity=run,binding=expected,
         phase_receipt_ref=ref,store_root=str(store_root),worker_credentials_directory='/unused/credentials')
     profile_path=tmp_path/'phase-profile.json';profile_path.write_bytes(canonical_json_bytes(profile))
-    ready=SimpleNamespace(identity=run,binding=expected,expires_at=datetime.now(UTC)+timedelta(hours=1))
+    ready.expires_at=datetime.now(UTC)+timedelta(hours=1)
     monkeypatch.setattr(local_pre_p3,'read_local_pre_p3',lambda root:{'PRE_P3_READY':ready})
     checked=[]
     def readback(actual,*,repository,store):

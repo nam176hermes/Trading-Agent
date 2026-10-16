@@ -158,7 +158,7 @@ def derive_local_p3_status(root: Path):
     import psycopg
     from packages.p3_provenance import LocalP3Status,PhaseExitReceiptV2
     from packages.alpha_lifecycle.replica_store import _read
-    from packages.local_pre_p3 import read_local_pre_p3,POLICY_PATH
+    from packages.local_pre_p3 import read_local_pre_p3,validate_local_phase_binding
     from packages.alpha_lifecycle.local_qualification import validate_local_qualification
     from packages.runtime_release.config import read_protected_canonical_json_current,_absolute
     from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -174,12 +174,8 @@ def derive_local_p3_status(root: Path):
         document,digest=read_protected_canonical_json_current(LOCAL_PHASE_PROFILE)
         profile=LocalPhaseProfile.model_validate_json(canonical_json_bytes(document))
         code='E_LOCAL_PHASE_BINDING'
-        if (profile.identity!=ready.identity or profile.binding.gate!='P3_PHASE_EXIT'
-            or profile.binding.source!=source
-            or profile.binding.policy_digest!=hashlib.sha256((root/POLICY_PATH).read_bytes()).hexdigest()
-            or profile.binding.environment_ref!=ready.binding.environment_ref):
-            raise ValueError('local phase and prerequisite identity differ')
         store=LocalArtifactStore(_absolute(profile.store_root))
+        validate_local_phase_binding(root,profile.identity,profile.binding,ready,store=store)
         code='E_LOCAL_PHASE_AUTHENTICATION'
         approval=validate_local_qualification(profile.identity,profile.binding,store=store)
         if approval.evidence_refs!=(profile.phase_receipt_ref,):

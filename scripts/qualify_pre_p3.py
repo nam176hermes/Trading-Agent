@@ -1432,7 +1432,7 @@ def main(arguments: list[str] | None = None) -> int:
                     from packages.alpha_lifecycle.contracts.authority import QualificationReceipt
                     from packages.alpha_lifecycle.replica_store import _read
                     from packages.p3_provenance import PhaseExitReceiptV2
-                    from packages.local_pre_p3 import POLICY_PATH
+                    from packages.local_pre_p3 import validate_local_phase_binding
                     from services.job_store.config import JobStoreSettings
                     from services.job_store.worker_repository import WorkerRepository
                     from services.job_worker.p3_phase_readback import validate_phase_exit_receipt
@@ -1440,11 +1440,8 @@ def main(arguments: list[str] | None = None) -> int:
                     ready=read_local_pre_p3(ROOT)['PRE_P3_READY']
                     profile=LocalPhaseProfile.model_validate_json(_read_receipt(args.profile))
                     binding=profile.binding
-                    if (binding.gate!='P3_PHASE_EXIT' or binding.source!=ready.binding.source
-                        or profile.identity!=ready.identity or binding.environment_ref!=ready.binding.environment_ref
-                        or binding.policy_digest!=_sha(ROOT/POLICY_PATH)):
-                        raise ValueError('phase proposal differs from current source qualification')
                     store=LocalArtifactStore(_absolute(profile.store_root))
+                    validate_local_phase_binding(ROOT,profile.identity,binding,ready,store=store)
                     retained_phase=_read(store,profile.phase_receipt_ref,PhaseExitReceiptV2)
                     with ExitStack() as stack:
                         publication=None
