@@ -1712,12 +1712,15 @@ def test_partial_clone_missing_blob_fails_without_hydrating_local_object_databas
     assert not helper_seen.exists(), "promisor helper or remote was invoked during local source scan"
 
 
-def test_requested_closure_ignores_unrelated_oversized_object_store_content(git_fixture: GitFixture) -> None:
+@pytest.mark.parametrize("preexisting_fanout", [False, True])
+def test_requested_closure_ignores_unrelated_oversized_object_store_content(git_fixture: GitFixture, preexisting_fanout: bool) -> None:
     """Break caught: sealing copies the whole object store rather than just the requested exact closure."""
     commit_oid, _ = git_fixture.commit_file("pin.md", b"x")
     primary = git_fixture.root / ".git/objects"
     unrelated = git_fixture.root / ".git/objects/ff/unrelated"
-    unrelated.parent.mkdir()
+    if preexisting_fanout:
+        unrelated.parent.mkdir(exist_ok=True)
+    unrelated.parent.mkdir(exist_ok=True)
     unrelated.write_bytes(b"u" * 10_000_000)
 
     snapshot = GitTreeSnapshot.from_commit(git_fixture.root, commit_oid, limits=GitScanLimits(max_total_bytes=1024))

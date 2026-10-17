@@ -150,7 +150,7 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
             input_set_ref=manifest.input_set_ref,allowed_alpha_ids=[],
             body={'baseline_manifest_ref':manifest_ref})
         grants = []
-        monkeypatch.setattr(command,'parent_replica_fence',lambda:lambda:grants.append(len(calls)))
+        monkeypatch.setattr(command,'parent_replica_fence',lambda *,expires_at:lambda:grants.append(len(calls)))
         def child_executor(**kwargs):
             executor._before_spawn = kwargs['before_spawn']
             executor._store = kwargs['store']

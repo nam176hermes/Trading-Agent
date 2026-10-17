@@ -106,6 +106,7 @@ class JobRepository:
         request: EnqueueJobRequest,
         trace_id: str,
     ) -> EnqueueResult:
+        admitted = None
         job_type = JobType(request.job_type)
         if request.actor.actor_type is not ActorType.OPERATOR:
             raise ValueError("Job API actor authority is invalid")
@@ -136,6 +137,8 @@ class JobRepository:
             from packages.job_contracts import AlphaCampaignPayload
 
             if type(payload) is AlphaCampaignPayload:
+                from .p3_enqueue import read_enqueue_authority
+                admitted = read_enqueue_authority(connection, payload)
                 statement = """
                     SELECT job_id, outcome
                     FROM job_plane.api_enqueue_alpha_campaign(
@@ -174,6 +177,9 @@ class JobRepository:
         if result is None:
             raise RuntimeError("enqueue authority returned no result")
         row = self._select_job(connection, result["job_id"])
+        if admitted is not None:
+            from .p3_enqueue import recheck_enqueue_authority
+            recheck_enqueue_authority(admitted, payload)
         return EnqueueResult(
             job=self._job_record(row),
             outcome=EnqueueOutcome(result["outcome"]),

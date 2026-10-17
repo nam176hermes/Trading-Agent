@@ -11,7 +11,8 @@ from psycopg.types.json import Jsonb
 
 from packages.job_contracts import EnqueueJobRequest
 from services.job_store import JobRepository, JobStoreSettings
-from services.job_store.worker_repository import ProcessIdentity, WorkerRepository
+from services.job_store.worker_repository import ProcessIdentity
+from tests.jobs._snapshot0007 import Snapshot0007WorkerRepository
 from tests.jobs._postgres import (
     _upgrade_to_revision,
     disposable_database,
@@ -614,7 +615,7 @@ def test_recovery_capability_blocks_incomplete_stored_identity(
             "UPDATE public.jobs SET priority = 100 WHERE job_id = %s",
             (job_id,),
         )
-    with WorkerRepository(_store(roles["trading_job_worker"])) as workers:
+    with Snapshot0007WorkerRepository(_store(roles["trading_job_worker"])) as workers:
         claim = workers.claim_next(
             "transition-authority-worker",
             30,
@@ -699,7 +700,7 @@ def test_recovery_capability_rejects_null_observation_without_mutation(
             "UPDATE public.jobs SET priority = 100 WHERE job_id = %s",
             (job_id,),
         )
-    with WorkerRepository(_store(roles["trading_job_worker"])) as workers:
+    with Snapshot0007WorkerRepository(_store(roles["trading_job_worker"])) as workers:
         claim = workers.claim_next(
             "transition-authority-worker",
             30,

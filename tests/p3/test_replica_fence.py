@@ -70,3 +70,60 @@ print('two grants')
     finally:
         if process.poll() is None: process.kill()
         process.communicate()
+
+
+@pytest.mark.parametrize('remaining, expected_wait', [(45, 45), (600, 300)])
+def test_parent_grant_wait_is_bounded_by_authorization(monkeypatch, remaining, expected_wait):
+    from datetime import datetime, timedelta, timezone
+    from services.job_worker import p3_spawn_interface as interface
+    now = datetime.now(timezone.utc)
+
+    class Clock:
+        @staticmethod
+        def now(_zone):
+            return now
+
+    monkeypatch.setattr(interface, 'datetime', Clock, raising=False)
+    writes = []
+    def write(fd, raw):
+        writes.append((fd, raw))
+        return len(raw)
+    def ready(readers, writers, errors, timeout):
+        assert (readers, writers, errors, timeout) == ([0], [], [], expected_wait)
+        return readers, [], []
+    monkeypatch.setattr(interface.os, 'write', write)
+    monkeypatch.setattr(interface.os, 'read', lambda fd, size: ACK+b'1\n')
+    monkeypatch.setattr(interface.select, 'select', ready)
+    interface.parent_replica_fence(expires_at=now+timedelta(seconds=remaining))()
+    assert writes == [(2, REQUEST+b'1\n')]
+
+
+@pytest.mark.parametrize('expired_before', [True, False])
+def test_parent_grant_rejects_expiry_before_request_or_after_response(monkeypatch, expired_before):
+    from datetime import datetime, timedelta, timezone
+    from services.job_worker import p3_spawn_interface as interface
+    start = datetime.now(timezone.utc)
+    expires = start + timedelta(seconds=1)
+    current = expires if expired_before else start
+
+    class Clock:
+        @staticmethod
+        def now(_zone):
+            return current
+
+    monkeypatch.setattr(interface, 'datetime', Clock, raising=False)
+    writes = []
+    def write(fd, raw):
+        writes.append(raw)
+        return len(raw)
+    def response(readers, writers, errors, timeout):
+        nonlocal current
+        assert timeout == 1
+        current = expires
+        return readers, [], []
+    monkeypatch.setattr(interface.os, 'write', write)
+    monkeypatch.setattr(interface.os, 'read', lambda fd, size: ACK+b'1\n')
+    monkeypatch.setattr(interface.select, 'select', response)
+    with pytest.raises(interface.P3SpawnError, match='expired'):
+        interface.parent_replica_fence(expires_at=expires)()
+    assert writes == ([] if expired_before else [REQUEST+b'1\n'])

@@ -134,6 +134,35 @@ class HwcStatusError(ValueError):
     """HWC status or portable evidence is malformed or stale."""
 
 
+def validate_local_hwc_portable_receipt(identity, binding, *, root: Path, store):
+    """Authenticate LOCAL custody and rerun the same headless proof validator."""
+    from packages.alpha_lifecycle.local_qualification import validate_local_qualification
+    receipt = validate_local_qualification(identity, binding, store=store)
+    validate_local_hwc_evidence(receipt, root=root, store=store)
+    if validate_local_qualification(identity, binding, store=store) != receipt:
+        raise HwcStatusError('local HWC approval changed during semantic readback')
+    return receipt
+
+
+def validate_local_hwc_evidence(receipt, *, root: Path, store):
+    """Validate retained proof content; this helper grants no issuer authority."""
+    from packages.alpha_lifecycle.local_qualification import _read_evidence
+    recording = import_module('scripts.record_hwc_portable_receipt')
+    binding = receipt.binding
+    if binding.gate != 'HWC_PORTABLE_QUALIFIED':
+        raise HwcStatusError('local HWC gate differs')
+    if len(receipt.evidence_refs) != 3 or any(ref.media_type != 'application/json' for ref in receipt.evidence_refs):
+        raise HwcStatusError('local HWC needs exact headless, boundary and contract evidence')
+    headless, boundary, contracts = (_read_evidence(store, ref) for ref in receipt.evidence_refs)
+    try:
+        _, source = recording.validate_portable_evidence(root=root, headless_raw=headless,
+            boundary_raw=boundary, contract_raw=contracts)
+        if boundary != recording._boundary_report(root) or source != binding.source.model_dump(mode='json'):
+            raise HwcStatusError('local HWC source or boundary evidence differs')
+    except recording.HwcPortableRecordingError as error:
+        raise HwcStatusError('local HWC semantic proof is invalid') from error
+
+
 def status_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         canonical_json_bytes(

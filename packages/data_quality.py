@@ -114,7 +114,8 @@ def validate_bar_rows(
 
 
 def resolve_provider_conflict(
-    candidates: tuple[ProviderCandidateV1, ...], *, provider_priority: tuple[str, ...]
+    candidates: tuple[ProviderCandidateV1, ...], *, provider_priority: tuple[str, ...],
+    known_at: datetime | None = None,
 ) -> DataConflictReceiptV1:
     if (
         not candidates
@@ -127,6 +128,11 @@ def resolve_provider_conflict(
     canonical = tuple(candidates)
     if any(candidate.provider not in provider_priority for candidate in canonical):
         raise DataConflictError("candidate provider has no explicit priority")
+    if known_at is not None:
+        cutoff = require_utc(known_at)
+        canonical = tuple(candidate for candidate in canonical if candidate.system_observed_at <= cutoff)
+        if not canonical:
+            raise DataConflictError("no provider candidate is visible at the knowledge cutoff")
     best_rank = min(provider_priority.index(candidate.provider) for candidate in canonical)
     selected_rank = tuple(
         candidate

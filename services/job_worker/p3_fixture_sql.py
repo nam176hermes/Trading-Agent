@@ -8,7 +8,6 @@ import json
 import secrets
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from datetime import UTC, datetime
@@ -64,6 +63,28 @@ def validate_sql_fixture_checks(checks,*,process_identity_bound=True):
     if (not isinstance(checks,list) or len(checks)!=sum(expected.values())
         or any(not isinstance(check,str) for check in checks) or Counter(checks)!=expected):
         raise ValueError('qualification SQL check inventory differs from the exact source fixture')
+
+
+def validate_local_sql_fixture_checks(proof):
+    from services.job_store.p3_catalog import SESSION_CATALOG_SHA256,SESSION_REVISION
+    expected={
+        'native_process_checks':dict(verdict='PASS',role_denials=5,null_denials=12,identity_denials=8,
+            lock_fences=6,concurrent_winners=1,crash_recovery='TERMINAL_NO_RETRY'),
+        'session_holdout_checks':dict(verdict='PASS',ordinary_holdout_claim='CLOSED',concurrent_winners=1,
+            workflow_denials=2,role_denials=5,null_denials=9,cancelled_and_expired='REJECTED',
+            expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
+            late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
+            expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
+        'local_identity_checks':dict(verdict='PASS',enqueue_freshness=dict(revoked='REJECTED',expired='REJECTED',
+            after_insert='ROLLED_BACK',intent='REJECTED',changed='ROLLED_BACK',dedup='CURRENT_AUTHORITY_REQUIRED',
+            api_status=503,role_denials=4),catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
+            identity_denials=5,role_denials=5,cross_lane_second_disclosures_rejected=2,expiry='REJECTED',
+            start_before_disclosure='REJECTED',wrong_identity_heartbeat='STALE',terminal='COMMITTED',
+            recovery='TERMINAL_NO_RETRY',retry='REJECTED',migration_parent_drift='REJECTED',phase_exit_readback='COMMITTED_CURRENT_HEAD_ONLY'),
+    }
+    if (proof['sql_revision']!=SESSION_REVISION or any(
+        canonical_json_bytes(proof.get(name))!=canonical_json_bytes(value) for name,value in expected.items())):
+        raise ValueError('local SQL identity, catalog, native or lifecycle coverage differs')
 
 
 def _alpha_request() -> EnqueueJobRequest:
@@ -128,6 +149,14 @@ def check_publication(sock, name, root, payload, mark):
         assert claim is not None and claim.job_id == 'job_publication'
         assert worker.start_attempt(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,
             ProcessIdentity(301,301,301,'d'*64),'publication:start',alpha_campaign=True)
+        def active_mark(name,**kwargs):
+            # Outer runtime verification must not silently age this still-active fixture claim.
+            def renew():
+                assert worker.heartbeat_control(claim.job_id,claim.attempt_id,claim.worker_id,
+                    claim.lease_token,30,alpha_campaign=True)=='CONTINUE'
+            renew()
+            mark(name,**kwargs)
+            renew()
         entries, refs, heads = publication_entries(store, evidence_ref, (f'a{n}.source.fixture' for n in range(4)))
         request_payload = {
             'schema_version':'p3-publication-request-v1','idempotency_key':'source-registration',
@@ -145,14 +174,14 @@ def check_publication(sock, name, root, payload, mark):
             assert error.sqlstate == 'P3D01'
         else:
             raise AssertionError('stale publication fence accepted')
-        mark('PUBLICATION_STALE_FENCE_PASS',flush=True)
+        active_mark('PUBLICATION_STALE_FENCE_PASS',flush=True)
         try:
             publisher.publish(request,replace(claim,attempt_id='attempt_wrong'),tuple(entries),trace_id='publication:wrong-attempt')
         except psycopg.Error as error:
             assert error.sqlstate == 'P3D01'
         else:
             raise AssertionError('wrong publication attempt accepted')
-        mark('PUBLICATION_WRONG_ATTEMPT_PASS')
+        active_mark('PUBLICATION_WRONG_ATTEMPT_PASS')
         wrong_head = request.model_dump(mode='json')
         wrong_head['expected_heads'][0].update(sequence=1,event_digest='0'*64)
         wrong_head.pop('digest')
@@ -163,7 +192,7 @@ def check_publication(sock, name, root, payload, mark):
             pass
         else:
             raise AssertionError('stale registry head accepted')
-        mark('PUBLICATION_STALE_HEAD_PASS')
+        active_mark('PUBLICATION_STALE_HEAD_PASS')
         duplicate_event = json.loads(entries[-1].canonical_event_text)
         duplicate_event['event_id'] = str(entries[0].event_id)
         duplicate = entries[-1].model_copy(update={
@@ -176,7 +205,7 @@ def check_publication(sock, name, root, payload, mark):
             pass
         else:
             raise AssertionError('duplicate publication event accepted')
-        mark('PUBLICATION_DUPLICATE_EVENT_PASS')
+        active_mark('PUBLICATION_DUPLICATE_EVENT_PASS')
 
 
         bad_entries = tuple(entries[:-1]) + (entries[-1].model_copy(update={
@@ -192,7 +221,7 @@ def check_publication(sock, name, root, payload, mark):
             for table in ('p3_alpha_heads','p3_alpha_job_commits','domain_events','event_outbox','event_append_idempotency'):
                 assert inspector.execute(f'SELECT count(*) FROM public.{table}').fetchone() == (0,)
             assert inspector.execute('SELECT state FROM public.jobs WHERE job_id=%s',(claim.job_id,)).fetchone() == ('RUNNING',)
-        mark('PUBLICATION_MID_BATCH_ROLLBACK_PASS',flush=True)
+        active_mark('PUBLICATION_MID_BATCH_ROLLBACK_PASS',flush=True)
         with psycopg.connect(host=str(sock),dbname=name,user='postgres',autocommit=True) as injector:
             injector.execute("CREATE FUNCTION public.p3_source_reject_terminal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.reason_code='P3_COMMITTED' THEN RAISE EXCEPTION 'source-test terminal failure'; END IF; RETURN NEW; END $$")
             injector.execute("CREATE TRIGGER p3_source_reject_terminal BEFORE INSERT ON public.job_events FOR EACH ROW EXECUTE FUNCTION public.p3_source_reject_terminal()")
@@ -210,7 +239,7 @@ def check_publication(sock, name, root, payload, mark):
             finally:
                 injector.execute('DROP TRIGGER p3_source_reject_terminal ON public.job_events')
                 injector.execute('DROP FUNCTION public.p3_source_reject_terminal()')
-        mark('PUBLICATION_TERMINAL_FAILURE_ROLLBACK_PASS',flush=True)
+        active_mark('PUBLICATION_TERMINAL_FAILURE_ROLLBACK_PASS',flush=True)
 
         # Cancellation owns the job lock before publication enters its capability.
         with psycopg.connect(host=str(sock),dbname=name,user='trading_job_api') as api:
@@ -242,16 +271,14 @@ def check_publication(sock, name, root, payload, mark):
                 else:
                     raise AssertionError('publication passed cancellation that held the job lock')
             assert observer.execute('SELECT count(*) FROM public.p3_alpha_job_commits WHERE job_id=%s',(cancel_claim.job_id,)).fetchone() == (0,)
-        mark('PUBLICATION_CANCEL_BEFORE_PASS')
+        active_mark('PUBLICATION_CANCEL_BEFORE_PASS')
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             owner.execute("UPDATE public.jobs SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE job_id=%s",(cancel_claim.job_id,))
             owner.execute("UPDATE public.job_attempts SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE attempt_id=%s",(cancel_claim.attempt_id,))
         assert worker.recover_expired_leases(ProcProcessInspector(),recovery_id='worker-startup-recovery',alpha_campaign=True,fixture_only=True) == ()
         with psycopg.connect(host=str(sock),dbname=name,user='postgres') as owner:
             assert owner.execute('SELECT state FROM public.jobs WHERE job_id=%s',(cancel_claim.job_id,)).fetchone() == ('CANCEL_REQUESTED',)
-        mark('FIXTURE_RECOVERY_ISOLATION_PASS')
-
-        assert worker.heartbeat_control(claim.job_id,claim.attempt_id,claim.worker_id,claim.lease_token,30,alpha_campaign=True) == 'CONTINUE'
+        active_mark('FIXTURE_RECOVERY_ISOLATION_PASS')
 
 
         from concurrent.futures import ThreadPoolExecutor
@@ -390,7 +417,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
     custodian_release_source_checks: bool = False,
     native_process_source_checks: bool = False,
     session_holdout_source_checks: bool = False,
+    local_identity_source_checks: bool = False,
 ) -> dict[str, object]:
+    session_holdout_source_checks = session_holdout_source_checks or local_identity_source_checks
     if not __debug__:
         raise RuntimeError("source checks require assertions enabled")
     root = Path(tempfile.mkdtemp(prefix='p3-source-pg-', dir='/tmp')) if owned_root is None else owned_root
@@ -407,6 +436,7 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
     process = identity = None
     checks = []
     started_at = datetime.now(UTC).isoformat()
+    primary_error: BaseException | None = None
 
     def mark(name, *, flush=True):
         if name!='OPERATION_AUTHORIZATION_EXPIRY_WAIT':
@@ -452,13 +482,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         started = True
         inspector = ProcProcessInspector()
         identity = inspector.inspect(process.pid)
+        initial_identity = identity
         descriptor = pidfd_open(process.pid,0)
         try:
-            if (identity is None or identity.pid != identity.process_group
-                or inspector.inspect(process.pid) != identity or process.poll() is not None):
-                raise RuntimeError('PostgreSQL process identity changed before fencing')
-            pidfd_signal(descriptor,0,None,0)
-            mark('SQL_PROCESS_IDENTITY_BOUND_PASS' if heartbeat is not None else 'SQL_PROCESS_IDENTITY_OBSERVED_PASS')
             deadline = time.monotonic() + 30
             while True:
                 ready = subprocess.run([str(BIN/'pg_isready'),'-h',str(sock),'-U','postgres'],
@@ -469,6 +495,16 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
                     raise RuntimeError('PostgreSQL fixture startup failed')
                 progress()
                 time.sleep(.05)
+            # Startup may briefly expose empty argv; bind the ready server while
+            # preserving the spawned kernel identity and all fencing checks.
+            identity = inspector.inspect(process.pid)
+            if (identity is None or initial_identity is None or identity.pid != identity.process_group
+                or (identity.pid, identity.process_group, identity.start_ticks)
+                != (initial_identity.pid, initial_identity.process_group, initial_identity.start_ticks)
+                or inspector.inspect(process.pid) != identity or process.poll() is not None):
+                raise RuntimeError('PostgreSQL process identity changed before fencing')
+            pidfd_signal(descriptor,0,None,0)
+            mark('SQL_PROCESS_IDENTITY_BOUND_PASS' if heartbeat is not None else 'SQL_PROCESS_IDENTITY_OBSERVED_PASS')
         finally:
             os.close(descriptor)
         passwords = {role: secrets.token_hex(24) for role in ('owner','migrator','reader','jobs')}
@@ -702,6 +738,10 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         if session_holdout_source_checks:
             from .p3_session_sql_fixture import check_session_holdout
             session_checks = check_session_holdout(sock,name,source)
+        local_checks = {}
+        if local_identity_source_checks:
+            from .p3_local_sql_fixture import check_local_identity
+            local_checks = check_local_identity(sock,name,source)
         with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
             revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
             if revision_row is None:
@@ -710,8 +750,12 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
 
 
 
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        primary_error = sys.exception()
+        if primary_error is not None:
+            setattr(primary_error, 'last_check', checks[-1] if checks else None)
         try:
             _cleanup_cluster(root, data, sock, started, run, process=process, identity=identity)
         except BaseException as cleanup_error:
@@ -720,8 +764,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
             raise SQLFixtureCleanupError(f"SQL cleanup unverified; retained {root}") from cause
     validate_sql_fixture_checks(checks,process_identity_bound=heartbeat is not None)
     return {"source": source.model_dump(mode="json"), "checks": checks, "sql_revision":sql_revision,
-            **({"native_process_checks": native_checks} if native_process_source_checks else {}),
+            **({"native_process_checks": native_checks} if native_process_source_checks or local_identity_source_checks else {}),
             **({"session_holdout_checks": session_checks} if session_holdout_source_checks else {}),
+            **({"local_identity_checks": local_checks} if local_identity_source_checks else {}),
             "postgres_binary_sha256": hashlib.sha256((BIN/'postgres').read_bytes()).hexdigest(),
             "started_at": started_at, "finished_at": datetime.now(UTC).isoformat(),
             "cleanup": {"cluster_id": root.name, "root_absent": not root.exists(),

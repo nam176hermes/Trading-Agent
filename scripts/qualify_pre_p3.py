@@ -67,6 +67,9 @@ ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY = {"broker": False, "live": False, "network": False, "production": False}
 P1_QUALIFICATION_OPERATION = "p2-security-master-runtime-green-v1"
 _P2_FIXTURE_VALIDITY = timedelta(hours=2)
+# One LOCAL qualification must cover integration, producers and the whole R06 campaign;
+# every receipt binds the run identity, so a mid-campaign renewal restarts the chain.
+LOCAL_RECEIPT_VALIDITY = timedelta(hours=8)
 _P2_FIXTURE_PORT = 49152
 _P1_EXTERNAL_OUTCOMES = {
     "EXT-DISPOSABLE-PG-GREEN": "DEFERRED",
@@ -620,44 +623,146 @@ def p2_final_v2(
     )
 
 
+def _observe_tests(source, selectors, *, environment=None, watched=None):
+    """Collect and execute the same source-owned suite using the existing reporter."""
+    from scripts.trusted_test_tmp import prepare_trusted_test_tmp
+    def unchanged():
+        if _source_v2() != source or (watched is not None and watched[0].read_bytes() != watched[1]):
+            raise QualificationError('test suite source changed during qualification')
+    unchanged()
+    started = datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+    session = prepare_trusted_test_tmp('local-phase-suite')
+    try:
+        report_path = session.path/'observations.json'
+        collection_path = session.path/'collection.json'
+        base = environment if environment is not None else {
+            key:os.environ[key] for key in ('PATH','HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP') if key in os.environ}
+        env = {key:value for key,value in base.items() if not key.startswith(('GITHUB_', 'PYTEST_'))}
+        env.update(TEST_GOVERNANCE_REPORT=str(report_path), TEST_GOVERNANCE_COMPONENT='root',
+            TEST_GOVERNANCE_NO_CLOBBER='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+        _run(sys.executable, '-m', 'pytest', '-q', '--collect-only', '-p', 'scripts.test_governance_pytest',
+            *selectors, environment={**env, 'TEST_GOVERNANCE_REPORT':str(collection_path),
+                'TEST_GOVERNANCE_COLLECTION_ONLY':'1'})
+        unchanged()
+        _run(sys.executable, '-m', 'pytest', '-q', '-p', 'scripts.test_governance_pytest',
+            *selectors, environment=env)
+        unchanged()
+        with report_path.open('rb') as stream:
+            raw = stream.read(131073)
+        with collection_path.open('rb') as stream:
+            collection_raw = stream.read(131073)
+        if max(len(raw), len(collection_raw)) > 131072:
+            raise QualificationError('test observation report exceeds its bound')
+        completed = datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+        return collection_raw, raw, started, completed
+    finally:
+        session.cleanup()
+
+
 def _execute_pit_suite(source, qualification, store):
     """Observe exact PIT calls; retained test metadata is not execution authority."""
     from packages.alpha_lifecycle.pit_suite import SUITE_PATH, PIT_EVIDENCE_MEDIA, build_pit_suite_receipt, pit_suite_cases
-    from scripts.trusted_test_tmp import prepare_trusted_test_tmp
-    if _source_v2() != source:
-        raise QualificationError('PIT suite source changed before execution')
     manifest = SUITE_PATH.read_bytes()
     cases = pit_suite_cases(manifest)
-    session = prepare_trusted_test_tmp('p3-pit-suite')
-    try:
-        report_path = session.path/'observations.json'
-        environment = {key:os.environ[key] for key in ('PATH','HOME','LANG','LC_ALL','TMPDIR','TEMP','TMP') if key in os.environ}
-        environment.update(TEST_GOVERNANCE_REPORT=str(report_path), TEST_GOVERNANCE_COMPONENT='root',
-            TEST_GOVERNANCE_NO_CLOBBER='1', PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
-        collection_path = session.path/'collection.json'
-        _run(sys.executable, '-m', 'pytest', '-q', '--collect-only', '-p', 'scripts.test_governance_pytest',
-            *(case.node_id for case in cases), environment={**environment,
-                'TEST_GOVERNANCE_REPORT':str(collection_path), 'TEST_GOVERNANCE_COLLECTION_ONLY':'1'})
-        if _source_v2() != source or SUITE_PATH.read_bytes() != manifest:
-            raise QualificationError('PIT suite source changed during collection')
-        _run(sys.executable, '-m', 'pytest', '-q', '-p', 'scripts.test_governance_pytest',
-            *(case.node_id for case in cases), environment=environment)
-        if _source_v2() != source or SUITE_PATH.read_bytes() != manifest:
-            raise QualificationError('PIT suite source changed during execution')
-        with report_path.open('rb') as report:
-            raw = report.read(131073)
-        with collection_path.open('rb') as report:
-            collection_raw = report.read(131073)
-        if max(len(raw), len(collection_raw)) > 131072:
-            raise QualificationError('PIT observation report exceeds its bound')
-        manifest_ref = store.put_bytes(manifest, media_type=PIT_EVIDENCE_MEDIA)
-        report_ref = store.put_bytes(raw, media_type=PIT_EVIDENCE_MEDIA)
-        collection_ref = store.put_bytes(collection_raw, media_type='application/json')
-        qualification = {**qualification, 'completed_at_utc':datetime.now(timezone.utc)
-            .replace(microsecond=0).isoformat().replace('+00:00','Z')}
-        return build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
-    finally:
-        session.cleanup()
+    collection_raw, raw, _, completed = _observe_tests(source, tuple(case.node_id for case in cases),
+        watched=(SUITE_PATH, manifest))
+    manifest_ref = store.put_bytes(manifest, media_type=PIT_EVIDENCE_MEDIA)
+    report_ref = store.put_bytes(raw, media_type=PIT_EVIDENCE_MEDIA)
+    collection_ref = store.put_bytes(collection_raw, media_type='application/json')
+    qualification = {**qualification, 'completed_at_utc':completed}
+    return build_pit_suite_receipt(source, manifest_ref, collection_ref, report_ref, qualification, store=store)
+
+
+def execute_local_suite(gate, identity, store):
+    """Retain real local observations; protected approval remains a separate step."""
+    from packages.local_pre_p3 import local_gate_selectors, build_local_test_evidence
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+    identity = LocalRunIdentity.model_validate(identity)
+    source = _source_v2()
+    environment = p2_runtime_environment(source=source) if gate == 'P2_RUNTIME_QUALIFIED' else None
+    collection, report, started, completed = _observe_tests(source, local_gate_selectors(gate), environment=environment)
+    return build_local_test_evidence(gate=gate, source=source, identity=identity,
+        collection_ref=store.put_bytes(collection, media_type='application/json'),
+        report_ref=store.put_bytes(report, media_type='application/json'),
+        started_at=started, completed_at=completed, store=store)
+
+
+def produce_local_gate(identity, binding, store, *, retained=()):
+    """Produce reviewable evidence from real runs, without installing approval."""
+    from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity, QualificationBinding, QualificationReceipt
+    from packages.alpha_lifecycle.local_qualification import _host_identity, _read_evidence, validate_local_qualification
+    from packages.local_pre_p3 import (LOCAL_PRE_P3_GATES, POLICY_PATH,
+        _validate_local_gate_proof, validate_local_environment, validate_local_prerequisite_chain)
+    identity = LocalRunIdentity.model_validate(identity)
+    binding = QualificationBinding.model_validate(binding)
+    started = datetime.now(timezone.utc)
+    def current():
+        if _source_v2() != binding.source.model_dump(mode='json'):
+            raise QualificationError('local qualification source differs')
+        if _host_identity() != (identity.host_id,identity.boot_id):
+            raise QualificationError('local qualification host differs')
+        if _sha(ROOT/POLICY_PATH) != binding.policy_digest:
+            raise QualificationError('local qualification policy differs')
+        validate_local_environment(ROOT,binding.environment_ref,store=store)
+        _read_evidence(store,binding.input_ref)
+    current()
+    gate = binding.gate
+    if gate not in LOCAL_PRE_P3_GATES:
+        raise QualificationError('local prerequisite gate is not supported')
+    if retained and gate not in ('P1_H_COMPLETE','P1_LTS_READY'):
+        raise QualificationError('only P1 consumes independently supplied native/external proof')
+    def retain(raw):
+        if len(raw)>131072:
+            raise QualificationError('local qualification proof exceeds its bound')
+        return store.put_bytes(raw,media_type='application/json')
+    dependencies = ()
+    if gate in ('P2_QUALIFIED','PRE_P3_READY'):
+        children = ('P2_SOURCE_COMPLETE','P2_RUNTIME_QUALIFIED') if gate=='P2_QUALIFIED' else LOCAL_PRE_P3_GATES[:-1]
+        dependencies = tuple(validate_local_qualification(identity,binding.model_copy(update={'gate':child}),store=store)
+            for child in children)
+        for receipt in dependencies:
+            _validate_local_gate_proof(receipt,root=ROOT,store=store)
+        refs = tuple(retain(canonical_json_bytes(receipt)) for receipt in dependencies)
+        started = min([started,*(receipt.started_at for receipt in dependencies)])
+    elif gate == 'HWC_PORTABLE_QUALIFIED':
+        from scripts.qualify_hwc_headless import qualify
+        from scripts.record_hwc_portable_receipt import _boundary_report, _contract_report
+        headless = qualify(require_clean=True,build_dashboard=True)
+        refs = (retain(canonical_json_bytes(headless)+b'\n'),retain(_boundary_report(ROOT)),retain(_contract_report(ROOT)))
+    else:
+        proof = execute_local_suite(gate,identity,store)
+        refs = (retain(canonical_json_bytes(proof)),)
+        if gate in ('P1_H_COMPLETE','P1_LTS_READY'):
+            refs += tuple(retained)
+        elif gate == 'P2_SOURCE_COMPLETE':
+            replay = tuple(_run(sys.executable,'scripts/certify_p2_data_platform.py') for _ in range(3))
+            if len(set(replay)) != 1:
+                raise QualificationError('local P2 subprocess replay differs')
+            pit = _execute_pit_suite(binding.source.model_dump(mode='json'),dict(
+                identity=identity.model_dump(mode='json'),producer='scripts/qualify_pre_p3.py'),store)
+            refs += (retain(canonical_json_bytes(pit)),retain(canonical_json_bytes(json.loads(replay[0]))))
+        elif gate == 'P2_RUNTIME_QUALIFIED':
+            binary = Path('/usr/lib/postgresql/16/bin/postgres')
+            refs += (retain(canonical_json_bytes(dict(schema_version='local-postgres-identity-v1',
+                version=_run(str(binary),'--version').strip(),binary_sha256=_sha(binary),
+                source=binding.source.model_dump(mode='json')))),)
+    completed = datetime.now(timezone.utc)
+    expires = min([started+timedelta(hours=24),completed+LOCAL_RECEIPT_VALIDITY,
+        *(receipt.expires_at for receipt in dependencies)])
+    value = dict(schema_version='local-phase-qualification-receipt-v1',identity=identity,binding=binding,
+        started_at=started.isoformat().replace('+00:00','Z'),completed_at=completed.isoformat().replace('+00:00','Z'),
+        expires_at=expires.isoformat().replace('+00:00','Z'),evidence_refs=refs,status='PASS',authority=AUTHORITY)
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    receipt = QualificationReceipt.model_validate_json(canonical_json_bytes(value))
+    _validate_local_gate_proof(receipt,root=ROOT,store=store)
+    if gate=='PRE_P3_READY':
+        validate_local_prerequisite_chain((*dependencies,receipt))
+    for dependency in dependencies:
+        if validate_local_qualification(identity,dependency.binding,store=store) != dependency:
+            raise QualificationError('local prerequisite approval changed during aggregation')
+    current()
+    retain(canonical_json_bytes(receipt))
+    return receipt
 
 
 def p2_source_v2(output: Path, *, qualification: dict[str, str]) -> None:
@@ -1223,6 +1328,22 @@ def promotion_v1(
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser('local-plan')
+    plan.add_argument('--issuer',required=True)
+    plan.add_argument('--store-root',type=Path,required=True)
+    plan.add_argument('--input-ref',type=Path,required=True)
+    plan.add_argument('--environment-ref',type=Path,required=True)
+    plan.add_argument('--output',type=Path,required=True)
+    local = commands.add_parser('local-propose')
+    local.add_argument('--profile',type=Path,required=True)
+    local.add_argument('--gate',required=True)
+    local.add_argument('--retained',type=Path)
+    local.add_argument('--output',type=Path,required=True)
+    phase=commands.add_parser('local-propose-phase')
+    phase.add_argument('--profile',type=Path,required=True)
+    phase.add_argument('--output',type=Path,required=True)
+    readback = commands.add_parser('local-readback')
+    readback.add_argument('--output',type=Path,required=True)
     for name in ("p2-source", "p2-runtime"):
         command = commands.add_parser(name)
         command.add_argument("--output", type=Path, required=True)
@@ -1277,7 +1398,96 @@ def main(arguments: list[str] | None = None) -> int:
     promotion.add_argument("--skip-stale-candidate", action="store_true")
     args = parser.parse_args(arguments)
     try:
-        if args.command == "p2-source":
+        if args.command in ('local-plan','local-propose','local-propose-phase','local-readback'):
+            from packages.local_pre_p3 import LocalPreP3Profile, read_local_pre_p3
+            from packages.data_catalog.artifact_store import LocalArtifactStore
+            from packages.data_contracts import ArtifactRefV1
+            from packages.runtime_release.config import _absolute, ProtectedAuthorityError
+            try:
+                output = _absolute(str(args.output))
+                if output.resolve()==ROOT.resolve() or ROOT.resolve() in output.resolve().parents:
+                    raise ValueError('local qualification outputs must remain outside source')
+                if args.command=='local-plan':
+                    from uuid import uuid4
+                    from packages.alpha_lifecycle.local_qualification import _host_identity,_read_evidence
+                    from packages.local_pre_p3 import LOCAL_PRE_P3_GATES,POLICY_PATH,validate_local_environment
+                    source=_source_v2()
+                    store=LocalArtifactStore(_absolute(str(args.store_root)))
+                    input_ref=ArtifactRefV1.model_validate_json(_read_receipt(args.input_ref))
+                    environment_ref=ArtifactRefV1.model_validate_json(_read_receipt(args.environment_ref))
+                    _read_evidence(store,input_ref)
+                    validate_local_environment(ROOT,environment_ref,store=store)
+                    machine,boot=_host_identity()
+                    profile=LocalPreP3Profile.model_validate_json(canonical_json_bytes(dict(
+                        schema_version='local-pre-p3-profile-v1',store_root=str(args.store_root),
+                        identity=dict(issuer_kind='LOCAL',issuer_identity=args.issuer,run_id=str(uuid4()),attempt=1,
+                            host_id=machine,boot_id=str(boot)),
+                        bindings=[dict(gate=gate,source=source,policy_digest=_sha(ROOT/POLICY_PATH),
+                            input_ref=input_ref,environment_ref=environment_ref) for gate in LOCAL_PRE_P3_GATES])))
+                    if _source_v2()!=source:raise ValueError('source changed during local plan')
+                    value=profile.model_dump(mode='json')
+                elif args.command=='local-propose-phase':
+                    from contextlib import ExitStack
+                    from packages.p3_status import LocalPhaseProfile
+                    from packages.alpha_lifecycle.contracts.authority import QualificationReceipt
+                    from packages.alpha_lifecycle.replica_store import _read
+                    from packages.p3_provenance import PhaseExitReceiptV2
+                    from packages.local_pre_p3 import validate_local_phase_binding
+                    from services.job_store.config import JobStoreSettings
+                    from services.job_store.worker_repository import WorkerRepository
+                    from services.job_worker.p3_phase_readback import validate_phase_exit_receipt
+                    started=datetime.now(timezone.utc)
+                    ready=read_local_pre_p3(ROOT)['PRE_P3_READY']
+                    profile=LocalPhaseProfile.model_validate_json(_read_receipt(args.profile))
+                    binding=profile.binding
+                    store=LocalArtifactStore(_absolute(profile.store_root))
+                    validate_local_phase_binding(ROOT,profile.identity,binding,ready,store=store)
+                    retained_phase=_read(store,profile.phase_receipt_ref,PhaseExitReceiptV2)
+                    with ExitStack() as stack:
+                        publication=None
+                        if retained_phase.outcome in ('PASS','FAIL'):
+                            settings=JobStoreSettings.from_systemd_credentials(
+                                {'CREDENTIALS_DIRECTORY':str(_absolute(profile.worker_credentials_directory))},
+                                expected_user='trading_job_worker')
+                            worker=stack.enter_context(WorkerRepository(settings));worker.assert_session_runtime_identity()
+                            publication=worker.alpha_publication_repository(store)
+                        result=validate_phase_exit_receipt(profile.phase_receipt_ref,repository=publication,store=store)
+                    if (result.source!=binding.source or result.identity!=profile.identity
+                        or result.policy_digest!=binding.policy_digest or result.input_ref!=binding.input_ref
+                        or result.environment_ref!=binding.environment_ref or read_local_pre_p3(ROOT)['PRE_P3_READY']!=ready):
+                        raise ValueError('phase proposal identity or authority changed')
+                    completed=datetime.now(timezone.utc)
+                    value=dict(schema_version='local-phase-qualification-receipt-v1',identity=profile.identity,binding=binding,
+                        started_at=started.isoformat().replace('+00:00','Z'),completed_at=completed.isoformat().replace('+00:00','Z'),
+                        expires_at=min(completed+LOCAL_RECEIPT_VALIDITY,ready.expires_at).isoformat().replace('+00:00','Z'),
+                        evidence_refs=(profile.phase_receipt_ref,),status='PASS',authority=AUTHORITY)
+                    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+                    # PASS qualifies readback integrity; economic outcome stays in the referenced receipt.
+                    receipt=QualificationReceipt.model_validate_json(canonical_json_bytes(value))
+                    store.put_bytes(canonical_json_bytes(receipt),media_type='application/json')
+                    value=receipt.model_dump(mode='json')
+                elif args.command=='local-readback':
+                    gates=read_local_pre_p3(ROOT)
+                    value=dict(schema_version='local-pre-p3-readback-v1',issuer_kind='LOCAL',
+                        local_ready=True,published_ready=False,execution_authorized=False,
+                        gates={name:receipt.digest for name,receipt in gates.items()})
+                else:
+                    profile=LocalPreP3Profile.model_validate_json(_read_receipt(args.profile))
+                    binding=next((b for b in profile.bindings if b.gate==args.gate),None)
+                    if binding is None:
+                        raise ValueError('local gate is outside the proposed profile')
+                    retained=()
+                    if args.retained:
+                        refs=json.loads(_read_receipt(args.retained))
+                        if not isinstance(refs,list) or not 5<=len(refs)<=63:
+                            raise ValueError('P1 retained proof reference inventory differs')
+                        retained=tuple(ArtifactRefV1.model_validate(ref) for ref in refs)
+                    value=produce_local_gate(profile.identity,binding,
+                        LocalArtifactStore(_absolute(profile.store_root)),retained=retained).model_dump(mode='json')
+                _write(output,value,trailing_newline=False)
+            except (ValueError,OSError,ProtectedAuthorityError) as error:
+                raise QualificationError(str(error)) from error
+        elif args.command == "p2-source":
             p2_source(args.output)
         elif args.command == "p2-runtime":
             p2_runtime(args.output)

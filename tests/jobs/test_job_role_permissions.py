@@ -8,7 +8,7 @@ import pytest
 
 from packages.job_contracts import ActorIdentity, EnqueueJobRequest, JobState
 from services.job_store import JobRepository, JobStoreSettings
-from services.job_store.worker_repository import WorkerRepository
+from tests.jobs._snapshot0007 import Snapshot0007WorkerRepository
 from services.job_worker.recovery import ProcessIdentity
 from tests.jobs._postgres import (
     _upgrade_to_revision,
@@ -653,7 +653,7 @@ def test_real_worker_role_can_claim_start_finalize_and_heartbeat(
         ).job
 
     worker_id = "role-matrix-worker"
-    with WorkerRepository(_store(roles["trading_job_worker"])) as repository:
+    with Snapshot0007WorkerRepository(_store(roles["trading_job_worker"])) as repository:
         claimed = repository.claim_next(
             worker_id,
             lease_seconds=30,

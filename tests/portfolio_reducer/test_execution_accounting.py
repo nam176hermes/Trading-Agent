@@ -563,3 +563,131 @@ def test_bust_or_correction_rejects_consumed_or_cross_scope_reference(status, re
     )
     with pytest.raises(PortfolioReplayError, match="account"):
         apply_portfolio_event(state, cross_account)
+
+
+# CR01: accounting must not depend on the ambient Decimal context (precision or traps).
+import decimal  # noqa: E402
+
+CONTEXTS = pytest.mark.parametrize("context", [
+    decimal.Context(prec=2),
+    decimal.Context(prec=28),
+    decimal.Context(prec=80),
+    decimal.Context(prec=28, traps=[decimal.InvalidOperation, decimal.DivisionByZero, decimal.Overflow,
+                                    decimal.Rounded, decimal.Inexact]),
+], ids=["prec2", "prec28", "prec80", "prec28-traps"])
+
+
+def _reduce_in(context: decimal.Context, events: tuple) -> object:
+    outer = decimal.getcontext().copy()
+    with decimal.localcontext(context):
+        state = reduce_portfolio_events(events)
+        stepwise = reduce_portfolio_events(events[:1])
+        for event in events[1:]:
+            stepwise = apply_portfolio_event(stepwise, event)
+    assert decimal.getcontext().prec == outer.prec and decimal.getcontext().traps == outer.traps
+    assert stepwise.model_dump_json() == state.model_dump_json()          # replay == incremental
+    assert state.model_dump_json() == reduce_portfolio_events(events).model_dump_json()   # == default context
+    return state
+
+
+@CONTEXTS
+def test_sell_replay_is_independent_of_decimal_context(context: decimal.Context) -> None:
+    state = _reduce_in(context, (
+        opening(),
+        fill_event(event_number=2, execution_number=20, side=OrderSide.SELL, quantity="1.23", price="100"),
+    ))
+
+    assert state.snapshot.positions[0].quantity.value == Decimal("-1.23")
+    assert state.snapshot.balances[0].cash.amount == Decimal("1123")
+
+
+@CONTEXTS
+def test_bust_reverses_exact_stored_effect_under_decimal_context(context: decimal.Context) -> None:
+    normal = fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="1.23", price="100",
+                        commission=money("1.23"))
+    bust = fill_event(event_number=3, execution_number=30, side=OrderSide.BUY, quantity="1.23", price="100",
+                      status=FillReportStatus.BUST, bust_of=normal.payload.fill.execution_id)
+    state = _reduce_in(context, (opening(), normal, bust))
+
+    usd = state.snapshot.balances[0]
+    assert usd.cash.amount == Decimal("1000")
+    assert usd.fees.amount == 0 and usd.realized_pnl.amount == 0
+    assert all(position.quantity.value == 0 for position in state.snapshot.positions)
+
+
+@CONTEXTS
+def test_correction_replaces_exact_economics_under_decimal_context(context: decimal.Context) -> None:
+    normal = fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="1.23", price="100")
+    correction = fill_event(event_number=3, execution_number=30, side=OrderSide.BUY, quantity="1.23", price="90",
+                            commission=money("0.23"), status=FillReportStatus.CORRECTION,
+                            correction_of=normal.payload.fill.execution_id)
+    state = _reduce_in(context, (opening(), normal, correction))
+
+    assert state.snapshot.balances[0].cash.amount == Decimal("889.07")      # 1000 - 110.7 - 0.23
+    assert state.snapshot.positions[0].quantity.value == Decimal("1.23")
+
+
+# CR02: bust negates the stored settled delta; correction undoes it and applies the replacement's delta.
+from dataclasses import replace  # noqa: E402
+
+USDT_INSTRUMENT = InstrumentId("BTC-USDT", ProductType.CRYPTO_SPOT, "BINANCE")
+
+
+def _usdt_definition() -> InstrumentDefinition:
+    return replace(definition(), **{
+        "instrument_id": USDT_INSTRUMENT, "raw_symbol": "BTCUSDT", "quote_currency": Currency.USDT,
+        "settlement_currency": Currency.USDT, "tick_size": Price(Decimal("0.01"), Currency.USDT),
+        "size_increment": OrderQuantity(Decimal("0.000001"), 6), "minimum_quantity": OrderQuantity(Decimal("0.000001"), 6),
+        "maximum_quantity": OrderQuantity(Decimal("100"), 6), "minimum_notional": money("0.01", Currency.USDT),
+        "maximum_notional": money("100000", Currency.USDT),
+    })   # InstrumentDefinition is a frozen dataclass
+
+
+def _usdt_fill(*, event_number: int, execution_number: int, price: str, fee: str = "0",
+               status: FillReportStatus = FillReportStatus.FILLED, correction_of: UUID | None = None,
+               bust_of: UUID | None = None) -> EventEnvelope[object]:
+    quantity = OrderQuantity(Decimal("0.100001"), 6)
+    fill = FillEvent(
+        execution_id=uid(execution_number), order_id=uid(1_000 + execution_number), report_sequence=1,
+        venue_trade_id=f"trade-{execution_number}", instrument_definition=_usdt_definition(),
+        side=OrderSide.BUY, liquidity_side=LiquiditySide.MAKER, status=status, quantity=quantity,
+        cumulative_fill_quantity=quantity, leaves_quantity=OrderQuantity(Decimal("0"), 6), order_quantity=quantity,
+        last_fill_price=Price(Decimal(price), Currency.USDT), average_fill_price=Price(Decimal(price), Currency.USDT),
+        commission=money(fee, Currency.USDT), reconciliation_source=ReconciliationSource.VENUE,
+        duplicate_of_execution_id=None, correction_of_execution_id=correction_of, bust_of_execution_id=bust_of,
+        filled_at=NOW, schema_version="2.0",
+    )
+    return envelope(PortfolioFillEntry(account_id="account-1", strategy_id="strategy-1", fill=fill, effective_at=NOW,
+                                       schema_version="portfolio-entry-v1"), event_number=event_number)
+
+
+def _usdt_opening(cash: str = "1000.000001") -> EventEnvelope[object]:
+    return envelope(PortfolioOpeningEntry(account_id="account-1", reporting_currency=Currency.USDT,
+                                          balances=(balance(Currency.USDT, cash),), source_id="opening-source",
+                                          source_revision="r1", effective_at=NOW, schema_version="portfolio-entry-v1"),
+                    event_number=1)
+
+
+def _usdt_cash(state) -> Decimal:
+    (usdt,) = (item for item in state.snapshot.balances if item.currency is Currency.USDT)
+    return usdt.cash.amount
+
+
+def test_settled_buy_delta_matches_the_golden() -> None:
+    assert _usdt_cash(reduce_portfolio_events((_usdt_opening(), _usdt_fill(event_number=2, execution_number=20,
+                                                                          price="1.50")))) == Decimal("999.849999")
+
+
+def test_bust_negates_stored_settlement_delta() -> None:
+    normal = _usdt_fill(event_number=2, execution_number=20, price="1.50")
+    bust = _usdt_fill(event_number=3, execution_number=30, price="1.50", status=FillReportStatus.BUST,
+                      bust_of=normal.payload.fill.execution_id)
+    assert _usdt_cash(reduce_portfolio_events((_usdt_opening(), normal, bust))) == Decimal("1000.000001")
+
+
+def test_correction_rebases_settlement_without_rounding_balance() -> None:
+    normal = _usdt_fill(event_number=2, execution_number=20, price="1.50")
+    correction = _usdt_fill(event_number=3, execution_number=30, price="1.51", status=FillReportStatus.CORRECTION,
+                            correction_of=normal.payload.fill.execution_id)
+    # replacement delta: -(0.100001 x 1.51) = -0.15100151 -> -0.151002; 1000.000001 - 0.151002
+    assert _usdt_cash(reduce_portfolio_events((_usdt_opening(), normal, correction))) == Decimal("999.848999")

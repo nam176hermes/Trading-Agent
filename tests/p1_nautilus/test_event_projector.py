@@ -1431,3 +1431,34 @@ def test_zero_order_completion_accepts_empty_commission_observation() -> None:
 
     assert stream.events[-1]["event_type"] == "RunCompleted"
     assert stream.events[-1]["fees"] == "0"
+
+
+# CR02: the event projector's per-fill settlement (shared with final_state) follows the approved golden.
+from engines.nautilus.runtime_v1.event_projector import _settled_cash  # noqa: E402
+
+_MICRO = Decimal("0.000001")
+
+
+@pytest.mark.parametrize(("steps", "closing"), [
+    ((("BUY", "0"),), "999.849999"),
+    ((("BUY", "0.000001"),), "999.849999"),
+    ((("BUY", "0.000002"),), "999.849997"),
+    ((("BUY", "0"), ("BUY", "0")), "999.699997"),
+    ((("BUY", "0"), ("SELL", "0")), "1000.000001"),
+])
+def test_event_projector_settles_each_fill_delta_once(steps: tuple, closing: str) -> None:
+    cash = Decimal("1000.000001")
+    for side, fee in steps:
+        cash = _settled_cash(cash, side, Decimal("0.100001"), Decimal("1.50"), Decimal(fee), _MICRO)
+
+    assert cash == Decimal(closing)
+
+
+def test_both_native_consumers_call_the_shared_settlement_under_prec_96() -> None:
+    from pathlib import Path
+
+    runtime = Path(__file__).parents[2] / "engines/nautilus/runtime_v1"
+    for name in ("event_projector.py", "final_state.py"):
+        text = (runtime / name).read_text(encoding="utf-8")
+        assert text.count("_settled_cash(cash,") == 2 and "context.prec = 96" in text
+        assert "cash = (cash - quantity * price" not in text and "cash = (cash + quantity * price" not in text

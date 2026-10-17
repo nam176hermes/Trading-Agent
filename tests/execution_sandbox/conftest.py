@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -83,6 +84,7 @@ class ExactSafetyVerifier:
 class PreparedCase:
     ledger: InMemoryEventLedger
     intent: OrderIntent
+    policy_decision: RiskDecision
     observation: RuntimeRiskObservation
     policy: RuntimeRiskPolicy
     safety: GlobalSafetyObservation
@@ -284,9 +286,15 @@ def _authority_inputs(intent: OrderIntent) -> tuple[RuntimeRiskObservation, Runt
     return observation, policy, policy_decision
 
 
-@pytest.fixture(name="prepared_case")
-def fixture_prepared_case(order_intent: OrderIntent) -> PreparedCase:
+def build_prepared_case(
+    order_intent: OrderIntent,
+    *,
+    age: Callable[[RuntimeRiskObservation], RuntimeRiskObservation] | None = None,
+) -> PreparedCase:
+    """Approve, activate and prepare one permit; `age` rewrites facts BEFORE approval so digests stay valid."""
     observation, policy, policy_decision = _authority_inputs(order_intent)
+    if age is not None:
+        observation = age(observation)
     decision = evaluate_runtime_order_risk(
         decision_id=uid(16), intent=order_intent, policy_decision=policy_decision,
         observation=observation, policy=policy, decided_at=NOW,
@@ -316,4 +324,14 @@ def fixture_prepared_case(order_intent: OrderIntent) -> PreparedCase:
         safety_verifier=ExactSafetyVerifier(), permit_id=uid(22), event_id=uid(23), prepared_at=NOW + timedelta(seconds=1),
     )
     consumption_safety = safety.model_copy(update={"observed_at": NOW + timedelta(seconds=1)})
-    return PreparedCase(ledger, order_intent, observation, policy, consumption_safety, permit)
+    return PreparedCase(ledger, order_intent, policy_decision, observation, policy, consumption_safety, permit)
+
+
+@pytest.fixture(name="prepared_case")
+def fixture_prepared_case(order_intent: OrderIntent) -> PreparedCase:
+    return build_prepared_case(order_intent)
+
+
+@pytest.fixture(name="prepared_case_factory")
+def fixture_prepared_case_factory(order_intent: OrderIntent) -> Callable[..., PreparedCase]:
+    return lambda **options: build_prepared_case(order_intent, **options)

@@ -207,8 +207,8 @@ class JobWorker:
             kwargs["alpha_campaign"] = True
             if self._p3_session is not None:
                 if self._session_holdout:
-                    kwargs['session_workflow'] = (self._p3_session.profile.workflow_run_id,
-                        self._p3_session.profile.workflow_attempt)
+                    from .p3_session import session_identity
+                    kwargs['session_workflow'] = session_identity(self._p3_session.profile)
         return getattr(self._repository, method)(*args, **kwargs)
 
     def _worker_heartbeat(self, status: str, claim=None) -> None:
@@ -437,12 +437,21 @@ class JobWorker:
                               (getattr(cause,"reason_code",None) or getattr(error,"reason_code",None) or "SAFETY_DRIFT") if safety_drift else
                               "P3_AUTHORITY_HELD" if blocked else "P3_INTEGRATION_FAILED")
                     expected = JobState.CANCEL_REQUESTED if cancelled else (JobState.RUNNING if started else JobState.CLAIMED)
+                    diagnostics = ()
+                    try:
+                        diagnostics = (self._validator.integration_failure_artifact(
+                            claimed, error, started=started,
+                            reason_code='CANCELLED' if cancelled else reason),)
+                    except (OSError, ValueError):
+                        # Storage failure must not change the durable failure/control outcome.
+                        import logging
+                        logging.getLogger(__name__).error('P3 integration diagnostic storage unavailable')
                     finalized = self._repository_call("finalize_execution",
                         claimed, expected_state=expected,
                         expected_attempt_outcome="RUNNING" if started else "CLAIMED",
                         final_state=JobState.CANCELLED if cancelled else (JobState.BLOCKED if blocked else (JobState.FAILED if started else JobState.BLOCKED)),
                         reason_code="CANCELLED" if cancelled else reason, trace_id=trace_id,
-                        outcome=outcome, result=None, stream_artifacts=(),
+                        outcome=outcome, result=None, stream_artifacts=diagnostics,
                     )
             else:
                 finalized = self._repository_call("finalize_execution",
@@ -518,8 +527,11 @@ class JobWorker:
             return True
         p3_custody = outcome.p3_output_custody
         next_progress = 0.0
+        # Full boundary checks also satisfy the one-second callback cadence.
+        # The first callback still reads current SQL control after each boundary.
+        control_after_boundary = False
         def p3_progress():
-            nonlocal next_progress
+            nonlocal next_progress, control_after_boundary
             try:
                 if p3_custody is not None:
                     p3_custody.check_deadline()
@@ -527,13 +539,26 @@ class JobWorker:
                 if now >= next_progress:
                     self._validation_progress(claimed, safety_preflight)
                     next_progress = time.monotonic() + 1
+                    control_after_boundary = False
+                elif control_after_boundary:
+                    self._validation_control(claimed)
+                    control_after_boundary = False
                 if p3_custody is not None:
                     p3_custody.check_deadline()
             except TimeoutError as exc:
                 raise ResultValidationError('P3 post-run deadline expired',
                     reconciliation_required=True) from exc
         try:
+            # Complete view admission before the mandatory worker boundary so
+            # validation starts with fresh safety/control and its callback cadence.
+            holdout_view = (
+                self._p3_session.view
+                if self._p3_profile and self._p3_session is not None else None
+            )
             self._validation_progress(claimed, safety_preflight)
+            if self._p3_profile:
+                next_progress = time.monotonic() + 1
+                control_after_boundary = True
             if engine_request is not None:
                 from packages.engine_event_ledger import (
                     EngineEventConflictError,
@@ -635,7 +660,7 @@ class JobWorker:
                     output_custody=outcome.p3_output_custody,
                     output_inventory_ref=outcome.p3_output_inventory_ref,
                     progress=p3_progress,
-                    **({'holdout_view': self._p3_session.view} if self._p3_session is not None else {}),
+                    **({'holdout_view': holdout_view} if self._p3_session is not None else {}),
                 )
             else:
                 result = self._validator.validate(
@@ -676,6 +701,8 @@ class JobWorker:
             # expire. Recheck once more before any SUCCEEDED transition.
             self._validation_progress(claimed, safety_preflight)
             if self._p3_profile:
+                next_progress = time.monotonic() + 1
+                control_after_boundary = True
                 p3_progress()
             outcome = bind_latest_safety(outcome)
         except ResultValidationError as exc:
@@ -1066,6 +1093,9 @@ class JobWorker:
             (safety_preflight or self._safety_preflight)()
         except WorkerBlockedError as exc:
             raise _ValidationSafetyDrift(exc.reason_code) from exc
+        self._validation_control(claimed)
+
+    def _validation_control(self, claimed) -> None:
         control = WorkerControl(self._repository_call("heartbeat_control",
             claimed.job_id, claimed.attempt_id, self._worker_id,
             claimed.lease_token, self._lease_seconds,
@@ -1075,11 +1105,12 @@ class JobWorker:
         if control is WorkerControl.STALE:
             raise _ValidationStale("lease lost during result validation")
 
-    def _command_timeout(self, claimed: object) -> int:
+    def _command_timeout(self, claimed: object) -> int | None:
         from .command_registry import COMMAND_REGISTRY, p3_command_spec
 
         if self._p3_profile:
-            return p3_command_spec(getattr(claimed, "payload", None)).timeout_seconds
+            p3_command_spec(getattr(claimed, "payload", None))
+            return None  # The authenticated P3 provider selects the policy's work budget.
         return COMMAND_REGISTRY[getattr(claimed, "job_type")].timeout_seconds
 
     def _finalize_termination(

@@ -53,7 +53,22 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0017_p1_request_digest_authority.py",
     "alembic/versions/0018_p1_paper_closure_rotation.py",
     "alembic/versions/0019_p2_security_master.py",
+    "alembic/versions/0020_p3_alpha_campaign_authority.py",
+    "alembic/versions/0021_p3_operation_authority.py",
+    "alembic/versions/0022_p3_worker_lane_isolation.py",
+    "alembic/versions/0023_p3_output_custody.py",
+    "alembic/versions/0024_p3_workflow_claim.py",
+    "alembic/versions/0025_p3_holdout_intent.py",
+    "alembic/versions/0026_p3_holdout_disclosure.py",
+    "alembic/versions/0027_p3_custodian_release.py",
+    "alembic/versions/0028_p3_native_process.py",
+    "alembic/versions/0029_p3_session_holdout_claim.py",
+    "alembic/versions/0030_p3_session_terminal_fences.py",
+    "alembic/versions/0031_p3_local_identity.py",
+    "alembic/versions/0032_p3_enqueue_freshness.py",
+    "alembic/versions/0033_p3_core_closure_repair.py",
     "ops/postgres/provision-job-roles.sql",
+    "ops/postgres/provision-p3-roles.sql",
     "ops/postgres/provision-roles.sql",
 )
 
@@ -860,3 +875,59 @@ def test_exact_planned_cli_rejects_every_review_or_file_drift(
     assert result.stderr.startswith("REJECTED: ")
     assert "operator.example" not in result.stderr
     assert "reviewer.example" not in result.stderr
+
+
+def test_executed_forward_migration_requires_exact_source_binding() -> None:
+    """D1: every forward migration a disposable upgrade can execute is bound by exact bytes, in order."""
+    module = load_validator()
+    migrations = tuple(
+        f"alembic/versions/{path.name}" for path in sorted((ROOT / "alembic/versions").glob("[0-9][0-9][0-9][0-9]_*.py"))
+    )
+    bound = tuple(path for path in module.APPROVAL_SOURCE_BINDING_PATHS if path.startswith("alembic/"))
+    assert bound == migrations
+    assert migrations[-1] == "alembic/versions/0033_p3_core_closure_repair.py"   # the controls below: newest binding
+    module.validate_source_binding_files(build_record(), ROOT)
+
+    missing = build_record()
+    missing["source_bindings"] = [  # type: ignore[index]
+        binding for binding in missing["source_bindings"]  # type: ignore[union-attr]
+        if binding["path"] != migrations[-1]
+    ]
+    refresh_digest(missing)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="missing or excessive"):
+        module.validate_disposable_postgres_approval(missing, context(module))
+
+    changed = build_record()
+    for binding in changed["source_bindings"]:  # type: ignore[union-attr]
+        if binding["path"] == migrations[-1]:
+            binding["sha256"] = "e" * 64
+    refresh_digest(changed)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="digest does not match"):
+        module.validate_source_binding_files(changed, ROOT)
+
+
+@pytest.mark.parametrize("path", ("ops/postgres/provision-p3-roles.sql",))
+def test_every_provisioning_script_the_harness_can_run_is_bound(path: str) -> None:
+    """R5: the P3 role bootstrap is bound by exact bytes like every other provisioning script."""
+    module = load_validator()
+    provisioning = tuple(
+        f"ops/postgres/{item.name}" for item in sorted((ROOT / "ops/postgres").glob("provision-*.sql"))
+    )
+    assert tuple(item for item in module.APPROVAL_SOURCE_BINDING_PATHS if item.startswith("ops/")) == provisioning
+    assert path in provisioning
+
+    missing = build_record()
+    missing["source_bindings"] = [  # type: ignore[index]
+        binding for binding in missing["source_bindings"] if binding["path"] != path  # type: ignore[union-attr]
+    ]
+    refresh_digest(missing)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="missing or excessive"):
+        module.validate_disposable_postgres_approval(missing, context(module))
+
+    changed = build_record()
+    for binding in changed["source_bindings"]:  # type: ignore[union-attr]
+        if binding["path"] == path:
+            binding["sha256"] = "e" * 64
+    refresh_digest(changed)
+    with pytest.raises(module.DisposablePostgresApprovalRejected, match="digest does not match"):
+        module.validate_source_binding_files(changed, ROOT)

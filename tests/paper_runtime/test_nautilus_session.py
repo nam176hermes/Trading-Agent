@@ -547,3 +547,31 @@ def test_source_does_not_add_network_or_live_authority() -> None:
         }
         assert imports.isdisjoint({"aiohttp", "httpx", "requests", "socket", "urllib"})
     assert iter_payloads(b"") == ()
+
+
+def test_transport_timeout_requires_reconciliation_without_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR03: a bounded transport failure is never a success and never advances the durable checkpoint."""
+    child = _Child()
+    exchange = child.exchange
+
+    def times_out_after_start(raw: bytes) -> bytes:
+        if child.calls >= 1:                                   # the start succeeded; the next exchange times out
+            raise TimeoutError("paper child exchange deadline expired")
+        return exchange(raw)
+
+    child.exchange = times_out_after_start  # type: ignore[method-assign]
+    session, _capability, _client = _session(child, [_safety()], monkeypatch)
+    start, target, _stop = _commands(_request())
+    first = session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
+
+    with pytest.raises(NautilusSessionRejected):
+        session.execute(target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256)
+
+    assert session.state == "RECONCILIATION_REQUIRED"
+    assert child.aborted is True
+    stored = session._checkpoints.load(session._request.engine_run_id)
+    assert stored is not None and stored.checkpoint_sha256 == first.checkpoint.checkpoint_sha256
+    with pytest.raises(NautilusSessionRejected, match="terminal"):
+        session.execute(target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256)

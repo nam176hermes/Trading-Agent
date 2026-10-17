@@ -141,10 +141,10 @@ def test_preflight_and_postflight_use_postgresql_authority_primitives() -> None:
     assert "pg_catalog.has_function_privilege" not in text
     assert "set_config('search_path', v_prior_search_path" not in text
     assert text.count(
-        "pg_catalog.set_config('search_path', 'public, pg_catalog', true)"
+        "pg_catalog.set_config('search_path', 'pg_catalog, public', true)"
     ) == 1
     assert text.rfind(
-        "pg_catalog.set_config('search_path', 'public, pg_catalog', true)"
+        "pg_catalog.set_config('search_path', 'pg_catalog, public', true)"
     ) > text.rfind("$p2_security_master_postflight$;")
 
 

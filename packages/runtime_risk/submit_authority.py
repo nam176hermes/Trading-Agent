@@ -26,7 +26,9 @@ from packages.domain.runtime_risk import (
     DurableOrderApprovalRef,
     RuntimeOrderRiskDecision,
     RuntimeRiskObservation,
+    RuntimeRiskOutcome,
     RuntimeRiskPolicy,
+    RuntimeRiskReasonCode,
 )
 from packages.event_ledger.models import AppendOutcome, OutboxIntent
 from packages.event_ledger.replay import (
@@ -40,6 +42,7 @@ from packages.event_ledger.reducer import SequenceError
 
 from .approval import DurableApprovalError, verify_durable_order_approval
 from .canonical import canonical_model_digest, canonical_model_json
+from .evaluator import evaluate_runtime_order_risk
 from .halt import (
     GlobalHaltAuthorityError,
     GlobalHaltReplay,
@@ -68,11 +71,22 @@ _CONSUMPTION_FAILURE = "submit permit consumption failed"
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
-class SubmitPermitPreparationError(RuntimeError):
+class _SubmitAuthorityError(RuntimeError):
+    def __init__(self, *args: object, reason_codes: tuple[RuntimeRiskReasonCode, ...] = ()) -> None:
+        super().__init__(*args)
+        self._reason_codes = tuple(reason_codes)
+
+    @property
+    def reason_codes(self) -> tuple[RuntimeRiskReasonCode, ...]:
+        """Fresh-admissibility rejection reasons; empty for every other failure."""
+        return self._reason_codes
+
+
+class SubmitPermitPreparationError(_SubmitAuthorityError):
     """Exact durable submit authority could not be prepared."""
 
 
-class SubmitPermitConsumptionError(RuntimeError):
+class SubmitPermitConsumptionError(_SubmitAuthorityError):
     """One-shot submit authority could not be proven and consumed."""
 
 
@@ -182,6 +196,39 @@ def _require_active_exact_authority(
         raise SubmitPermitPreparationError(_PREPARATION_FAILURE) from exc
     if reasons:
         raise SubmitPermitPreparationError(_PREPARATION_FAILURE)
+
+
+def _require_fresh_admissibility(
+    error: type[_SubmitAuthorityError],
+    message: str,
+    *,
+    operation_id: UUID,
+    intent: OrderIntent,
+    policy_decision: RiskDecision,
+    observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    operation_at: datetime,
+) -> None:
+    """CR03: re-run the whole evaluator on the bound facts at the operation time, in memory only.
+
+    Historical approval stays as recorded; nothing is persisted or re-approved. New facts need a new
+    observation, approval and permit.
+    """
+    try:
+        fresh = evaluate_runtime_order_risk(
+            decision_id=operation_id,
+            intent=intent,
+            policy_decision=policy_decision,
+            observation=observation,
+            policy=policy,
+            decided_at=operation_at,
+        )
+    except ValueError as exc:
+        raise error(message) from exc
+    if fresh.outcome is not RuntimeRiskOutcome.APPROVED or fresh.reason_codes != (
+        RuntimeRiskReasonCode.WITHIN_LIMITS,
+    ):
+        raise error(message, reason_codes=fresh.reason_codes)
 
 
 def _prepared_payload(
@@ -471,6 +518,16 @@ def prepare_submit_permit(
         safety=current_safety,
         prepared_at=prepared_at,
     )
+    _require_fresh_admissibility(
+        SubmitPermitPreparationError,
+        _PREPARATION_FAILURE,
+        operation_id=permit_id,
+        intent=intent,
+        policy_decision=policy_decision,
+        observation=current_observation,
+        policy=current_policy,
+        operation_at=prepared_at,
+    )
     payload = _prepared_payload(
         permit_id=permit_id,
         approval_reference=reference,
@@ -585,6 +642,8 @@ def _require_current_consumption_authority(
     *,
     replay: GlobalHaltReplay,
     permit: PreparedSubmitPermit,
+    intent: OrderIntent,
+    policy_decision: RiskDecision,
     observation: RuntimeRiskObservation,
     policy: RuntimeRiskPolicy,
     safety: GlobalSafetyObservation,
@@ -592,6 +651,11 @@ def _require_current_consumption_authority(
 ) -> None:
     state = replay.state
     try:
+        if (
+            canonical_model_digest(intent) != permit.intent_digest
+            or canonical_model_digest(policy_decision) != permit.policy_risk_decision_digest
+        ):
+            raise ValueError("intent or policy decision differs from the permit")
         if not (permit.prepared_at <= consumed_at <= permit.expires_at):
             raise ValueError("permit is outside its consumption window")
         if not (permit.prepared_at <= safety.observed_at <= consumed_at):
@@ -625,6 +689,16 @@ def _require_current_consumption_authority(
             raise ValueError("current submit authority bindings changed")
     except (GlobalHaltAuthorityError, *_CANONICAL_ERRORS) as exc:
         raise SubmitPermitConsumptionError(_CONSUMPTION_FAILURE) from exc
+    _require_fresh_admissibility(
+        SubmitPermitConsumptionError,
+        _CONSUMPTION_FAILURE,
+        operation_id=permit.permit_id,
+        intent=intent,
+        policy_decision=policy_decision,
+        observation=observation,
+        policy=policy,
+        operation_at=consumed_at,
+    )
 
 
 def _consumed_payload(
@@ -865,6 +939,8 @@ def consume_submit_permit(
     *,
     repository: EventLedgerRepository,
     permit: PreparedSubmitPermit,
+    intent: OrderIntent,
+    policy_decision: RiskDecision,
     current_observation: RuntimeRiskObservation,
     current_policy: RuntimeRiskPolicy,
     current_safety: GlobalSafetyObservation,
@@ -875,6 +951,8 @@ def consume_submit_permit(
     """Consume one exact five-second permit after a fresh safety observation."""
 
     permit = _canonical_consumption_model(permit, PreparedSubmitPermit, "permit")
+    intent = _canonical_consumption_model(intent, OrderIntent, "intent")
+    policy_decision = _canonical_consumption_model(policy_decision, RiskDecision, "policy_decision")
     observation = _canonical_consumption_model(
         current_observation, RuntimeRiskObservation, "current_observation"
     )
@@ -904,6 +982,8 @@ def consume_submit_permit(
     _require_current_consumption_authority(
         replay=replay,
         permit=permit,
+        intent=intent,
+        policy_decision=policy_decision,
         observation=observation,
         policy=policy,
         safety=safety,
@@ -938,6 +1018,8 @@ def consume_submit_permit(
         _require_current_consumption_authority(
             replay=refreshed,
             permit=permit,
+            intent=intent,
+            policy_decision=policy_decision,
             observation=observation,
             policy=policy,
             safety=safety,

@@ -56,10 +56,10 @@ def main() -> None:
         or environment_identity.sandbox_policy_digest != args.sandbox_policy_digest):
         raise ValueError('operation manifest, InputSet or execution identity differs')
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     if not args.job_id or args.authorization_ref is None:
         raise ValueError('operation requires job attribution and retained authorization')
-    authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RunAuthorization)
+    authorization = _read(store,ArtifactRefV1.model_validate_json(args.authorization_ref.read_bytes()),RUN_AUTHORIZATION)
     stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,intent.workflow_operation,
         intent_raw,operation_input=intent)
     args.output.mkdir(mode=0o700,exist_ok=True)
@@ -88,7 +88,7 @@ def main() -> None:
                 python=args.python, source=source, environment_ref=environment,
                 sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox,
                 runtime_mounts=runtime_mounts, instrument_spec_ref=spec_ref, holdout_view=view,
-                before_spawn=parent_replica_fence())
+                before_spawn=parent_replica_fence(expires_at=authorization.expires_at))
             result = execute_holdout_manifest(request_ref, manifest_ref, spec_ref, executor, output_root=args.output)
             raw_result = canonical_json_bytes(result)
             executor.put_bytes(raw_result, media_type='application/json')
@@ -132,7 +132,8 @@ def main() -> None:
     runtime_mounts = _runtime_mounts(args.runtime_mounts_ref)
     executor = BubblewrapExecutor(
         store=store, store_root=args.store, release_root=args.release, python=args.python,
-        source=source, environment_ref=environment, before_spawn=parent_replica_fence(),
+        source=source, environment_ref=environment,
+        before_spawn=parent_replica_fence(expires_at=authorization.expires_at),
         sandbox_policy_digest=args.sandbox_policy_digest, bwrap=args.sandbox, runtime_mounts=runtime_mounts,
     )
     if isinstance(intent.body,CandidateOOSInput):

@@ -385,6 +385,7 @@ def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, ob
     policy = _validate_policy(policy)
     _absolute_parts(cache, "input cache")
     parent_fd = _prepare_private_cache_parent(cache.parent)
+    primary_error: BaseException | None = None
     try:
         try:
             os.stat(cache.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -441,8 +442,10 @@ def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, ob
             os.replace(staging_name, cache.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             committed = True
             return manifest
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
-            primary_error = sys.exception()
             cleanup_error: BaseException | None = None
             if not committed:
                 try:
@@ -456,8 +459,10 @@ def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, ob
                     cleanup_error = exc
             if primary_error is None and cleanup_error is not None:
                 raise cleanup_error
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        primary_error = sys.exception()
         try:
             os.close(parent_fd)
         except BaseException:

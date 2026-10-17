@@ -52,3 +52,49 @@ def test_fixture_entry_binds_enqueue_before_database_and_recovery(monkeypatch,fa
     else:
         assert main.main()==0
         assert calls==['enqueue','authority','credentials','enqueue','database','schema','build','run','closed']
+
+
+@pytest.mark.parametrize('fault',[None,'mixed','runtime'])
+def test_local_fixture_entry_requires_local_request_before_current_catalog(monkeypatch,fault):
+    from services.job_worker import main
+    from scripts import p3_authority
+    from packages.alpha_lifecycle import authority
+    from tests.p3.test_job_api import _alpha_request
+    from tests.p3.test_local_qualification import sealed
+    from packages.engine_contracts import canonical_json_bytes
+    from datetime import UTC,datetime,timedelta
+    now=datetime.now(UTC)
+    payload=_alpha_request().payload.model_copy(update={'operation':'PARITY','logical_trial_id':'p3-integration-fixture-v1'})
+    values=dict(TRADING_WORKER_PROFILE='p3-fixture-v1',P3_ISSUER_KIND='LOCAL',P3_OPERATION='p3-integration-fixture-v1',
+        P3_AUTHORITY_REQUEST_FILE='/synthetic/request',P3_PREFLIGHT_DIRECTORY='/synthetic/preflight',
+        P3_ARTIFACT_ROOT='/synthetic/store',P3_MANIFEST_FILE='/synthetic/manifest',P3_REVIEW_FILE='/synthetic/review',
+        CREDENTIALS_DIRECTORY='/synthetic/credentials')
+    for key,value in values.items():monkeypatch.setenv(key,value)
+    auth=authority._LocalFixtureAuthorization.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-local-fixture-authorization-v1',fixture_plan_ref=payload.manifest_ref,
+        review_ref=payload.manifest_ref,operation='PARITY',issued_at=now.isoformat().replace('+00:00','Z'),
+        expires_at=(now+timedelta(hours=1)).isoformat().replace('+00:00','Z'),nonce='00000000-0000-4000-8000-000000000002',
+        identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000003',
+            attempt=1,host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'),
+        authority=dict(broker=False,live=False,network=False,production=False)))))
+    monkeypatch.setattr(p3_authority,'read_enqueued_job',lambda *a,**k:('job_fixture',SimpleNamespace(payload=payload),'synthetic'))
+    monkeypatch.setattr(authority,'validate_request',lambda *a,**k:SimpleNamespace(authorization=object() if fault=='mixed' else auth))
+    monkeypatch.setattr(main,'attest_worker_runtime_authority',lambda:SimpleNamespace(application_revision=payload.expected_source.commit_sha))
+    def runtime(*a):
+        if fault=='runtime':raise ValueError('local fixture runtime rejected')
+    monkeypatch.setattr('services.job_worker.p3_local_runtime.require_local_runtime',runtime)
+    monkeypatch.setattr(main.JobStoreSettings,'from_systemd_credentials',lambda **k:object())
+    calls=[]
+    class Repository:
+        def __init__(self,*a):calls.append('database')
+        def __enter__(self):return self
+        def __exit__(self,*a):pass
+        def assert_session_runtime_identity(self):calls.append('current-catalog')
+        def assert_p3_runtime_identity(self):pytest.fail('local fixture used old catalog')
+    monkeypatch.setattr(main,'WorkerRepository',Repository)
+    monkeypatch.setattr(main,'build_p3_fixture_worker',lambda *a,**k:SimpleNamespace(run_once=lambda:True))
+    if fault:
+        with pytest.raises(ValueError,match='local fixture'):main.main()
+        assert not calls
+    else:
+        assert main.main()==0 and calls==['database','current-catalog']

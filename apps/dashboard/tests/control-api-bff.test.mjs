@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { registerHooks } from 'node:module';
 import path from 'node:path';
-import test, { afterEach } from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 registerHooks({
@@ -31,6 +31,10 @@ registerHooks({
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const originalFetch = globalThis.fetch;
 const originalEnvironment = { ...process.env };
+
+beforeEach(() => {
+  delete process.env.TRADING_CONTROL_API_ORIGIN;
+});
 
 afterEach(() => {
   globalThis.fetch = originalFetch;

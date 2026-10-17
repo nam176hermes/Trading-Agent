@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import json
 import os
 from pathlib import Path
@@ -24,10 +25,11 @@ from packages.alpha_lifecycle.authority import (
     validate_workflow_operation,
 )
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
+from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization, RunAuthorization
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody, JobMetadata, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
-from packages.project_status import derive_project_status
+from packages.project_status import require_p3_source_ready
 from apps.job_api.contracts import (
     JobDeduplicatedEnvelope, JobDetailEnvelope, JobEnqueuedEnvelope,
 )
@@ -97,7 +99,8 @@ def _request_json(method: str, path: str, token: str, body: object | None = None
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        with urlopen(request, timeout=10) as response:
+        # Enqueue commits before it answers; a cold first request exceeded 10 s and lost the ACK.
+        with urlopen(request, timeout=60 if method == "POST" else 10) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, TimeoutError) as error:
         raise RuntimeError("HELD E_JOB_API: loopback Job API request failed") from error
@@ -115,13 +118,10 @@ def _validated_request(request_file: Path, workflow_operation: str):
     request = validate_request(request_file, source, operation)
     authorization = request.authorization
     payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=request.operation_input)
-    status = derive_project_status(ROOT)
-    if not (
-        status["gates"]["HWC_SOURCE_READY"] == "PASS"
-        and status["gates"]["PRE_P3_READY"] == "PASS"
-        and status["p3_alpha_development_allowed"] is True
-    ):
-        raise RuntimeError("HELD E_SOURCE_READY: protected source gates are not current")
+    try:
+        require_p3_source_ready(ROOT,getattr(authorization,'identity',None))
+    except ValueError as error:
+        raise RuntimeError('HELD E_SOURCE_READY: protected source gates are not current') from error
     return request, payload
 
 
@@ -147,11 +147,11 @@ def preflight(request_file: Path, output_dir: Path, workflow_operation: str):
 
 def _stage_request(request, payload, workflow_operation, store, manifest_file, review_file):
     authorization = request.authorization
-    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FixturePlan, validate_fixture_authority
+    from services.job_worker.p3_integration import _read_review, _read_authority_bytes, FIXTURE_PLAN, validate_fixture_authority
     review = _read_review(review_file,authorization.review_ref)
     manifest = _read_authority_bytes(manifest_file)
     if workflow_operation == "p3-integration-fixture-v1":
-        plan = FixturePlan.model_validate_json(manifest)
+        plan = FIXTURE_PLAN.validate_json(manifest)
         if plan.source != payload.expected_source or canonical_json_bytes(plan) != manifest:
             raise RuntimeError("HELD E_MANIFEST: fixture plan differs from source")
         validate_fixture_authority(payload,authorization,plan,review)
@@ -179,9 +179,14 @@ def enqueue(request_file: Path, token_file: Path, output_dir: Path, workflow_ope
     authorization = request.authorization
     payload, review = _stage_request(request, payload, workflow_operation,
         LocalArtifactStore(artifact_root), manifest_file, review_file)
-    if request.operation_input is not None:
+    # LOCAL SQL acceptance runs under the separate authority UID. The Job API
+    # requires the exact accepted bytes and rechecks protected authority inside
+    # its enqueue transaction; the worker never receives that SQL credential.
+    if request.operation_input is not None and not isinstance(authorization, LocalRunAuthorization):
         from packages.alpha_lifecycle.authority import AuthorityHeld
         from services.job_store.p3_operation_authority import accept_operation_authorization
+        if not isinstance(authorization, RunAuthorization):
+            raise AuthorityHeld('HELD E_SQL_AUTHORITY: official authorization type required')
         credential_directory = os.environ.get("P3_AUTHORITY_CREDENTIALS_DIRECTORY")
         if not credential_directory:
             raise AuthorityHeld("HELD E_SQL_AUTHORITY: protected acceptance credentials unavailable")
@@ -216,7 +221,7 @@ def _enqueue_job_id(enqueue_raw, body, operator):
 def wait_for_result(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
     job_id,body,operator=read_enqueued_job(request_file,output_dir,workflow_operation,
         artifact_root=artifact_root,manifest_file=manifest_file,review_file=review_file)
-    _wait(job_id,body,operator,token_file,output_dir)
+    _wait(job_id,body,operator,token_file,output_dir,request_file=request_file)
 
 
 def read_enqueued_job(request_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path):
@@ -244,13 +249,19 @@ def read_enqueued_job(request_file: Path, output_dir: Path, workflow_operation: 
 def dispatch(request_file: Path, token_file: Path, output_dir: Path, workflow_operation: str, *, artifact_root: Path, manifest_file: Path, review_file: Path) -> None:
     job_id, body, operator = enqueue(request_file, token_file, output_dir, workflow_operation,
         artifact_root=artifact_root, manifest_file=manifest_file, review_file=review_file)
-    _wait(job_id, body, operator, token_file, output_dir)
+    _wait(job_id, body, operator, token_file, output_dir, request_file=request_file)
 
 
-def _wait(job_id, body, operator, token_file, output_dir):
+def _wait(job_id, body, operator, token_file, output_dir, *, request_file):
+    started, now = time.monotonic(), datetime.now(UTC)
+    request, payload = _validated_request(request_file, body.payload.logical_trial_id)
+    if build_enqueue_body(payload, request.authorization.nonce) != body:
+        raise RuntimeError("HELD E_JOB_API: wait request differs from the authorized job")
+    authorization = request.authorization
     token = _read_token(token_file)
-    deadline = time.monotonic() + 900
-    while True:
+    # Observation includes preparation and retention, not only one child command.
+    deadline = started + (authorization.expires_at - now).total_seconds()
+    while time.monotonic() < deadline and authorization.issued_at <= datetime.now(UTC) < authorization.expires_at:
         detail_raw = _request_json("GET", f"/v1/jobs/{job_id}", token)
         try:
             detail = JobDetailEnvelope.model_validate(detail_raw)
@@ -258,14 +269,15 @@ def _wait(job_id, body, operator, token_file, output_dir):
             state = detail.data.job.state.value
         except Exception as error:
             raise RuntimeError("HELD E_JOB_API: detail response contract is invalid") from error
+        if time.monotonic() >= deadline or not authorization.issued_at <= datetime.now(UTC) < authorization.expires_at:
+            break
         if state in TERMINAL_STATES:
             _write(output_dir, "job-result.json", detail)
             if state != "SUCCEEDED":
                 raise RuntimeError(f"HELD E_P3_JOB: terminal state {state}")
             return
-        if time.monotonic() >= deadline:
-            raise RuntimeError("HELD E_P3_JOB: bounded wait expired")
         time.sleep(1)
+    raise RuntimeError("HELD E_P3_JOB: authorization wait expired")
 
 
 if __name__ == "__main__":

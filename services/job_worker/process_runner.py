@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO, Callable, Protocol, Sequence, cast
 
-from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter
+from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter, _close_descriptors
 from .command_registry import (
     PAPER_COMMAND_ARGV_PREFIX,
     CommandLineage,
@@ -299,7 +299,7 @@ def _read_proc_member(pid: int, *, allow_zombie: bool) -> SessionMember | None:
     try:
         descriptor = os.open(f"/proc/{pid}/stat", flags)
         raw = os.read(descriptor, 4096)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
     finally:
         if descriptor >= 0:
@@ -479,10 +479,13 @@ class ProcessRunner:
                     or any(type(fd) is not int or fd < 0 for fd in p3_built.pass_fds)
                     or p3_built.argv[0] != f'/proc/self/fd/{p3_built.pass_fds[0]}'
                     or type(p3_built.lineage) is not P3SpawnLineage
-                    or type(p3_built.timeout_seconds) is not int or p3_built.timeout_seconds <= 0
+                    or (p3_built.timeout_seconds is not None and (type(p3_built.timeout_seconds) is not int or p3_built.timeout_seconds <= 0))
                     or _COMMIT.fullmatch(p3_built.source_revision) is None
                     or timeout_seconds not in {None,p3_built.timeout_seconds}):
                     raise ValueError('attested P3 spawn shape is unsafe')
+                from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_V2_SHA256
+                if (p3_built.timeout_seconds is None) != (p3_built.lineage.sandbox_policy_sha256 == SANDBOX_PROFILE_V2_SHA256):
+                    raise ValueError('P3 work budget differs from the authenticated sandbox policy')
                 replica_fence = p3_built.replica_fence
                 timeout_seconds = p3_built.timeout_seconds
                 argv, cwd, child_environment, pass_fds = p3_built.argv,p3_built.cwd,p3_built.environment,p3_built.pass_fds
@@ -529,6 +532,10 @@ class ProcessRunner:
                 ):
                     raise ValueError("timeout must equal the attested command timeout")
                 timeout_seconds = engine_built.timeout_seconds
+                if timeout_seconds is None:
+                    from .p3_native_spawn import LOCAL_NATIVE_POLICY_SHA256
+                    if (not native_authority or engine_built.lineage.sandbox_profile_sha256 != LOCAL_NATIVE_POLICY_SHA256):
+                        raise ValueError('Only the authenticated LOCAL P3 native policy may omit its work budget')
                 if _SOURCE_REVISION.fullmatch(engine_built.source_revision) is None:
                     raise ValueError("attested engine source revision is invalid")
                 argv = engine_built.argv
@@ -591,7 +598,7 @@ class ProcessRunner:
                 result_validator_id = built.result_validator_id
                 source_revision = built.backend_revision
                 command_lineage = built.lineage.as_metadata()
-            assert timeout_seconds is not None
+            assert timeout_seconds is not None or p3_authority or native_authority
             # Current safety is the final authority read. Immutable/semantic
             # attestation and all local command validation have already
             # completed, so no potentially slow operation can age this proof
@@ -620,15 +627,18 @@ class ProcessRunner:
                     except OSError:
                         pass
                 close_after_spawn_fds = ()
-        except BaseException:
+        except BaseException as error:
+            pending_fds = (*close_after_spawn_fds, reserve_fd)
+            close_after_spawn_fds = ()
+            reserve_fd = -1
+            pre_spawn_cleanup_errors: list[BaseException] = []
             if p3_output is not None:
-                p3_output.abandon()
-            for descriptor in close_after_spawn_fds:
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-            os.close(reserve_fd)
+                self._best_effort(p3_output.abandon, pre_spawn_cleanup_errors)
+            self._best_effort(lambda: _close_descriptors(*pending_fds), pre_spawn_cleanup_errors)
+            if pre_spawn_cleanup_errors:
+                cleanup_error = pre_spawn_cleanup_errors[0]
+                cleanup_error.__cause__ = error.__cause__
+                raise error from cleanup_error
             raise
         original_streams = (getattr(process, "stdout", None), getattr(process, "stderr", None))
 
@@ -639,6 +649,7 @@ class ProcessRunner:
         session_cleanup = _SessionCleanupState({})
         reaped = False
         suppress_child_signal = False
+        primary_error: BaseException | None = None
         try:
             identity = self._inspector.inspect(process.pid)
             if identity is None or identity.pid != process.pid or identity.process_group != process.pid:
@@ -649,8 +660,9 @@ class ProcessRunner:
 
             leader_pidfd = -1
             try:
-                os.close(reserve_fd)
+                closing_reserve = reserve_fd
                 reserve_fd = -1
+                os.close(closing_reserve)
                 leader_pidfd = self._pidfd_open(identity.pid, 0)
                 leader_member = self._leader_inspector(identity.pid)
                 if (
@@ -777,7 +789,7 @@ class ProcessRunner:
                         safety_reason_code = instruction.reason_code
                 if pending_fence is not None:
                     now = self._monotonic()
-                if reason is None and now - started >= timeout_seconds:
+                if reason is None and timeout_seconds is not None and now - started >= timeout_seconds:
                     reason = "TIMEOUT"
 
                 if pending_fence is not None and reason is None and not leader_exited:
@@ -885,7 +897,8 @@ class ProcessRunner:
             if inventory_ref is not None:
                 p3_output = None
             return result
-        except BaseException:
+        except BaseException as error:
+            primary_error = error
             if identity is not None:
                 self._cleanup_session_bounded(identity, session_cleanup, cleanup_errors)
             elif not suppress_child_signal:
@@ -894,16 +907,27 @@ class ProcessRunner:
         finally:
             if p3_authority and (grant_pipe := getattr(process, 'stdin', None)) is not None:
                 self._best_effort(grant_pipe.close, cleanup_errors)
+            output_cleanup_error: BaseException | None = None
             if p3_output is not None:
-                p3_output.abandon()
+                try:
+                    p3_output.abandon()
+                except BaseException as exc:
+                    output_cleanup_error = exc
             if reserve_fd >= 0:
-                self._best_effort(lambda fd=reserve_fd: os.close(fd), cleanup_errors)
+                closing_reserve = reserve_fd
+                reserve_fd = -1
+                self._best_effort(lambda: os.close(closing_reserve), cleanup_errors)
             if identity is not None and not session_cleanup.complete:
                 self._cleanup_session_bounded(identity, session_cleanup, cleanup_errors)
             self._close_member_handles(session_cleanup, cleanup_errors)
             self._close_selector_and_streams(selector, states, original_streams, cleanup_errors)
             if not reaped:
                 self._wait_bounded(process, cleanup_errors)
+            if output_cleanup_error is not None:
+                if primary_error is not None:
+                    output_cleanup_error.__cause__ = primary_error.__cause__
+                    raise primary_error from output_cleanup_error
+                raise output_cleanup_error
 
     @staticmethod
     def _decision_reason(decision: HeartbeatDecision) -> str:

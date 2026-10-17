@@ -93,6 +93,7 @@ class OperatorControlService:
         intent = snapshot.intent
         assert intent is not None
         if snapshot.receipt is not None:
+            self.authority_recheck()
             return CommandExecutionResultV1(
                 schema_version="operator-command-execution-result-v1",
                 receipt=snapshot.receipt,

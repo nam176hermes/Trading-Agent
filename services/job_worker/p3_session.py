@@ -12,11 +12,13 @@ import time
 from typing import Annotated, Literal, TYPE_CHECKING
 from uuid import UUID
 
-from pydantic import BeforeValidator, Field, model_validator
+from pydantic import BeforeValidator, Field, TypeAdapter, model_validator
 
 from packages.alpha_lifecycle.contracts.base import StrictModel, SourceIdentity, Sha256
 from packages.alpha_lifecycle.contracts.models import json_array
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord, RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import (CustodyRecord, RUN_AUTHORIZATION,
+    RunAuthorizationValue, LocalRunAuthorization, LocalRunIdentity)
+from packages.alpha_lifecycle.authority import local_run_directory
 from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.alpha_lifecycle.operation_input import P3OperationInput, HoldoutInput, NativeParityInput, PhaseExitInput
@@ -35,7 +37,8 @@ if TYPE_CHECKING:
     from packages.alpha_lifecycle.contracts.results import ParityResult
     from packages.alpha_lifecycle.native_request import NativeRequest
     from services.job_store.p3_sql import PublicationProposal
-    from .p3_host_profile import OfficialHostProfile
+    from .p3_host_profile import ANY_OFFICIAL_PROFILE
+    from .p3_spawn import CompleteP3Closure
     from .p3_native_spawn import P3NativeSpawnProvider
     from .p3_native_runner import NativeReplica
     from .process_runner import HeartbeatDecision, HeartbeatInstruction
@@ -65,16 +68,13 @@ class SessionStageProfile(StrictModel):
     attempts: Annotated[tuple[SessionAttempt, ...], BeforeValidator(json_array), Field(min_length=1, max_length=3)]
 
 
-class SessionProfile(StrictModel):
-    schema_version: Literal['p3-holdout-session-v1']
+class _SessionProfileFields(StrictModel):
     source: SourceIdentity
     environment_ref: ArtifactRefV1
     primary_selection_ref: ArtifactRefV1
     custody_record_ref: ArtifactRefV1
     holdout_commitment: Sha256
     closure_sha256: Sha256
-    workflow_run_id: Annotated[int, Field(gt=0)]
-    workflow_attempt: Annotated[int, Field(gt=0)]
     parent: ProcessIdentity
     boot_id: UUID
     issued_at: CanonicalUtcDateTime
@@ -82,10 +82,243 @@ class SessionProfile(StrictModel):
     workflow_deadline: CanonicalUtcDateTime
 
     @model_validator(mode='after')
-    def _bounded(self) -> 'SessionProfile':
-        if not self.issued_at < self.expires_at <= self.workflow_deadline <= self.issued_at + timedelta(minutes=37):
+    def _bounded(self) -> '_SessionProfileFields':
+        if not self.issued_at < self.expires_at <= self.workflow_deadline:
             raise ValueError('session must fit its protected and enclosing workflow deadlines')
         return self
+
+
+class SessionProfile(_SessionProfileFields):
+    schema_version: Literal['p3-holdout-session-v1']
+    workflow_run_id: Annotated[int, Field(gt=0)]
+    workflow_attempt: Annotated[int, Field(gt=0)]
+
+    @model_validator(mode='after')
+    def _hosted_bound(self):
+        if self.workflow_deadline > self.issued_at + timedelta(minutes=37):
+            raise ValueError('hosted session exceeds its workflow maximum')
+        return self
+
+
+class LocalSessionProfile(_SessionProfileFields):
+    schema_version: Literal['p3-local-holdout-session-v1']
+    identity: LocalRunIdentity
+
+    @model_validator(mode='after')
+    def _boot(self):
+        if self.identity.boot_id != self.boot_id:
+            raise ValueError('local session boot identity differs')
+        return self
+
+
+SESSION_PROFILE = TypeAdapter(Annotated[SessionProfile | LocalSessionProfile,Field(discriminator='schema_version')])
+
+
+class LocalSessionOwnerObservation(StrictModel):
+    """Untrusted worker observation; the root controller must inspect the process."""
+    schema_version: Literal['p3-local-session-owner-observation-v1']
+    identity: LocalRunIdentity
+    source: SourceIdentity
+    job_id: str
+    host_profile_sha256: Sha256
+    parent: ProcessIdentity
+    issued_at: CanonicalUtcDateTime
+    workflow_deadline: CanonicalUtcDateTime
+
+    @model_validator(mode='after')
+    def _bounds(self):
+        validate_p3_job_id(self.job_id)
+        if not self.issued_at < self.workflow_deadline:
+            raise ValueError('owner observation deadline is invalid')
+        return self
+
+
+class LocalSessionLaunch(StrictModel):
+    schema_version: Literal['p3-local-session-launch-v1']
+    identity: LocalRunIdentity
+    source: SourceIdentity
+    job_id: str
+    host_profile_sha256: Sha256
+    worker_pid: Annotated[int, Field(gt=0)]
+    worker_start_ticks: Annotated[int, Field(ge=0)]
+    worker_uid: Annotated[int, Field(gt=0)]
+    controller_pid: Annotated[int, Field(gt=0)]
+    issued_at: CanonicalUtcDateTime
+    workflow_deadline: CanonicalUtcDateTime
+
+
+def await_local_session_owner(profile, closure, *, host_profile_digest, expires_at, guard):
+    """Observe the post-exec worker before SQL, then await exact root admission."""
+    from io import BytesIO
+    from .artifacts import ArtifactWriter
+    from packages.runtime_release.config import ProtectedAuthorityError
+    now = datetime.now(UTC)
+    if expires_at <= now:
+        raise ValueError('session authority already expired')
+    path = local_run_directory(profile.identity)/'session.json'
+    launch_path = path.with_name('session-launch.json')
+    # Root may still be publishing immediately after fork; no SQL or observation yet.
+    publish_deadline = time.monotonic() + min(60, (expires_at-now).total_seconds())
+    while True:
+        guard()
+        try:
+            launch_document, _ = read_protected_canonical_json_current(launch_path)
+            break
+        except ProtectedAuthorityError:
+            try:
+                launch_path.lstat()
+            except FileNotFoundError:
+                if time.monotonic() >= publish_deadline:
+                    raise ValueError('protected transport launch observation absent') from None
+                time.sleep(0.25)
+                continue
+            raise
+    launch = LocalSessionLaunch.model_validate_json(canonical_json_bytes(launch_document))
+    deadline = launch.workflow_deadline
+    parent = ProcProcessInspector().inspect(os.getpid())
+    if (parent is None or launch.identity != profile.identity or launch.source != closure.source
+        or launch.job_id != profile.job_id or launch.host_profile_sha256 != host_profile_digest
+        or launch.worker_pid != os.getpid() or launch.worker_start_ticks != parent.start_ticks
+        or launch.worker_uid != os.geteuid() or launch.controller_pid != os.getppid()
+        or not launch.issued_at <= datetime.now(UTC) < deadline <= expires_at):
+        raise ValueError('session owner differs from protected transport launch')
+    observation = LocalSessionOwnerObservation.model_validate_json(canonical_json_bytes(dict(
+        schema_version='p3-local-session-owner-observation-v1', identity=profile.identity,
+        source=closure.source, job_id=profile.job_id, host_profile_sha256=host_profile_digest,
+        parent=dict(pid=parent.pid, process_group=parent.process_group, start_ticks=parent.start_ticks,
+                    command_fingerprint=parent.command_fingerprint),
+        issued_at=launch.issued_at.isoformat().replace('+00:00','Z'),
+        workflow_deadline=deadline.isoformat().replace('+00:00','Z'))))
+    guard()
+    # O_EXCL intentionally prevents restarting this logical owner handshake.
+    writer = ArtifactWriter(Path(profile.output_root))
+    writer.capture_stream(profile.job_id, 'session-owner', 'observation-claim', BytesIO(b''))
+    pending = writer.capture_stream(profile.job_id, 'session-owner',
+        'observation-pending', BytesIO(canonical_json_bytes(observation)))
+    temporary = writer.root/pending.relative_ref
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    os.replace(temporary, temporary.with_name('observation.log'))
+    monotonic_deadline = time.monotonic() + (deadline-datetime.now(UTC)).total_seconds()
+    while time.monotonic() < monotonic_deadline and datetime.now(UTC) < deadline:
+        guard()
+        if read_protected_canonical_json_current(launch_path)[0] != launch_document:
+            raise ValueError('protected transport launch changed')
+        if ProcProcessInspector().inspect(os.getpid()) != parent:
+            raise ValueError('session owner changed during admission')
+        try:
+            document, _ = read_protected_canonical_json_current(path)
+        except ProtectedAuthorityError:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                time.sleep(0.25)
+                continue
+            raise
+        session = LocalSessionProfile.model_validate_json(canonical_json_bytes(document))
+        if (session.parent != parent or session.identity != profile.identity
+            or session.source != closure.source or session.closure_sha256 != closure.closure_sha256
+            or canonical_json_bytes(session.environment_ref) != canonical_json_bytes(profile.environment_ref)
+            or session.issued_at != observation.issued_at or session.workflow_deadline != deadline
+            or not session.issued_at <= datetime.now(UTC) < session.expires_at):
+            raise ValueError('protected session differs from observed owner/deadline')
+        guard()
+        return observation
+    raise ValueError('session owner admission deadline expired')
+
+
+def session_identity(profile) -> tuple[int,int] | LocalRunIdentity:
+    if isinstance(profile,LocalSessionProfile):
+        return profile.identity
+    return profile.workflow_run_id,profile.workflow_attempt
+
+
+SessionRefKind = Literal['NATIVE_COMMITMENT', 'PARITY_PAIR']
+_SESSION_REF_NAMES = {'NATIVE_COMMITMENT': 'native-commitment', 'PARITY_PAIR': 'parity-pair'}
+
+
+class SessionRefObservation(StrictModel):
+    """Untrusted worker note of a session-held reference the next intent must name.
+
+    The references hold no protected prices. The live session still rejects any
+    PARITY or PHASE_EXIT body that differs from what it holds, so a wrong note
+    can only block the campaign, never widen it.
+    """
+    schema_version: Literal['p3-session-ref-observation-v1']
+    job_id: str
+    kind: SessionRefKind
+    ref: ArtifactRefV1
+
+
+def publish_session_ref(output_root, job_id: str, kind: SessionRefKind, ref: ArtifactRefV1) -> Path:
+    """Write the note once, fsynced, under the worker output root; never overwrite."""
+    from io import BytesIO
+    from .artifacts import ArtifactWriter
+    validate_p3_job_id(job_id)
+    note = SessionRefObservation(schema_version='p3-session-ref-observation-v1', job_id=job_id, kind=kind, ref=ref)
+    writer = ArtifactWriter(Path(output_root))
+    name = _SESSION_REF_NAMES[kind]
+    pending = writer.capture_stream(job_id, 'session-refs', name + '-pending', BytesIO(canonical_json_bytes(note)))
+    temporary = writer.root/pending.relative_ref
+    with temporary.open('rb') as stream:
+        os.fsync(stream.fileno())
+    target = temporary.with_name(name + '.log')
+    os.link(temporary, target)  # FileExistsError: one note per job and kind.
+    os.unlink(temporary)
+    return target
+
+
+def read_session_ref(output_root, job_id: str, kind: SessionRefKind, *, worker_uid: int,
+                     store: LocalArtifactStore, expected_source: SourceIdentity) -> ArtifactRefV1:
+    """Owner-observation custody checks, then authenticate the referenced artifact.
+
+    Run under the worker UID (the root controller reaches it through `as_worker`). Nothing from the
+    note or artifact is returned or raised: every failure becomes one fixed error without its chain,
+    and the result is rebuilt from checked values.
+    """
+    try:
+        return _authenticated_session_ref(output_root, job_id, kind, worker_uid=worker_uid,
+                                          store=store, expected_source=expected_source)
+    except Exception:
+        raise ValueError('session reference note rejected') from None
+
+
+def _authenticated_session_ref(output_root, job_id, kind, *, worker_uid, store, expected_source):
+    import hashlib
+    import stat
+    from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.alpha_lifecycle.parity import SessionParityPair
+    from .results import _open_directory_chain
+    validate_p3_job_id(job_id)
+    path = Path(output_root)/job_id/'session-refs'/(_SESSION_REF_NAMES[kind] + '.log')
+    parent_fd = _open_directory_chain(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=parent_fd)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != worker_uid or info.st_nlink != 1
+                or stat.S_IMODE(info.st_mode) != 0o600 or not 1 <= info.st_size <= 4096):
+                raise ValueError('custody')
+            note = SessionRefObservation.model_validate_json(stream.read(4097))
+    finally:
+        os.close(parent_fd)
+    ref = note.ref
+    if (note.job_id != job_id or note.kind != kind or ref.media_type != 'application/json'
+        or ref.locator != ref.content_sha256 + '.blob' or not 1 <= ref.size_bytes <= 65536):
+        raise ValueError('shape')
+    raw = store.read_bytes(ref)
+    if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.content_sha256:
+        raise ValueError('bytes')
+    # The live session always retains the native-bound pair (build_parity_pair with its parent proof).
+    value = (NativeCommitment if kind == 'NATIVE_COMMITMENT' else SessionParityPair).model_validate_json(raw)
+    if canonical_json_bytes(value) != raw:
+        raise ValueError('canonical')
+    bound = value.source if isinstance(value, NativeCommitment) else _read(store, value.manifest_ref, HoldoutManifest).source
+    if bound != expected_source:
+        raise ValueError('source')
+    return ArtifactRefV1(content_sha256=ref.content_sha256, locator=ref.content_sha256 + '.blob',
+                         size_bytes=len(raw), media_type='application/json')
 
 
 class P3HoldoutSession:
@@ -94,8 +327,9 @@ class P3HoldoutSession:
             raise ValueError('session requires the concrete retained store')
         self._digest: str
         document, self._digest = read_protected_canonical_json_current(profile_path)
-        self.profile: SessionProfile = SessionProfile.model_validate_json(canonical_json_bytes(document))
-        expected = Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json')
+        self.profile = SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+        expected = (local_run_directory(self.profile.identity)/'session.json' if isinstance(self.profile,LocalSessionProfile)
+            else Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json'))
         if profile_path != expected:
             raise ValueError('session profile must use its workflow-owned path')
         self._path: Path = profile_path
@@ -111,7 +345,7 @@ class P3HoldoutSession:
         self._outputs: dict[str, ArtifactRefV1] = {}
         self.completed_jobs: list[str] = []
         self._native_receipts: tuple[ArtifactRefV1, ...] = ()
-        self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorization] | None = None
+        self._active: tuple[ClaimedJob, Callable[[], None], str, RunAuthorizationValue] | None = None
         self._closed: bool = False
         self._release_attempted: bool = False
         self._native_spawn_issued: bool = False
@@ -130,6 +364,11 @@ class P3HoldoutSession:
         self.close()
 
     def _check_owner(self) -> None:
+        if isinstance(self.profile,LocalSessionProfile):
+            from packages.alpha_lifecycle.local_qualification import _host_identity
+            if _host_identity() != (self.profile.identity.host_id,self.profile.identity.boot_id):
+                self.close()
+                raise ValueError('local session host identity changed')
         if (self._closed or time.monotonic() >= self._deadline
             or not self.profile.issued_at <= datetime.now(UTC) < self.profile.expires_at
             or os.getpid() != self.profile.parent.pid
@@ -146,6 +385,9 @@ class P3HoldoutSession:
 
     def fence(self) -> None:
         """Call before each replica and durable write, using this stage's lease."""
+        self._fence_closure()
+
+    def _fence_closure(self) -> 'CompleteP3Closure':
         try:
             self._check_view_access()
             active = self._active
@@ -157,16 +399,18 @@ class P3HoldoutSession:
                 raise ValueError('session profile changed')
             if read_protected_canonical_json_current(self._path.with_name('stage.json'))[1] != self._stage_digest:
                 raise ValueError('session protected attempt chain changed')
-            _ = self._host(claim, digest)
-            if (authorization.issuer_run_id != self.profile.workflow_run_id
-                or authorization.issuer_attempt != self.profile.workflow_attempt):
+            _, closure = self._host(claim, digest)
+            identity = (authorization.identity if isinstance(authorization,LocalRunAuthorization)
+                else (authorization.issuer_run_id,authorization.issuer_attempt))
+            if identity != session_identity(self.profile):
                 raise ValueError('stage belongs to another workflow attempt')
             self._check_view_access()
+            return closure
         except BaseException:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> 'OfficialHostProfile':
+    def _host(self, claim: ClaimedJob, digest: str) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
             job_id=claim.job_id, payload=claim.payload, context=os.environ)
@@ -178,7 +422,7 @@ class P3HoldoutSession:
             raise ValueError('session source, environment, runtime or transport changed')
         if self._host_identity is None:
             self._host_identity = identity
-        return profile
+        return profile, closure
 
     @contextmanager
     def stage(self, claim: ClaimedJob, *, fence: Callable[[], None]) -> Generator['P3HoldoutSession', None, None]:
@@ -209,7 +453,7 @@ class P3HoldoutSession:
                 raise ValueError('session protected attempt chain differs from current claim')
             self._stage_digest = stage_digest
             _ = self._host(claim, digest)
-            authorization = _read(self._store, claim.payload.authorization_ref, RunAuthorization)
+            authorization = _read(self._store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
             intent = _read(self._store, claim.payload.manifest_ref, P3OperationInput)
             body = intent.body
             if isinstance(body, HoldoutInput):
@@ -257,7 +501,7 @@ class P3HoldoutSession:
             raise ValueError('session permits exactly one holdout release attempt')
         self._release_attempted = True  # Uncertain acknowledgement never permits a second request.
         try:
-            profile = self._host(active[0], active[2])
+            profile, _ = self._host(active[0], active[2])
             if profile.custodian_endpoint is None:
                 raise ValueError('session has no protected custodian endpoint')
             view, request_ref, manifest_ref = release_holdout_view(active[0], repository, self._store,
@@ -278,18 +522,22 @@ class P3HoldoutSession:
             from packages.alpha_lifecycle.native_request import prepare_native_commitment
             commitment = prepare_native_commitment(manifest_ref, self._spec, view)
             self.native_commitment_ref = self.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
+            if isinstance(self.profile, LocalSessionProfile):  # GITHUB lane not verified for notes.
+                publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
             self.fence()
             return request_ref, manifest_ref
         except BaseException:
             self.close()
             raise
 
-    def spawn_inputs(self, claim: ClaimedJob) -> tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]:
-        self.fence()
+    def spawn_inputs(self, claim: ClaimedJob) -> tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1, 'CompleteP3Closure']:
+        closure = self._fence_closure()
+        if self._view is None:
+            raise ValueError('session has no released view')
         if (self._active is None or self._active[0] != claim or self._active[3].operation != 'HOLDOUT'
             or self._request is None or self._manifest is None or self._spec is None):
             raise ValueError('holdout driver differs from its released current claim')
-        return self.view, self._request, self._manifest, self._spec
+        return self._view, self._request, self._manifest, self._spec, closure
 
     @property
     def view(self) -> HoldoutCalculationView:
@@ -333,7 +581,7 @@ class P3HoldoutSession:
             raise ValueError('native launch requires the active parity stage')
         return P3NativeSpawnProvider(self._path.with_name('native.json'), self._active[0],
             session_sha256=self._digest, requests=requests,
-            commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self.fence)
+            commitment=_read(self, self.native_commitment_ref, NativeCommitment), fence=self._fence_closure)
 
     def execute_native(self, *,
         heartbeat: Callable[[ProcessIdentity], 'HeartbeatDecision | HeartbeatInstruction'],
@@ -346,7 +594,7 @@ class P3HoldoutSession:
             active = self._active
             if active is None:
                 raise ValueError('native execution requires the active parity stage')
-            profile = self._host(active[0], active[2])
+            profile, _ = self._host(active[0], active[2])
             runs = run_native_replicas(provider, view=self.view, output=self,
                 artifact_root=Path(profile.output_root)/'native', heartbeat=heartbeat, preflight=preflight)
             self.native_parent_proof_ref, self._native_receipts = retain_native_proof(provider, runs, self)
@@ -390,6 +638,8 @@ class P3HoldoutSession:
             primary_parity_ref=refs[0], baseline_parity_ref=refs[1], store=self,
             native_parent_proof_ref=self.native_parent_proof_ref)
         self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
+        if isinstance(self.profile, LocalSessionProfile):
+            publish_session_ref(self._host(active[0], active[2])[0].output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
         return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:

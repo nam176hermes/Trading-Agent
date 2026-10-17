@@ -167,7 +167,15 @@ def test_foundation_requires_exact_public_historical_sources() -> None:
     assert closure._foundation_workflow_valid(raw)
     for original, replacement in (
         (b"3f62908385be289999ccd14eed2e4007efdbf9e2", b"0" * 40),
+        (b"366790e9f7d75b9e8fdd277381f095fb62c940e3", b"0" * 40),
         (b"git fetch --no-tags origin", b"git fetch --no-tags untrusted"),
+        (b"-y bubblewrap squashfs-tools", b"-y squashfs-tools"),
+        (b'version: "0.11.7"', b'version: "latest"'),
+        (b"uv run python -m scripts.check_ci_native_prerequisites", b"true"),
+        (b"cache-local-path: /home/runner/.cache/uv", b"cache-local-path: /tmp/cache"),
+        (b"b702a19b26cbd007abf9ccbaa45dfdff99e9dbd646d89c9f3c9bb7b501aea44f", b"0" * 64),
+        (b"cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4", b"0" * 64),
+        (b'--require-hashes --strict --only-binary=":all:"', b'--strict --only-binary=":all:"'),
     ):
         assert original in raw
         assert not closure._foundation_workflow_valid(raw.replace(original, replacement))

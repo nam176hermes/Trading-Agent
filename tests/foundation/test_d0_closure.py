@@ -174,7 +174,25 @@ def test_ci_fetches_exact_historical_review_objects_before_validation() -> None:
     assert "git fetch --no-tags origin" in fetch
     assert "3f62908385be289999ccd14eed2e4007efdbf9e2" in fetch
     assert "a606dbc9862744f5db9ca8325fcc3e18b60d8df1" in fetch
+    assert "366790e9f7d75b9e8fdd277381f095fb62c940e3" in fetch
     assert workflow.index("Fetch immutable historical review sources") < workflow.index("Run canonical local and CI gate")
+
+
+def test_ci_installs_transport_tools_before_validation() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "sudo apt-get update && sudo apt-get install --no-install-recommends -y bubblewrap squashfs-tools" in workflow
+    assert workflow.index("Install transport test tools") < workflow.index("Run canonical local and CI gate")
+
+
+def test_ci_prepares_pinned_offline_source_composition_inputs() -> None:
+    from packages.runtime_release.v2 import PAPER_PYTHON_RUNTIME_PROVENANCE, PAPER_UV_PROVENANCE
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'version: "0.11.7"' in workflow
+    assert "cache-local-path: /home/runner/.cache/uv" in workflow
+    assert '--require-hashes --strict --only-binary=":all:"' in workflow
+    for digest in (PAPER_PYTHON_RUNTIME_PROVENANCE["upstream_archive_sha256"], PAPER_UV_PROVENANCE["sha256"]):
+        assert digest in workflow
+    assert workflow.index("Prepare pinned P3 source-test inputs") < workflow.index("Run canonical local and CI gate")
 
 
 def test_canonical_ci_is_an_alias_for_the_portable_gate() -> None:
@@ -326,3 +344,9 @@ def test_track_c_source_head_defers_runtime_activation() -> None:
         "TRADING_JOB_API_EXPECTED_REVISION=0011_engine_backtest_worker_authority"
         in systemd_example
     )
+
+
+def test_ci_checks_native_prerequisites_before_the_expensive_gate() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "uv run python -m scripts.check_ci_native_prerequisites" in workflow
+    assert workflow.index("Install transport test tools") < workflow.index("Check native prerequisites before the full gate") < workflow.index("Run canonical local and CI gate")

@@ -41,6 +41,23 @@ class ProjectStatusError(ValueError):
     """Project authority evidence is malformed, stale, or contradictory."""
 
 
+def require_p3_source_ready(root: Path, identity=None):
+    """Select one authenticated lane explicitly; never fall back across issuers."""
+    if identity is not None:
+        from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+        from packages.local_pre_p3 import read_local_pre_p3
+        identity = LocalRunIdentity.model_validate(identity)
+        receipt = read_local_pre_p3(root)['PRE_P3_READY']
+        if receipt.identity != identity:
+            raise ProjectStatusError('P3 local source qualification issuer differs')
+        return receipt
+    status = derive_project_status(root)
+    if (status['gates']['HWC_SOURCE_READY'] != 'PASS' or status['gates']['PRE_P3_READY'] != 'PASS'
+        or status['p3_alpha_development_allowed'] is not True):
+        raise ProjectStatusError('P3 protected source gates are not current')
+    return None
+
+
 def receipt_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(
         canonical_json_bytes({key: value for key, value in payload.items() if key != "receipt_sha256"})
@@ -251,7 +268,7 @@ def evaluate_pre_p3_provenance(root: Path) -> dict[str, Any]:
     }
 
 
-def derive_project_status(root: Path) -> dict[str, Any]:
+def derive_project_status(root: Path, *, local: bool = False) -> dict[str, Any]:
     root = root.resolve()
     policy = json.loads(
         (root / "docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v2.json").read_text()
@@ -301,7 +318,7 @@ def derive_project_status(root: Path) -> dict[str, Any]:
     from packages.p3_status import derive_p3_status
 
     p3_status = derive_p3_status(root)
-    return {
+    result = {
         "authority": {"broker": False, "live": False, "network": False, "production": False},
         "blockers": sorted(blockers),
         "current_phase": "P3_ALPHA_DEVELOPMENT" if p3_allowed else "PRE_P3_CLOSURE",
@@ -331,6 +348,12 @@ def derive_project_status(root: Path) -> dict[str, Any]:
         "qualification_provenance": pre_p3["provenance"],
         "schema_version": "trading-agent-project-status-v2",
     }
+
+    if local:
+        from packages.p3_status import derive_local_p3_status
+        result['schema_version']='trading-agent-project-status-v3'
+        result['local_p3_status']=derive_local_p3_status(root).model_dump(mode='json')
+    return result
 
 
 __all__ = [

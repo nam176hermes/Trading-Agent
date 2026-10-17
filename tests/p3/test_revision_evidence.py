@@ -350,3 +350,79 @@ def test_backup_failure_never_returns_receipt(tmp_path,monkeypatch,fault):
     if fault not in ('put_identity','readback'):
         assert tuple(sorted(str(path) for path in tmp_path.rglob('*')))==before
     assert store.read_bytes(ref)==b'{}'
+
+
+# --- T01: LOCAL producer lane reuses the same reconstruction, copy and readback ---
+
+_LOCAL_IDENTITY=dict(issuer_kind='LOCAL',issuer_identity='thenam176-local',
+    run_id='eb0103be-3ab4-4f3e-86e0-31d1c9547ed2',attempt=1,host_id='b'*64,
+    boot_id='39c646a1-867a-4597-9213-3a54eb34666a')
+
+
+def test_local_backup_reconstructs_copies_and_reads_destination(
+    complete_revision_inputs,tmp_path,monkeypatch,
+):
+    """The LOCAL lane must produce the same custody facts, only different provenance."""
+    from packages.alpha_lifecycle import research_custody
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store,ref,query,dataset_ref,dataset=complete_revision_inputs
+    root=tmp_path/'local-backup'
+    root.mkdir(mode=0o700)
+    backup=LocalArtifactStore(root)
+    monkeypatch.setattr(store,'put_bytes',lambda *a,**k:(_ for _ in ()).throw(AssertionError('backup wrote source artifacts')))
+    receipt,object_inventory_ref=research_custody.backup_revision_inventory_local(
+        ref,source=SOURCE,policy_digest=POLICY,query=query,dataset_ref=dataset_ref,
+        store=store,backup=backup,identity=_LOCAL_IDENTITY)
+    assert receipt.schema_version=='p3-local-research-backup-receipt-v1'
+    assert receipt.identity.issuer_identity=='thenam176-local'
+    assert str(receipt.identity.run_id)==_LOCAL_IDENTITY['run_id']
+    assert not hasattr(receipt,'producer_run_id')
+    assert receipt.status=='READBACK_VERIFIED'
+    assert receipt.object_version==receipt.object_inventory_content_sha256==object_inventory_ref.content_sha256
+    assert receipt.inventory_content_sha256==ref.content_sha256
+    assert receipt.dataset_content_sha256==dataset_ref.content_sha256
+    inventory_raw=backup.read_bytes(object_inventory_ref)
+    objects=tuple(ArtifactRefV1.model_validate(item) for item in json.loads(inventory_raw))
+    assert receipt.object_count==len({item.content_sha256 for item in objects})
+    for item in objects:
+        assert backup.read_bytes(item)==store.read_bytes(item)
+
+
+def test_local_backup_rejects_a_non_local_identity(complete_revision_inputs,tmp_path):
+    """A GITHUB-shaped or malformed identity must not reach the LOCAL producer."""
+    from packages.alpha_lifecycle import research_custody
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store,ref,query,dataset_ref,dataset=complete_revision_inputs
+    root=tmp_path/'rejected-backup'
+    root.mkdir(mode=0o700)
+    backup=LocalArtifactStore(root)
+    for identity in (dict(_LOCAL_IDENTITY,issuer_kind='GITHUB'),
+                     dict(_LOCAL_IDENTITY,run_id='1'),
+                     {key:value for key,value in _LOCAL_IDENTITY.items() if key!='host_id'}):
+        with pytest.raises(ValueError):
+            research_custody.backup_revision_inventory_local(
+                ref,source=SOURCE,policy_digest=POLICY,query=query,dataset_ref=dataset_ref,
+                store=store,backup=backup,identity=identity)
+    assert not any(root.iterdir())
+
+
+def test_local_research_proposal_uses_full_backup_readback(complete_revision_inputs, tmp_path):
+    from scripts.prepare_p3_local_research import produce_research_proposal
+    from packages.alpha_lifecycle.local_research import LocalResearchProof
+    from packages.alpha_lifecycle.research_custody import validate_research_batch_commitment
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    store, ref, query, dataset_ref, dataset = complete_revision_inputs
+    root = tmp_path/'proposal-backup'; root.mkdir(mode=0o700)
+    backup = LocalArtifactStore(root)
+    result = produce_research_proposal(ref, source=SOURCE, policy_digest=POLICY, query=query,
+        dataset_ref=dataset_ref, store=store, backup=backup, identity=_LOCAL_IDENTITY)
+    commitment = validate_research_batch_commitment(result['commitment_ref'], source=SOURCE,
+        policy_digest=POLICY, dataset_ref=dataset_ref, dataset=dataset, store=store)
+    proof = _read(store, result['proof_ref'], LocalResearchProof)
+    assert proof.commitment_ref == result['commitment_ref']
+    assert proof.backup_receipt_ref == commitment.backup_receipt_ref
+    assert proof.source_store_root == str(store._root)
+    assert proof.backup_store_root == str(root)
+    assert backup.read_bytes(proof.backup_inventory_ref)
+    assert result['qualification'] == 'PROPOSAL_ONLY'

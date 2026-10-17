@@ -52,7 +52,7 @@ def test_loads_exact_frozen_policy_and_current_compatibility_tuple() -> None:
     assert active.engine_version == "1.231.0"
     assert active.closure_schema_version == 8
     assert active.closure_sha256 == (
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     )
     assert rollback.lifecycle.value == "ROLLBACK"
     assert rollback.engine_version == "1.227.0"

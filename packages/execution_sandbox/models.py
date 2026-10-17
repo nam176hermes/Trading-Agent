@@ -13,6 +13,7 @@ from packages.domain.clock import require_utc
 from packages.domain.events import EventEnvelope
 from packages.domain.orders import OrderEvent, OrderIntent, OrderState
 from packages.domain.orders import FillEvent
+from packages.domain.risk import RiskDecision
 from packages.domain.runtime_halt import (
     ConsumedSubmitAuthority,
     GlobalSafetyObservation,
@@ -228,6 +229,7 @@ class SandboxSubmitRequest(SandboxModel):
     order_id: UUID
     order_intent: OrderIntent
     permit: PreparedSubmitPermit
+    policy_decision: RiskDecision
     current_observation: RuntimeRiskObservation
     current_policy: RuntimeRiskPolicy
     current_safety: GlobalSafetyObservation
@@ -243,6 +245,7 @@ class SandboxSubmitRequest(SandboxModel):
     def _canonical_nested_values(self) -> "SandboxSubmitRequest":
         object.__setattr__(self, "order_intent", _canonical_model(self.order_intent, OrderIntent, "order_intent"))
         object.__setattr__(self, "permit", _canonical_model(self.permit, PreparedSubmitPermit, "permit"))
+        object.__setattr__(self, "policy_decision", _canonical_model(self.policy_decision, RiskDecision, "policy_decision"))
         object.__setattr__(self, "current_observation", _canonical_model(self.current_observation, RuntimeRiskObservation, "current_observation"))
         object.__setattr__(self, "current_policy", _canonical_model(self.current_policy, RuntimeRiskPolicy, "current_policy"))
         object.__setattr__(self, "current_safety", _canonical_model(self.current_safety, GlobalSafetyObservation, "current_safety"))

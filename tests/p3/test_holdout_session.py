@@ -52,7 +52,7 @@ def test_released_view_combines_metadata_without_persisting_raw_inputs(reference
 
 
 @pytest.fixture
-def session_inputs(reference_seed, tmp_path, monkeypatch):
+def session_inputs(reference_seed, tmp_path, monkeypatch, request):
     from dataclasses import asdict
     from datetime import UTC, datetime, timedelta
     import hashlib
@@ -61,7 +61,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
     from types import SimpleNamespace
     from uuid import uuid4
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload, stage_alpha_campaign_payload
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
     from packages.alpha_lifecycle.contracts.lifecycle import RegistrationProof
     from packages.alpha_lifecycle.operation_input import P3OperationInput
@@ -95,6 +95,15 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
         issued_at=utc(now-timedelta(minutes=1)), expires_at=utc(now+timedelta(minutes=3)),
         workflow_deadline=utc(now+timedelta(minutes=4)))
+    local=getattr(request,'param','GITHUB')=='LOCAL'
+    local_identity=None
+    if local:
+        from packages.alpha_lifecycle.local_qualification import _host_identity
+        machine,boot=_host_identity()
+        local_identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id=str(uuid4()),attempt=1,
+            host_id=machine,boot_id=str(boot))
+        profile.pop('workflow_run_id');profile.pop('workflow_attempt')
+        profile.update(schema_version='p3-local-holdout-session-v1',identity=local_identity)
     host = {}
     stage_profile = {}
     attempts = []
@@ -113,14 +122,16 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         if digest(host) != expected_digest or host['job_id'] != job_id or host['payload'] != payload:
             raise ValueError('host profile changed')
         intent = _read(store, payload.manifest_ref, P3OperationInput)
-        auth = _read(store, payload.authorization_ref, RunAuthorization)
+        auth = _read(store, payload.authorization_ref, RUN_AUTHORIZATION)
         assert stage_alpha_campaign_payload(ReadbackStore(store, store), auth, manifest.source,
             intent.workflow_operation, canonical_json_bytes(intent), operation_input=intent) == payload
-        return SimpleNamespace(store_root=str(destination), custodian_endpoint=endpoint,
+        return SimpleNamespace(store_root=str(destination), output_root=str(tmp_path/'output'), custodian_endpoint=endpoint,
             model_dump=lambda **kwargs: {'runtime': host.get('runtime', 'fixed')}), SimpleNamespace(
             source=manifest.source, environment_ref=manifest.environment_ref, closure_sha256='f'*64)
     monkeypatch.setattr('services.job_worker.p3_host_profile.read_official_profile', host_reader)
-    session = module.P3HoldoutSession(Path('/run/trading-agent-p3/1-1/session.json'), store=store)
+    session_path=(Path('/run/trading-agent-p3/local/synthetic')/(local_identity['run_id']+'-1')/'session.json'
+        if local_identity else Path('/run/trading-agent-p3/1-1/session.json'))
+    session = module.P3HoldoutSession(session_path, store=store)
     def claim(operation, **changes):
         body = {
             'HOLDOUT': dict(primary_selection_ref=manifest.primary_selection_ref,
@@ -152,7 +163,13 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
             review_ref=review_ref, operation=operation, allowed_alpha_ids=intent.allowed_alpha_ids,
             issued_at=utc(now-timedelta(minutes=1)), expires_at=utc(now+timedelta(minutes=4)), nonce=str(uuid4()),
             issuer_workflow='p3-authority.yml', issuer_run_id=1, issuer_attempt=1, authority=authority)
-        auth = _read(store, auth_ref, RunAuthorization)
+        if local_identity:
+            import json
+            fields=json.loads(store.read_bytes(auth_ref))
+            for name in ('issuer_workflow','issuer_run_id','issuer_attempt','digest'):fields.pop(name)
+            fields.update(schema_version='p3-local-run-authorization-v1',identity=local_identity)
+            auth_ref=_seal(store,**fields)
+        auth = _read(store, auth_ref, RUN_AUTHORIZATION)
         payload = build_alpha_campaign_payload(auth, manifest.source, workflow, operation_input=intent)
         result = ClaimedJob('job_'+operation, JobType.ALPHA_CAMPAIGN, payload, 'attempt_'+operation,
             1, 'worker', 's'*32, now+timedelta(minutes=1), 1)
@@ -169,7 +186,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch):
         return view, placeholder, manifest_ref
     monkeypatch.setattr('services.job_worker.p3_holdout_release.release_holdout_view', release)
     return SimpleNamespace(session=session, claim=claim, store=store, manifest=manifest_ref, spec=spec_ref,
-        profile=profile, host=host, stage_profile=stage_profile, events=events, module=module)
+        profile=profile, host=host, stage_profile=stage_profile, events=events, module=module, output_root=tmp_path/'output')
 
 
 def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs):
@@ -181,13 +198,72 @@ def test_session_rejects_an_attempt_missing_from_protected_chain(session_inputs)
             pass
 
 
-def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
+@pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
+@pytest.mark.parametrize('fault', [None, 'inverted', 'outside'])
+def test_local_session_uses_authority_window_while_hosted_stays_bounded(session_inputs, fault):
+    from datetime import datetime, timedelta
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    x = session_inputs
+    document = dict(x.profile)
+    issued = datetime.fromisoformat(document['issued_at'].replace('Z', '+00:00'))
+    end = issued + timedelta(minutes=55)
+    document['workflow_deadline'] = end.isoformat().replace('+00:00', 'Z')
+    expires = issued if fault == 'inverted' else end + timedelta(seconds=1 if fault == 'outside' else -1)
+    document['expires_at'] = expires.isoformat().replace('+00:00', 'Z')
+    if fault or document['schema_version'] == 'p3-holdout-session-v1':
+        with pytest.raises(ValueError):
+            x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+    else:
+        profile = x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+        assert profile.issued_at == issued and profile.workflow_deadline == end
+
+
+@pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
+def test_spawn_inputs_uses_one_fresh_host_admission_per_borrow(session_inputs, monkeypatch):
     from services.job_store.worker_repository import WorkerRepository
     x = session_inputs
-    with x.session.stage(x.claim('HOLDOUT'), fence=lambda: x.events.append('holdout-fence')):
+    claim = x.claim('HOLDOUT')
+    with pytest.raises(ValueError, match='session closed'), x.session.stage(claim, fence=lambda: None):
+        x.session.release(object.__new__(WorkerRepository), trace_id='test:borrow')
+        host = x.session._host
+        admissions = []
+        def observe(*args):
+            admissions.append(args)
+            return host(*args)
+        monkeypatch.setattr(x.session, '_host', observe)
+        view, request, manifest, spec, closure = x.session.spawn_inputs(claim)
+        assert closure.source == x.session.profile.source
+        assert manifest == x.manifest and spec == x.spec and request is not None
+        assert view.read_bytes(manifest)
+        assert len(admissions) == 1
+        assert x.session.spawn_inputs(claim)[0] is view
+        assert len(admissions) == 2
+        # A completed admission is never reused for the next access.
+        x.profile['closure_sha256'] = '0' * 64
+        with pytest.raises(ValueError, match='session profile changed'):
+            x.session.spawn_inputs(claim)
+        with pytest.raises(ValueError, match='closed'):
+            view.read_bytes(manifest)
+
+
+@pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
+def test_session_reuses_one_view_across_independently_admitted_stages(session_inputs):
+    import os
+    from services.job_store.worker_repository import WorkerRepository
+    from services.job_worker.p3_session import LocalSessionProfile, read_session_ref
+    x = session_inputs
+    holdout = x.claim('HOLDOUT')
+    with x.session.stage(holdout, fence=lambda: x.events.append('holdout-fence')):
         x.session.release(object.__new__(WorkerRepository), trace_id='test:session')
         view = x.session.view
         assert view.read_bytes(x.manifest)
+    # Root learns the commitment for the PARITY intent only from the worker's retained note.
+    note = x.output_root/holdout.job_id/'session-refs'/'native-commitment.log'
+    if isinstance(x.session.profile, LocalSessionProfile):
+        assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid(),
+            store=x.store, expected_source=x.session.profile.source) == x.session.native_commitment_ref
+    else:  # The note channel is LOCAL-only until the GITHUB lane is verified separately.
+        assert not note.exists()
     for stage in ('PARITY', 'PHASE_EXIT'):
         with x.session.stage(x.claim(stage), fence=lambda: x.events.append(stage)):
             assert x.session.view is view
@@ -199,6 +275,7 @@ def test_session_reuses_one_view_across_independently_admitted_stages(session_in
         view.read_bytes(x.manifest)
 
 
+@pytest.mark.parametrize('session_inputs',['GITHUB','LOCAL'],indirect=True)
 @pytest.mark.parametrize('fault', ['cancel', 'lease', 'profile', 'runtime', 'deadline', 'repeated_release',
     'stage_order', 'alias_between_jobs', 'attempt_chain', 'review', 'pid', 'boot'])
 def test_failed_session_revokes_alias_and_cannot_resume(session_inputs, monkeypatch, fault):
@@ -218,8 +295,8 @@ def test_failed_session_revokes_alias_and_cannot_resume(session_inputs, monkeypa
             elif fault == 'runtime': x.host['runtime'] = 'substituted'
             elif fault == 'attempt_chain': x.stage_profile['attempts'][0]['lease_token_sha256'] = '0'*64
             elif fault == 'review':
-                from packages.alpha_lifecycle.contracts.authority import RunAuthorization
-                auth = RunAuthorization.model_validate_json(x.store.read_bytes(x.host['payload'].authorization_ref))
+                from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
+                auth = RUN_AUTHORIZATION.validate_json(x.store.read_bytes(x.host['payload'].authorization_ref))
                 (x.store._root/auth.review_ref.locator).write_bytes(b'{}')
             elif fault == 'pid': monkeypatch.setattr(x.module.os, 'getpid', lambda: 999999999)
             elif fault == 'boot':
@@ -372,3 +449,185 @@ def test_session_exit_recomputes_with_same_view_without_raw_cas(session_inputs, 
     assert all(not (x.store._root/ref.locator).exists() for ref in (*reference_seed[-2], reference_seed[-1]))
     with pytest.raises(ValueError, match='closed'):
         _ = view.raw
+
+
+def test_local_session_uses_protected_local_identity_without_github_numbers(session_inputs,monkeypatch):
+    from pathlib import Path
+    from packages.engine_contracts import canonical_json_bytes
+    from packages.alpha_lifecycle.local_qualification import _host_identity
+    from services.job_worker import p3_session as module
+    import hashlib
+    x=session_inputs
+    document=x.session.profile.model_dump(mode='json')
+    for name in ('workflow_run_id','workflow_attempt'):document.pop(name)
+    host,boot=_host_identity()
+    identity=dict(issuer_kind='LOCAL',issuer_identity='operator-a',run_id='00000000-0000-4000-8000-000000000002',
+        attempt=1,host_id=host,boot_id=str(boot))
+    document.update(schema_version='p3-local-holdout-session-v1',identity=identity)
+    monkeypatch.setattr(module,'read_protected_canonical_json_current',lambda path:(document,hashlib.sha256(canonical_json_bytes(document)).hexdigest()))
+    path=Path('/run/trading-agent-p3/local/operator-a/00000000-0000-4000-8000-000000000002-1/session.json')
+    session=module.P3HoldoutSession(path,store=x.store)
+    assert session.profile.identity.model_dump(mode='json')==identity
+    assert module.session_identity(session.profile)==session.profile.identity
+    assert not hasattr(session.profile,'workflow_run_id')
+    with pytest.raises(ValueError,match='path'):
+        module.P3HoldoutSession(Path('/run/trading-agent-p3/1-1/session.json'),store=x.store)
+    document['identity']={**identity,'host_id':'0'*64}
+    with pytest.raises(ValueError,match='host|identity'):
+        module.P3HoldoutSession(path,store=x.store)
+
+
+def _synthetic_commitment(store):
+    import hashlib
+    import json
+    from packages.alpha_lifecycle.native_request import NativeCommitment
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    dummy = store.put_bytes(b'{}', media_type='application/json').model_dump(mode='json')
+    value = dict(schema_version='p3-native-commitment-v1', environment_ref=dummy, manifest_ref=dummy,
+                 instrument_spec_ref=dummy, primary_request_sha256='4'*64, baseline_request_sha256='5'*64,
+                 source=dict(closure_policy_sha256='0'*64, closure_schema_version='trading-agent-source-closure-v1',
+                             closure_sha256='1'*64, commit_sha='2'*40, tree_sha='3'*40))
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    commitment = NativeCommitment.model_validate_json(json.dumps(value))
+    return store.put_bytes(canonical_json_bytes(commitment), media_type='application/json'), commitment.source
+
+
+@pytest.mark.parametrize('fault', [None, 'republish', 'owner', 'mode', 'link', 'kind', 'job', 'media',
+                                   'missing', 'wrong_type', 'source'])
+def test_session_ref_note_is_single_use_custody_checked_and_authenticated(tmp_path, fault):
+    import os
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.data_contracts import ArtifactRefV1
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    if fault == 'media':  # Codex F01: worker-chosen text must never be echoed.
+        ref = ref.model_copy(update=dict(media_type='SYNTHETIC_H1_CLOSE=12345.67'))
+    if fault == 'missing':
+        ref = ArtifactRefV1(content_sha256='a'*64, locator='a'*64+'.blob', size_bytes=10, media_type='application/json')
+    if fault == 'wrong_type':
+        ref = store.put_bytes(b'{"schema_version":"other"}', media_type='application/json')
+    if fault == 'source':
+        source = SourceIdentity.model_validate({**source.model_dump(mode='json'), 'commit_sha': '9'*40})
+    output = tmp_path/'output'
+    path = publish_session_ref(output, 'job_parity', 'NATIVE_COMMITMENT', ref)
+    uid, kind, job = os.geteuid(), 'NATIVE_COMMITMENT', 'job_parity'
+    if fault == 'republish':
+        with pytest.raises(FileExistsError):
+            publish_session_ref(output, 'job_parity', 'NATIVE_COMMITMENT', ref)
+        return
+    if fault == 'owner': uid += 1
+    if fault == 'mode': path.chmod(0o640)
+    if fault == 'link': os.link(path, output/'alias')
+    if fault == 'kind':
+        path.rename(path.with_name('parity-pair.log')); kind = 'PARITY_PAIR'
+    if fault == 'job':
+        path.parent.parent.rename(output/'job_other'); job = 'job_other'
+    def read():
+        return read_session_ref(output, job, kind, worker_uid=uid, store=store, expected_source=source)
+    if fault is None:
+        assert read() == ref
+    else:
+        _assert_rejected_without_marker(read)
+
+
+def _assert_rejected_without_marker(read):
+    import traceback
+    with pytest.raises(ValueError) as error:
+        read()
+    # Nothing worker-controlled may survive in the message or the exception chain (Codex round 2).
+    assert 'SYNTHETIC_H1' not in ''.join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None and error.value.__suppress_context__
+
+
+@pytest.mark.parametrize('variant', ['note_field', 'artifact_field'])
+def test_session_ref_rejection_carries_no_worker_text(tmp_path, variant):
+    import json
+    import os
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    if variant == 'artifact_field':
+        ref = store.put_bytes(b'{"schema_version":"SYNTHETIC_H1_CLOSE=12345.67"}', media_type='application/json')
+    path = publish_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT', ref)
+    if variant == 'note_field':
+        note = json.loads(path.read_bytes())
+        note['ref']['size_bytes'] = 'SYNTHETIC_H1_CLOSE=12345.67'
+        path.write_bytes(json.dumps(note).encode())
+    _assert_rejected_without_marker(lambda: read_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT',
+        worker_uid=os.geteuid(), store=store, expected_source=source))
+
+
+@pytest.mark.parametrize('observed', [
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'SYNTHETIC_H1_CLOSE=1'},
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 'SYNTHETIC_H1_CLOSE=1', 'media_type': 'application/json'},
+    {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'application/json',
+     'extra': 'SYNTHETIC_H1_CLOSE=1'},
+    'SYNTHETIC_H1_CLOSE=1'])
+def test_root_accepts_only_a_plain_ref_from_the_worker_helper(observed):
+    from scripts.p3_local_controller import checked_session_ref
+    _assert_rejected_without_marker(lambda: checked_session_ref(observed))
+
+
+def test_worker_helper_session_ref_action_round_trips_and_rejects_extra_fields(tmp_path):
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from scripts.p3_local_controller import checked_session_ref
+    from scripts.p3_local_host import session_ref_action
+    from services.job_worker.p3_session import publish_session_ref
+    (tmp_path/'cas').mkdir(mode=0o700)
+    store = LocalArtifactStore(tmp_path/'cas')
+    ref, source = _synthetic_commitment(store)
+    publish_session_ref(tmp_path/'output', 'job_parity', 'NATIVE_COMMITMENT', ref)
+    command = dict(action='session-ref', output_root=str(tmp_path/'output'), job_id='job_parity',
+                   kind='NATIVE_COMMITMENT', store_root=str(tmp_path/'cas'),
+                   expected_source=source.model_dump(mode='json'))
+    assert checked_session_ref(session_ref_action(command)) == ref
+    with pytest.raises(ValueError):
+        session_ref_action(dict(command, credentials_directory='/run/anything'))
+
+
+@pytest.mark.parametrize('fault', [None, 'uid', 'source', 'run_id'])
+def test_root_note_read_binds_runtime_to_this_session_before_the_worker_helper(monkeypatch, fault):
+    from pathlib import Path
+    from types import SimpleNamespace
+    from scripts import p3_local_controller as controller
+    import scripts.p3_local_host as host_module
+    import scripts.p3_local_transport as transport
+    import services.job_worker.p3_host_profile as profiles
+    import services.job_worker.p3_session as session_module
+    source = dict(commit_sha='2'*40, tree_sha='3'*40, closure_sha256='1'*64,
+                  closure_policy_sha256='0'*64, closure_schema_version='trading-agent-source-closure-v1')
+    identity = dict(issuer_kind='LOCAL', issuer_identity='synthetic', run_id='00000000-0000-4000-8000-000000000001',
+                    attempt=1, host_id='a'*64, boot_id='00000000-0000-4000-8000-000000000002')
+    class V2:
+        pass
+    host = V2()
+    host.image = SimpleNamespace(worker_uid=980, worker_gid=980)
+    host.output_root, host.store_root, host.job_id = '/w/out', '/w/cas', 'job_parity'
+    request = SimpleNamespace(authorization=SimpleNamespace(identity=SimpleNamespace(model_dump=lambda **_: identity)),
+                              execution_source=SimpleNamespace(model_dump=lambda **_: source))
+    runtime = dict(uid=980, identity=dict(identity), source=dict(source), expires_at=None,
+                   application_root='/app', application_python='/app/python')
+    if fault == 'uid': runtime['uid'] = 981
+    if fault == 'source': runtime['source'] = {**source, 'commit_sha': '9'*40}
+    if fault == 'run_id': runtime['identity'] = {**identity, 'run_id': '00000000-0000-4000-8000-000000000009'}
+    calls = []
+    ref = {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'application/json'}
+    monkeypatch.setattr(profiles, 'LocalOfficialHostProfileV2', V2)
+    monkeypatch.setattr(controller, '_session_context', lambda path: (request, Path('/run/session'), host, None))
+    monkeypatch.setattr(controller, '_protected_model', lambda path, model: SimpleNamespace(worker_uid=980))
+    monkeypatch.setattr(transport, '_runtime_authority', lambda value: runtime)
+    monkeypatch.setattr(transport, '_official_deadline', lambda bound, expires: bound)
+    monkeypatch.setattr(host_module, 'as_worker', lambda *args: calls.append(args) or ref)
+    monkeypatch.setattr(session_module, 'LocalSessionLaunch', object)
+    if fault is None:
+        assert controller.read_session_ref('/request.json', 'NATIVE_COMMITMENT')['ref'].locator == ref['locator']
+        assert len(calls) == 1
+    else:
+        with pytest.raises(ValueError):
+            controller.read_session_ref('/request.json', 'NATIVE_COMMITMENT')
+        assert calls == []

@@ -78,9 +78,10 @@ function requestWithSession(token) {
 }
 
 function auditEvents() {
-  const auditPath = path.join(researchDirectory, 'memory', 'dashboard_mutation_audit.jsonl');
-  if (!fs.existsSync(auditPath)) return [];
-  return fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
+  const directory = path.join(researchDirectory, 'memory');
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory).filter((name) => /^dashboard_mutation_audit\..+\.jsonl$/.test(name)).sort()
+    .flatMap((name) => fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').map(JSON.parse));
 }
 
 test('every mutation route passes its explicit required role to the shared policy', () => {
@@ -209,8 +210,9 @@ test('malformed persisted audit evidence fails closed without overwriting it', a
     import('../src/lib/trading/auth.ts'),
     import('../src/lib/trading/session.ts'),
   ]);
+  const { mutationAuditPath } = await import('../src/lib/trading/auth.ts');
   const auditDirectory = path.join(researchDirectory, 'memory');
-  const auditPath = path.join(auditDirectory, 'dashboard_mutation_audit.jsonl');
+  const auditPath = mutationAuditPath();
   const malformed = '{"event":"dashboard_mutation_authorization"\n';
   fs.mkdirSync(auditDirectory, { mode: 0o700 });
   fs.writeFileSync(auditPath, malformed, { mode: 0o600 });
@@ -321,4 +323,138 @@ test('auth helper has structured fail-closed configuration and credential errors
   assert.match(source, /CONFIGURATION_ERROR/);
   assert.match(source, /UNAUTHORIZED/);
   assert.doesNotMatch(source, /if\s*\(!password\)\s*return null/);
+});
+
+test('audit log at its read cap rotates into a retained segment instead of locking mutations', async () => {
+  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
+    import('../src/lib/trading/auth.ts'),
+    import('../src/lib/trading/session.ts'),
+  ]);
+  const { mutationAuditPath } = await import('../src/lib/trading/auth.ts');
+  const auditDirectory = path.join(researchDirectory, 'memory');
+  const auditPath = mutationAuditPath();
+  const record = '{"event":"dashboard_mutation_authorization","pad":"';
+  const filler = 1024 * 1024 - 1 - record.length - 3;
+  const nearCap = `${record}${'x'.repeat(filler)}"}\n`;
+  assert.equal(Buffer.byteLength(nearCap), 1024 * 1024 - 1);
+  fs.mkdirSync(auditDirectory, { mode: 0o700 });
+  fs.writeFileSync(auditPath, nearCap, { mode: 0o600 });
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = authorizeMutation(
+      requestWithSession(issueSession('operator')),
+      'pipeline.run',
+      'MUTATION_EXECUTION_SENSITIVE',
+      'operator',
+    );
+    assert.equal(response, null);
+  }
+
+  const segments = fs.readdirSync(auditDirectory)
+    .filter((name) => name !== path.basename(auditPath) && /^dashboard_mutation_audit\..+\.jsonl$/.test(name));
+  assert.equal(segments.length, 1);
+  assert.equal(fs.readFileSync(path.join(auditDirectory, segments[0]), 'utf8'), nearCap);
+  assert.equal(fs.statSync(path.join(auditDirectory, segments[0])).mode & 0o777, 0o600);
+  const current = fs.readFileSync(auditPath, 'utf8').trimEnd().split('\n').map((line) => JSON.parse(line));
+  assert.equal(current.length, 2);
+  assert.ok(current.every((row) => row.authorization_outcome === 'GRANTED'));
+});
+
+function writerScript(count) {
+  // Child processes share the parent's module hooks so they load the same TypeScript sources.
+  const src = new URL('../src/', import.meta.url).href;
+  const next = new URL('../node_modules/next/server.js', import.meta.url).href;
+  return `
+import fs from 'node:fs';
+import { registerHooks } from 'node:module';
+import { fileURLToPath } from 'node:url';
+registerHooks({ resolve(specifier, context, nextResolve) {
+  if (specifier === 'server-only') return { shortCircuit: true, url: 'data:text/javascript,export%20{}' };
+  if (specifier === 'next/server') return { shortCircuit: true, url: ${JSON.stringify(next)} };
+  if (specifier.startsWith('@/')) {
+    for (const suffix of ['.ts', '.tsx', '/index.ts']) {
+      const candidate = ${JSON.stringify(src)} + specifier.slice(2) + suffix;
+      if (fs.existsSync(fileURLToPath(candidate))) return { shortCircuit: true, url: candidate };
+    }
+  }
+  if (specifier.startsWith('.') && context.parentURL?.includes('/src/')) {
+    const url = new URL(specifier.replace(/\\.js$/, '') + '.ts', context.parentURL);
+    if (fs.existsSync(fileURLToPath(url))) return { shortCircuit: true, url: url.href };
+  }
+  return nextResolve(specifier, context);
+} });
+const { authorizeMutation } = await import(${JSON.stringify(src + 'lib/trading/auth.ts')});
+const { issueSession } = await import(${JSON.stringify(src + 'lib/trading/session.ts')});
+let granted = 0;
+for (let i = 0; i < ${count}; i += 1) {
+  const request = new Request('https://dashboard.test/api/trading/run',
+    { method: 'POST', headers: { cookie: 'trading_session=' + issueSession('operator') } });
+  if (authorizeMutation(request, 'pipeline.run', 'MUTATION_EXECUTION_SENSITIVE', 'operator') === null) granted += 1;
+}
+process.stdout.write(String(granted));
+`;
+}
+
+function allAuditRecords() {
+  const directory = path.join(researchDirectory, 'memory');
+  return fs.readdirSync(directory)
+    .filter((name) => /^dashboard_mutation_audit(\..+)?\.jsonl$/.test(name))
+    .flatMap((name) => fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').map(JSON.parse));
+}
+
+test('two dashboard processes writing the audit log never lose an authorized event (audit A07)', async () => {
+  const { spawn } = await import('node:child_process');
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', writerScript(40)], { env: process.env });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(Number(out)) : reject(new Error(`writer exited ${code}`))));
+  });
+  const granted = await Promise.all([run(), run()]);
+  assert.deepEqual(granted, [40, 40]);
+  const records = allAuditRecords();
+  assert.equal(records.length, 80);
+  assert.ok(records.every((row) => row.authorization_outcome === 'GRANTED'));
+});
+
+test('a partial write by one process never invalidates another process record (audit AR04)', async () => {
+  const [{ authorizeMutation }, { issueSession }] = await Promise.all([
+    import('../src/lib/trading/auth.ts'),
+    import('../src/lib/trading/session.ts'),
+  ]);
+  const { spawn } = await import('node:child_process');
+  const run = (limitKiB) => new Promise((resolve, reject) => {
+    // A child with RLIMIT_FSIZE gets a short write once its log would cross the limit.
+    const script = writerScript(20);
+    const child = limitKiB
+      ? spawn('/bin/bash', ['-c', `ulimit -f ${limitKiB}; exec "$0" --input-type=module -e "$1"`, process.execPath, script],
+        // RLIMIT_FSIZE would also cut an inherited V8 coverage file short; the empty value keeps node from re-adding it.
+        { env: { ...process.env, NODE_V8_COVERAGE: '' } })
+      : spawn(process.execPath, ['--input-type=module', '-e', script], { env: process.env });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', reject);
+    child.on('close', () => resolve(Number(out)));
+  });
+  const [limited, normal] = await Promise.all([run(1), run(0)]);
+  assert.ok(limited < 20, 'the size-limited writer must hit a short write');
+  assert.equal(normal, 20);
+  // This process is a third writer after the damage: it must still authorize and record.
+  assert.equal(authorizeMutation(requestWithSession(issueSession('operator')), 'pipeline.run',
+    'MUTATION_EXECUTION_SENSITIVE', 'operator'), null);
+  const directory = path.join(researchDirectory, 'memory');
+  let valid = 0;
+  let broken = 0;
+  for (const name of fs.readdirSync(directory).filter((entry) => /^dashboard_mutation_audit\..+\.jsonl$/.test(entry))) {
+    const lines = fs.readFileSync(path.join(directory, name), 'utf8').split('\n');
+    const tail = lines.pop();
+    for (const line of lines) {
+      assert.equal(JSON.parse(line).authorization_outcome, 'GRANTED', name);
+      valid += 1;
+    }
+    if (tail !== '') broken += 1;   // only the limited writer's own log may end in its failed write
+  }
+  assert.equal(valid, limited + normal + 1);
+  assert.ok(broken <= 1);
 });

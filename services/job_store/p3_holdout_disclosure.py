@@ -9,7 +9,7 @@ import hashlib
 from psycopg import OperationalError
 
 from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord,FamilyReview,PrimarySelection,RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import CustodyRecord,FamilyReview,PrimarySelection,RUN_AUTHORIZATION
 from packages.alpha_lifecycle.contracts.execution import InputSet
 from packages.alpha_lifecycle.holdout import derive_holdout_request
 from packages.alpha_lifecycle.operation_input import HoldoutInput,P3OperationInput
@@ -35,7 +35,7 @@ def consume(pool,claim: ClaimedJob,store,*,trace_id: str) -> datetime:
         _reference(ref,65536)
         return _read(reader,ref,model)
     intent=read(claim.payload.manifest_ref,P3OperationInput)
-    authorization=read(claim.payload.authorization_ref,RunAuthorization)
+    authorization=read(claim.payload.authorization_ref,RUN_AUTHORIZATION)
     if (not isinstance(intent.body,HoldoutInput) or build_alpha_campaign_payload(authorization,
         claim.payload.expected_source,claim.payload.logical_trial_id,operation_input=intent)!=claim.payload):
         raise ValueError('holdout disclosure payload differs from approved inputs')

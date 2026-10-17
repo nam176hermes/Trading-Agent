@@ -47,13 +47,13 @@ def test_p1_profile_is_one_code_owned_closed_policy() -> None:
     assert policy.result_validator_id == "nautilus-p1-event-stream-v1"
     assert policy.timeout_seconds == 120
     assert policy.closure_sha256 == (
-        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+        "5863b3c96c9bf31c8c6239cfedb9617b2f7418fff3cd7c697028b15392bf2155"
     )
     assert policy.sandbox_profile_sha256 == (
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
     )
     assert policy.runtime_inventory_sha256 == (
-        "1078d6bc593ef4b2037985bd458aa51c04ce9a315977098e9ce1270c0e350e62"
+        "42591b911732211c3c1b67a3ef26b6d079d9fb28065178bce1c2cfdcb380415e"
     )
     assert "profile" not in RunBacktest.model_fields
 

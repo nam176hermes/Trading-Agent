@@ -266,9 +266,9 @@ def _probe_repository(repository: Any, expected_revision: str, *, session: bool 
     if pool is None:
         return False, False
     if session:
-        from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
+        from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOGS
         from services.job_store.p3_custodian_release import IDENTITY as SESSION_IDENTITY_SQL
-        if expected_revision != SESSION_REVISION:
+        if expected_revision not in SESSION_CATALOGS:
             return False, False
         try:
             with pool.connection() as connection, connection.transaction():
@@ -276,7 +276,7 @@ def _probe_repository(repository: Any, expected_revision: str, *, session: bool 
                 identity = connection.execute(SESSION_IDENTITY_SQL).fetchone()
                 catalog = connection.execute(SESSION_CATALOG_SQL).fetchone()
                 return True, identity == {'current_user': 'trading_job_api', 'session_user': 'trading_job_api',
-                    'version_num': SESSION_REVISION, 'restricted': True} and catalog == {'catalog_sha256': SESSION_CATALOG_SHA256}
+                    'version_num': expected_revision, 'restricted': True} and catalog == {'catalog_sha256': SESSION_CATALOGS[expected_revision]}
         except Exception:
             return False, False
     try:

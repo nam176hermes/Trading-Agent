@@ -1,0 +1,2791 @@
+{
+  "lanes": [
+    {
+      "lane_id": "green",
+      "red_sql_operation": null,
+      "red_sql_path": null,
+      "scope": "DISPOSABLE_PG_GREEN"
+    },
+    {
+      "lane_id": "red-catalog",
+      "red_sql_operation": "jobs-authority-catalog-derivation-red-v1",
+      "red_sql_path": "ops/postgres/job-plane-authority/acl-repair-v1.sql",
+      "scope": "DISPOSABLE_PG_RED"
+    },
+    {
+      "lane_id": "red-evidence",
+      "red_sql_operation": "jobs-authority-catalog-evidence-derivation-red-v1",
+      "red_sql_path": "ops/postgres/job-plane-authority/acl-repair-v1.sql",
+      "scope": "DISPOSABLE_PG_RED"
+    }
+  ],
+  "nodes": [
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-application-role-permissions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_alembic_schema.py::test_application_role_permissions_are_least_privilege"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-alembic-head-cycle-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_alembic_schema.py::test_empty_database_upgrades_to_deterministic_head"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-alembic-0008-to-0009-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_alembic_schema.py::test_prior_0008_revision_upgrades_to_exact_0009"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-alembic-0007-to-0008-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_alembic_schema.py::test_prior_supported_0007_revision_upgrades_to_exact_0008"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_changed_source_content_requires_new_run_and_preserves_old_provenance"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_collision_is_quarantined_without_overwrite"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_explicit_apply_gate_and_idempotent_second_run"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_failed_chunk_rolls_back_then_resume_retries_without_duplicates"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_mid_chunk_failure_rolls_back_every_row_and_checkpoint"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-fixture-importer-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_fixture_importer.py::test_resume_rejects_changed_inventory_or_normalization"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-phase3b-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_phase3b_transactions.py::test_chunk_failure_rolls_back_and_resume_completes"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-phase3b-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_phase3b_transactions.py::test_real_phase3b_apply_and_second_apply_are_idempotent"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "control-api-real-data-apply-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/control_api/test_real_data_apply.py::test_reviewed_real_plan_first_and_second_apply_are_idempotent"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-alembic-empty-upgrade-downgrade-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_alembic_jobs_schema.py::test_empty_database_upgrades_to_exact_0004_and_downgrades"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-alembic-heartbeat-git-sha1-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_alembic_jobs_schema.py::test_heartbeat_code_commit_accepts_real_git_sha1[scheduler_heartbeats-\\n            INSERT INTO scheduler_heartbeats (\\n              heartbeat_id, scheduler_id, code_commit, actor_id, trace_id,\\n              tick_at, outcome\\n            ) VALUES (\\n              'scheduler-sha1', 'scheduler-one', %s, 'scheduler-one',\\n              'trace-sha1', now(), 'SKIPPED_NOT_SLOT'\\n            )\\n            ]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-alembic-heartbeat-git-sha1-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_alembic_jobs_schema.py::test_heartbeat_code_commit_accepts_real_git_sha1[worker_heartbeats-\\n            INSERT INTO worker_heartbeats (\\n              worker_id, code_commit, status, heartbeat_at\\n            ) VALUES ('worker-sha1', %s, 'IDLE', now())\\n            ]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-alembic-0003-upgrade-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_alembic_jobs_schema.py::test_revision_0003_upgrades_in_place_to_0004"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_0006_discloses_missing_global_default_function_acl"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_0007_catalog_matches_reviewed_forward_repair"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-0007-forward-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_0007_green_gate_requires_two_independent_reviewed_catalog_captures"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-0007-rejection-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_0007_rejects_catalog_drift_without_changing_pre_0007_authority"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-0007-rejection-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_0007_rejects_event_chain_violation_without_changing_pre_0007_authority"
+    },
+    {
+      "lane_id": "red-evidence",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-evidence-capture-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        },
+        {
+          "operation_id": "jobs-authority-catalog-evidence-derivation-red-v1",
+          "red_sql_path": "ops/postgres/job-plane-authority/acl-repair-v1.sql",
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_capture_reviewed_catalog_evidence_for_operator_review"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_contains_alembic_relation_but_not_head_row"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[altered-trigger-statements2]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[changed-function-body-statements3]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[changed-function-result-statements5]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[changed-function-search-path-statements4]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[disabled-trigger-statements1]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[extra-column-acl-statements14]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[extra-default-acl-statements15]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[extra-event-suppressing-trigger-statements0]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[extra-relation-acl-statements12]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[extra-sequence-acl-statements13]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[function-overload-statements6]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[policy-drift-statements10]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[public-execute-statements7]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[rls-drift-statements11]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[safe-role-setting-drift-statements16]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[wrong-function-grant-option-statements9]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_catalog_digest_changes_for_every_adversarial_catalog_drift[wrong-function-grantee-statements8]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-derivation-red-v1",
+          "red_sql_path": "ops/postgres/job-plane-authority/acl-repair-v1.sql",
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_hash_bound_acl_derivation_is_rolled_back_on_the_same_connection"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-authority-catalog-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_authority_catalog.py::test_unknown_role_setting_returns_only_key_and_never_secret_value"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_duplicate_terminal_transition_within_epoch_is_rejected[DISPOSABLE_PG_GREEN]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_duplicate_terminal_transition_within_epoch_is_rejected[DISPOSABLE_PG_RED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_event_after_terminal_without_retry_is_rejected[DISPOSABLE_PG_GREEN]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_event_after_terminal_without_retry_is_rejected[DISPOSABLE_PG_RED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-bootstrap-attempt-BOOTSTRAP_ATTEMPT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-bootstrap-edge-BOOTSTRAP_EDGE]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-cross-job-attempt-CROSS_JOB_ATTEMPT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-disconnected-DISCONNECTED_FROM_STATE]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-final-mismatch-FINAL_STATE_MISMATCH]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-later-null-LATER_NULL_FROM_STATE]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-sequence-duplicate-SEQUENCE_DUPLICATE]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-sequence-gap-SEQUENCE_GAP]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-sequence-start-SEQUENCE_START]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_GREEN-unapproved-edge-UNAPPROVED_EDGE]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-bootstrap-attempt-BOOTSTRAP_ATTEMPT]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-bootstrap-edge-BOOTSTRAP_EDGE]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-cross-job-attempt-CROSS_JOB_ATTEMPT]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-disconnected-DISCONNECTED_FROM_STATE]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-final-mismatch-FINAL_STATE_MISMATCH]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-later-null-LATER_NULL_FROM_STATE]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-sequence-duplicate-SEQUENCE_DUPLICATE]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-sequence-gap-SEQUENCE_GAP]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-sequence-start-SEQUENCE_START]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_every_non_retry_history_violation[DISPOSABLE_PG_RED-unapproved-edge-UNAPPROVED_EDGE]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_job_with_no_history[DISPOSABLE_PG_GREEN]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_reports_job_with_no_history[DISPOSABLE_PG_RED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-changed-metadata-RETRY_METADATA]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-different-attempt-RETRY_ATTEMPT_CHANGED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-forged-attempt-RETRY_FORGED_ATTEMPT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-not-adjacent-RETRY_NOT_ADJACENT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-null-attempt-RETRY_ATTEMPT_CHANGED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-over-budget-RETRY_OVER_BUDGET]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-wrong-actor-RETRY_WRONG_ACTOR]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_GREEN-wrong-reason-RETRY_WRONG_REASON]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-changed-metadata-RETRY_METADATA]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-different-attempt-RETRY_ATTEMPT_CHANGED]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-forged-attempt-RETRY_FORGED_ATTEMPT]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-not-adjacent-RETRY_NOT_ADJACENT]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-null-attempt-RETRY_ATTEMPT_CHANGED]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-over-budget-RETRY_OVER_BUDGET]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-wrong-actor-RETRY_WRONG_ACTOR]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_retry_rejects_actor_reason_attempt_budget_adjacency_and_metadata[DISPOSABLE_PG_RED-wrong-reason-RETRY_WRONG_REASON]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_valid_retry_epoch_allows_a_second_terminal_result[DISPOSABLE_PG_GREEN-recovery]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_valid_retry_epoch_allows_a_second_terminal_result[DISPOSABLE_PG_GREEN-worker]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_valid_retry_epoch_allows_a_second_terminal_result[DISPOSABLE_PG_RED-recovery]"
+    },
+    {
+      "lane_id": "red-catalog",
+      "operations": [
+        {
+          "operation_id": "jobs-event-chain-authority-red-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_event_chain_authority.py::test_valid_retry_epoch_allows_a_second_terminal_result[DISPOSABLE_PG_RED-worker]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_attempt_children_cannot_cross_job_boundaries"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_api-INSERT INTO job_artifacts DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_api-INSERT INTO job_attempts DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_api-INSERT INTO scheduler_heartbeats DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_api-INSERT INTO worker_heartbeats DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_api-SELECT lease_owner FROM jobs]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_scheduler-INSERT INTO job_attempts DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_scheduler-SELECT lease_owner FROM jobs]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_scheduler-UPDATE jobs SET state = state]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_worker-INSERT INTO jobs DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_cross_role_sensitive_operations_are_denied[trading_job_worker-INSERT INTO scheduler_heartbeats DEFAULT VALUES]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_each_runtime_role_is_denied_delete_truncate_and_ddl[trading_job_api]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_each_runtime_role_is_denied_delete_truncate_and_ddl[trading_job_scheduler]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_each_runtime_role_is_denied_delete_truncate_and_ddl[trading_job_worker]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_job_role_acl_and_rls_catalog_is_exact"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_job_roles_have_exact_flags_memberships_and_no_ownership"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_legacy_roles_and_default_acls_have_zero_job_authority"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_nonexistent_gregorian_schedule_date_is_denied_at_database_boundary"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_owner_is_also_prevented_from_mutating_append_only_events"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_real_api_role_can_enqueue_and_cancel_only"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_real_scheduler_role_can_enqueue_only_one_exact_snapshot_slot"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-role-permissions-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_role_permissions.py::test_real_worker_role_can_claim_start_finalize_and_heartbeat"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_api_cannot_commit_trigger_valid_cancel_without_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_api_capability_rejects_noncanonical_snapshot_identity[invalid_payload0-dc993577d7fe81a0fc6b23e281e0b7e2a182d557143cfa312d21078271b4091a]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_api_capability_rejects_noncanonical_snapshot_identity[invalid_payload1-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_cancel_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_cancel_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_cancel_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_cancel_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-6]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[api_enqueue_snapshot-arg-7]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[scheduler_enqueue_snapshot-arg-6]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_claim_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_control_snapshot_lease-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-13]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-16]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-18]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-6]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-7]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-8]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_finalize_snapshot-arg-9]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-10]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-11]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-12]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-13]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_recover_expired_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-6]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-7]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-8]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_capabilities_reject_null_required_arguments[worker_start_snapshot-arg-9]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_recovery_capability_blocks_incomplete_stored_identity[all-null-UPDATE public.job_attempts SET child_pid = NULL, process_group_id = NULL, process_start_ticks = NULL, command_fingerprint = NULL WHERE attempt_id = %s]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_recovery_capability_blocks_incomplete_stored_identity[partial-UPDATE public.job_attempts SET command_fingerprint = NULL WHERE attempt_id = %s]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_recovery_capability_rejects_null_observation_without_mutation"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_runtime_head_is_transition_authority_revision"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_runtime_roles_have_no_direct_state_or_event_dml"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_scheduler_capability_rejects_noncanonical_snapshot_identity[invalid_payload0-dc993577d7fe81a0fc6b23e281e0b7e2a182d557143cfa312d21078271b4091a]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_scheduler_capability_rejects_noncanonical_snapshot_identity[invalid_payload1-ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_transition_authority_function_catalog_is_exact"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-authority-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_authority.py::test_worker_cannot_commit_state_without_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-transition-restore-green-v1",
+          "red_sql_path": null,
+          "scope": "DISPOSABLE_PG_GREEN"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_job_transition_restore.py::test_green_restore_round_trip_preserves_0007_authority"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "postgres-harness-base-provisioning-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_postgres_harness.py::test_disposable_database_provisions_exact_0004_role_preconditions"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "postgres-harness-isolated-environment-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_postgres_harness.py::test_temp_cluster_exports_only_an_isolated_allowlisted_environment"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_actor_and_trace_are_attributed_without_auth_material"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_canonical_same_payload_deduplicates_to_same_job"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_enqueue_rolls_back_job_when_database_rejects_event_insert"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_first_enqueue_persists_queued_job_and_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_same_key_with_different_actor_is_conflict"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-enqueue-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_enqueue.py::test_two_concurrent_enqueues_create_one_job_and_one_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_get_job_recursively_freezes_event_and_artifact_metadata"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_get_job_returns_events_in_sequence_order"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_get_job_returns_none_for_unknown_id"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_get_job_uses_one_repeatable_read_snapshot_during_concurrent_transition"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_applies_bounded_limit_and_offset"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_applies_type_state_actor_and_time_filters"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_has_stable_newest_first_order_with_job_id_tiebreak"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters2]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters3]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters4]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters5]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters6]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters7]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-queries-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_queries.py::test_list_jobs_normalizes_all_malformed_filter_types[filters8]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_approved_retry_requeues_without_terminal_or_lease_residue[FAILED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_approved_retry_requeues_without_terminal_or_lease_residue[TIMED_OUT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_active_job_transitions_to_cancel_requested[CLAIMED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_active_job_transitions_to_cancel_requested[RUNNING]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_queued_transitions_directly_to_cancelled"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_terminal_job_is_a_noop[BLOCKED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_terminal_job_is_a_noop[CANCELLED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_terminal_job_is_a_noop[FAILED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_terminal_job_is_a_noop[SUCCEEDED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_terminal_job_is_a_noop[TIMED_OUT]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_cancel_unknown_job_raises_typed_error"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_stale_worker_capability_returns_false_and_writes_no_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-repository-transactions-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_repository_transactions.py::test_worker_transition_rolls_back_when_database_rejects_event_insert"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-scheduler-repository-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_scheduler_repository.py::test_concurrent_scheduler_processes_create_one_job"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-scheduler-repository-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_scheduler_repository.py::test_non_slot_tick_persists_skipped_heartbeat_without_job"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-scheduler-repository-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_scheduler_repository.py::test_repeat_tick_enqueues_once_and_persists_both_transactional_outcomes"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-claims-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_claims.py::test_claim_orders_by_priority_then_fifo_and_is_atomic"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-claims-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_claims.py::test_claim_rolls_back_job_attempt_and_event_together"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-claims-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_claims.py::test_skip_locked_claims_next_job_and_never_double_claims"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-claims-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_claims.py::test_two_simultaneous_claim_transactions_assign_one_job_once"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_cancel_requested_before_start_is_fenced_and_finalized_without_identity"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_cancel_requested_heartbeat_and_finalize_preserve_attempt_outcome[False-CLAIMED]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_cancel_requested_heartbeat_and_finalize_preserve_attempt_outcome[True-RUNNING]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_expired_token_cannot_renew_or_finalize_and_writes_no_false_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_late_finalize_fence_loss_rolls_back_inserted_artifacts"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_running_job_rejects_claimed_attempt_outcome_for_lifecycle_updates"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_start_heartbeat_and_finalize_require_full_fence"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_start_persists_complete_process_identity_and_wrong_token_writes_no_event"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-leases-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_leases.py::test_terminal_attempt_cannot_be_heartbeated_or_finalized"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_absent_child_interrupts_then_requeues_when_eligible"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_attempts_exhausted_stays_failed"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_incomplete_identity_blocks_as_unverifiable"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_matching_live_child_blocks_without_retry"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_nonmatching_live_identity_blocks_without_retry[observed0]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_nonmatching_live_identity_blocks_without_retry[observed1]"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_possible_result_requires_reconciliation_not_retry"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_result_appearing_during_process_observation_blocks_stale_requeue"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_terminal_attempt_before_candidate_scan_is_not_recovered"
+    },
+    {
+      "lane_id": "green",
+      "operations": [
+        {
+          "operation_id": "jobs-worker-recovery-v1",
+          "red_sql_path": null,
+          "scope": "GREEN_OR_RED"
+        }
+      ],
+      "test_node_id": "tests/jobs/test_worker_recovery.py::test_terminal_attempt_winning_during_observation_rejects_recovery_mutation"
+    }
+  ],
+  "schema_version": "postgres-authority-lanes/v1"
+}

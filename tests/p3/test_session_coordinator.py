@@ -38,7 +38,10 @@ def test_coordinator_keeps_one_view_and_never_reclaims(session_inputs, monkeypat
         admitted.custodian_endpoint = checked.custodian_endpoint
         return admitted, closure
     monkeypatch.setattr(p3_host_profile, 'read_official_profile', host)
-    monkeypatch.setattr(p3_host_profile.OfficialHostProfile, 'model_validate_json', lambda raw: profile())
+    # The stage-transition seam resolves the lane through the shared discriminated union,
+    # not by picking a concrete model class, so the fake has to replace that adapter.
+    monkeypatch.setattr(p3_host_profile, 'OFFICIAL_PROFILE',
+        SimpleNamespace(validate_json=lambda raw: profile()))
     def no_unbounded_wait(_):
         raise AssertionError('unexpected unbounded wait')
     monkeypatch.setattr(module.time, 'sleep', no_unbounded_wait)
@@ -144,6 +147,43 @@ def test_official_entry_dispatches_holdout_to_session_after_host_admission(synth
 
 
 from tests.p3.test_spawn_capability import synthetic_provider  # noqa: E402,F401
+
+
+def test_local_session_rejects_replacement_while_constructing_preflight(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from services.job_worker import p3_official, p3_host_profile, p3_local_runtime, p3_session
+    from services.job_worker.errors import SafetyBlockedError
+    reads = []
+    def current(authority, identity, source, deadline):
+        reads.append(deadline)
+        return 'a'*64 if len(reads) <= 2 else 'b'*64
+    monkeypatch.setattr(p3_local_runtime, 'require_local_runtime', current)
+    original_guard = p3_local_runtime.local_runtime_guard(None, None, None, 'operation-deadline')
+    deadline = datetime.now(UTC)+timedelta(minutes=37)
+    class Profile(SimpleNamespace):
+        pass
+    profile = Profile(identity=object(), store_root=str(tmp_path), output_root=str(tmp_path),
+        job_id='job_'+'1'*32, environment_ref=object())
+    closure = SimpleNamespace(source=object(), environment_ref=profile.environment_ref, closure_sha256='c'*64)
+    # The launcher asks "is this the LOCAL lane?" against the shared lane base that both the
+    # v1 and v2 profiles inherit, so the fake stands in for that base. Substituting the
+    # concrete LocalOfficialHostProfile would let a v2 profile answer the GITHUB branch.
+    monkeypatch.setattr(p3_host_profile, 'LocalOfficialHostProfileLane', Profile)
+    class Session:
+        profile = SimpleNamespace(workflow_deadline=deadline, **vars(closure))
+        spawn_inputs = None
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(p3_official, 'local_run_directory', lambda identity: tmp_path)
+    monkeypatch.setattr(p3_session, 'P3HoldoutSession', lambda *a, **k: Session())
+    monkeypatch.setattr('services.job_worker.p3_spawn.P3SpawnProvider', lambda **kwargs: object())
+    monkeypatch.setattr(p3_official, 'read_protected_canonical_json_current', lambda path: ({}, 'd'*64))
+    def no_worker(*args, **kwargs):
+        pytest.fail('replacement reached worker construction with a newly pinned approval')
+    with pytest.raises(SafetyBlockedError):
+        p3_official.run_session({}, repository=object(), profile=profile, closure=closure,
+            authority=object(), build_worker=no_worker, runtime_guard=original_guard)
+    assert reads[0] == 'operation-deadline' and all(value == deadline for value in reads[1:])
 
 
 @pytest.mark.parametrize('fault', [None, 'lost_ack', 'unknown_commit', 'wrong_readback'])

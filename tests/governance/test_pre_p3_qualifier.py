@@ -796,3 +796,11 @@ def test_pre_p3_final_rejects_pending_p0_even_when_other_gates_pass(
 
     with pytest.raises(QualificationError, match="P0"):
         pre_p3_final(tmp_path, tmp_path / "pre-p3.json", status_payload=status)
+
+
+def test_local_receipt_validity_covers_a_campaign_within_the_24h_bound():
+    from scripts.qualify_pre_p3 import LOCAL_RECEIPT_VALIDITY
+
+    # Receipts are consumed against started_at + 24h; integration plus seven operations and a
+    # 37-minute holdout session need several hours from one qualification.
+    assert timedelta(hours=4) <= LOCAL_RECEIPT_VALIDITY <= timedelta(hours=8)

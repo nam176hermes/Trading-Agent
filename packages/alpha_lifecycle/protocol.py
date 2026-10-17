@@ -14,6 +14,10 @@ from .baselines import BaselineResultV1
 
 
 _Return = Annotated[Decimal, Field(ge=Decimal("-1"), le=Decimal("1000"))]
+# Fold excess subtracts two scenario total_return values, each bounded by _Return.
+_FoldExcess = Annotated[Decimal, Field(ge=Decimal("-1001"), le=Decimal("1001"))]
+# Regime subset returns are unbounded finite DecimalText values in RegimeResult.
+_RegimeExcess = Annotated[Decimal, Field(allow_inf_nan=False)]
 _NonNegative = Annotated[Decimal, Field(ge=0, le=Decimal("1000000"))]
 
 
@@ -68,8 +72,8 @@ class AlphaQualificationEvidenceV1(_Frozen):
     pit_adversarial_passed: bool
     metrics: PerformanceMetricsV1
     baseline_result: BaselineResultV1
-    fold_excess_returns: tuple[_Return, ...] = Field(min_length=3, max_length=32)
-    regime_excess_returns: tuple[_Return, ...] = Field(min_length=3, max_length=32)
+    fold_excess_returns: tuple[_FoldExcess, ...] = Field(min_length=3, max_length=32)
+    regime_excess_returns: tuple[_RegimeExcess, ...] = Field(min_length=3, max_length=32)
     perturbation_net_returns: tuple[_Return, ...] = Field(min_length=2, max_length=64)
     double_cost_net_return: _Return
     delayed_execution_net_return: _Return

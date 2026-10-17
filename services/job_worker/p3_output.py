@@ -13,7 +13,8 @@ from packages.data_catalog.artifact_store import LocalArtifactStore, ArtifactInt
 from packages.alpha_lifecycle.replica_store import ArtifactStore, ReadbackStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES
+from packages.alpha_lifecycle.sandbox_policy import CHILD_POLICY, MAX_ATTEMPT_OUTPUT_BYTES, MAX_OUTPUT_INVENTORY_BYTES, SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256
+from .artifacts import _close_descriptors
 
 _MAX_FILES = 8192
 _FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
@@ -27,9 +28,14 @@ class P3OutputCustody:
     def __init__(self, parent_fd: int, output_fd: int, name: str, store: LocalArtifactStore, *,
         before_retain: Callable[[dict[str, ArtifactRefV1], ArtifactStore], None] | None = None,
         before_write: Callable[[], None] | None = None,
+        sandbox_policy_digest: str = SANDBOX_PROFILE_SHA256,
     ) -> None:
         if type(store) is not LocalArtifactStore or re.fullmatch('[0-9a-f]{64}',name) is None:
             raise ValueError('P3 output custody requires the retained store and exact attempt directory')
+        if sandbox_policy_digest not in {SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256}:
+            raise ValueError('P3 output requires an accepted sandbox policy')
+        self._local_work = sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256
+        self._postrun_started = False
         self._parent = self._output = -1
         self._retained = None
         self._postrun_deadline = None
@@ -62,18 +68,15 @@ class P3OutputCustody:
             or any(info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700 for info in (current,opened))):
             raise ValueError('P3 output directory identity changed')
 
-    def _close(self) -> None:
+    def _close(self, *descriptors: int) -> None:
+        opened=list(descriptors)
         if self._retained is not None:
             directories=self._retained[0]
             self._retained=None
-            for relative,fd in directories.items():
-                if relative:
-                    os.close(fd)
-        for name in ('_output','_parent'):
-            fd=getattr(self,name)
-            setattr(self,name,-1)
-            if fd >= 0:
-                os.close(fd)
+            opened.extend(fd for relative,fd in directories.items() if relative)
+        opened.extend((self._output,self._parent))
+        self._output=self._parent=-1
+        _close_descriptors(*opened)
 
     def abandon(self) -> None:
         try:
@@ -111,19 +114,20 @@ class P3OutputCustody:
             os.close(fd)
 
     def begin_postrun(self) -> None:
-        if self._postrun_deadline is not None:
+        if self._postrun_started:
             raise ValueError('P3 post-run budget cannot be restarted')
-        self._postrun_deadline=time.monotonic()+CHILD_POLICY['child_wall_seconds']
+        self._postrun_started = True
+        self._postrun_deadline=None if self._local_work else time.monotonic()+CHILD_POLICY['child_wall_seconds']
 
     def check_deadline(self) -> None:
-        if self._postrun_deadline is None or time.monotonic() >= self._postrun_deadline:
+        if not self._postrun_started or (self._postrun_deadline is not None and time.monotonic() >= self._postrun_deadline):
             raise TimeoutError('P3 post-run deadline is absent or expired')
 
     def retain(self, *, progress: Callable[[], None] | None = None) -> ArtifactRefV1:
         if self._retained is not None:
             raise ValueError('P3 output was already retained')
         self._check()
-        if self._postrun_deadline is None:
+        if not self._postrun_started:
             self.begin_postrun()
         def check() -> None:
             self.check_deadline()
@@ -187,17 +191,36 @@ class P3OutputCustody:
                 self._before_retain({relative+'/'+name: ref for relative, name, _, ref in files}, PinnedReader())
                 check()
             inventory=[]
+            retained_refs: set[ArtifactRefV1] = set()
             for relative,name,expected,ref in files:
                 check()
                 raw=self._read(directories[relative],name,expected)
-                if self._before_write is not None:
-                    self._before_write()
+                if ref not in retained_refs:
+                    try:
+                        existing = self._store.read_bytes(ref)
+                    except ArtifactIntegrityError as error:
+                        missing = error.__cause__
+                        if not isinstance(missing, FileNotFoundError) or missing.filename != ref.locator:
+                            raise
+                    else:
+                        if existing != raw:
+                            raise ValueError('P3 preexisting output readback differs')
+                        retained_refs.add(ref)
+                if ref not in retained_refs:
+                    if self._before_write is not None:
+                        self._before_write()
+                        check()
+                    retained=self._store.put_bytes(raw,media_type=ref.media_type)
                     check()
-                retained=self._store.put_bytes(raw,media_type=ref.media_type)
-                check()
-                if retained != ref or self._store.read_bytes(ref) != raw:
+                    if retained != ref:
+                        raise ValueError('P3 retained output reference differs')
+                # Replicas retain every pinned private path. Only a reference
+                # already published and freshly read back can avoid a
+                # repeated write; both private and retained bytes stay checked.
+                if self._store.read_bytes(ref) != raw:
                     raise ValueError('P3 retained output readback differs')
                 check()
+                retained_refs.add(ref)
                 inventory.append(dict(path=relative+'/'+name,artifact_ref=ref))
             inventory_raw=canonical_json_bytes(inventory)
             if len(inventory_raw) > MAX_OUTPUT_INVENTORY_BYTES:
@@ -214,10 +237,7 @@ class P3OutputCustody:
             self._retained=(directories,listing,files,inventory_ref)
             return inventory_ref
         except BaseException:
-            for relative,fd in directories.items():
-                if relative:
-                    os.close(fd)
-            self._close()
+            self._close(*(fd for relative,fd in directories.items() if relative))
             raise
 
     @property

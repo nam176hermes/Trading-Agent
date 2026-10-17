@@ -86,9 +86,9 @@ class PrepareCase:
     initial_safety: GlobalSafetyObservation
 
 
-def approved_active_case() -> PrepareCase:
+def approved_active_case(selected: EvaluatorCase | None = None) -> PrepareCase:
     ledger = InMemoryEventLedger()
-    selected = evaluator_case()
+    selected = selected or evaluator_case()
     approval_event = runtime_risk_event(
         selected,
         event_id=uid(803),
@@ -434,6 +434,8 @@ def consume(
     arguments: dict[str, object] = {
         "repository": repository or case.ledger,
         "permit": permit,
+        "intent": case.evaluator.intent,
+        "policy_decision": case.evaluator.policy_decision,
         "current_observation": case.evaluator.observation,
         "current_policy": case.evaluator.policy,
         "current_safety": safety(observed_at=PREPARED_AT + timedelta(seconds=1)),
@@ -1250,3 +1252,174 @@ def test_consume_submit_permit_is_strictly_one_shot() -> None:
 
     assert case.ledger.load_events() == prior_events
     assert case.ledger.load_outbox() == prior_outbox
+
+
+# CR03: historical approval and fresh admissibility are separate checks. Prepare and consume re-run the whole
+# evaluator on the bound facts at their own operation time. Aged facts are built BEFORE approval so every digest is
+# valid; the oracle is UTC arithmetic plus the contract reason enum, never the evaluator itself.
+from packages.domain import Currency  # noqa: E402
+from packages.domain.runtime_risk import RuntimeRiskReasonCode  # noqa: E402
+
+T0 = NOW
+MICROSECOND = timedelta(microseconds=1)
+Reason = RuntimeRiskReasonCode
+
+
+def _with_fact_at(fact: str, at: datetime) -> EvaluatorCase:
+    base = evaluator_case(settlement_currency=Currency.USDT, conversion_rate=Decimal("1")) if fact == "conversion" \
+        else evaluator_case()
+    observation = base.observation
+    portfolio = observation.portfolio
+    position = portfolio.positions[0]
+    if fact == "market":
+        observation = observation.model_copy(update={"market_snapshots": tuple(
+            item.model_copy(update={"observed_at": at}) for item in observation.market_snapshots)})
+    elif fact == "conversion":
+        observation = observation.model_copy(update={"conversion_rates": tuple(
+            item.model_copy(update={"observed_at": at}) for item in observation.conversion_rates)})
+    elif fact == "venue":
+        observation = observation.model_copy(update={"venue_health": tuple(
+            item.model_copy(update={"observed_at": at}) for item in observation.venue_health)})
+    elif fact == "command_window":
+        observation = observation.model_copy(update={"command_window_started_at": at})
+    else:
+        if fact == "portfolio":                # the snapshot is aged with everything it contains (domain invariant)
+            mark = position.mark
+            assert mark is not None
+            portfolio = portfolio.model_copy(update={
+                "observed_at": at,
+                "balances": tuple(item.model_copy(update={"observed_at": at}) for item in portfolio.balances),
+                "positions": (position.model_copy(update={
+                    "observed_at": at, "mark": mark.model_copy(update={"marked_at": at})}),),
+            })
+        elif fact == "balance":
+            portfolio = portfolio.model_copy(update={"balances": tuple(
+                item.model_copy(update={"observed_at": at}) for item in portfolio.balances)})
+        elif fact == "position":               # a mark may not be newer than its position (domain invariant)
+            mark = position.mark
+            assert mark is not None
+            portfolio = portfolio.model_copy(update={"positions": (position.model_copy(
+                update={"observed_at": at, "mark": mark.model_copy(update={"marked_at": at})}),)})
+        elif fact == "mark":
+            mark = position.mark
+            assert mark is not None
+            portfolio = portfolio.model_copy(update={"positions": (position.model_copy(
+                update={"mark": mark.model_copy(update={"marked_at": at})}),)})
+        else:
+            raise AssertionError(fact)
+        observation = observation.model_copy(update={"portfolio": portfolio})
+    return EvaluatorCase(base.intent, base.policy_decision, observation, base.policy)
+
+
+_TTL_FACTS = {                     # fact -> contract reason when it is older than its 10 s TTL
+    "market": Reason.MARKET_DATA_STALE,
+    "conversion": Reason.VALUATION_AUTHORITY_MISSING,
+    "portfolio": Reason.PORTFOLIO_STATE_INVALID,
+    "balance": Reason.PORTFOLIO_STATE_INVALID,
+    "position": Reason.PORTFOLIO_STATE_INVALID,
+    "mark": Reason.PORTFOLIO_STATE_INVALID,
+    "venue": Reason.VENUE_UNHEALTHY,
+}
+
+
+def _ledger_state(case: PrepareCase) -> tuple[object, object]:
+    return case.ledger.load_events(), case.ledger.load_outbox()
+
+
+def test_prepare_rechecks_admissibility_at_prepared_at() -> None:
+    case = approved_active_case()                          # every fact at T0, approved at T0
+    prepared_at = T0 + timedelta(seconds=240)              # decision still inside its 5-minute life
+    before = _ledger_state(case)
+
+    with pytest.raises(SubmitPermitPreparationError) as raised:
+        prepare(case, prepared_at=prepared_at, current_safety=safety(observed_at=prepared_at - timedelta(seconds=1)))
+
+    assert raised.value.reason_codes == (
+        Reason.MARKET_DATA_STALE, Reason.PORTFOLIO_STATE_INVALID, Reason.COMMAND_RATE_LIMIT, Reason.VENUE_UNHEALTHY,
+    )
+    assert str(raised.value) == "submit permit preparation failed"
+    assert _ledger_state(case) == before                   # rejected before any append
+
+
+@pytest.mark.parametrize("fact", sorted(_TTL_FACTS))
+def test_consume_rechecks_facts_that_expire_after_prepare(fact: str) -> None:
+    case = approved_active_case(_with_fact_at(fact, T0 - timedelta(seconds=9)))
+    permit = prepare(case, prepared_at=T0 + timedelta(seconds=1))     # age exactly 10 s = TTL: accepted
+    consumed_at = T0 + timedelta(seconds=1) + MICROSECOND             # permit valid until T0 + 6 s
+    assert consumed_at < permit.expires_at
+    before = _ledger_state(case)
+
+    with pytest.raises(SubmitPermitConsumptionError) as raised:
+        consume(case, permit, consumed_at=consumed_at, current_safety=safety(observed_at=consumed_at))
+
+    assert raised.value.reason_codes == (_TTL_FACTS[fact],)
+    assert str(raised.value) == "submit permit consumption failed"
+    assert _ledger_state(case) == before
+
+
+def test_command_window_expiry_requires_new_approval() -> None:
+    case = approved_active_case(_with_fact_at("command_window", T0 - timedelta(seconds=59)))
+    permit = prepare(case, prepared_at=T0 + timedelta(seconds=1))     # window age exactly 60 s: accepted
+    consumed_at = T0 + timedelta(seconds=1) + MICROSECOND
+    before = _ledger_state(case)
+
+    with pytest.raises(SubmitPermitConsumptionError) as raised:
+        consume(case, permit, consumed_at=consumed_at, current_safety=safety(observed_at=consumed_at))
+
+    assert raised.value.reason_codes == (Reason.COMMAND_RATE_LIMIT,)
+    assert _ledger_state(case) == before
+
+
+@pytest.mark.parametrize("fact", [*sorted(_TTL_FACTS), "command_window"])
+def test_fresh_admissibility_boundaries_are_inclusive(fact: str) -> None:
+    age = timedelta(seconds=60 if fact == "command_window" else 10)
+    consumed_at = T0 + timedelta(seconds=2)
+    case = approved_active_case(_with_fact_at(fact, consumed_at - age))  # exactly at the limit when consumed
+    permit = prepare(case)
+
+    authority = consume(case, permit, consumed_at=consumed_at, current_safety=safety(observed_at=consumed_at))
+
+    assert authority.permit_id == permit.permit_id
+
+
+def test_prepare_rejects_a_fact_one_microsecond_past_its_ttl() -> None:
+    case = approved_active_case(_with_fact_at("market", T0 - timedelta(seconds=9)))
+    before = _ledger_state(case)
+
+    with pytest.raises(SubmitPermitPreparationError) as raised:
+        prepare(case, prepared_at=T0 + timedelta(seconds=1) + MICROSECOND)
+
+    assert raised.value.reason_codes == (Reason.MARKET_DATA_STALE,)
+    assert _ledger_state(case) == before
+
+
+@pytest.mark.parametrize("changed", ("intent", "policy_decision"))
+def test_consume_binds_exact_intent_and_policy_decision(changed: str) -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    before = _ledger_state(case)
+    replacement = (
+        case.evaluator.intent.model_copy(update={"client_order_id": "client-forged"})
+        if changed == "intent"
+        else case.evaluator.policy_decision.model_copy(update={"policy_version": "target-policy-forged"})
+    )
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, **{changed: replacement})             # same IDs, different content
+
+    assert _ledger_state(case) == before
+
+
+def test_new_facts_require_new_approval_and_permit() -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    fresh = case.evaluator.observation.model_copy(update={"state_version": 2})
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, current_observation=fresh)            # new facts under the old permit
+
+    renewed = evaluator_case()
+    renewed = EvaluatorCase(renewed.intent, renewed.policy_decision, fresh, renewed.policy)
+    new_case = approved_active_case(renewed)                        # new approval over the new facts
+    new_permit = prepare(new_case)
+    assert consume(new_case, new_permit, current_observation=fresh).permit_id == new_permit.permit_id

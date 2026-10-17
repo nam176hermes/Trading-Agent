@@ -182,3 +182,42 @@ def test_event_union_is_closed_and_discriminated() -> None:
         P1_EVENT_ADAPTER.validate_json(json.dumps(missing))
     with pytest.raises(ValidationError):
         P1_EVENT_ADAPTER.validate_python({"event_type": "FabricatedCallback"})
+
+
+# CR01: a split fill completes its order exactly; the cumulative quantity does not use the Decimal context.
+def _split_fill_stream(*parts: str, submitted: str = "1.004") -> tuple:
+    base = stream()
+    quantity = Decimal(submitted)
+    head = (
+        base[0],
+        base[1],
+        base[2].model_copy(update={"quantity": quantity}),
+        base[3].model_copy(update={"quantity": quantity}),
+    )
+    fills = tuple(
+        base[4].model_copy(update={"sequence": 6 + index, "native_fill_id": f"fill-random-{index}",
+                                   "quantity": Decimal(part)})
+        for index, part in enumerate(parts)
+    )
+    tail_start = 6 + len(parts)
+    position = base[5].model_copy(update={"sequence": tail_start, "quantity": quantity})
+    account = base[6].model_copy(update={"sequence": tail_start + 1})
+    completion = base[7].model_copy(update={"sequence": tail_start + 2, "fill_count": len(parts),
+                                            "final_position": quantity})
+    events = head + fills + (position, account, completion)
+    return events[:-1] + (completion.model_copy(update={"semantic_digest": semantic_digest(events)}),)
+
+
+@pytest.mark.parametrize("precision", [2, 28, 80])
+def test_partial_fill_completion_uses_exact_quantity_sum(precision: int) -> None:
+    import decimal
+
+    exact = _split_fill_stream("0.67", "0.334")
+    short = _split_fill_stream("0.67", "0.333")      # one quantum missing
+    over = _split_fill_stream("0.67", "0.335")       # one quantum extra
+    with decimal.localcontext(decimal.Context(prec=precision)):
+        assert validate_event_stream(exact) == exact
+        with pytest.raises(ValueError, match="unfinished order"):
+            validate_event_stream(short)
+        with pytest.raises(ValueError, match="do not match the submitted order"):
+            validate_event_stream(over)

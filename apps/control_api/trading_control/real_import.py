@@ -587,6 +587,13 @@ def apply_real_plan(
         "role": "trading_migrator",
     }:
         raise ApplyRejected("real apply requires the localhost migrator role")
+    return _apply_real_plan(plan, settings, code_commit=code_commit)
+
+
+def _apply_real_plan(
+    plan: RealApplyPlan, settings: DatabaseSettings, *, code_commit: str,
+) -> ApplyResult:
+    """Shared import body; callers must establish their own target authority first."""
     connection = psycopg.connect(settings.conninfo(), autocommit=True)
     run_id = str(uuid.uuid4())
     before = _canonical_count(connection)

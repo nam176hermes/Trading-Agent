@@ -237,3 +237,162 @@ def test_retention_fences_each_artifact_and_inventory_write(tmp_path, revoke):
             assert len(calls) == len(list(store._root.iterdir())) == 2
     finally:
         handle.abandon()
+
+
+def test_repeated_replica_outputs_fit_postrun_budget_without_repeated_cas_writes(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from services.job_worker import p3_output
+    clock = [100.0]
+    monkeypatch.setattr(p3_output, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    handle, output, store = custody(tmp_path)
+    originals = {}
+    for number in range(20):
+        raw = canonical_json_bytes({'synthetic': number})
+        originals[hashlib.sha256(raw).hexdigest()+'.blob'] = raw
+    for relative in ('artifacts', 'r1/artifacts', 'r2/artifacts', 'r3/artifacts'):
+        directory = output/relative
+        directory.mkdir(mode=0o700, parents=True)
+        if relative != 'artifacts': directory.parent.chmod(0o700)
+        for number, (name, raw) in enumerate(originals.items()):
+            if relative != 'artifacts' and number >= 6: break
+            (directory/name).write_bytes(raw)
+            (directory/name).chmod(0o600)
+    fences = []
+    def fence():
+        fences.append(True)
+        clock[0] += 8.0  # Full-source admission is charged to the unchanged 300s post-run budget.
+    handle._before_write = fence
+    publications = []
+    publish = store.put_bytes
+    def observed_write(raw, *, media_type):
+        publications.append(hashlib.sha256(raw).hexdigest())
+        return publish(raw, media_type=media_type)
+    monkeypatch.setattr(store, 'put_bytes', observed_write)
+    try:
+        inventory_ref = handle.retain()
+        import json
+        inventory = json.loads(store.read_bytes(inventory_ref))
+        assert len(inventory) == 38  # Preserve every replica path, including repeated bytes.
+        assert len(publications) == len(set(publications)) == len(fences) == 21
+        assert clock[0]-100.0 < p3_output.CHILD_POLICY['child_wall_seconds'] == 300
+        handle.cleanup()
+        assert not output.exists()
+    finally:
+        handle.abandon()
+
+
+@pytest.mark.parametrize('drift', ['private_bytes', 'private_inode', 'retained_bytes', 'retained_missing'])
+def test_reused_replica_artifact_still_checks_private_identity_and_retained_readback(tmp_path, monkeypatch, drift):
+    handle, output, store = custody(tmp_path)
+    raw = b'{"synthetic":true}'
+    name = hashlib.sha256(raw).hexdigest()+'.blob'
+    for relative in ('artifacts', 'r1/artifacts'):
+        directory = output/relative
+        directory.mkdir(mode=0o700, parents=True)
+        if relative != 'artifacts': directory.parent.chmod(0o700)
+        (directory/name).write_bytes(raw)
+        (directory/name).chmod(0o600)
+    publish = store.put_bytes
+    def drift_after_first_write(value, *, media_type):
+        result = publish(value, media_type=media_type)
+        target = output/'r1/artifacts'/name if drift.startswith('private') else store._root/name
+        if drift in {'private_inode', 'retained_missing'}: target.unlink()
+        if drift != 'retained_missing': target.write_bytes(b'{}' if drift.endswith('bytes') else raw)
+        return result
+    monkeypatch.setattr(store, 'put_bytes', drift_after_first_write)
+    try:
+        with pytest.raises((OSError, ValueError)):
+            handle.retain()
+        assert output.exists()
+    finally:
+        handle.abandon()
+
+
+def test_already_retained_exact_artifact_needs_no_new_write_or_write_fence(tmp_path, monkeypatch):
+    handle, output, store = custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw = b'{"synthetic":true}'
+    ref = store.put_bytes(raw, media_type='application/json')
+    private = output/'artifacts'/ref.locator
+    private.write_bytes(raw); private.chmod(0o600)
+    before = (store._root/ref.locator).stat()
+    writes, fences, validations = [], [], []
+    publish = store.put_bytes
+
+    def observe(value, *, media_type):
+        writes.append(value)
+        assert value != raw, 'an already verified CAS artifact was rewritten'
+        return publish(value, media_type=media_type)
+
+    def validate(inventory, reader):
+        validations.append(True)
+        assert inventory == {'artifacts/'+ref.locator: ref}
+        assert reader.read_bytes(ref) == raw
+
+    monkeypatch.setattr(store, 'put_bytes', observe)
+    handle._before_retain = validate
+    handle._before_write = lambda: fences.append(True)
+    try:
+        inventory = handle.retain()
+        assert len(writes) == len(fences) == len(validations) == 1
+        assert store.read_bytes(inventory)
+        after = (store._root/ref.locator).stat()
+        assert (before.st_ino, before.st_mtime_ns, before.st_ctime_ns) == (
+            after.st_ino, after.st_mtime_ns, after.st_ctime_ns)
+        handle.cleanup()
+    finally:
+        handle.abandon()
+
+
+def test_corrupt_preexisting_cas_is_rejected_before_any_publication(tmp_path, monkeypatch):
+    from packages.data_catalog.artifact_store import ArtifactIntegrityError
+    handle, output, store = custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw = b'{"synthetic":true}'
+    ref = store.put_bytes(raw, media_type='application/json')
+    (output/'artifacts'/ref.locator).write_bytes(raw)
+    (output/'artifacts'/ref.locator).chmod(0o600)
+    (store._root/ref.locator).write_bytes(b'{}')
+
+    def forbidden_write():
+        raise AssertionError('corrupt CAS must not reach a durable write')
+
+    handle._before_write = forbidden_write
+    try:
+        with pytest.raises(ArtifactIntegrityError):
+            handle.retain()
+        assert (output/'artifacts'/ref.locator).read_bytes() == raw
+        assert (store._root/ref.locator).read_bytes() == b'{}'
+    finally:
+        handle.abandon()
+
+
+@pytest.mark.parametrize('drift', ['missing', 'corrupt'])
+def test_preexisting_artifact_is_read_back_again_after_lookup(tmp_path, monkeypatch, drift):
+    handle, output, store = custody(tmp_path)
+    (output/'artifacts').mkdir(mode=0o700)
+    raw = b'{"synthetic":true}'
+    ref = store.put_bytes(raw, media_type='application/json')
+    (output/'artifacts'/ref.locator).write_bytes(raw)
+    (output/'artifacts'/ref.locator).chmod(0o600)
+    read = store.read_bytes
+    calls = []
+
+    def change_after_read(value):
+        result = read(value)
+        if value == ref:
+            calls.append(True)
+            if len(calls) == 1:
+                (store._root/ref.locator).unlink()
+                if drift == 'corrupt':
+                    (store._root/ref.locator).write_bytes(b'{}')
+                    (store._root/ref.locator).chmod(0o600)
+        return result
+
+    monkeypatch.setattr(store, 'read_bytes', change_after_read)
+    try:
+        with pytest.raises(ValueError):
+            handle.retain()
+        assert (output/'artifacts'/ref.locator).read_bytes() == raw
+    finally:
+        handle.abandon()

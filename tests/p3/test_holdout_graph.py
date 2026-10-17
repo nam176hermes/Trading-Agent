@@ -68,15 +68,17 @@ def holdout_graph(retained_family):
     buffer_ref,buffer=dataset('BUFFER',date(2026,9,1),1)
     folds=build_holdout_fold_manifest(context,h_data,policy_digest=inputs.policy_digest)
     folds_ref=store.put_bytes(canonical_json_bytes(folds),media_type='application/json')
-    pit_ref=_seal(store,schema_version='p3-p-i-t-proof-v1',dataset_ref=h_ref,fold_manifest_ref=folds_ref,
-        vintage_class=h_data.vintage_class,historical_vintage_verified=False,
-        revision_proof_ref=closed('holdout.producer'),no_future_suite_ref=closed('holdout.no-future'),limitations=h_data.limitations)
-    h_inputs_ref=store.put_bytes(canonical_json_bytes(_changed(inputs,dataset_evidence_ref=h_ref,
-        fold_manifest_ref=folds_ref,pit_proof_ref=pit_ref)),media_type='application/json')
     custody_ref=_seal(store,schema_version='p3-custody-record-v1',holdout_commitment='a'*64,
         ciphertext_ref=closed('ciphertext'),plaintext_bundle_digest='b'*64,custodian_identity='synthetic.custodian',
         research_identity='synthetic.research',custodian_attestation_ref=closed('attestation'),
         access_policy_digest='c'*64,classification='HISTORICAL_ACCESS_CONTROLLED_NOT_INFORMATIONALLY_BLIND')
+    # Holdout PIT contract: the custody record (holdout commitment) is the revision proof; the no-future suite is the research one.
+    research_pit=_read(store,inputs.pit_proof_ref,PITProof)
+    pit_ref=_seal(store,schema_version='p3-p-i-t-proof-v1',dataset_ref=h_ref,fold_manifest_ref=folds_ref,
+        vintage_class=h_data.vintage_class,historical_vintage_verified=False,
+        revision_proof_ref=custody_ref,no_future_suite_ref=research_pit.no_future_suite_ref,limitations=h_data.limitations)
+    h_inputs_ref=store.put_bytes(canonical_json_bytes(_changed(inputs,dataset_evidence_ref=h_ref,
+        fold_manifest_ref=folds_ref,pit_proof_ref=pit_ref)),media_type='application/json')
     # This selected value is a declared dependency stub only. The real family fails;
     # the separate non-stubbed test below must reject it and never read H1.
     primary_ref=_seal(store,schema_version='p3-primary-selection-v1',family_review_ref=family_ref,
@@ -122,7 +124,7 @@ def _reader(graph,reads):
 
 
 @pytest.mark.parametrize('fault',[None,'epoch','family','cost','regime','integration','h_source','h_environment',
-    'h_dataset','pit_dataset','pit_fold','pit_vintage','fold_rows','row_overlap','snapshot_overlap',
+    'h_dataset','pit_dataset','pit_fold','pit_vintage','pit_revision','pit_suite','fold_rows','row_overlap','snapshot_overlap',
     'row_snapshot_overlap','ciphertext_attestation_overlap','ciphertext_row_overlap','attestation_snapshot_overlap',
     'primary_none','primary_head','primary_alias','custody_alias','registration','candidate','instrument','training','negative_threshold'])
 def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypatch,fault):
@@ -143,10 +145,12 @@ def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypa
             'h_dataset':('dataset_evidence_ref',intent.body.buffer_ref),
         }[fault]
         body['holdout_input_set_ref']=changed(intent.body.holdout_input_set_ref,InputSet,**{key:value})
-    elif fault in {'pit_dataset','pit_fold','pit_vintage'}:
+    elif fault in {'pit_dataset','pit_fold','pit_vintage','pit_revision','pit_suite'}:
         values={'pit_dataset':dict(dataset_ref=intent.body.context_dataset_ref),
             'pit_fold':dict(fold_manifest_ref=graph.closed('other-fold')),
-            'pit_vintage':dict(vintage_class='HISTORICAL_VINTAGE_VERIFIED',historical_vintage_verified=True)}[fault]
+            'pit_vintage':dict(vintage_class='HISTORICAL_VINTAGE_VERIFIED',historical_vintage_verified=True),
+            'pit_revision':dict(revision_proof_ref=graph.closed('holdout.producer')),
+            'pit_suite':dict(no_future_suite_ref=intent.body.custody_record_ref)}[fault]
         ref=changed(h_inputs.pit_proof_ref,PITProof,**values)
         body['holdout_input_set_ref']=changed(intent.body.holdout_input_set_ref,InputSet,pit_proof_ref=ref)
     elif fault=='fold_rows':
@@ -221,13 +225,19 @@ def test_holdout_metadata_closes_graph_without_reading_h1(holdout_graph,monkeypa
     assert reads
 
 
-@pytest.mark.parametrize('fault',['untyped','source'])
+@pytest.mark.parametrize('fault',['untyped','source','local_issuer'])
 def test_holdout_rejects_unqualified_integration_before_family(holdout_graph,monkeypatch,fault):
     graph=holdout_graph
     intent,authorization=_request(graph)
     receipt=_read(graph.store,graph.inputs.integration_receipt_ref,IntegrationReceipt)
     raw=b'{}' if fault=='untyped' else canonical_json_bytes(_changed(receipt,
         source=receipt.source.model_copy(update={'commit_sha':'9'*40})))
+    if fault=='local_issuer':
+        from uuid import uuid4
+        value=receipt.model_dump(mode='json',exclude={'digest','workflow_run_id','workflow_attempt'})
+        value.update(schema_version='p3-local-integration-qualified-v1',identity=dict(issuer_kind='LOCAL',
+            issuer_identity='synthetic',run_id=str(uuid4()),attempt=1,host_id='a'*64,boot_id=str(uuid4())))
+        raw=graph.store.read_bytes(_seal(graph.store,**value))
     bad_ref=graph.store.put_bytes(raw,media_type='application/json')
     body=intent.body.model_dump(mode='json')
     for name in ('input_set_ref','holdout_input_set_ref'):
@@ -253,3 +263,30 @@ def test_real_failed_family_cannot_obtain_holdout_projection(holdout_graph):
     with pytest.raises(ValueError,match='family selection'):
         holdout.validate_holdout_operation_input(intent,authorization,expected_source=holdout_graph.inputs.source,
             store=_reader(holdout_graph,[]),now=datetime.now(UTC))
+
+
+def test_holdout_body_is_derived_from_selection_custody_and_policy(holdout_graph, monkeypatch):
+    from packages.alpha_lifecycle.contracts.data import PITProof
+    from packages.alpha_lifecycle.local_campaign import holdout_body
+    graph = holdout_graph
+    intent, _ = _request(graph)
+    fixture = intent.body
+    body = holdout_body(intent.input_set_ref, fixture.primary_selection_ref, custody_record_ref=fixture.custody_record_ref,
+                        holdout_dataset_ref=fixture.holdout_dataset_ref, buffer_ref=fixture.buffer_ref, store=graph.store)
+    same = ('primary_selection_ref', 'candidate_spec_ref', 'registration_proof_ref', 'custody_record_ref',
+            'holdout_dataset_ref', 'context_dataset_ref', 'buffer_ref', 'environment_ref', 'instrument_spec_ref', 'policy_digest')
+    assert {k: body[k] for k in same} == {k: getattr(fixture, k) for k in same}
+    derived = _read(graph.store, body['holdout_input_set_ref'], InputSet)
+    pit = _read(graph.store, derived.pit_proof_ref, PITProof)
+    research_pit = _read(graph.store, graph.inputs.pit_proof_ref, PITProof)
+    assert pit.revision_proof_ref == fixture.custody_record_ref and pit.no_future_suite_ref == research_pit.no_future_suite_ref
+    intent, authorization = _request(graph, body=body)
+    monkeypatch.setattr(primary_selection, 'select_primary', lambda review, reader: graph.primary)
+    original = holdout.validate_research_inputs
+    def training_dependency(ref, reader):
+        inputs, folds, dataset, threshold = original(ref, reader)
+        return inputs, folds, dataset, RegimeThreshold.model_validate(_changed(threshold,
+            training_range=dict(start='2018-01-01', end='2021-08-31'), sample_count=1276))
+    monkeypatch.setattr(holdout, 'validate_research_inputs', training_dependency)
+    holdout.validate_holdout_operation_input(intent, authorization, expected_source=graph.inputs.source,
+                                             store=_reader(graph, []), now=datetime.now(UTC))

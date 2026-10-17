@@ -2448,3 +2448,28 @@ def test_symlinked_transport_root_is_rejected_without_ambient_fallback(
         provider.prepare(_envelope())
 
     assert list(real_transport.iterdir()) == []
+
+
+def test_exact_product_closure_accepts_distinct_bound_request_source(secure_tmp_path: Path) -> None:
+    """Task 10.2: the closure keeps S_runtime while the request carries S_final; the pins still decide."""
+    runtime_source = "1" * 40
+    final_source = "2" * 40
+    closure = replace(_p1_closure(secure_tmp_path), source_commit=runtime_source)
+    envelope = _envelope().model_copy(update={"source_commit": final_source})
+    provider = _provider(
+        secure_tmp_path, lambda: closure, expected_manifest_schema_version=8, profile_policy=P1_REAL_BACKTEST_POLICY,
+    )
+    spawn = consume_prepared_engine_spawn(provider.prepare(envelope))
+    try:
+        assert spawn.source_revision == runtime_source
+        assert spawn.lineage.closure_sha256 == P1_REAL_BACKTEST_POLICY.closure_sha256
+    finally:
+        _close_spawn_fds(spawn)
+
+    for mutation in ({"closure_sha256": "0" * 64}, {"runtime_inventory_sha256": "0" * 64}):
+        wrong = replace(closure, **mutation)
+        with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+            _provider(
+                secure_tmp_path, lambda: wrong, expected_manifest_schema_version=8,
+                profile_policy=P1_REAL_BACKTEST_POLICY,
+            ).prepare(envelope)

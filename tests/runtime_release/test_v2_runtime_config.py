@@ -9,6 +9,8 @@ import stat
 
 import pytest
 
+from scripts.p3_local_issue_runtime import _staged_material
+
 from tests.foundation._package6_staging_fixture import (
     Package6StagingLease,
     package6_staging_lease,
@@ -90,6 +92,7 @@ def _staging_authority(
     monkeypatch: pytest.MonkeyPatch,
     *,
     lease: Package6StagingLease,
+    window: timedelta = timedelta(minutes=10),
 ):
     lease.assert_valid()
     private = lease.root
@@ -123,7 +126,8 @@ def _staging_authority(
     tree = "b" * 40
     approval_sha256 = "c" * 64
     generated = datetime.now(UTC).replace(microsecond=0)
-    expires = generated + timedelta(minutes=10)
+    # The validity window is measured from generated_at, never from a later read of the clock.
+    expires = generated + window
 
     def timestamp(value: datetime) -> str:
         return value.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -550,3 +554,192 @@ def test_explicit_isolated_authority_loader_failure_is_sanitized() -> None:
 
     assert str(raised.value) == "protected runtime authority is unavailable"
     assert "private" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("fault", [None, "ok_60", "missing", "expired", "future", "too_long", "noncanonical"])
+def test_issuer_reads_and_validates_package6_validity(
+    tmp_path, monkeypatch, package6_staging_lease, fault
+):
+    stage, python, _ = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
+    path = package6_staging_lease.root / "authority/release-authority-v2.json"
+    document = json.loads(path.read_bytes())
+    now = datetime.now(UTC).replace(microsecond=0)
+    timestamp = lambda value: value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if fault == "missing":
+        document.pop("validity")
+        document["generated_at"] = timestamp(now)
+        document["expires_at"] = timestamp(now + timedelta(minutes=10))
+    elif fault == "expired":
+        document["validity"] = {
+            "generated_at_utc": timestamp(now - timedelta(minutes=10)),
+            "expires_at_utc": timestamp(now - timedelta(seconds=1)),
+        }
+    elif fault == "future":
+        document["validity"]["generated_at_utc"] = timestamp(now + timedelta(minutes=1))
+    elif fault in {"ok_60", "too_long"}:
+        # Exactly the K1 ceiling (3600 s) from generated_at is valid; one second more is not.
+        generated = datetime.strptime(
+            document["validity"]["generated_at_utc"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=UTC)
+        seconds = 3600 if fault == "ok_60" else 3601
+        document["validity"]["expires_at_utc"] = timestamp(generated + timedelta(seconds=seconds))
+    elif fault == "noncanonical":
+        document["validity"]["expires_at_utc"] = (now + timedelta(minutes=10)).isoformat()
+    path.chmod(0o600)
+    raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(raw)
+    path.chmod(0o444)
+    request = {
+        "staging_authority_path": str(path),
+        "application_root": str(stage / "application"),
+        "application_python": str(python),
+    }
+    if fault not in {None, "ok_60"}:
+        with pytest.raises(ValueError):
+            _staged_material(request)
+    else:
+        material = _staged_material(request)
+        assert material["authority_generated_at"] == document["validity"]["generated_at_utc"]
+        assert material["authority_expires_at"] == document["validity"]["expires_at_utc"]
+        assert material["static_authority_sha256"] == hashlib.sha256(raw).hexdigest()
+        assert Path(material["application_root"]) == stage / "application"
+
+
+# --- K1 staging window: 60 minutes from generated_at (F2-a', Codex design review 2026-09-27) ---------------
+def _timestamp(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _generated(stage: Path) -> datetime:
+    document = json.loads((stage.parent / "authority/release-authority-v2.json").read_bytes())
+    return datetime.strptime(document["validity"]["generated_at_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
+def _rotate_safety(stage: Path, at: datetime) -> None:
+    """What the protected refresh does: a fresh 6 s snapshot, and the activation rebound to it."""
+    runtime_root, authority_root = stage.parent / "runtime", stage.parent / "authority"
+    safety_path = runtime_root / "safety-state.json"
+    safety = json.loads(safety_path.read_bytes())
+    safety.update(generated_at=_timestamp(at), expires_at=_timestamp(at + timedelta(seconds=6)))
+    safety_path.chmod(0o600)
+    safety_sha256 = _write_fixed(safety_path, safety, 0o600)
+    activation_path = authority_root / "release-activation-v2.json"
+    activation = json.loads(activation_path.read_bytes())
+    activation["safety"]["snapshot_sha256"] = safety_sha256
+    activation_path.chmod(0o644)
+    _write_fixed(activation_path, activation)
+
+
+@pytest.mark.parametrize("seconds", (1800, 1860, 3600))
+def test_k1_accepts_staging_windows_up_to_sixty_minutes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
+    seconds: int,
+) -> None:
+    stage, application_python, _backend = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease, window=timedelta(seconds=seconds)
+    )
+    expected = _timestamp(_generated(stage) + timedelta(seconds=seconds))
+
+    core = load_runtime_authority_v2()
+    projected = projected_runtime_config.load_runtime_authority_v2()
+    issued = _staged_material({
+        "staging_authority_path": str(stage.parent / "authority/release-authority-v2.json"),
+        "application_root": str(stage / "application"),
+        "application_python": str(application_python),
+    })
+
+    assert core.scope == projected.scope == "PACKAGE6_STAGING_ONLY"
+    material = staging_v2.load_staging_authority_material()
+    assert _timestamp(material.authority_expires_at) == issued["authority_expires_at"] == expected
+
+
+@pytest.mark.parametrize("seconds", (3601, 3660))
+def test_k1_rejects_staging_windows_beyond_sixty_minutes_everywhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
+    seconds: int,
+) -> None:
+    stage, application_python, _backend = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease, window=timedelta(seconds=seconds)
+    )
+    with pytest.raises(ProtectedAuthorityError):
+        load_runtime_authority_v2()
+    with pytest.raises(projected_runtime_config.ProtectedAuthorityError):
+        projected_runtime_config.load_runtime_authority_v2()
+    with pytest.raises(ValueError):
+        _staged_material({
+            "staging_authority_path": str(stage.parent / "authority/release-authority-v2.json"),
+            "application_root": str(stage / "application"),
+            "application_python": str(application_python),
+        })
+    # The refresh path validates the activation with the same validator (staging_v2.py:770).
+    activation = json.loads((stage.parent / "authority/release-activation-v2.json").read_bytes())
+    with pytest.raises(ValueError):
+        staging_v2._validate_activation(
+            activation,
+            authority_sha256=activation["authority_sha256"],
+            approval_sha256=activation["package6_approval_sha256"],
+            now=_generated(stage) + timedelta(minutes=1),
+        )
+
+
+def test_k1_sixty_minute_authority_expiry_is_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    stage, _app, _backend = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease, window=timedelta(minutes=60)
+    )
+    expires = _generated(stage) + timedelta(minutes=60)
+    # The loader checks the safety snapshot against the real clock, where the fixture snapshot is fresh,
+    # so a failure below can only come from the authority validity at the simulated moment.
+    assert staging_v2.load_staging_authority_material(now=expires - timedelta(seconds=1)).authority_expires_at == expires
+    with pytest.raises(staging_v2.StagingAuthorityError):
+        staging_v2.load_staging_authority_material(now=expires)
+
+
+def test_k1_sixty_minute_activation_must_equal_its_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    stage, _app, _backend = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease, window=timedelta(minutes=60)
+    )
+    activation_path = stage.parent / "authority/release-activation-v2.json"
+    activation = json.loads(activation_path.read_bytes())
+    shorter = _timestamp(_generated(stage) + timedelta(minutes=60) - timedelta(seconds=1))
+    activation["validity"] = {**activation["validity"], "expires_at_utc": shorter}
+    activation["semantic"]["expires_at"] = shorter
+    activation_path.chmod(0o644)
+    _write_fixed(activation_path, activation)
+    with pytest.raises(ProtectedAuthorityError):
+        load_runtime_authority_v2()
+
+
+def test_k1_refresh_of_a_sixty_minute_authority_at_minute_forty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    stage, _app, _backend = _staging_authority(
+        tmp_path, monkeypatch, lease=package6_staging_lease, window=timedelta(minutes=60)
+    )
+    material = staging_v2.load_staging_authority_material()
+    minute_forty = _generated(stage) + timedelta(minutes=40)
+
+    _rotate_safety(stage, minute_forty)
+    refreshed = staging_v2.refresh_staging_dynamic_material(material, now=minute_forty + timedelta(seconds=5))
+    assert refreshed.authority_expires_at == material.authority_expires_at
+    assert refreshed.safety_snapshot_sha256 != material.safety_snapshot_sha256
+
+    # The 6 s safety TTL is unchanged by K1: at the snapshot's own expiry, and after it, refresh fails.
+    for late in (6, 7):
+        with pytest.raises(staging_v2.StagingAuthorityError):
+            staging_v2.refresh_staging_dynamic_material(material, now=minute_forty + timedelta(seconds=late))

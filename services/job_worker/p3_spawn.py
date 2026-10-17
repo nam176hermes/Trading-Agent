@@ -28,15 +28,15 @@ if TYPE_CHECKING:
 
 from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore, _read
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.sandbox_policy import (
-    BWRAP_CAPABILITIES, BWRAP_VERSION, MAX_ARGV_BYTES,
-    MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES, SANDBOX_PROFILE_SHA256,
+    BWRAP_CAPABILITIES, BWRAP_VERSION, BWRAP_PARSER_TOKEN_CAPACITY, MAX_ARGV_BYTES,
+    MAX_CLOSURE_BYTES, MAX_CLOSURE_FILES, SANDBOX_PROFILE_SHA256, SANDBOX_PROFILE_V2_SHA256,
     SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, DRIVER_ENTRY, ROOT_READONLY_ARGS,
-    RO_FILE_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG,
+    RO_FILE_FLAG, RO_PATH_FLAG, RO_DIRECTORY_FLAG, RW_DIRECTORY_FLAG,
 )
 from packages.data_contracts import ArtifactRefV1
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -49,12 +49,70 @@ from .command_registry import CommandSpec, p3_command_spec
 from .engine_spawn import _sealed_memfd
 from .p3_spawn_interface import P3PreparedSpawnMarker, P3SpawnError
 from .p3_output import P3OutputCustody
+from .artifacts import _close_descriptors
 from .results import _open_directory_chain
+from scripts.run_p3_native_child import LOCAL_FLAG, LOCAL_POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
 _TTL_NS = 5 * 60 * 1_000_000_000
 _RELEASE = PurePosixPath('/p3/release')
 _PYTHON = PurePosixPath('/p3/python')
+
+
+def verify_image_mount(mount: Path | None) -> dict[str, str | list[str]]:
+    """Require a real read-only image mount, not merely a directory that exists.
+
+    Two directories that are present and distinct is what an ordinary writable directory
+    also satisfies, so on its own it would make an ordinary directory the fallback transport
+    for a mechanism whose entire premise is a read-only image. What is checked here is the
+    capability: this path is a mount point in this namespace, it carries a squashfs, it is
+    read-only, nodev and nosuid, it exposes the whole image rather than a subtree, and the
+    device serving it is the device the mount root actually sits on.
+    """
+    if mount is None or not isinstance(mount,Path) or not mount.is_absolute() or not mount.is_dir():
+        raise ValueError('P3 image transport requires an absolute mount root')
+    record=None
+    with open('/proc/self/mountinfo','rb') as handle:
+        for line in handle.read().decode().splitlines():
+            fields=line.split()
+            separator=fields.index('-')
+            if fields[4]==str(mount):
+                record=dict(device=fields[2],root=fields[3],options=fields[5].split(','),
+                            filesystem=fields[separator+1])
+    if record is None:
+        raise ValueError('P3 image mount is not a mount point in this namespace')
+    if record['filesystem']!='squashfs':
+        raise ValueError('P3 image mount is not a squashfs')
+    if not {'ro','nodev','nosuid'}.issubset(set(record['options'])):
+        raise ValueError('P3 image mount is not read-only, nodev and nosuid')
+    if record['root']!='/':
+        raise ValueError('P3 image mount exposes a subtree rather than the whole image')
+    if not os.statvfs(mount).f_flag & os.ST_RDONLY:
+        raise ValueError('P3 image mount is writable')
+    device=os.stat(mount).st_dev
+    if record['device']!=f'{os.major(device)}:{os.minor(device)}':
+        raise ValueError('P3 image mount root is not on the device serving it')
+    return record
+
+
+def _image_root_args(closure) -> tuple[str, ...]:
+    """Deliver the two verified image roots as aggregate read-only binds.
+
+    The number of closure files does not appear here, which is the whole point: the v1
+    form needed five tokens per file. The bytes behind these roots were already read back
+    and compared against the inventory, and the mount they sit on is verified here, so this
+    binds what was verified rather than any path that happens to hold two directories.
+    """
+    mount = closure.image_mount
+    record = verify_image_mount(mount)
+    release,python = mount/closure.image.release_root, mount/closure.image.python_root
+    if release == python or not release.is_dir() or not python.is_dir():
+        raise ValueError('P3 image roots are missing or collide')
+    device = os.stat(mount).st_dev
+    if release.stat().st_dev != device or python.stat().st_dev != device:
+        raise ValueError('P3 image roots are not on the verified image mount')
+    assert record['filesystem'] == 'squashfs'
+    return (RO_PATH_FLAG,str(release),str(_RELEASE),RO_PATH_FLAG,str(python),str(_PYTHON))
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +146,12 @@ class CompleteP3Closure:
     closure_sha256: str
     bound_job_id: str
     bound_payload_fingerprint: str
+    # LOCAL v2 only. `image` is the durable descriptor and `image_mount` is where this run
+    # mounted it read-only. Both stay None on the v1 sealed-file transport, and the logical
+    # inventory validator and closure fingerprint above are shared by both transports: only
+    # how the verified bytes reach the sandbox differs.
+    image: object | None = None
+    image_mount: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +176,7 @@ class P3BuiltSpawn:
     environment: Mapping[str, str]
     pass_fds: tuple[int, ...]
     close_after_spawn_fds: tuple[int, ...]
-    timeout_seconds: int
+    timeout_seconds: int | None
     result_validator_id: str
     capability_fingerprint: str
     source_revision: str
@@ -150,14 +214,20 @@ def _release_files(source: SourceIdentity) -> dict[PurePosixPath, tuple[str, byt
     if _git(ROOT,'status','--porcelain') or SourceIdentity.model_validate(canonical_source_identity(ROOT)) != source:
         raise ValueError('P3 driver source differs from current source')
     entries = _parse_tree(_git(ROOT, 'ls-tree', '-rz', '--full-tree', source.commit_sha))
-    files = {p.decode():(mode,raw) for (mode,_,p),raw in zip(entries,_read_blobs(ROOT,entries),strict=True)}
-    inventory = json.loads(files['docs/implementation/p3/p3-driver-files-v1.json'][1])
+    by_path = {entry[2].decode():entry for entry in entries}
+    inventory_path = 'docs/implementation/p3/p3-driver-files-v1.json'
+    inventory_raw = _read_blobs(ROOT,[by_path[inventory_path]])[0]
+    inventory = json.loads(inventory_raw)
     paths = inventory['paths']
     if (set(inventory) != {'schema_version','paths'} or inventory['schema_version'] != 'p3-driver-source-files-v1'
         or not isinstance(paths,list) or paths != sorted(set(paths))
         or any(not isinstance(p,str) or p.startswith('/') or '..' in PurePosixPath(p).parts for p in paths)
-        or any(files[p][0] not in {'100644','100755'} for p in paths)):
+        or any(by_path[p][0] not in {'100644','100755'} for p in paths)):
         raise ValueError('P3 source projection differs from its reviewed inventory')
+    selected = [by_path[p] for p in paths if p != inventory_path]
+    files = {p.decode():(mode,raw) for (mode,_,p),raw in
+             zip(selected,_read_blobs(ROOT,selected) if selected else [],strict=True)}
+    files[inventory_path] = (by_path[inventory_path][0],inventory_raw)
     return {_RELEASE/p:files[p] for p in paths}
 
 
@@ -188,7 +258,7 @@ def _file_bytes(path: Path, identity: tuple[int, int], size: int, mode: int, dig
 
 class P3SpawnProvider:
     def __init__(self, *, attest_closure: Callable[[], CompleteP3Closure], store: LocalArtifactStore,
-        store_root: Path, output_root: Path, holdout_inputs: Callable[[ClaimedJob], tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1]] | None = None) -> None:
+        store_root: Path, output_root: Path, holdout_inputs: Callable[[ClaimedJob], tuple[HoldoutCalculationView, ArtifactRefV1, ArtifactRefV1, ArtifactRefV1, CompleteP3Closure]] | None = None) -> None:
         if not callable(attest_closure):
             raise TypeError('complete P3 attestor is required')
         if type(store) is not LocalArtifactStore or store._root != store_root:
@@ -219,11 +289,16 @@ class P3SpawnProvider:
             or closure.bound_job_id != job.job_id
             or closure.bound_payload_fingerprint != payload_fingerprint(job.payload)
             or type(closure.sandbox) is not P3Sandbox
-            or closure.sandbox.profile_sha256 != SANDBOX_PROFILE_SHA256
             or closure.sandbox.version != BWRAP_VERSION or closure.sandbox.capabilities != BWRAP_CAPABILITIES):
             raise ValueError('complete P3 source attestation is required')
+        # The transport and its policy identity must agree in both directions. A closure
+        # carrying an image may only present the v2 policy, and a sealed-file closure may
+        # only present v1, so neither transport can borrow the other's accepted identity.
+        expected_policy = SANDBOX_PROFILE_V2_SHA256 if closure.image is not None else SANDBOX_PROFILE_SHA256
+        if closure.sandbox.profile_sha256 != expected_policy:
+            raise ValueError('P3 sandbox policy identity does not match the closure transport')
         intent = _read(self._store, job.payload.manifest_ref, P3OperationInput)
-        authorization = _read(self._store, job.payload.authorization_ref, RunAuthorization)
+        authorization = _read(self._store, job.payload.authorization_ref, RUN_AUTHORIZATION)
         payload = stage_alpha_campaign_payload(ReadbackStore(self._store,self._store), authorization,
             closure.source, job.payload.logical_trial_id, canonical_json_bytes(intent), operation_input=intent)
         inputs = _read(self._store, intent.input_set_ref, InputSet)
@@ -299,16 +374,33 @@ class P3SpawnProvider:
             sandbox_fd = _sealed_memfd('p3-sandbox',raw,mode=0o500)
             descriptors.append(sandbox_fd)
             argv = [f'/proc/self/fd/{sandbox_fd}',*SANDBOX_ARGS,*FILESYSTEM_ARGS]
+            imaged = closure.image is not None
+            # Only the targets this transport actually seals cost a descriptor, an argument
+            # or a parent directory. On v2 the image supplies the release and Python trees,
+            # and pre-creating their directories would shadow the mount as well as charging
+            # a budget the launch never spends.
+            sealed_targets = tuple(t for t in targets if not (imaged and (
+                t.is_relative_to(_RELEASE) or t.is_relative_to(_PYTHON))))
             directories = {PurePosixPath('/p3'),PurePosixPath('/p3/bin'),PurePosixPath('/p3/inputs'),
                 PurePosixPath('/p3/store'),PurePosixPath('/p3/output')}
-            for target in targets:
+            for target in sealed_targets:
                 directories.update(p for p in target.parents if p != PurePosixPath('/'))
             soft,_ = resource.getrlimit(resource.RLIMIT_NOFILE)
-            if (sum(len(str(t).encode())+80 for t in targets)+sum(len(str(p).encode())+12 for p in directories)+8192 > MAX_ARGV_BYTES
-                or (soft != resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(targets)+16 >= soft)):
+            if (sum(len(str(t).encode())+80 for t in sealed_targets)+sum(len(str(p).encode())+12 for p in directories)+8192 > MAX_ARGV_BYTES
+                or (soft != resource.RLIM_INFINITY and len(os.listdir('/proc/self/fd'))+len(sealed_targets)+16 >= soft)):
                 raise ValueError('P3 closure exceeds argv or descriptor limits')
+            lower_bound = (6 if imaged else 5*len(sealed_targets))+2*len(directories)+len(SANDBOX_ARGS)+len(FILESYSTEM_ARGS)
+            if lower_bound > BWRAP_PARSER_TOKEN_CAPACITY:
+                raise ValueError('P3 closure exceeds the pinned sandbox parser capacity')
             for directory in sorted(directories,key=lambda p:(len(p.parts),str(p))):
                 argv.extend(('--dir',str(directory)))
+            # Transport seam. Every closure file is read back and verified on both paths;
+            # only the delivery differs. v1 seals each file into its own memfd, which costs
+            # five parser tokens per file and puts the complete closure past the pinned
+            # bwrap parser's capacity. v2 verifies the same bytes through the read-only
+            # image mount and then delivers the two roots as aggregate binds, so the file
+            # count leaves the token budget entirely. System libraries stay sealed per file
+            # on both paths; they are not in the image and must not widen to a directory.
             for mount in closure.mounts:
                 if (not mount.target.is_absolute()
                     or '..' in mount.target.parts or mount.mode not in {0o400,0o500,0o444,0o555}
@@ -320,14 +412,18 @@ class P3SpawnProvider:
                     or bool(mount.mode & 0o111) != (release[mount.target][0] == '100755'))
                     or mount.target in runtime and mount.source != runtime[mount.target]):
                     raise ValueError('P3 mounted bytes differ from source or runtime')
+                if imaged and (mount.target.is_relative_to(_RELEASE) or mount.target.is_relative_to(_PYTHON)):
+                    continue
                 fd = _sealed_memfd('p3-closure',raw,mode=mount.mode)
                 descriptors.append(fd)
                 argv.extend(('--perms',f'{mount.mode:o}',RO_FILE_FLAG,str(fd),str(mount.target)))
+            if imaged:
+                argv.extend(_image_root_args(closure))
             argv.extend(('--perms','500',RO_FILE_FLAG,str(sandbox_fd),'/p3/bin/bwrap'))
             references = {'manifest-ref':payload.manifest_ref,'source':closure.source,
                 'environment-ref':closure.environment_ref,'authorization-ref':payload.authorization_ref}
             if self._holdout_inputs is not None:
-                view, request_ref, manifest_ref, spec_ref = self._holdout_inputs(job)
+                view, request_ref, manifest_ref, spec_ref, _ = self._holdout_inputs(job)
                 references.update({'holdout-manifest-ref':manifest_ref,
                     'holdout-request-ref':request_ref, 'instrument-spec-ref':spec_ref})
                 view_fd = _sealed_memfd('p3-holdout-view', view.raw, mode=0o400)
@@ -356,10 +452,18 @@ class P3SpawnProvider:
             output_info = os.fstat(output_fd)
             if output_info.st_uid != os.geteuid() or stat.S_IMODE(output_info.st_mode) != 0o700:
                 raise ValueError('P3 attempt output directory is not private and owned')
+            local = environment.sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256
+            timeout = None if local else spec.timeout_seconds
+            if local:
+                fd = _sealed_memfd('p3-local-work-policy',LOCAL_POLICY,mode=0o400)
+                descriptors.append(fd)
+                argv.extend(('--perms','400',RO_FILE_FLAG,str(fd),'/p3/inputs/local-work-policy'))
             argv.extend((RO_DIRECTORY_FLAG,str(store_fd),'/p3/store',
                 RW_DIRECTORY_FLAG,str(output_fd),'/p3/output',
                 *ROOT_READONLY_ARGS,'--chdir','/p3/release',
                 *ENVIRONMENT_ARGS,*DRIVER_ENTRY))
+            if local:
+                argv.append(LOCAL_FLAG)
             for name in references:
                 argv.extend((f'--{name}',f'/p3/inputs/{name}.json'))
             if self._holdout_inputs is not None:
@@ -368,6 +472,8 @@ class P3SpawnProvider:
                 '--sandbox-policy-digest',environment.sandbox_policy_digest,'--logical-trial-id',payload.logical_trial_id,
                 '--job-id',job.job_id,'--output','/p3/output','--sandbox','/p3/bin/bwrap',
                 '--runtime-mounts-ref','/p3/inputs/runtime-mounts.json'))
+            if len(argv)-1 > BWRAP_PARSER_TOKEN_CAPACITY:
+                raise ValueError('P3 spawn argument count exceeds the pinned sandbox parser capacity')
             if time.monotonic_ns() >= deadline or sum(len(a.encode())+1 for a in argv) > MAX_ARGV_BYTES:
                 raise ValueError('P3 capability expired during verification')
             self._inputs(job, closure)
@@ -375,7 +481,7 @@ class P3SpawnProvider:
                 raise ValueError('P3 capability expired during final input validation')
             claim_digest = _digest(dict(job_id=job.job_id,attempt_id=job.attempt_id,worker_id=job.worker_id,
                 lease_token_sha256=job.lease_token_sha256,payload=job.payload,closure=fingerprint,
-                argv_prefix=spec.argv_prefix,timeout_seconds=spec.timeout_seconds,
+                argv_prefix=spec.argv_prefix,timeout_seconds=timeout,
                 result_validator=spec.result_validator_id,transport_identities=identities,
                 output_identity=(output_info.st_dev,output_info.st_ino)))
             before_write: Callable[[], None] | None = None
@@ -384,7 +490,7 @@ class P3SpawnProvider:
                 owner = self._holdout_inputs
                 def validate_outputs(inventory, outputs):
                     from .p3_output_validation import validate_holdout_output
-                    view, _, manifest_ref, _ = owner(job)
+                    view, _, manifest_ref, _, _ = owner(job)
                     # Pure recomputation reads keep the view's current lifetime;
                     # the pinned output reader owns lease/safety progress. Full
                     # host admission runs again before every durable CAS write.
@@ -396,35 +502,46 @@ class P3SpawnProvider:
                     owner(job)
                 before_write = write_fence
             custody = P3OutputCustody(output_parent,output_fd,run_name,self._store,
-                before_retain=before_retain, before_write=before_write)
-            os.close(output_parent)
+                before_retain=before_retain, before_write=before_write,
+                sandbox_policy_digest=environment.sandbox_policy_digest)
             descriptors.remove(output_parent)
+            closing_parent = output_parent
             output_parent = -1
+            os.close(closing_parent)
             def replica_fence() -> None:
-                # SQL lease/safety belongs to the heartbeat before each grant.
-                if (self._attest_closure() != closure
+                # The HOLDOUT owner returns this borrow's complete fresh attestation.
+                current = (self._attest_closure() if self._holdout_inputs is None
+                    else self._holdout_inputs(job)[4])
+                if (current != closure
                     or tuple(_directory_identity(p) for p in (self._store_root,self._output_root)) != identities):
                     raise ValueError('P3 replica profile or transport changed')
-                if self._holdout_inputs is not None:
-                    self._holdout_inputs(job)
 
             return P3BuiltSpawn(job.job_id,job.attempt_id,tuple(argv),Path('/'),MappingProxyType({}),tuple(descriptors),tuple(descriptors),
-                spec.timeout_seconds,spec.result_validator_id,claim_digest,closure.source.commit_sha,
+                timeout,spec.result_validator_id,claim_digest,closure.source.commit_sha,
                 P3SpawnLineage(fingerprint,environment.sandbox_policy_digest,payload.manifest_ref.content_sha256,claim_digest),custody,replica_fence)
         except BaseException as error:
-            if custody is not None:
-                custody.abandon()
-            elif created_output is not None:
-                try:
-                    os.rmdir(created_output,dir_fd=output_parent)
-                except OSError:
-                    # Preserve unexpected contents; only an empty task directory is ours to remove.
-                    pass
-            for fd in descriptors:
-                os.close(fd)
+            cleanup_error: BaseException | None = None
+            try:
+                if custody is not None:
+                    custody.abandon()
+                elif created_output is not None:
+                    try:
+                        os.rmdir(created_output,dir_fd=output_parent)
+                    except OSError:
+                        # Preserve unexpected contents; only an empty task directory is ours to remove.
+                        pass
+            except BaseException as exc:
+                cleanup_error = exc
+            try:
+                _close_descriptors(*descriptors)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
             if not isinstance(error, Exception):
+                if cleanup_error is not None:
+                    cleanup_error.__cause__ = error.__cause__
+                    raise error from cleanup_error
                 raise
-            raise P3SpawnError('P3_SPAWN_HELD','P3 capability consumption failed') from error
+            raise P3SpawnError('P3_SPAWN_HELD','P3 capability consumption failed') from (cleanup_error or error)
 
 
 def consume_prepared_p3_spawn(token: PreparedP3Spawn) -> P3BuiltSpawn:

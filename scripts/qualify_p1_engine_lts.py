@@ -241,6 +241,10 @@ def load_external_receipt(path: Path, *, schema: str, verdict: str, source_ident
         value = _loads_external_exact(path.read_bytes())
     except OSError as exc:
         raise P1EngineLtsQualificationError("external receipt is unavailable") from exc
+    return validate_external_receipt(value, schema=schema, verdict=verdict, source_identity=source_identity)
+
+
+def validate_external_receipt(value, *, schema, verdict, source_identity):
     if set(value) != _EXTERNAL_KEYS:
         raise P1EngineLtsQualificationError("external receipt shape is invalid")
     if value.get("authority_limits") != SAFE_AUTHORITY_LIMITS:
@@ -383,6 +387,10 @@ def qualify(
     if not injected_source and _source_changed(source):
         return {**base, "status": "HELD_SOURCE_CHANGED_DURING_QUALIFICATION"}, 2
 
+    return _complete_receipt(policy, base, source, external_hashes, mode)
+
+
+def _complete_receipt(policy, base, source, external_hashes, mode):
     p1_h = {
         **base,
         "external_receipt_sha256s": external_hashes,
@@ -412,6 +420,35 @@ def qualify(
     }
     receipt["receipt_sha256"] = hashlib.sha256(canonical_receipt_bytes(receipt)).hexdigest()
     return receipt, 0
+
+
+def validate_complete_receipt(value, *, external, retained, source_identity):
+    """Recompute all eight P1 nodes and read each authenticated external leaf.
+
+    The caller authenticates local custody; this semantic validator does not
+    turn researcher JSON into an operator/native qualification.
+    """
+    if set(external) != set(_EXTERNAL_SPECS):
+        raise P1EngineLtsQualificationError('complete P1 external inventory differs')
+    hashes = {}
+    referenced = set()
+    for name, (schema, verdict) in _EXTERNAL_SPECS.items():
+        raw = external[name]
+        payload = validate_external_receipt(_loads_external_exact(raw), schema=schema,
+            verdict=verdict, source_identity=source_identity)
+        hashes[name] = hashlib.sha256(raw).hexdigest()
+        for digest in payload['evidence_sha256s']:
+            if digest not in retained or hashlib.sha256(retained[digest]).hexdigest() != digest:
+                raise P1EngineLtsQualificationError('complete P1 retained external evidence is absent or altered')
+            referenced.add(digest)
+    if set(retained) != referenced:
+        raise P1EngineLtsQualificationError('complete P1 retained external inventory differs')
+    policy, static = _validate_static()
+    base = _base_receipt(policy, static, source_identity, True)
+    expected, _ = _complete_receipt(policy, base, source_identity, hashes, 'final')
+    if canonical_receipt_bytes(value) != canonical_receipt_bytes(expected):
+        raise P1EngineLtsQualificationError('complete P1 receipt or eight-node DAG differs')
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:

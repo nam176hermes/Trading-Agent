@@ -57,6 +57,43 @@ POSTGRES_EXECUTABLES = frozenset(
 
 _AUTHORITY_TOKEN = object()
 _PLANNED_SLOT_COUNTERS: dict[tuple[str, str, str], int] = {}
+FIXTURE_PLAN_REQUIRED_ENV = "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED"
+_ACTIVE_DISPOSABLE_ENDPOINTS: set[tuple[str, int]] = set()
+
+
+def _require_active_disposable_endpoint(conninfo: str, kwargs: dict) -> None:
+    from psycopg.conninfo import conninfo_to_dict
+
+    values = conninfo_to_dict(conninfo)
+    values.update({name: kwargs[name] for name in
+        ("host", "hostaddr", "port", "service", "passfile") if name in kwargs})
+    try:
+        endpoint = (values.get("host"), int(values.get("port", "")))
+    except (TypeError, ValueError):
+        endpoint = None
+    if (endpoint not in _ACTIVE_DISPOSABLE_ENDPOINTS
+        or any(values.get(name) for name in ("hostaddr", "service", "passfile"))):
+        raise DisposablePostgresApprovalRejected(
+            "disposable PostgreSQL connection is outside the active approved slot"
+        )
+
+
+def install_disposable_connection_fence(patch: pytest.MonkeyPatch) -> None:
+    """Fence sync/pool/SQLAlchemy and async drivers before libpq can open a socket."""
+    sync = psycopg.Connection.connect.__func__
+    asynchronous = psycopg.AsyncConnection.connect.__func__
+
+    def connect(cls, conninfo="", **kwargs):
+        _require_active_disposable_endpoint(conninfo, kwargs)
+        return sync(cls, conninfo, **kwargs)
+
+    async def async_connect(cls, conninfo="", **kwargs):
+        _require_active_disposable_endpoint(conninfo, kwargs)
+        return await asynchronous(cls, conninfo, **kwargs)
+
+    patch.setattr(psycopg.Connection, "connect", classmethod(connect))
+    patch.setattr(psycopg, "connect", psycopg.Connection.connect)
+    patch.setattr(psycopg.AsyncConnection, "connect", classmethod(async_connect))
 
 
 class _ReviewedSqlSnapshot(NamedTuple):
@@ -196,6 +233,7 @@ _POSTGRES_OPERATION_SCOPES = MappingProxyType(
         "pg_ctl_stop": _BOTH_DISPOSABLE_SCOPES,
         "green_base_psql": _GREEN_ONLY_SCOPE,
         "green_job_psql": _GREEN_ONLY_SCOPE,
+        "green_p3_psql": _GREEN_ONLY_SCOPE,
         "green_restore_target_psql": _GREEN_ONLY_SCOPE,
         "red_base_psql": _RED_ONLY_SCOPE,
         "red_job_psql": _RED_ONLY_SCOPE,
@@ -228,6 +266,7 @@ _BASE_ROLE_SQL_BYTES = (ROOT / "ops/postgres/provision-roles.sql").read_bytes()
 _JOB_ROLE_SQL_BYTES = (
     ROOT / "ops/postgres/provision-job-roles.sql"
 ).read_bytes()
+_P3_ROLE_SQL_BYTES = (ROOT / "ops/postgres/provision-p3-roles.sql").read_bytes()
 
 
 def _upgrade_to_revision(settings: DatabaseSettings, revision: str) -> None:
@@ -285,8 +324,14 @@ def disposable_database(
     operation_id: str | None = None,
     red_sql_file: Path | None = None,
     planned: bool = False,
+    p3_roles: bool = False,
 ):
-    """Yield an isolated exact-0004 database ready for the 0005 migration."""
+    """Yield an isolated exact-0004 database ready for the 0005 migration.
+
+    `p3_roles=True` (GREEN only) allows exactly one `provision_p3_roles(owner)` call, at revision 0019, for the
+    bound P3 role bootstrap that migrations 0020-0032 require. Earlier provisioning would change the role
+    catalog that the 0007 preflight digest binds.
+    """
 
     with _disposable_postgres_session(
         operation_id=operation_id,
@@ -294,7 +339,40 @@ def disposable_database(
         planned=planned,
         expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
-        yield _prepare_disposable_database(session)
+        owner = _prepare_disposable_database(session, p3_roles=p3_roles)
+        if not p3_roles:
+            yield owner
+            return
+        _P3_ROLE_REQUESTS[id(owner)] = (owner, _validated_session(session))
+        try:
+            yield owner
+        finally:
+            _P3_ROLE_REQUESTS.pop(id(owner), None)
+
+
+_P3_ROLE_REQUESTS: dict[int, tuple[DatabaseSettings, object]] = {}
+_P3_ROLE_REVISION = "0019_p2_security_master"
+
+
+def _alembic_revision(owner: DatabaseSettings) -> str | None:
+    with psycopg.connect(owner.conninfo()) as connection:
+        row = connection.execute("SELECT version_num FROM public.alembic_version").fetchone()
+    return None if row is None else row[0]
+
+
+def provision_p3_roles(owner: DatabaseSettings) -> None:
+    """Run the bound P3 role bootstrap once, at 0019, for a GREEN database opened with `p3_roles=True`."""
+    request = _P3_ROLE_REQUESTS.get(id(owner))
+    if request is None or request[0] is not owner:
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning was not requested for this disposable database"
+        )
+    if _alembic_revision(owner) != _P3_ROLE_REVISION:
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning is allowed only at revision 0019_p2_security_master"
+        )
+    del _P3_ROLE_REQUESTS[id(owner)]                      # exactly once
+    _run_green_p3_psql(request[1])
 
 
 @contextmanager
@@ -418,6 +496,19 @@ def disposable_role_settings(
     if role not in _DISPOSABLE_LOGIN_ROLES:
         raise ValueError("disposable role is not allowed")
     return replace(database, user=role, password=_ROLE_PASSWORDS[role])
+
+
+def apply_disposable_real_plan(plan, owner: DatabaseSettings, *, apply: bool, code_commit: str):
+    """Exercise the same importer only in an active validated disposable fixture."""
+    from trading_control.real_import import _apply_real_plan
+    from trading_control.writer import ApplyRejected
+
+    if apply is not True:
+        raise ApplyRejected("explicit apply=True is required")
+    _require_active_disposable_endpoint(owner.conninfo(), {})
+    if owner.database != DISPOSABLE_DATABASE or owner.user != "trading_owner":
+        raise DisposablePostgresApprovalRejected("real import requires a disposable owner")
+    return _apply_real_plan(plan, disposable_role_settings(owner, "trading_migrator"), code_commit=code_commit)
 
 
 def _unused_tcp_port() -> int:
@@ -546,8 +637,14 @@ def _validated_reviewed_sql_snapshot(
 
 def _prepare_disposable_database(
     session: object,
+    *,
+    p3_roles: bool = False,
 ) -> DatabaseSettings:
     validated = _validated_session(session)
+    if p3_roles and validated.authority.context.scope != "DISPOSABLE_PG_GREEN":
+        raise DisposablePostgresApprovalRejected(
+            "P3 role provisioning is available only in disposable GREEN scope"
+        )
     cluster = _public_cluster(validated)
     _provision_base_roles(validated)
     owner = _owner_settings(cluster)
@@ -809,9 +906,6 @@ GRANT CONNECT ON DATABASE {database}
 GRANT TEMPORARY ON DATABASE {database} TO trading_migrator;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ALTER SCHEMA public OWNER TO trading_owner;
-SET SESSION AUTHORIZATION trading_owner;
-CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
-RESET SESSION AUTHORIZATION;
 ALTER ROLE trading_owner IN DATABASE {database} SET timezone = 'UTC';
 ALTER ROLE trading_migrator IN DATABASE {database} SET timezone = 'UTC';
 ALTER ROLE trading_reader IN DATABASE {database}
@@ -843,6 +937,16 @@ def _build_green_job_psql_command(session: object) -> _PostgresCommand:
             f"--dbname={DISPOSABLE_DATABASE}",
         ),
         input_bytes=_job_role_input(),
+    )
+
+
+def _build_green_p3_psql_command(session: object) -> _PostgresCommand:
+    return _command(
+        session,
+        "green_p3_psql",
+        "psql",
+        ("-X", "--no-psqlrc", "--set=ON_ERROR_STOP=1", "--dbname=postgres"),
+        input_bytes=_P3_ROLE_SQL_BYTES,
     )
 
 
@@ -923,6 +1027,7 @@ def _expected_command(
         "pg_ctl_stop": _build_pg_ctl_stop_command,
         "green_base_psql": _build_green_base_psql_command,
         "green_job_psql": _build_green_job_psql_command,
+        "green_p3_psql": _build_green_p3_psql_command,
         "green_restore_target_psql": _build_green_restore_target_psql_command,
         "red_base_psql": _build_red_base_psql_command,
         "red_job_psql": _build_red_job_psql_command,
@@ -1041,6 +1146,18 @@ def _run_green_job_psql(session: object) -> subprocess.CompletedProcess:
     except subprocess.CalledProcessError:
         raise RuntimeError(
             "isolated PostgreSQL provisioning failed: provision-job-roles.sql"
+        ) from None
+
+
+def _run_green_p3_psql(session: object) -> subprocess.CompletedProcess:
+    try:
+        return _execute_postgres_command(
+            session,
+            _build_green_p3_psql_command(session),
+        )
+    except subprocess.CalledProcessError:
+        raise RuntimeError(
+            "isolated PostgreSQL provisioning failed: provision-p3-roles.sql"
         ) from None
 
 
@@ -1236,6 +1353,18 @@ def _approval_inputs(
             "database-starting test does not expose a stable operation id"
         )
     return record, scope, operation_id
+
+
+def _fixture_plan_required() -> bool:
+    """An owner lane sets YES: every session then takes an approved plan slot, whatever its caller asked for."""
+    value = os.environ.get(FIXTURE_PLAN_REQUIRED_ENV)
+    if value is None:
+        return False
+    if value != "YES":
+        raise DisposablePostgresApprovalRejected(
+            "disposable PostgreSQL fixture plan requirement is not exact"
+        )
+    return True
 
 
 def _require_paper_safety_environment() -> None:
@@ -1489,6 +1618,7 @@ def _disposable_postgres_session(
     """Yield a private capability for one validated disposable cluster."""
 
     record, scope, stable_operation_id = _approval_inputs(operation_id)
+    planned = _fixture_plan_required() or planned     # validate the requirement even when the caller plans
     source_commit, source_tree = _current_source_identity()
     _require_current_source_matches_approval(
         record, source_commit, source_tree,
@@ -1535,9 +1665,13 @@ def _disposable_postgres_session(
             initialized = True
             _run_pg_ctl_start(session)
             session.derivation_state.phase = "CLUSTER_STARTED"
+            _ACTIVE_DISPOSABLE_ENDPOINTS.add((authority.context.bind_host, authority.context.port))
             yield session
         finally:
             if session is not None:
+                _ACTIVE_DISPOSABLE_ENDPOINTS.discard(
+                    (session.authority.context.bind_host, session.authority.context.port)
+                )
                 session.derivation_state.phase = "CLOSED"
                 if initialized:
                     _ensure_disposable_postgres_stopped(session)
@@ -1556,5 +1690,6 @@ def disposable_postgres_cluster(
     with _disposable_postgres_session(
         operation_id=operation_id,
         red_sql_file=red_sql_file,
+        expected_lifecycle_actions=lifecycle_actions_for("CLUSTER"),
     ) as session:
         yield _public_cluster(session)

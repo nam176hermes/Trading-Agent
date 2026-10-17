@@ -115,3 +115,110 @@ def test_baseline_must_bind_the_same_snapshot_and_cost_model() -> None:
                 total_return=Decimal("0.15"),
             )
         )
+
+
+def test_regime_excess_below_single_return_floor_reaches_criteria() -> None:
+    values = (Decimal("0.03"), Decimal("0.01"), Decimal("-1.3666"))
+    evidence = _evidence(regime_excess_returns=values)
+
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.regime_excess_returns == values
+    assert result.failure_codes == ("E_REGIME_DEPENDENCE",)
+    assert result.qualified is False
+
+
+def test_fold_excess_below_single_return_floor_can_fail_criteria() -> None:
+    values = (Decimal("-1.2"), Decimal("-0.5"), Decimal("0.01"))
+    evidence = _evidence(fold_excess_returns=values)
+
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.fold_excess_returns == values
+    assert result.failure_codes == ("E_FOLD_COUNT", "E_MEDIAN_FOLD")
+    assert result.qualified is False
+
+
+def test_fold_excess_below_single_return_floor_can_qualify() -> None:
+    values = (Decimal("-1.2"), Decimal("0.01"), Decimal("0.02"))
+    evidence = _evidence(fold_excess_returns=values)
+
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.fold_excess_returns == values
+    assert result.failure_codes == ()
+    assert result.qualified is True
+
+
+def test_regime_excess_above_fold_ceiling_can_qualify() -> None:
+    values = (Decimal("1023"), Decimal("0.01"), Decimal("-0.02"))
+    evidence = _evidence(regime_excess_returns=values)
+
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.regime_excess_returns == values
+    assert result.failure_codes == ()
+    assert result.qualified is True
+
+
+def test_regime_excess_below_fold_floor_reaches_criteria() -> None:
+    values = (Decimal("-1023"), Decimal("0.01"), Decimal("0.02"))
+    evidence = _evidence(regime_excess_returns=values)
+
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.regime_excess_returns == values
+    assert result.failure_codes == ("E_REGIME_DEPENDENCE",)
+    assert result.qualified is False
+
+
+@pytest.mark.parametrize(
+    ("first", "error_type", "failure_codes", "qualified"),
+    [
+        ("-1001", None, ("E_FOLD_COUNT", "E_MEDIAN_FOLD"), False),
+        ("1001", None, (), True),
+        ("-1001.0001", "greater_than_equal", None, None),
+        ("1001.0001", "less_than_equal", None, None),
+    ],
+)
+def test_fold_excess_endpoints_and_outside_bounds(
+    first: str,
+    error_type: str | None,
+    failure_codes: tuple[str, ...] | None,
+    qualified: bool | None,
+) -> None:
+    values = (Decimal(first), Decimal("0.02"), Decimal("-0.01"))
+    if error_type is not None:
+        with pytest.raises(ValidationError) as caught:
+            _evidence(fold_excess_returns=values)
+        assert (("fold_excess_returns", 0), error_type) in {
+            (error["loc"], error["type"]) for error in caught.value.errors()
+        }
+        return
+
+    evidence = _evidence(fold_excess_returns=values)
+    result = evaluate_alpha_qualification(evidence)
+
+    assert evidence.fold_excess_returns == values
+    assert result.failure_codes == failure_codes
+    assert result.qualified is qualified
+
+
+def test_regime_excess_rejects_nonfinite_values_at_each_position() -> None:
+    for nonfinite in ("NaN", "sNaN", "Infinity", "-Infinity"):
+        for index in range(3):
+            values = [Decimal("0.03"), Decimal("0.01"), Decimal("-0.02")]
+            values[index] = Decimal(nonfinite)
+            with pytest.raises(ValidationError) as caught:
+                _evidence(regime_excess_returns=tuple(values))
+            assert (("regime_excess_returns", index), "finite_number") in {
+                (error["loc"], error["type"]) for error in caught.value.errors()
+            }
+
+
+def test_single_total_return_keeps_original_floor() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _metrics(total_return=Decimal("-1.0001"))
+    assert (("total_return",), "greater_than_equal") in {
+        (error["loc"], error["type"]) for error in caught.value.errors()
+    }

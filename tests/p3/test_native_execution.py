@@ -13,15 +13,23 @@ from tests.p3.test_holdout_session import session_inputs  # noqa: F401
 from tests.p3.test_reference_input import reference_seed  # noqa: F401
 
 
+@pytest.mark.parametrize('session_inputs', ['LOCAL'], indirect=True)
+def test_local_parity_note_uses_the_admitted_host_profile(native_provider, tmp_path, monkeypatch):
+    test_native_execution_owns_six_distinct_children_and_stops_on_failure(
+        native_provider, tmp_path, monkeypatch, None)
+    provider, x, _, _ = native_provider
+    assert (x.output_root / provider._claim.job_id / 'session-refs' / 'parity-pair.log').is_file()
+
+
 @pytest.mark.parametrize('fault', [None, 'real_processes', 'cancel', 'exit', 'identity', 'lineage',
-    'fingerprint', 'request', 'truncated', 'output', 'revoked'])
+    'fingerprint', 'request', 'truncated', 'output', 'revoked', 'clock'])
 def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
     native_provider, tmp_path, monkeypatch, fault,
 ):
     from packages.alpha_lifecycle.contracts.execution import HoldoutManifest, InstrumentSpec
     from packages.alpha_lifecycle.executable_reference import run_executable_reference, run_selected_baseline_reference
     from packages.alpha_lifecycle.replica_store import _read
-    from services.job_worker import p3_native_spawn as native, process_runner
+    from services.job_worker import p3_native_runner, p3_native_spawn as native, process_runner
     from services.job_worker.recovery import ProcessIdentity
     from tests.jobs.test_process_runner import safety_evidence
 
@@ -100,6 +108,16 @@ def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
     kwargs = dict(view=view, output=x.session, artifact_root=tmp_path/'streams',
         heartbeat=heartbeat, preflight=preflight)
     before = datetime.now(UTC)
+    # Synthetic execution has explicit UTC samples; host clock steps must not
+    # turn the positive fixture into a production chronology rejection.
+    end = before + timedelta(microseconds=12)
+    samples = iter((before, before-timedelta(microseconds=1)) if fault == 'clock' else
+        (before+timedelta(microseconds=i) for i in range(12)))
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(samples).astimezone(tz)
+    monkeypatch.setattr(p3_native_runner, 'datetime', Clock)
     if fault in (None, 'real_processes'):
         runs = run_native_replicas(provider, **kwargs)
         assert len(runs) == len(calls) == len(set(identities)) == 6
@@ -107,7 +125,7 @@ def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
         assert len({root for root, _, _ in calls}) == 6
         assert {(job, attempt) for _, job, attempt in calls} == {(provider._claim.job_id, provider._claim.attempt_id)}
         for run in runs:
-            assert before <= run.started_at <= run.completed_at <= datetime.now(UTC)
+            assert before <= run.started_at <= run.completed_at <= end
             assert run.request_sha256 == payload_digest(provider._requests[run.role != 'PRIMARY'])
             assert x.store.read_bytes(run.result_ref)
             assert run.outcome.lineage.command['os_sandbox_profile_sha256'] != 'd'*64
@@ -144,6 +162,10 @@ def test_native_execution_owns_six_distinct_children_and_stops_on_failure(
         assert len(calls) == (2 if fault == 'identity' else 1)
         assert len(failed.value.completed) == (1 if fault == 'identity' else 0)
         if fault == 'cancel': assert failed.value.outcome.termination_reason == 'CANCELLED'
+        if fault == 'clock':
+            assert str(failed.value) == 'native child outcome differs from its consumed launch or failed'
+            assert failed.value.outcome.exit_code == 0
+            assert failed.value.outcome.termination_reason is None
         if fault != 'identity': assert not writes
     with pytest.raises((RuntimeError, ValueError)):
         run_native_replicas(provider, **kwargs)
@@ -156,8 +178,8 @@ def test_session_revokes_view_when_native_execution_fails(native_provider, tmp_p
     alias = x.session.view
     original_host = x.session._host
     def host(*args):
-        original_host(*args)
-        return SimpleNamespace(output_root=str(tmp_path/'protected-output'))
+        _, closure = original_host(*args)
+        return SimpleNamespace(output_root=str(tmp_path/'protected-output')), closure
     monkeypatch.setattr(x.session, '_host', host)
     monkeypatch.setattr(x.session, 'native_spawn_provider', lambda: provider)
     def fail(actual, **kwargs):

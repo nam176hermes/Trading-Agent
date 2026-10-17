@@ -111,6 +111,7 @@ def _alpha_request() -> EnqueueJobRequest:
 def test_job_api_routes_alpha_campaign_to_the_scoped_sql_capability() -> None:
     request = _alpha_request()
     connection = _Connection(
+        {"version_num":"0026_p3_holdout_disclosure"},
         {"job_id": "job_fixed", "outcome": "ENQUEUED"},
         _job_row(request),
     )
@@ -122,8 +123,8 @@ def test_job_api_routes_alpha_campaign_to_the_scoped_sql_capability() -> None:
 
     assert result.outcome is EnqueueOutcome.ENQUEUED
     assert result.job.job_id == "job_fixed"
-    assert "job_plane.api_enqueue_alpha_campaign" in connection.calls[0][0]
-    assert "p_payload_text" not in connection.calls[0][0]
+    assert "job_plane.api_enqueue_alpha_campaign" in connection.calls[1][0]
+    assert "p_payload_text" not in connection.calls[1][0]
 
 
 @pytest.mark.parametrize('fault', [None, 'revision', 'catalog', 'role', 'restricted', 'paper'])

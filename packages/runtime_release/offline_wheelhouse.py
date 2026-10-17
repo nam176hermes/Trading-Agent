@@ -158,10 +158,35 @@ def _wheel_metadata(path: Path) -> tuple[str, str, str]:
         _fail()
     name = message.get("Name")
     version = message.get("Version")
-    license_value = message.get("License-Expression") or message.get("License") or "UNKNOWN"
-    if not isinstance(name, str) or not isinstance(version, str) or not isinstance(license_value, str):
+    if not isinstance(name, str) or not isinstance(version, str):
         _fail()
-    license_value = " ".join(license_value.split())
+    # The manifest records a licence identifier, not a licence document. Some wheels put the
+    # full licence text in the legacy License field: polars 1.44.1 ships 1141 characters
+    # there and has no License-Expression, which made the wheelhouse for this lock
+    # impossible to build at all.
+    #
+    # That single case is the only one resolved differently here. Every metadata the previous
+    # resolution already accepted keeps the exact value it produced, an absent licence
+    # included -- it recorded UNKNOWN, and it still does. verify_offline_wheelhouse rebuilds
+    # the expected manifest and compares it against the retained one, so a wider fallback
+    # would have changed annotated-types and duckdb from UNKNOWN to "MIT License" and
+    # rejected retained manifests whose wheels and lock had never moved.
+    expression = message.get("License-Expression")
+    from_legacy = not (isinstance(expression, str) and expression)
+    raw = message.get("License") if from_legacy else expression
+    if not (isinstance(raw, str) and raw):
+        raw, from_legacy = "UNKNOWN", False
+    license_value = " ".join(raw.split())
+    if from_legacy and len(license_value) > 512:
+        # A licence document rather than an identifier, which is the one input the previous
+        # resolution had no answer for: it failed the build outright. The OSI classifier is
+        # a fixed vocabulary, so it is an identifier -- a name such as "MIT License", not
+        # necessarily the SPDX form.
+        classifiers = [value for value in (message.get_all("Classifier") or [])
+                       if isinstance(value, str) and value.startswith("License ::")]
+        if not classifiers:
+            _fail()
+        license_value = " ".join(classifiers[0].split("::")[-1].split())
     if not license_value or len(license_value) > 512:
         _fail()
     return name, version, license_value

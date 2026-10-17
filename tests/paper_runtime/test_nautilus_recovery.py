@@ -706,3 +706,411 @@ def test_replay_blocks_changed_command_prefix_without_starting_next_target(
         )
 
     assert fresh.calls == 0
+
+
+# PR02: replay bookkeeping is always released when recovery fails, without losing the primary failure.
+def _prepared_recovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from test_nautilus_session import _Child, _commands, _request, _safety, _session
+
+    root = tmp_path / "store"
+    root.mkdir(mode=0o700)
+    store = NautilusRecoveryStore(root)
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+    closure = P1_REAL_BACKTEST_POLICY.closure_sha256
+    old_child = _Child(closure=closure)
+    old_session, _capability, _client = _session(
+        old_child, [_safety()], monkeypatch, authority_closure=closure, recovery_recorder=store,
+    )
+    start, target, _stop = _commands(_request())
+    first = old_session.execute(start, expected_checkpoint_sha256=ZERO_CHECKPOINT_SHA256)
+    second = old_session.execute(target, expected_checkpoint_sha256=first.checkpoint.checkpoint_sha256)
+    old_child.abort()                                        # the prior child is proven dead
+    receipt_path = tmp_path / "recovery.json"
+    receipt = write_nautilus_recovery_receipt(
+        receipt_path, _runtime_evidence(second.checkpoint, child_running=False),
+        command_chain_sha256=store.chain_sha256,
+    )
+
+    def fresh(identity: str = "f" * 64, safety=None):
+        child = _Child(closure=closure, identity=identity)
+        return child, (lambda recorder: _session(
+            child, safety if safety is not None else [_safety()], monkeypatch, authority_closure=closure,
+            authority_identity=identity, recovery_recorder=recorder)[0])
+
+    def recover(factory, on_store=None):
+        return recover_nautilus_paper_session(
+            on_store or store, factory, prior_session=old_session, receipt_path=receipt_path,
+            expected_receipt_sha256=receipt.receipt_sha256,
+        )
+
+    return store, root, fresh, recover
+
+
+def _prefix_hashes(root: Path) -> dict[str, str]:
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(root.iterdir())
+            if path.name.startswith(("intent-", "step-"))}
+
+
+def test_factory_error_releases_replay_and_holds_unknown_outcome(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, _root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+
+    def broken_factory(_recorder):
+        raise OSError("child could not be created")
+
+    with pytest.raises(OSError, match="could not be created"):
+        recover(broken_factory)
+    assert store.begin_replay()                              # bookkeeping released: no "already active"
+    store.cancel_replay()
+    child, factory = fresh()
+    with pytest.raises(ValueError, match="outcome is unknown"):   # a raising factory is no proof of no child
+        recover(factory)
+    assert child.calls == 0
+
+
+def test_invalid_recovery_factory_result_releases_replay_and_holds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, _root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+
+    with pytest.raises(TypeError, match="invalid paper session"):
+        recover(lambda _recorder: object())
+    assert store.begin_replay()
+    store.cancel_replay()
+    child, factory = fresh()
+    with pytest.raises(ValueError, match="outcome is unknown"):
+        recover(factory)
+    assert child.calls == 0
+
+
+def test_abort_error_still_releases_replay_bookkeeping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_nautilus_session import _safety
+
+    store, _root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    safety = [_safety()]
+    child, factory = fresh(safety=safety)
+    exchange = child.exchange
+
+    def engage_after_start(raw: bytes) -> bytes:
+        response = exchange(raw)
+        safety.append(_safety(kill_switch=CanonicalKillSwitchState.ACTIVE))
+        return response
+
+    def failing_abort() -> None:
+        raise OSError("abort failed")                        # the child is NOT stopped
+
+    child.exchange = engage_after_start  # type: ignore[method-assign]
+    child.abort = failing_abort  # type: ignore[method-assign]
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        recover(factory)
+
+    messages = [str(error) for error in raised.value.exceptions]
+    assert any("exit-only stop" in message for message in messages)          # primary failure kept
+    assert any("abort failed" in message for message in messages)           # cleanup failure kept
+    assert any("could not be terminated" in message for message in messages)  # termination unproven
+    assert store.begin_replay()                              # bookkeeping released: no "already active"
+    store.cancel_replay()
+
+
+def test_failed_replay_preserves_durable_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    before = _prefix_hashes(root)
+
+    def broken_factory(_recorder):
+        raise OSError("child could not be created")
+
+    with pytest.raises(OSError):
+        recover(broken_factory)
+    with pytest.raises(ValueError, match="outcome is unknown"):
+        recover(lambda _recorder: object())
+
+    assert _prefix_hashes(root) == before
+
+
+# R3 REVISE: a failed recovery child that may still run blocks every further recovery; liveness failures count
+# as unproven termination and never leave the replay bookkeeping stuck.
+def _failing_recovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, liveness_error: bool = False):
+    from test_nautilus_session import _safety
+
+    store, _root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    safety = [_safety()]
+    child, factory = fresh(safety=safety)
+    exchange = child.exchange
+
+    def engage_after_start(raw: bytes) -> bytes:
+        response = exchange(raw)
+        safety.append(_safety(kill_switch=CanonicalKillSwitchState.ACTIVE))
+        return response
+
+    def failing_abort() -> None:
+        raise OSError("abort failed")
+
+    def failing_liveness() -> bool:
+        raise ValueError("paper child liveness cannot be proven")
+
+    child.exchange = engage_after_start  # type: ignore[method-assign]
+    child.abort = failing_abort  # type: ignore[method-assign]
+    if liveness_error:
+        child.is_running = failing_liveness  # type: ignore[method-assign]
+    ports = []
+
+    def capturing(recorder):
+        session = factory(recorder)
+        ports.append(session._child)          # the exact child port recovery recorded
+        return session
+
+    with pytest.raises(BaseExceptionGroup) as raised:
+        recover(capturing)
+    child.port = ports[0]
+    return store, fresh, recover, child, raised.value
+
+
+def test_retry_is_refused_while_a_failed_recovery_child_may_still_run(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch)
+    assert failed_child.is_running()                              # abort failed; the child still runs
+
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="not proven terminated"):
+        recover(second_factory)
+    assert second_child.calls == 0                                # no second child was driven
+
+    failed_child.aborted = True                                   # termination is now proven
+    assert recover(second_factory).disposition == "RESUME_EXACT_PREFIX"
+
+
+def test_liveness_error_keeps_every_failure_and_releases_bookkeeping(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, _child, group = _failing_recovery(tmp_path, monkeypatch, liveness_error=True)
+
+    messages = [f"{type(error).__name__}: {error}" for error in group.exceptions]
+    assert any("exit-only stop" in message for message in messages)                   # primary
+    assert any(message == "OSError: abort failed" for message in messages)             # abort failure
+    assert any("liveness cannot be proven" in message for message in messages)        # liveness failure
+    assert any("could not be terminated" in message for message in messages)          # unproven termination
+    assert store.begin_replay()                                                        # not "already active"
+    store.cancel_replay()
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="not proven terminated"):                     # liveness unknown: blocked
+        recover(second_factory)
+    assert second_child.calls == 0
+
+
+
+# R3 REVISE-02: the unproven-termination state is durable in the store directory, bound to the attempt and the
+# child identity, written before the factory runs; a reopened store keeps blocking until termination is proven.
+def test_reopened_store_blocks_while_the_failed_child_still_runs(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch)
+    reopened = NautilusRecoveryStore(tmp_path / "store")
+
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="not proven terminated"):
+        recover(second_factory, on_store=reopened)
+    assert second_child.calls == 0
+
+
+def test_reopened_store_blocks_while_liveness_is_unknown(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch, liveness_error=True)
+    reopened = NautilusRecoveryStore(tmp_path / "store")
+
+    with pytest.raises(ValueError, match="not proven terminated"):
+        reopened.prove_recovery_child_terminated(failed_child.port)  # liveness raises: no proof
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="not proven terminated"):
+        recover(second_factory, on_store=reopened)
+    assert second_child.calls == 0
+
+
+def test_reopened_store_resumes_after_termination_is_proven(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch)
+    reopened = NautilusRecoveryStore(tmp_path / "store")
+    from types import SimpleNamespace
+
+    impostor = SimpleNamespace(process_authority_sha256="9" * 64, is_running=lambda: False)
+    with pytest.raises(ValueError, match="not proven terminated"):
+        reopened.prove_recovery_child_terminated(impostor)          # a dead child with another identity is no proof
+
+    failed_child.aborted = True                                     # the failed child really ended
+    reopened.prove_recovery_child_terminated(failed_child.port)
+    second_child, second_factory = fresh()
+    assert recover(second_factory, on_store=NautilusRecoveryStore(tmp_path / "store")).disposition == "RESUME_EXACT_PREFIX"
+
+
+def test_crash_between_attempt_marker_and_child_identity_blocks(tmp_path, monkeypatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    store._open_recovery_attempt()          # crash simulation: the marker exists, the child identity never landed
+    before = _prefix_hashes(root)
+
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="recovery attempt outcome is unknown"):
+        recover(second_factory, on_store=NautilusRecoveryStore(root))
+    assert second_child.calls == 0 and _prefix_hashes(root) == before
+
+
+def test_corrupt_recovery_attempt_marker_blocks_before_the_factory(tmp_path, monkeypatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    marker = root / "recovery-attempt-00000001.json"
+    marker.write_bytes(b"not json")
+    marker.chmod(0o400)
+
+    second_child, second_factory = fresh()
+    with pytest.raises(ValueError, match="recovery attempt"):
+        recover(second_factory, on_store=NautilusRecoveryStore(root))
+    assert second_child.calls == 0
+
+
+def test_proven_attempt_does_not_block_a_later_recovery(tmp_path, monkeypatch) -> None:
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch)
+    root = tmp_path / "store"
+    failed_child.aborted = True
+    NautilusRecoveryStore(root).prove_recovery_child_terminated(failed_child.port)
+
+    _child, factory = fresh()
+    assert recover(factory, on_store=NautilusRecoveryStore(root)).disposition == "RESUME_EXACT_PREFIX"
+    names = sorted(path.name for path in root.iterdir() if path.name.startswith("recovery-attempt-"))
+    assert names == ["recovery-attempt-00000001-child.json", "recovery-attempt-00000001-closed.json",
+                     "recovery-attempt-00000001.json", "recovery-attempt-00000002-child.json",
+                     "recovery-attempt-00000002.json"]                       # attempt 2's child still runs: open
+
+
+# R3 REVISE-03: no path closes an attempt without proof that its recorded child ended.
+def test_factory_that_raises_after_creating_a_child_holds_the_attempt(tmp_path, monkeypatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    created, factory = fresh()
+
+    def raises_after_spawn(recorder):
+        factory(recorder)                                          # a live child now exists
+        raise OSError("factory failed after spawning")
+
+    with pytest.raises(OSError, match="after spawning"):
+        recover(raises_after_spawn)
+    assert created.is_running()
+    second, second_factory = fresh("e" * 64)
+    with pytest.raises(ValueError, match="outcome is unknown"):
+        recover(second_factory, on_store=NautilusRecoveryStore(root))
+    assert second.calls == 0
+
+
+def test_termination_proof_requires_the_issued_port(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    store, fresh, recover, failed_child, _group = _failing_recovery(tmp_path, monkeypatch)
+    root = tmp_path / "store"
+    copy = SimpleNamespace(process_authority_sha256=failed_child.port.process_authority_sha256,
+                           is_running=lambda: False)
+    with pytest.raises(ValueError, match="not proven terminated"):
+        NautilusRecoveryStore(root).prove_recovery_child_terminated(copy)   # right identity, not the issued port
+    assert failed_child.is_running()
+    second, second_factory = fresh()
+    with pytest.raises(ValueError, match="not proven terminated"):
+        recover(second_factory, on_store=NautilusRecoveryStore(root))
+    assert second.calls == 0
+
+
+def test_successful_recovery_blocks_another_child_while_the_recovered_child_runs(tmp_path, monkeypatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    first, first_factory = fresh()
+    recovered = recover(first_factory)
+    assert first.is_running()
+
+    second, second_factory = fresh("e" * 64)
+    with pytest.raises(ValueError, match="not proven terminated"):
+        recover(second_factory, on_store=NautilusRecoveryStore(root))       # same prior session and receipt
+    assert second.calls == 0
+
+    first.aborted = True                                                    # the recovered child ended
+    NautilusRecoveryStore(root).prove_recovery_child_terminated(recovered.session._child)
+    assert recover(second_factory, on_store=NautilusRecoveryStore(root)).disposition == "RESUME_EXACT_PREFIX"
+
+
+def _marker(root: Path, name: str, document: dict[str, object]) -> None:
+    path = root / f"recovery-attempt-{name}.json"
+    path.write_bytes(canonical_json_bytes(document) + b"\n")
+    path.chmod(0o400)
+
+
+_OPENER = {"schema_version": "nautilus-recovery-attempt-v1", "attempt": 1, "chain_sha256": "a" * 64}
+_CHILD = {"schema_version": "nautilus-recovery-attempt-v1", "attempt": 1, "child_identity": "b" * 64}
+
+
+@pytest.mark.parametrize("markers", [
+    {"00000001": {k: v for k, v in _OPENER.items() if k != "chain_sha256"},                      # Codex probe
+     "00000001-closed": {"schema_version": "nautilus-recovery-attempt-v1", "attempt": 1, "reason": "TERMINATED"}},
+    {"00000001": {k: v for k, v in _OPENER.items() if k != "chain_sha256"}},                     # opener lacks chain
+    {"00000001": _OPENER, "00000001-closed": _CHILD},                                            # closed, no child
+    {"00000001": _OPENER, "00000001-child": _CHILD, "00000001-closed": {**_CHILD, "child_identity": "c" * 64}},
+    {"00000001": _OPENER, "00000001-child": _CHILD, "00000001-closed": {k: _CHILD[k] for k in ("schema_version", "attempt")}},
+    {"00000001": {**_OPENER, "extra": True}},
+    {"00000001": {**_OPENER, "attempt": True}},
+    {"00000001": _OPENER, "00000001-child": _CHILD, "00000002": {**_OPENER, "attempt": 2}},      # earlier left open
+])
+def test_structurally_invalid_attempt_markers_fail_closed(tmp_path, monkeypatch, markers) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    for name, document in markers.items():
+        _marker(root, name, document)
+
+    with pytest.raises(ValueError, match="recovery attempt"):
+        NautilusRecoveryStore(root)
+    second, second_factory = fresh()
+    with pytest.raises(ValueError, match="recovery attempt"):
+        recover(second_factory)
+    assert second.calls == 0
+
+
+def test_non_canonical_attempt_marker_fails_closed(tmp_path, monkeypatch) -> None:
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    path = root / "recovery-attempt-00000001.json"
+    path.write_bytes(json.dumps(_OPENER, indent=1).encode() + b"\n")
+    path.chmod(0o400)
+
+    with pytest.raises(ValueError, match="recovery attempt"):
+        NautilusRecoveryStore(root)
+
+
+# R3 REVISE-04: opening an attempt re-checks the inventory it numbers from; the guard before it may be stale.
+def _interleaved(tmp_path, monkeypatch, hook: str):
+    """Store B passes the guard; A recovers on another store at B's `hook`; then B continues."""
+    store, root, fresh, recover = _prepared_recovery(tmp_path, monkeypatch)
+    a_child, a_factory = fresh()
+    b_child, b_factory = fresh("e" * 64)
+    b_store = NautilusRecoveryStore(root)
+    original = getattr(b_store, hook)
+    results = []
+
+    def a_runs_first(*args):
+        results.append(recover(a_factory, on_store=NautilusRecoveryStore(root)))
+        return original(*args)
+
+    monkeypatch.setattr(b_store, hook, a_runs_first)
+    b_calls = []
+
+    def b_counting(recorder):
+        b_calls.append(recorder)
+        return b_factory(recorder)
+
+    return root, b_store, a_child, b_child, results, lambda: recover(b_counting, on_store=b_store), b_calls
+
+
+def test_attempt_opened_after_a_concurrent_recovery_is_refused(tmp_path, monkeypatch) -> None:
+    root, b_store, a_child, b_child, results, recover_b, b_calls = _interleaved(
+        tmp_path, monkeypatch, "_open_recovery_attempt")
+
+    with pytest.raises(ValueError, match="recovery attempt"):
+        recover_b()
+    assert results[0].disposition == "RESUME_EXACT_PREFIX" and a_child.is_running()
+    assert b_calls == [] and b_child.calls == 0                 # the blocked side never reached the factory
+    assert b_store.begin_replay()                               # bookkeeping released
+    b_store.cancel_replay()
+    NautilusRecoveryStore(root)                                 # inventory still valid
+    assert sorted(path.name for path in root.iterdir() if path.name.startswith("recovery-attempt-")) == [
+        "recovery-attempt-00000001-child.json", "recovery-attempt-00000001.json"]
+
+
+def test_same_attempt_number_race_is_refused_by_the_create_only_writer(tmp_path, monkeypatch) -> None:
+    root, b_store, a_child, b_child, results, recover_b, b_calls = _interleaved(
+        tmp_path, monkeypatch, "_write_attempt_marker")          # B already numbered attempt 1
+
+    with pytest.raises(FileExistsError):
+        recover_b()
+    assert results[0].disposition == "RESUME_EXACT_PREFIX"
+    assert b_calls == [] and b_child.calls == 0
+    assert b_store.begin_replay()
+    b_store.cancel_replay()
+    NautilusRecoveryStore(root)

@@ -44,7 +44,7 @@ class ProcProcessInspector:
         try:
             stat = (process_root / "stat").read_text(encoding="utf-8")
             command = (process_root / "cmdline").read_bytes()
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return None
         end_of_name = stat.rfind(")")
         if end_of_name < 0:

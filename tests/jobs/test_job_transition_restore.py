@@ -34,7 +34,10 @@ from packages.restore_proof_failure_codes import (
     RESTORE_PROOF_REPORTABLE_FAILURE_CODES as STANDALONE_RESTORE_PROOF_REPORTABLE_FAILURE_CODES,
     extract_restore_proof_failure_code,
 )
+from scripts.validate_disposable_postgres_fixture_plan import lifecycle_actions_for
+from tests.jobs._snapshot0007 import repair_disposable_snapshot_restore, reviewed_disposable_catalog_snapshot
 from tests.jobs._postgres import (
+    DISPOSABLE_DATABASE,
     _disposable_postgres_session,
     _prepare_empty_restore_target,
     _prepare_disposable_database,
@@ -102,6 +105,10 @@ EXPECTED_ROLE_SETTINGS_AFTER_PROVISION = (
     ("trading_owner", DATABASE_NAME, "timezone", "UTC"),
     ("trading_reader", DATABASE_NAME, "default_transaction_read_only", "on"),
     ("trading_reader", DATABASE_NAME, "timezone", "UTC"),
+)
+EXPECTED_DISPOSABLE_ROLE_SETTINGS_AFTER_PROVISION = tuple(
+    (role, DISPOSABLE_DATABASE if database == DATABASE_NAME else database, setting, value)
+    for role, database, setting, value in EXPECTED_ROLE_SETTINGS_AFTER_PROVISION
 )
 EXPECTED_ROLE_SETTINGS_AFTER_TARGET_DROP = (
     ("trading_job_api", None, "timezone", "UTC"),
@@ -1037,6 +1044,7 @@ def test_object_catalog_drift_rejects_authority_without_exposing_evidence(
             return None
 
     class _Owner:
+        database = DATABASE_NAME
         def conninfo(self) -> str:
             return "synthetic-no-connect"
 
@@ -1196,7 +1204,7 @@ def test_catalog_drift_runtime_contract_uses_only_the_committed_snapshot() -> No
     assert "FROZEN_CATALOG_0007_SNAPSHOT.read_bytes()" in reviewed_classifier_source
     assert "REVIEWED_CATALOG_SHA256" in reviewed_classifier_source
     assert "hashlib.sha256(frozen_snapshot).hexdigest()" in classifier_source
-    assert "_classify_reviewed_catalog_drift(catalog, digest_failure_code)" in (
+    assert "_classify_reviewed_catalog_drift(catalog, digest_failure_code, database_name=owner.database)" in (
         authority_source
     )
     assert "print(" not in byte_classifier_source
@@ -1930,16 +1938,23 @@ def _classify_catalog_drift(
 def _classify_reviewed_catalog_drift(
     catalog: CatalogEvidence,
     fallback_failure_code: str,
+    *, database_name: str = DATABASE_NAME,
 ) -> str:
     try:
         frozen_snapshot = FROZEN_CATALOG_0007_SNAPSHOT.read_bytes()
     except OSError:
         return RESTORE_PROOF_RESTORED_CATALOG_MALFORMED_OR_UNKNOWN
+    expected_digest = REVIEWED_CATALOG_SHA256
+    if database_name == DISPOSABLE_DATABASE:
+        try:
+            frozen_snapshot = reviewed_disposable_catalog_snapshot("0007")
+        except (OSError, ValueError):
+            return RESTORE_PROOF_RESTORED_CATALOG_MALFORMED_OR_UNKNOWN
+        expected_digest = hashlib.sha256(frozen_snapshot).hexdigest()
+    elif database_name != DATABASE_NAME:
+        return RESTORE_PROOF_RESTORED_CATALOG_MALFORMED_OR_UNKNOWN
     failure_code = _classify_catalog_drift(
-        catalog,
-        frozen_snapshot,
-        REVIEWED_CATALOG_SHA256,
-        fallback_failure_code,
+        catalog, frozen_snapshot, expected_digest, fallback_failure_code,
     )
     if failure_code is None:
         return fallback_failure_code
@@ -2103,6 +2118,7 @@ SELECTED_ACL_OBJECTS = frozenset(
 
 def _canonical_effective_acl_rows(
     rows: list[tuple[object, ...]],
+    *, database_name: str = DATABASE_NAME,
 ) -> tuple[tuple[str, str, str, str, str, bool], ...]:
     canonical: list[tuple[str, str, str, str, str, bool]] = []
     for row in rows:
@@ -2132,9 +2148,10 @@ def _canonical_effective_acl_rows(
         _raise_restore_proof_failure(
             RESTORE_PROOF_EFFECTIVE_DATABASE_ACL_NON_CANONICAL_EVIDENCE,
         )
-    if {(object_kind, object_name) for object_kind, object_name, *_ in canonical} != (
-        SELECTED_ACL_OBJECTS
-    ):
+    expected_objects = {(kind, database_name if kind == "DATABASE" else name)
+                        for kind, name in SELECTED_ACL_OBJECTS}
+    if (database_name not in {DATABASE_NAME, DISPOSABLE_DATABASE}
+        or {(object_kind, object_name) for object_kind, object_name, *_ in canonical} != expected_objects):
         _raise_restore_proof_failure(
             RESTORE_PROOF_EFFECTIVE_DATABASE_ACL_SELECTED_OBJECTS_MISMATCH,
         )
@@ -2202,7 +2219,7 @@ def _capture_database_acl(
                      privilege_type COLLATE "C", is_grantable
             """
         ).fetchall()
-    return _canonical_effective_acl_rows(rows)
+    return _canonical_effective_acl_rows(rows, database_name=owner.database)
 
 
 def _capture_row_counts(owner: DatabaseSettings) -> tuple[int, int, int]:
@@ -2227,9 +2244,14 @@ def _assert_reviewed_authority(
     with psycopg.connect(owner.conninfo()) as connection:
         catalog = capture_catalog(connection, CONTRACT)
         violations = find_event_chain_violations(connection, CONTRACT)
-    if catalog.sha256 != REVIEWED_CATALOG_SHA256:
+    expected_digest = REVIEWED_CATALOG_SHA256
+    if owner.database == DISPOSABLE_DATABASE:
+        expected_digest = hashlib.sha256(reviewed_disposable_catalog_snapshot("0007")).hexdigest()
+    elif owner.database != DATABASE_NAME:
+        _raise_restore_proof_failure(RESTORE_PROOF_RESTORED_CATALOG_MALFORMED_OR_UNKNOWN)
+    if catalog.sha256 != expected_digest:
         _raise_restore_proof_failure(
-            _classify_reviewed_catalog_drift(catalog, digest_failure_code)
+            _classify_reviewed_catalog_drift(catalog, digest_failure_code, database_name=owner.database)
         )
     _assert_restore_proof_equal(violations, (), violations_failure_code)
 
@@ -2242,11 +2264,11 @@ def _drop_only_target_database(maintenance: DatabaseSettings) -> None:
             ("postgres",),
             RESTORE_PROOF_TARGET_DROP_MAINTENANCE_CONTEXT_MISMATCH,
         )
-        connection.execute("DROP DATABASE trading_agent")
+        connection.execute("DROP DATABASE trading_agent_disposable_test")
         database_dropped = connection.execute(
             "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_database "
             "WHERE datname = %s)",
-            (DATABASE_NAME,),
+            (DISPOSABLE_DATABASE,),
         ).fetchone()
         _assert_restore_proof_equal(
             database_dropped,
@@ -2483,7 +2505,8 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
 
     with _guard_restore_proof_stage(RESTORE_PROOF_SOURCE_PREPARATION_DUMP_FAILURE):
         with _disposable_postgres_session(
-            operation_id=RESTORE_OPERATION_ID
+            operation_id=RESTORE_OPERATION_ID,
+            expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
         ) as source_session:
             source_owner = _prepare_disposable_database(source_session)
             _upgrade_to_revision(source_owner, EXACT_HEAD)
@@ -2498,7 +2521,7 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
             )
             _assert_restore_proof_equal(
                 source_role_settings,
-                EXPECTED_ROLE_SETTINGS_AFTER_PROVISION,
+                EXPECTED_DISPOSABLE_ROLE_SETTINGS_AFTER_PROVISION,
                 RESTORE_PROOF_SOURCE_ROLE_SETTINGS_MISMATCH,
             )
             source_database_acl = _capture_database_acl(source_owner)
@@ -2512,7 +2535,8 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                     RESTORE_PROOF_TARGET_BOOTSTRAP_DROP_FAILURE
                 ):
                     with _disposable_postgres_session(
-                        operation_id=RESTORE_OPERATION_ID
+                        operation_id=RESTORE_OPERATION_ID,
+                        expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
                     ) as target_session:
                         _assert_restore_proof_equal(
                             source_session.root == target_session.root,
@@ -2548,7 +2572,7 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                         )
                         _assert_restore_proof_equal(
                             target_role_settings,
-                            EXPECTED_ROLE_SETTINGS_AFTER_PROVISION,
+                            EXPECTED_DISPOSABLE_ROLE_SETTINGS_AFTER_PROVISION,
                             RESTORE_PROOF_TARGET_ROLE_SETTINGS_MISMATCH,
                         )
 
@@ -2580,6 +2604,7 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                                 _copy_precreated_custom_dump(source_dump, target_dump)
                                 _validate_secure_precreated_dump(target_dump)
                                 _run_pg_restore(target_session)
+                                repair_disposable_snapshot_restore(target_owner, CONTRACT)
 
                         with _guard_restore_proof_stage(
                             RESTORE_PROOF_POST_RESTORE_VERIFICATION_FAILURE
@@ -2597,7 +2622,7 @@ def test_green_restore_round_trip_preserves_0007_authority() -> None:
                                     target_maintenance,
                                     RESTORE_PROOF_TARGET_POST_RESTORE_ROLE_SETTINGS_MISMATCH,
                                 ),
-                                EXPECTED_ROLE_SETTINGS_AFTER_PROVISION,
+                                EXPECTED_DISPOSABLE_ROLE_SETTINGS_AFTER_PROVISION,
                                 RESTORE_PROOF_TARGET_POST_RESTORE_ROLE_SETTINGS_MISMATCH,
                             )
                             _assert_exact_head(
@@ -2693,7 +2718,7 @@ def test_future_green_restore_execution_is_statically_interlocked() -> None:
         "RESTORE_PROOF_TARGET_BASE_EXACT_HEAD_MISMATCH",
         "_capture_provisioned_globals(",
         "_capture_sanitized_role_settings(",
-        "EXPECTED_ROLE_SETTINGS_AFTER_PROVISION",
+        "EXPECTED_DISPOSABLE_ROLE_SETTINGS_AFTER_PROVISION",
         "EXPECTED_ROLE_SETTINGS_AFTER_TARGET_DROP",
         "_drop_only_target_database(target_maintenance)",
         "_secure_precreated_dump(source_session)",
@@ -2725,7 +2750,9 @@ def test_future_green_restore_execution_is_statically_interlocked() -> None:
         functions["_drop_only_target_database"],
     )
     assert drop_source is not None
-    assert 'connection.execute("DROP DATABASE trading_agent")' in drop_source
+    assert 'connection.execute("DROP DATABASE trading_agent_disposable_test")' in drop_source
+    assert 'connection.execute("DROP DATABASE trading_agent")' not in drop_source
+    assert "(DISPOSABLE_DATABASE,)" in drop_source
     assert "DROP ROLE" not in drop_source
     assert "DROP OWNED" not in drop_source
 

@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 
+from tests.jobs import test_p1_paper_closure_rotation_migration as paper_closure
 from tests.jobs._postgres import (
     _upgrade_to_revision,
     disposable_database,
@@ -127,7 +128,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -149,7 +150,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -164,7 +165,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.commit()
             with pytest.raises(DBAPIError) as rejected:
-                command.upgrade(config, "head")
+                command.upgrade(config, EXACT_HEAD)
             assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
             connection.rollback()
             connection.exec_driver_sql(
@@ -208,7 +209,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             )
             connection.exec_driver_sql("SET search_path = public, pg_catalog")
             connection.commit()
-            command.upgrade(config, "head")
+            command.upgrade(config, EXACT_HEAD)
             connection.exec_driver_sql(
                 "DROP OPERATOR public.= (pg_catalog.text, pg_catalog.text)"
             )
@@ -225,14 +226,14 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             connection.exec_driver_sql("RESET search_path")
             connection.commit()
             after = _p1_ingest_authority(connection)
-            assert after[0] == before_definition.replace(
-                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
+            assert after[0] == paper_closure._postgresql_16_definition(
+                paper_closure._current_prosrc().replace(
+                    paper_closure.OLD_CLOSURE, paper_closure.NEW_CLOSURE
+                )
             )
-            assert after[1] == (
-                "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089"
-            )
+            assert after[1] == paper_closure.ROTATED_SOURCE_SHA256
             assert after[2:] == before[2:]
-            command.upgrade(config, "head")
+            command.upgrade(config, EXACT_HEAD)
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == EXPECTED_TABLES
 
@@ -280,9 +281,9 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             context = MigrationContext.configure(connection)
             current = set(context.get_current_heads())
             script = ScriptDirectory.from_config(config)
-            assert current == set(script.get_heads()) == {
-                EXACT_HEAD
-            }
+            assert current == {EXACT_HEAD}
+            assert set(script.get_heads()) == {"0033_p3_core_closure_repair"}
+            assert EXACT_HEAD in {revision.revision for revision in script.walk_revisions()}
 
             decision_columns = {
                 item["name"]: item for item in inspector.get_columns("decisions")
@@ -368,8 +369,10 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "'job_plane_worker_heartbeats_insert', "
                 "'job_plane_worker_heartbeats_update') "
                 "AND roles = ARRAY['trading_job_worker']::name[] "
-                "AND with_check LIKE "
-                "'%paper_worker_job_id_allowed(current_job_id)%'"
+                "AND with_check = "
+                "'((current_job_id IS NULL) OR "
+                "job_plane.paper_worker_job_id_allowed((current_job_id)::text))'",
+                execution_options={"no_parameters": True},
             ).scalar_one() == 2
             assert connection.exec_driver_sql(
                 "SELECT has_function_privilege("

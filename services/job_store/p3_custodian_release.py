@@ -35,18 +35,22 @@ class CustodianReleaseRepository:
             database=read_systemd_credential(values,'database-name'),user='trading_p3_custodian',
             password=read_systemd_credential(values,'database-password')), session=session)
 
-    def __init__(self,settings: JobStoreSettings, *, session: bool = False) -> None:
+    def __init__(self,settings: JobStoreSettings, *, session: bool = False, revision: str | None = None) -> None:
         if settings.user!='trading_p3_custodian':
             raise ValueError('custodian release requires its distinct database identity')
         if type(session) is not bool:
             raise ValueError('custodian session lane must be explicit')
         self._session = session
+        from .p3_catalog import SESSION_REVISION, SESSION_CATALOGS
+        self._revision=revision or (SESSION_REVISION if session else REVISION)
+        if self._revision not in (SESSION_CATALOGS if session else {REVISION:CATALOG_SHA256}):
+            raise ValueError('custodian database revision is not reviewed')
         self._settings: JobStoreSettings=settings
 
     def _execute(self,query: LiteralString,request: ReleaseRequest) -> datetime:
-        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256, SESSION_REVISION
-        revision = SESSION_REVISION if self._session else REVISION
-        catalog = SESSION_CATALOG_SHA256 if self._session else CATALOG_SHA256
+        from .p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOGS
+        revision = self._revision
+        catalog = SESSION_CATALOGS[revision] if self._session else CATALOG_SHA256
         request=ReleaseRequest.model_validate(request)
         raw=canonical_json_bytes(request)
         digest=hashlib.sha256(raw).hexdigest()

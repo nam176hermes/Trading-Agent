@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import errno
 import json
 import hashlib
 import importlib.util
@@ -8,7 +9,6 @@ import os
 from pathlib import Path
 import stat
 import tarfile
-import tempfile
 
 import pytest
 
@@ -16,12 +16,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "engines/nautilus/input-cache-policy.json"
 SCRIPT = ROOT / "scripts/prepare_nautilus_input_cache.py"
-
-
-@pytest.fixture
-def tmp_path() -> Iterator[Path]:
-    with tempfile.TemporaryDirectory(prefix="nautilus-input-test-", dir="/tmp") as directory:
-        yield Path(directory)
 
 
 def test_committed_input_cache_policy_binds_the_01b_upstream_and_lockfile() -> None:
@@ -139,9 +133,10 @@ def _freeze_artifact_parent(cache: Path, artifact: Path) -> None:
 
 
 @pytest.fixture
-def private_cache_root() -> Path:
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="nautilus-input-cache-test-") as directory:
-        yield Path(directory)
+def private_cache_root(tmp_path: Path) -> Iterator[Path]:
+    directory = tmp_path / "cache-root"
+    directory.mkdir(mode=0o700)
+    yield directory
 
 
 def test_acquire_binds_source_derived_inputs_and_cargo_closure(tmp_path: Path, private_cache_root: Path) -> None:
@@ -216,6 +211,127 @@ def test_acquisition_preserves_primary_error_and_closes_descriptors_when_discard
     for descriptor in descriptors:
         with pytest.raises(OSError, match="Bad file descriptor"):
             os.fstat(descriptor)
+
+
+@pytest.mark.parametrize('handled_caller', [False, True], ids=['direct', 'unrelated-handler'])
+@pytest.mark.parametrize('failed_close', ['staging', 'parent'])
+def test_successful_acquire_reports_own_close_failure(
+    tmp_path: Path, private_cache_root: Path, monkeypatch: pytest.MonkeyPatch,
+    handled_caller: bool, failed_close: str,
+) -> None:
+    module = _module()
+    cargo_lock, pyproject = b"version = 3\n", b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
+    cargo = _private_cargo(tmp_path)
+    cache = private_cache_root / 'close-failure-cache'
+    owned, attempted = [], []
+    prepare_parent, create_staging, real_close = (
+        module._prepare_private_cache_parent, module._create_private_staging, os.close,
+    )
+    first = OSError(errno.EIO, 'synthetic committed cache close failure')
+    later = OSError(errno.EPERM, 'synthetic later parent close failure')
+
+    def capture_parent(path):
+        fd = prepare_parent(path)
+        owned.append(fd)
+        return fd
+
+    def capture_staging(parent_fd):
+        name, fd = create_staging(parent_fd)
+        owned.append(fd)
+        return name, fd
+
+    def close(fd):
+        real_close(fd)
+        if fd in owned:
+            attempted.append(fd)
+            if fd == owned[1] and failed_close == 'staging':
+                raise first
+            if fd == owned[0]:
+                raise later if failed_close == 'staging' else first
+
+    monkeypatch.setattr(module, '_prepare_private_cache_parent', capture_parent)
+    monkeypatch.setattr(module, '_create_private_staging', capture_staging)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'close', close)
+        with pytest.raises(OSError) as failure:
+            if handled_caller:
+                try:
+                    raise KeyError('unrelated caller error')
+                except KeyError:
+                    module.acquire(cache, policy, cargo)
+            else:
+                module.acquire(cache, policy, cargo)
+    assert failure.value is first
+    assert attempted == list(reversed(owned))
+    assert len(owned) == 2
+    for fd in owned:
+        with pytest.raises(OSError) as closed:
+            os.fstat(fd)
+        assert closed.value.errno == errno.EBADF
+    # Cleanup failed after commit; the bound immutable fixture cache survives.
+    assert module.verify(cache, policy)['upstream_commit'] == policy['upstream_commit']
+
+
+@pytest.mark.parametrize('primary_type', [ValueError, KeyboardInterrupt], ids=['refusal', 'cancellation'])
+def test_acquire_keeps_own_primary_when_all_cleanup_fails(
+    tmp_path: Path, private_cache_root: Path, monkeypatch: pytest.MonkeyPatch, primary_type,
+) -> None:
+    module = _module()
+    cargo_lock, pyproject = b"version = 3\n", b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
+    cargo = _private_cargo(tmp_path)
+    cache = private_cache_root / 'refused-cache'
+    primary = primary_type('synthetic derived input refusal')
+    origin = RuntimeError('synthetic original acquisition cause')
+    owned, attempted, discarded = [], [], []
+    prepare_parent, create_staging, discard, real_close = (
+        module._prepare_private_cache_parent, module._create_private_staging,
+        module._discard_private_staging, os.close,
+    )
+
+    def capture_parent(path):
+        fd = prepare_parent(path)
+        owned.append(fd)
+        return fd
+
+    def capture_staging(parent_fd):
+        name, fd = create_staging(parent_fd)
+        owned.append(fd)
+        return name, fd
+
+    def refuse(*args):
+        raise primary from origin
+
+    def fail_discard(*args):
+        discard(*args)
+        discarded.append(True)
+        raise OSError(errno.EIO, 'synthetic discard failure after cleanup')
+
+    def close(fd):
+        real_close(fd)
+        if fd in owned:
+            attempted.append(fd)
+            raise OSError(errno.EPERM, 'synthetic owned close failure after release')
+
+    monkeypatch.setattr(module, '_prepare_private_cache_parent', capture_parent)
+    monkeypatch.setattr(module, '_create_private_staging', capture_staging)
+    monkeypatch.setattr(module, '_copy_derived_input', refuse)
+    monkeypatch.setattr(module, '_discard_private_staging', fail_discard)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'close', close)
+        with pytest.raises(BaseException) as failure:
+            module.acquire(cache, policy, cargo)
+    assert failure.value is primary and failure.value.__cause__ is origin
+    assert len(owned) == 2 and attempted == list(reversed(owned))
+    assert discarded == [True]
+    assert not cache.exists() and not list(private_cache_root.iterdir())
+    for fd in owned:
+        with pytest.raises(OSError) as closed:
+            os.fstat(fd)
+        assert closed.value.errno == errno.EBADF
 
 
 def test_acquisition_creates_a_missing_private_cache_parent(tmp_path: Path, private_cache_root: Path) -> None:

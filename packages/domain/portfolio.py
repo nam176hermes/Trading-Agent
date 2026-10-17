@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from fractions import Fraction
 from typing import Annotated
 from uuid import UUID
 
@@ -61,7 +62,8 @@ class TargetPortfolio(DomainModel):
             raise ValueError("positions contain duplicate instruments")
         if len(self.source_signal_ids) != len(set(self.source_signal_ids)):
             raise ValueError("source_signal_ids contain duplicates")
-        if sum((abs(position.target_weight) for position in self.positions), Decimal(0)) > Decimal(1):
+        # Exact (CR01): Fraction sums do not depend on the ambient Decimal context.
+        if sum((abs(Fraction(position.target_weight)) for position in self.positions), Fraction(0)) > 1:
             raise ValueError("total absolute target weight must be <= 1")
         return self
 
@@ -197,7 +199,7 @@ class ExposureSnapshot(DomainModel):
             )
         if self.gross.amount < 0 or self.pending.amount < 0:
             raise ValueError("gross and pending exposure must be non-negative")
-        if self.gross.amount < abs(self.net.amount):
+        if self.gross.amount < self.net.amount.copy_abs():   # exact, context-free (CR01)
             raise ValueError("gross exposure must cover absolute net exposure")
         return self
 
