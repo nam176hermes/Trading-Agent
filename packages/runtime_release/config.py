@@ -322,11 +322,11 @@ def _safe_directory(metadata: os.stat_result) -> bool:
     )
 
 
-def _read_protected_file(path: Path) -> tuple[bytes, tuple[int, int]]:
+def _read_protected_file(path: Path, *, max_bytes: int = _MAX_BYTES) -> tuple[bytes, tuple[int, int]]:
     if not path.is_absolute() or ".." in path.parts:
         raise ProtectedAuthorityError()
     flags_dir = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    flags_file = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags_file = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os,"O_NONBLOCK",0)
     descriptors: list[int] = []
     try:
         current = os.open(path.anchor, flags_dir)
@@ -347,14 +347,14 @@ def _read_protected_file(path: Path) -> tuple[bytes, tuple[int, int]]:
             or metadata.st_uid != _EXPECTED_UID
             or metadata.st_gid != _EXPECTED_GID
             or stat.S_IMODE(metadata.st_mode) != 0o444
-            or metadata.st_size > _MAX_BYTES
+            or metadata.st_size > max_bytes
         ):
             raise ProtectedAuthorityError()
         chunks: list[bytes] = []
         total = 0
         while chunk := os.read(file_fd, 8192):
             total += len(chunk)
-            if total > _MAX_BYTES:
+            if total > max_bytes:
                 raise ProtectedAuthorityError()
             chunks.append(chunk)
         final = os.fstat(file_fd)
@@ -381,6 +381,11 @@ def read_protected_file_current(path: Path) -> bytes:
 
     raw, _ = _read_protected_file(path)
     return raw
+
+
+def read_protected_evidence_current(path: Path) -> bytes:
+    """Same root custody for bounded shared proofs; authority documents stay 64 KiB."""
+    return _read_protected_file(path,max_bytes=131072)[0]
 
 
 def read_protected_canonical_json(path: Path, expected_digest: str) -> dict[str, Any]:

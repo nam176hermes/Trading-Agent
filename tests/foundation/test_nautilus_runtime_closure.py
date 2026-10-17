@@ -149,9 +149,40 @@ def _assert_runtime_policy_source_authority(policy: dict[str, object]) -> None:
                 _FIX6_MATERIALIZER_SOURCE_SHA256
             )
             continue
-        assert (ROOT / source_path).read_bytes() == _git_source_blob(
-            source_commit, source_path
-        )
+        historical = _git_source_blob(source_commit, source_path)
+        if source_path == "services/job_worker/engine_spawn.py":
+            # LOCAL work can be unbounded; authenticate only its reviewed type change.
+            assert hashlib.sha256(historical).hexdigest() == (
+                "84ce00d88a0587d9788b9b87a8845beb8ad86cc740bd21871f7bed766920bb37"
+            )
+            assert _sha256(ROOT / source_path) == (
+                "dcd9971b60a70aa1274136043d0969a9f241625e2ca9ad6ea46a8bc6fdc9f753"
+            )
+            continue
+        assert (ROOT / source_path).read_bytes() == historical
+
+
+@pytest.mark.parametrize("mutation", ("old_annotation", "unrelated_byte"))
+def test_runtime_source_authority_rejects_unreviewed_engine_spawn_bytes(
+    monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    source = ROOT / "services/job_worker/engine_spawn.py"
+    current = source.read_bytes()
+    changed = (
+        current.replace(b"timeout_seconds: int | None\n", b"timeout_seconds: int\n", 1)
+        if mutation == "old_annotation"
+        else current + b"# unreviewed change\n"
+    )
+    assert changed != current
+    original_read = Path.read_bytes
+
+    def read_bytes(path: Path) -> bytes:
+        return changed if path == source else original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    with pytest.raises(AssertionError):
+        _assert_runtime_policy_source_authority(policy)
 
 
 def test_git_source_blob_remains_bound_after_a_later_nonruntime_commit(

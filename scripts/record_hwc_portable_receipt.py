@@ -21,7 +21,7 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.hwc_status import receipt_sha256, validate_hwc_portable_receipt
 from packages.pre_p3_provenance import canonical_source_identity
 from scripts.check_hwc_boundaries import evaluate_hwc_boundaries
-from scripts.qualify_hwc_headless import validate_receipt as validate_headless_receipt
+from scripts.qualify_hwc_headless import HeadlessQualificationError, validate_receipt as validate_headless_receipt
 from scripts.t_g03_capability_topology import _publish_no_clobber
 
 
@@ -116,14 +116,7 @@ def _contract_report(root: Path) -> bytes:
     )
 
 
-def make_receipt(
-    *,
-    root: Path,
-    headless_raw: bytes,
-    boundary_raw: bytes,
-    contract_raw: bytes,
-    environment: Mapping[str, str],
-) -> dict[str, Any]:
+def validate_portable_evidence(*, root: Path, headless_raw: bytes, boundary_raw: bytes, contract_raw: bytes):
     try:
         headless = json.loads(headless_raw)
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -132,7 +125,7 @@ def make_receipt(
         raise HwcPortableRecordingError("headless evidence bytes are not canonical")
     try:
         validate_headless_receipt(headless, root=root)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, HeadlessQualificationError) as exc:
         raise HwcPortableRecordingError("headless evidence validation failed") from exc
     source = canonical_source_identity(root)
     if headless["source"] != source:
@@ -153,6 +146,19 @@ def make_receipt(
             raise HwcPortableRecordingError(
                 "portable report is not canonical PASS evidence"
             )
+    return headless, source
+
+
+def make_receipt(
+    *,
+    root: Path,
+    headless_raw: bytes,
+    boundary_raw: bytes,
+    contract_raw: bytes,
+    environment: Mapping[str, str],
+) -> dict[str, Any]:
+    headless, source = validate_portable_evidence(root=root, headless_raw=headless_raw,
+        boundary_raw=boundary_raw, contract_raw=contract_raw)
     payload: dict[str, Any] = {
         "schema_version": "hwc-portable-qualified-receipt-v1",
         "status": "PASS",

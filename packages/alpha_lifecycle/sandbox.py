@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import re
 import json
 import resource
 from decimal import ROUND_HALF_EVEN, localcontext
@@ -21,7 +22,7 @@ from packages.alpha_lifecycle.replica_store import ReplicaArtifactStore, retain_
 from packages.alpha_lifecycle.replica_validation import validate_replica_result
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.alpha_lifecycle.pit_evidence import _reference
-from packages.alpha_lifecycle.sandbox_policy import SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, RO_PATH_FLAG, RO_FILE_FLAG, CHILD_ENTRY, ROOT_READONLY_ARGS
+from packages.alpha_lifecycle.sandbox_policy import SANDBOX_ARGS, FILESYSTEM_ARGS, ENVIRONMENT_ARGS, RO_PATH_FLAG, RO_FILE_FLAG, CHILD_ENTRY, ROOT_READONLY_ARGS, MAX_EXTERNAL_LIBRARIES, MAX_EXTERNAL_LIBRARY_BYTES, MAX_EXTERNAL_LIBRARY_TOTAL_BYTES, SANDBOX_PROFILE_V2_SHA256
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
@@ -45,6 +46,28 @@ def require_official_sandbox(path: Path = Path("/usr/bin/bwrap")) -> Path:
     ):
         raise SandboxHeld("HELD E_SANDBOX: Bubblewrap identity is unsafe")
     return path
+
+
+_LOADER_FAILURE = re.compile(rb"error while loading shared libraries: ")
+_TRACEBACK = re.compile(rb"^Traceback \(most recent call last\):$", re.MULTILINE)
+
+
+def _child_failure_summary(fd: int, returncode: int) -> str:
+    """Classify a failed replica into a fixed label; nothing the child produced is echoed.
+
+    Replica stderr and exit status are child-controlled and may be derived from research or
+    holdout data, so the result is one of four constants and never contains matched text,
+    library names, exception names or the raw exit code.
+    """
+    if returncode < 0:
+        return "SIGNALLED"
+    size = os.fstat(fd).st_size
+    tail = os.pread(fd, 4096, max(0, size - 4096))
+    if _LOADER_FAILURE.search(tail):
+        return "LOADER_FAILURE"
+    if _TRACEBACK.search(tail):
+        return "PYTHON_EXCEPTION"
+    return "UNCLASSIFIED"
 
 
 class BubblewrapExecutor:
@@ -100,7 +123,8 @@ class BubblewrapExecutor:
                 raise SandboxHeld('HELD E_SANDBOX: current execution fence rejected') from error
 
     def _argv(self, manifest_path: Path, result_path: Path, output_dir: Path, seccomp_fd: int,
-        view_fd: int | None = None) -> tuple[str, ...]:
+        view_fd: int | None = None, *,
+        runtime_fds: dict[Path, int] | None = None) -> tuple[str, ...]:
         child = self._release_root / CHILD_ENTRY
         store_path=str(self._store_root)
         mounts=(RO_PATH_FLAG,store_path,store_path)
@@ -110,9 +134,14 @@ class BubblewrapExecutor:
             store_path='/p3/holdout-inputs/view.json'
             mounts=('--perms','700','--dir','/p3/holdout-inputs',
                 '--perms','600',RO_FILE_FLAG,str(view_fd),store_path)
+        runtime_fds = {} if runtime_fds is None else runtime_fds
+        if set(runtime_fds) != set(self._runtime_mounts) - {Path('/p3/python')}:
+            raise ValueError('sandbox library descriptors differ from runtime mounts')
         return (
             str(self._bwrap), *SANDBOX_ARGS, "--seccomp", str(seccomp_fd),
-            *(arg for path in self._runtime_mounts for arg in (RO_PATH_FLAG, str(path), str(path))),
+            *(arg for path in self._runtime_mounts for arg in (
+                (RO_PATH_FLAG, str(path), str(path)) if path == Path('/p3/python') else
+                ('--perms', '555', RO_FILE_FLAG, str(runtime_fds[path]), str(path)))),
             RO_PATH_FLAG, str(self._release_root), str(self._release_root),
             *mounts,
             "--bind", str(output_dir), str(output_dir), *FILESYSTEM_ARGS,
@@ -123,9 +152,9 @@ class BubblewrapExecutor:
                 if self._instrument_spec_ref is not None else ()),
         )
 
-    @staticmethod
-    def _limits() -> None:
-        resource.setrlimit(resource.RLIMIT_CPU, (240, 240))
+    def _limits(self) -> None:
+        if self._sandbox_policy_digest != SANDBOX_PROFILE_V2_SHA256:
+            resource.setrlimit(resource.RLIMIT_CPU, (240, 240))
         resource.setrlimit(resource.RLIMIT_AS, (2_147_483_648, 2_147_483_648))
         resource.setrlimit(resource.RLIMIT_FSIZE, (268_435_456, 268_435_456))
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
@@ -181,32 +210,67 @@ class BubblewrapExecutor:
         os.chmod(manifest_path, 0o600)
         started = datetime.now(UTC)
         from packages.alpha_lifecycle.sandbox_policy import socket_filter_bytes
-        from services.job_worker.engine_spawn import _sealed_memfd
+        from services.job_worker.engine_spawn import _memfd_create, _sealed_memfd
         from services.job_worker.engine_spawn_interface import EngineSpawnError
         seccomp_fd = -1
         view_fd = -1
+        runtime_fds: dict[Path, int] = {}
+        stderr_fd = -1
+        summary = ""
         try:
             seccomp_fd = _sealed_memfd("p3-child-seccomp", socket_filter_bytes(), mode=0o400)
             if self._holdout_view is not None:
                 view_fd=_sealed_memfd('p3-holdout-view',self._holdout_view.raw,mode=0o600)
-            argv=(self._argv(manifest_path,result_path,output_dir,seccomp_fd,view_fd)
-                if view_fd>=0 else self._argv(manifest_path,result_path,output_dir,seccomp_fd))
+            libraries = tuple(path for path in self._runtime_mounts if path != Path('/p3/python'))
+            if len(libraries) > MAX_EXTERNAL_LIBRARIES:
+                raise SandboxHeld('HELD E_SANDBOX: runtime library count exceeds bound')
+            total_bytes = 0
+            for path in libraries:
+                # Outer per-file mounts have unlinked backing files. Pass their immutable
+                # bytes by descriptor; nested ordinary binds cannot resolve those sources.
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+                runtime_fds[path] = fd
+                info = os.fstat(fd)
+                total_bytes += info.st_size
+                if (not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_EXTERNAL_LIBRARY_BYTES
+                    or total_bytes > MAX_EXTERNAL_LIBRARY_TOTAL_BYTES
+                    or not os.fstatvfs(fd).f_flag & os.ST_RDONLY):
+                    raise SandboxHeld('HELD E_SANDBOX: runtime library is not bounded and read-only')
+            # Descriptors are passed only when there are libraries, so executors without
+            # runtime mounts keep the original four/five-argument call.
+            if runtime_fds:
+                argv=(self._argv(manifest_path,result_path,output_dir,seccomp_fd,view_fd,runtime_fds=runtime_fds)
+                    if view_fd>=0 else
+                    self._argv(manifest_path,result_path,output_dir,seccomp_fd,runtime_fds=runtime_fds))
+            else:
+                argv=(self._argv(manifest_path,result_path,output_dir,seccomp_fd,view_fd)
+                    if view_fd>=0 else self._argv(manifest_path,result_path,output_dir,seccomp_fd))
             self._check_fence()
+            # Child stderr lands in a private memfd bounded by the child's own file-size limit.
+            # Only a filtered summary ever leaves this function (see _child_failure_summary).
+            stderr_fd = _memfd_create("p3-child-stderr")
             completed = subprocess.run(
                 argv, env={}, cwd="/",
-                pass_fds=(seccomp_fd,view_fd) if view_fd>=0 else (seccomp_fd,),
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=300, check=False, preexec_fn=self._limits,
+                pass_fds=(*runtime_fds.values(), seccomp_fd, *((view_fd,) if view_fd>=0 else ())),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_fd,
+                timeout=None if self._sandbox_policy_digest == SANDBOX_PROFILE_V2_SHA256 else 300,
+                check=False, preexec_fn=self._limits,
             )
+            if completed.returncode != 0:
+                summary = _child_failure_summary(stderr_fd, completed.returncode)
         except (OSError, subprocess.SubprocessError, EngineSpawnError) as error:
             raise SandboxHeld("HELD E_SANDBOX: bounded child execution failed") from error
         finally:
+            for fd in runtime_fds.values():
+                os.close(fd)
             if seccomp_fd >= 0:
                 os.close(seccomp_fd)
             if view_fd >= 0:
                 os.close(view_fd)
+            if stderr_fd >= 0:
+                os.close(stderr_fd)
         if completed.returncode != 0:
-            raise SandboxHeld("HELD E_SANDBOX: child did not produce one valid result")
+            raise SandboxHeld(f"HELD E_SANDBOX: child did not produce one valid result ({summary})")
         if self._holdout_view is not None:
             self._check_fence()
         descriptor = -1

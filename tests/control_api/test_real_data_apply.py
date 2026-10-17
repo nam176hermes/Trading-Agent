@@ -6,48 +6,42 @@ import psycopg
 import pytest
 
 from trading_control.db import DatabaseSettings
-from trading_control.real_import import apply_real_plan, build_real_plan
-from tests.jobs._postgres import disposable_database, upgrade_to_head
+from trading_control.real_import import build_real_plan
+from tests.jobs._postgres import apply_disposable_real_plan, disposable_database, disposable_role_settings, upgrade_to_head
 
 
 REAL_ROOT = Path("/home/thenam176/.hermes/crypto-research")
-_TEST_DATABASE_NAME: str | None = None
+_TEST_DATABASE: DatabaseSettings | None = None
 
 
 def role_settings(filename: str) -> DatabaseSettings:
-    if _TEST_DATABASE_NAME is None:
+    if _TEST_DATABASE is None:
         raise RuntimeError("Control API test database fixture is not active")
-    values = dict(
-        line.split("=", 1)
-        for line in (Path.home() / ".config" / "trading-agent" / filename)
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if line
-    )
-    values["TRADING_DATABASE_NAME"] = _TEST_DATABASE_NAME
-    return DatabaseSettings.from_env(values)
+    if filename != "postgres-migrator.env":
+        raise ValueError("Control API test role is not allowed")
+    return disposable_role_settings(_TEST_DATABASE, "trading_migrator")
 
 
 @pytest.fixture(autouse=True)
 def clean_test_database() -> None:
-    global _TEST_DATABASE_NAME
+    global _TEST_DATABASE
     with disposable_database(
         operation_id="control-api-real-data-apply-v1"
     ) as owner:
-        _TEST_DATABASE_NAME = owner.database
+        _TEST_DATABASE = owner
         try:
             upgrade_to_head(owner)
-            yield
+            yield owner
         finally:
-            _TEST_DATABASE_NAME = None
+            _TEST_DATABASE = None
 
 
-def test_reviewed_real_plan_first_and_second_apply_are_idempotent() -> None:
+def test_reviewed_real_plan_first_and_second_apply_are_idempotent(clean_test_database) -> None:
     settings = role_settings("postgres-migrator.env")
     plan = build_real_plan(REAL_ROOT)
 
-    first = apply_real_plan(plan, settings, apply=True, code_commit="test")
-    second = apply_real_plan(plan, settings, apply=True, code_commit="test")
+    first = apply_disposable_real_plan(plan, clean_test_database, apply=True, code_commit="test")
+    second = apply_disposable_real_plan(plan, clean_test_database, apply=True, code_commit="test")
 
     assert first.inserted == 43055
     assert first.skipped == 0

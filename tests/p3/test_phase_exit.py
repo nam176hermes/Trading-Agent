@@ -244,3 +244,341 @@ def test_native_mismatch_is_held_and_cannot_publish(exit_graph):
         prepare_phase_exit(intent, expected_source=source, job_id='p3-unit-exit',
             observed_at=datetime(2026,9,2,tzinfo=UTC), expires_at=datetime(2026,9,3,tzinfo=UTC), store=store, holdout_view=view)
     assert set(store._root.iterdir()) == before
+
+
+@pytest.fixture
+def committed_exit(exit_graph):
+    """Synthetic SQL observation of the real retained FAIL publication; no host authority."""
+    import hashlib
+    from datetime import UTC,datetime
+    from types import SimpleNamespace
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization,ReviewApproval
+    from packages.alpha_lifecycle.contracts.lifecycle import JobCommitResult
+    from packages.alpha_lifecycle.lifecycle import read_registry_event
+    from services.job_worker.p3_publication_producer import prepare_phase_exit
+    from packages.job_contracts import AlphaCampaignPayload,AlphaCampaignOperation
+    store,intent,source,view=exit_graph
+    def put(value):return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+    def sealed(model,**value):
+        value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+        return model.model_validate_json(canonical_json_bytes(value))
+    proposal=prepare_phase_exit(intent,expected_source=source,job_id='job_'+'a'*32,
+        observed_at=datetime(2026,9,2,tzinfo=UTC),expires_at=datetime(2026,9,3,tzinfo=UTC),store=store,holdout_view=view)
+    review=sealed(ReviewApproval,schema_version='p3-review-approval-v1',source=source,
+        subject_digests=[intent.digest],operator_identity='synthetic-operator',reviewer_identity='synthetic-reviewer',
+        review_execution_id='synthetic-review',verdict='APPROVED',issued_at='2026-09-02T00:00:00Z',
+        expires_at='2026-09-03T00:00:00Z',evidence_ref=put({'synthetic':'review'}),
+        authority=dict(broker=False,live=False,network=False,production=False))
+    auth=sealed(LocalRunAuthorization,schema_version='p3-local-run-authorization-v1',input_set_ref=intent.input_set_ref,
+        review_ref=put(review),operation='PHASE_EXIT',allowed_alpha_ids=intent.allowed_alpha_ids,
+        issued_at='2026-09-02T00:00:00Z',expires_at='2026-09-03T00:00:00Z',nonce='00000000-0000-4000-8000-000000000002',
+        identity=dict(issuer_kind='LOCAL',issuer_identity='synthetic',run_id='00000000-0000-4000-8000-000000000003',
+            attempt=1,host_id='a'*64,boot_id='00000000-0000-4000-8000-000000000001'),
+        authority=dict(broker=False,live=False,network=False,production=False))
+    payload=AlphaCampaignPayload(schema_version='p3-alpha-campaign-payload-v1',operation=AlphaCampaignOperation.PHASE_EXIT,
+        manifest_ref=put(intent),authorization_ref=put(auth),expected_source=source,logical_trial_id='p3-phase-exit-v1')
+    request=proposal.request
+    commit=sealed(JobCommitResult,schema_version='p3-job-commit-result-v1',job_id=request.job_id,
+        idempotency_key=request.idempotency_key,semantic_request_digest=request.semantic_request_digest,
+        prepublication_ref=request.evidence_ref,ledger_event_ids=[str(entry.event_id) for entry in proposal.entries],
+        registry_event_refs=request.proposed_event_refs,alpha_outcome='FAIL')
+    event=read_registry_event(store,request.proposed_event_refs[0])
+    inventory=put([dict(path='artifacts/'+ref.locator,artifact_ref=ref) for ref in (put(proposal),request.evidence_ref,*request.proposed_event_refs)])
+    observation=dict(payload=payload,publication_request=request,commit_result=commit,
+        committed_at='2026-09-02T01:00:00+00:00',attempt_id='attempt_'+'b'*32,output_inventory_ref=inventory,
+        registry_head=dict(alpha_id=event.record.alpha_id,version=event.record.version,sequence=event.sequence,event_digest=event.event_sha256))
+    raw=canonical_json_bytes(observation)
+    repository=SimpleNamespace(read_phase_exit=lambda job_id:raw)
+    return store,repository,request.job_id,json.loads(raw),auth
+
+
+@pytest.mark.parametrize('fault',[None,'uncommitted','attempt','head','source','missing','changed'])
+def test_committed_phase_export_restarts_without_view_and_preserves_fail(committed_exit,monkeypatch,fault):
+    from services.job_worker.p3_phase_readback import export_phase_exit,validate_phase_exit_receipt
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
+    from packages.alpha_lifecycle.replica_store import _read
+    store,repository,job_id,observation,_=committed_exit
+    # Any recomputation or reacquisition after SQL commit is a regression.
+    def forbidden(*a,**k):raise AssertionError('post-commit export must not calculate or disclose')
+    monkeypatch.setattr('packages.alpha_lifecycle.phase_exit.evaluate_phase_exit',forbidden)
+    if fault=='uncommitted':repository.read_phase_exit=lambda _:None
+    elif fault=='attempt':observation['attempt_id']='another-attempt'
+    elif fault=='head':observation['registry_head']['event_digest']='0'*64
+    elif fault=='source':observation['payload']['expected_source']['commit_sha']='0'*40
+    elif fault=='missing':
+        evidence=_read(store,__import__('packages.data_contracts',fromlist=['ArtifactRefV1']).ArtifactRefV1.model_validate(observation['publication_request']['evidence_ref']),PrePublicationEvidence)
+        (store._root/evidence.exit_result_ref.locator).unlink()
+    if fault not in ('uncommitted','missing'):
+        count=[]
+        def read(_):
+            count.append(1)
+            return canonical_json_bytes(observation)+(b' ' if fault=='changed' and len(count)>1 else b'')
+        repository.read_phase_exit=read
+    if fault:
+        with pytest.raises((ValueError,TypeError,OSError)):export_phase_exit(job_id,repository=repository,store=store)
+    else:
+        first=export_phase_exit(job_id,repository=repository,store=store)
+        assert export_phase_exit(job_id,repository=repository,store=store)==first
+        receipt=validate_phase_exit_receipt(first,repository=repository,store=store)
+        assert receipt.outcome=='FAIL' and receipt.identity.issuer_kind=='LOCAL'
+        assert receipt.attempt_id==observation['attempt_id'] and receipt.registry_head_ref is not None
+
+
+@pytest.mark.parametrize('outcome',['HELD','NONE_QUALIFIED'])
+def test_terminal_nonpublication_keeps_outcome_without_registry_or_disclosure(committed_exit,monkeypatch,outcome):
+    import hashlib
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.alpha_lifecycle.operation_input import P3OperationInput,FAMILY_IDS
+    from packages.alpha_lifecycle.contracts.authority import PrimarySelection,FamilyReview,LocalRunAuthorization,ReviewApproval
+    from packages.job_contracts import AlphaCampaignPayload,payload_fingerprint
+    from apps.job_api.contracts import JobDetailEnvelope
+    from services.job_worker.p3_phase_readback import terminal_phase_observation,validate_phase_exit_receipt
+    store,_,job_id,observation,auth=committed_exit
+    def put(value):return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+    def seal(model,**value):
+        value.pop('digest',None);value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+        return model.model_validate_json(canonical_json_bytes(value))
+    payload=AlphaCampaignPayload.model_validate_json(canonical_json_bytes(observation['payload']))
+    intent=_read(store,payload.manifest_ref,P3OperationInput)
+    result=None
+    if outcome=='NONE_QUALIFIED':
+        previous=_read(store,intent.body.primary_selection_ref,PrimarySelection)
+        result=seal(PrimarySelection,**{**previous.model_dump(mode='json'),'outcome':'NONE_QUALIFIED',
+            'primary_alpha_id':None,'primary_version':None,'primary_candidate_head_ref':None})
+        intent=seal(P3OperationInput,schema_version='p3-operation-input-v1',operation='OOS',
+            workflow_operation='p3-select-primary-v1',input_set_ref=intent.input_set_ref,allowed_alpha_ids=FAMILY_IDS,
+            body=dict(family_review_ref=result.family_review_ref))
+        review=_read(store,auth.review_ref,ReviewApproval)
+        review=seal(ReviewApproval,**{**review.model_dump(mode='json'),'subject_digests':[intent.digest]})
+        auth=seal(LocalRunAuthorization,**{**auth.model_dump(mode='json'),'operation':'OOS',
+            'allowed_alpha_ids':list(FAMILY_IDS),'review_ref':put(review)})
+        payload=AlphaCampaignPayload.model_validate_json(canonical_json_bytes(dict(schema_version='p3-alpha-campaign-payload-v1',
+            operation='OOS',manifest_ref=put(intent),authorization_ref=put(auth),expected_source=payload.expected_source,
+            logical_trial_id='p3-select-primary-v1')))
+        family=_read(store,result.family_review_ref,FamilyReview)
+        def select(actual,reader):
+            assert actual==family and reader is store
+            return result
+        monkeypatch.setattr('packages.alpha_lifecycle.primary_selection.select_primary',select)
+    ref=put(result) if result else None
+    attempt=observation['attempt_id'];finished='2026-09-02T01:00:00Z'
+    detail=dict(job=dict(job_id=job_id,job_type='ALPHA_CAMPAIGN',state='SUCCEEDED' if result else 'BLOCKED',
+        payload=payload,payload_fingerprint=payload_fingerprint(payload),actor=dict(actor_type='OPERATOR',actor_id='synthetic-operator'),
+        priority=0,requested_at='2026-09-02T00:01:00Z',updated_at=finished,attempt_count=1,
+        reason_code='RESULT_VALIDATED' if result else 'P3_AUTHORITY_HELD',result_hash=None if ref is None else ref.content_sha256),
+        attempts=[dict(attempt_id=attempt,attempt_number=1,worker_id='synthetic-worker',claimed_at='2026-09-02T00:02:00Z',
+            started_at='2026-09-02T00:03:00Z',finished_at=finished,exit_code=None,termination_reason=None,artifact_count=0 if ref is None else 1)],
+        artifacts=[] if ref is None else [dict(artifact_id='artifact_result',attempt_id=attempt,artifact_type='result',
+            validator_id='p3-primary-selection-v1',sha256=ref.content_sha256,size_bytes=ref.size_bytes,created_at=finished)],events=[])
+    envelope=JobDetailEnvelope.model_validate_json(canonical_json_bytes(dict(schema_version='1.0.0',trace_id='synthetic',
+        generated_at='2026-09-02T01:01:00Z',data=detail)))
+    receipt=terminal_phase_observation(put(envelope),store=store)
+    assert receipt.outcome==outcome and receipt.publication_ref is None and receipt.registry_head_ref is None
+    assert validate_phase_exit_receipt(put(receipt),repository=None,store=store)==receipt
+    changed=envelope.model_copy(update={'data':envelope.data.model_copy(update={
+        'job':envelope.data.job.model_copy(update={'attempt_count':2})})})
+    with pytest.raises(ValueError):terminal_phase_observation(put(changed),store=store)
+
+
+@pytest.mark.parametrize('fault',[None,'revoked','wrong_source','wrong_host','expired'])
+def test_committed_phase_export_authenticates_exact_retained_evidence(committed_exit,monkeypatch,fault):
+    """Compose real export/auth/readback; inject only clock, host and protected custody."""
+    from datetime import UTC,datetime
+    from packages.alpha_lifecycle import local_qualification as authority
+    from packages.alpha_lifecycle.contracts.authority import QualificationBinding
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from packages.runtime_release import config
+    from services.job_worker.p3_phase_readback import export_phase_exit,validate_phase_exit_receipt
+    from tests.p3.test_local_qualification import sealed,SAFE
+    store,repository,job_id,_,auth=committed_exit
+    ref=export_phase_exit(job_id,repository=repository,store=store)
+    phase=validate_phase_exit_receipt(ref,repository=repository,store=store)
+    binding=QualificationBinding(gate='P3_PHASE_EXIT',source=phase.source,policy_digest=phase.policy_digest,
+        input_ref=phase.input_ref,environment_ref=phase.environment_ref)
+    def put(value):return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
+    receipt=sealed(dict(schema_version='local-phase-qualification-receipt-v1',identity=auth.identity,binding=binding,
+        started_at='2026-09-02T01:00:00Z',completed_at='2026-09-02T01:10:00Z',
+        expires_at='2026-09-02T03:00:00Z',evidence_refs=[ref],status='PASS',authority=SAFE))
+    approval=sealed(dict(schema_version='local-qualification-approval-v1',issuer_identity=auth.identity.issuer_identity,
+        receipt_ref=put(receipt),issued_at='2026-09-02T01:15:00Z',expires_at='2026-09-02T03:00:00Z',
+        revoked=fault=='revoked',authority=SAFE))
+    def protected(path):
+        assert path==Path('/etc/trading-agent/local-qualification/synthetic/P3_PHASE_EXIT.json')
+        return canonical_json_bytes(approval)+b'\n',(1,2)
+    monkeypatch.setattr(config,'_read_protected_file',protected)
+    monkeypatch.setattr(authority,'_host_identity',lambda:('f'*64 if fault=='wrong_host' else auth.identity.host_id,auth.identity.boot_id))
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return datetime(2026,9,2,3 if fault=='expired' else 2,tzinfo=UTC)
+    monkeypatch.setattr(authority,'datetime',Clock)
+    if fault=='wrong_source':binding=binding.model_copy(update={'source':binding.source.model_copy(update={'commit_sha':'f'*40})})
+    if fault:
+        with pytest.raises(ValueError):authority.validate_local_qualification(auth.identity,binding,store=store)
+    else:
+        qualified=authority.validate_local_qualification(auth.identity,binding,store=store)
+        observed=validate_phase_exit_receipt(qualified.evidence_refs[0],repository=repository,store=store)
+        assert observed==phase and observed.outcome=='FAIL' and qualified.status=='PASS'
+        assert export_phase_exit(job_id,repository=repository,store=store)==ref
+
+
+def _holdout_result(store, intent):
+    from packages.alpha_lifecycle.contracts.results import HoldoutEvaluationResult
+    from packages.alpha_lifecycle.holdout import HoldoutOperationResult
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    import hashlib
+    body = intent.body
+    value = dict(schema_version='p3-holdout-operation-result-v1', holdout_request_ref=body.holdout_request_ref,
+        holdout_manifest_ref=_read(store, body.holdout_evaluation_ref, HoldoutEvaluationResult).manifest_ref,
+        holdout_evaluation_ref=body.holdout_evaluation_ref, holdout_replay_ref=body.holdout_replay_ref,
+        executable_ref=body.executable_ref, baseline_executable_ref=body.baseline_executable_ref)
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    result = HoldoutOperationResult.model_validate_json(canonical_json_bytes(value))
+    return store.put_bytes(canonical_json_bytes(result), media_type='application/json'), result
+
+
+def test_parity_and_exit_bodies_derive_from_committed_holdout_and_session_notes(exit_graph):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.local_campaign import parity_body, phase_exit_body, propose_operation
+    from packages.alpha_lifecycle.native_request import prepare_native_commitment
+    from packages.alpha_lifecycle.operation_input import NativeParityInput
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from scripts.p3_local_controller import derive_body
+    store, intent, source, view = exit_graph
+    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    held_ref, held = _holdout_result(store, intent)
+    spec_ref = _read(store, intent.body.parity_ref, ParityPair).instrument_spec_ref
+    commitment = prepare_native_commitment(held.holdout_manifest_ref, spec_ref, view)
+    commitment_ref = store.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
+    parity = parity_body(held_ref, commitment_ref, store=store)
+    assert parity == dict(holdout_manifest_ref=held.holdout_manifest_ref, primary_reference_ref=held.executable_ref,
+        baseline_reference_ref=held.baseline_executable_ref, instrument_spec_ref=spec_ref,
+        native_request_ref=commitment_ref)
+    with pytest.raises(ValidationError) as missing_id:
+        propose_operation('p3-native-parity-v1', intent.input_set_ref, parity, store=store)
+    assert missing_id.value.errors()[0]['loc'] == ('allowed_alpha_ids', 0)
+    assert missing_id.value.errors()[0]['input'] is None
+    request = derive_body(dict(workflow_operation='p3-native-parity-v1', input_set_ref=intent.input_set_ref,
+        refs=dict(holdout_result_ref=held_ref, native_commitment_ref=commitment_ref)), source=source, store=store)
+    parity_intent = propose_operation(request['workflow_operation'], request['input_set_ref'], request['body'],
+        store=store, primary_alpha_id=request.get('primary_alpha_id'))
+    assert parity_intent.allowed_alpha_ids == intent.allowed_alpha_ids
+    assert parity_intent.body == NativeParityInput.model_validate(parity)
+    body = phase_exit_body(intent.body.primary_selection_ref, held_ref, intent.body.parity_ref, store=store)
+    from packages.alpha_lifecycle.operation_input import PhaseExitInput
+    assert PhaseExitInput.model_validate(body) == intent.body
+    exit_intent = propose_operation('p3-phase-exit-v1', intent.input_set_ref, body, store=store,
+                                    primary_alpha_id=intent.allowed_alpha_ids[0])
+    assert exit_intent == intent
+
+
+@pytest.mark.parametrize('reference', ['manifest', 'selection'])
+@pytest.mark.parametrize('fault', ['missing', 'wrong_type'])
+def test_parity_body_derivation_rejects_unavailable_or_wrong_typed_primary_chain(exit_graph, reference, fault):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.native_request import prepare_native_commitment
+    from packages.alpha_lifecycle.parity import ParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.data_catalog.artifact_store import ArtifactIntegrityError
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from scripts.p3_local_controller import derive_body
+    from tests.p3.test_parity_pair import _change
+    store, intent, source, view = exit_graph
+    held_ref, held = _holdout_result(store, intent)
+    spec_ref = _read(store, intent.body.parity_ref, ParityPair).instrument_spec_ref
+    commitment_ref = store.put_bytes(canonical_json_bytes(
+        prepare_native_commitment(held.holdout_manifest_ref, spec_ref, view)), media_type='application/json')
+    bad_ref = (held.holdout_manifest_ref.model_copy(update={'content_sha256':'0'*64, 'locator':'0'*64+'.blob'})
+        if fault == 'missing' else store.put_bytes(canonical_json_bytes({}), media_type='application/json'))
+    manifest_ref = (bad_ref if reference == 'manifest' else
+        _change(store, held.holdout_manifest_ref, primary_selection_ref=bad_ref))
+    held_ref = _change(store, held_ref, holdout_manifest_ref=manifest_ref)
+    commitment_ref = _change(store, commitment_ref, manifest_ref=manifest_ref)
+    with pytest.raises(ArtifactIntegrityError if fault == 'missing' else ValidationError):
+        derive_body(dict(workflow_operation='p3-native-parity-v1', input_set_ref=intent.input_set_ref,
+            refs=dict(holdout_result_ref=held_ref, native_commitment_ref=commitment_ref)), source=source, store=store)
+
+
+def test_parity_body_refuses_a_commitment_for_another_manifest(exit_graph):
+    from packages.alpha_lifecycle.local_campaign import parity_body
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    store, intent, _, _ = exit_graph
+    held_ref, _ = _holdout_result(store, intent)
+    with pytest.raises(ValueError):
+        parity_body(held_ref, store.put_bytes(canonical_json_bytes({}), media_type='application/json'), store=store)
+
+
+def test_session_parity_pair_note_reads_back_with_native_parent_proof(exit_graph, tmp_path):
+    import hashlib
+    import os
+    from packages.alpha_lifecycle.parity import ParityPair, SessionParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    store, intent, source, _ = exit_graph
+    value = _read(store, intent.body.parity_ref, ParityPair).model_dump(mode='json', exclude={'digest'})
+    value['native_parent_proof_ref'] = intent.body.holdout_replay_ref.model_dump(mode='json')
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    pair = SessionParityPair.model_validate(value)
+    ref = store.put_bytes(canonical_json_bytes(pair), media_type='application/json')
+    publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', ref)
+    assert read_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', worker_uid=os.geteuid(),
+                            store=store, expected_source=source) == ref
+
+
+def test_phase_exit_derives_from_plain_pair_and_retained_session_pair(exit_graph, tmp_path):
+    import os
+    from packages.alpha_lifecycle.local_campaign import phase_exit_body
+    from packages.alpha_lifecycle.operation_input import PhaseExitInput
+    from packages.alpha_lifecycle.parity import SessionParityPair
+    from packages.alpha_lifecycle.replica_store import _read
+    from scripts.p3_local_controller import derive_body
+    from services.job_worker.p3_session import publish_session_ref, read_session_ref
+    from tests.p3.test_parity_pair import _change
+    store, intent, source, _ = exit_graph
+    held_ref, _ = _holdout_result(store, intent)
+    plain_body = phase_exit_body(intent.body.primary_selection_ref, held_ref, intent.body.parity_ref, store=store)
+    assert PhaseExitInput.model_validate(plain_body) == intent.body
+    # Declared unit placeholder, as in the session-note test above; no native proof authority.
+    pair_ref = _change(store, intent.body.parity_ref, native_parent_proof_ref=intent.body.holdout_replay_ref)
+    publish_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', pair_ref)
+    observed_ref = read_session_ref(tmp_path, 'job_parity', 'PARITY_PAIR', worker_uid=os.geteuid(),
+                                   store=store, expected_source=source)
+    assert observed_ref == pair_ref
+    request = derive_body(dict(workflow_operation='p3-phase-exit-v1', input_set_ref=intent.input_set_ref,
+        refs=dict(primary_selection_ref=intent.body.primary_selection_ref, holdout_result_ref=held_ref,
+                  parity_pair_ref=observed_ref)), source=source, store=store)
+    assert request['primary_alpha_id'] == intent.allowed_alpha_ids[0]
+    assert PhaseExitInput.model_validate(request['body']) == intent.body.model_copy(update={'parity_ref': pair_ref})
+    assert _read(store, request['body']['parity_ref'], SessionParityPair).native_parent_proof_ref == intent.body.holdout_replay_ref
+
+
+@pytest.mark.parametrize('fault', ['digest', 'unknown_field', 'parent_type', 'manifest', 'primary', 'baseline', 'noncanonical'])
+def test_phase_exit_rejects_invalid_session_pair(exit_graph, fault):
+    from pydantic import ValidationError
+    from packages.alpha_lifecycle.local_campaign import phase_exit_body
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from tests.p3.test_parity_pair import _change
+    store, intent, _, _ = exit_graph
+    held_ref, held = _holdout_result(store, intent)
+    changes = dict(native_parent_proof_ref=intent.body.holdout_replay_ref)
+    if fault == 'unknown_field':
+        changes['unexpected'] = 'untrusted'
+    elif fault == 'parent_type':
+        changes['native_parent_proof_ref'] = None
+    elif fault in {'manifest', 'primary', 'baseline'}:
+        field = {'manifest': 'manifest_ref', 'primary': 'primary_reference_ref', 'baseline': 'baseline_reference_ref'}[fault]
+        changes[field] = held.holdout_replay_ref
+    pair_ref = _change(store, intent.body.parity_ref, **changes)
+    if fault in {'digest', 'noncanonical'}:
+        value = json.loads(store.read_bytes(pair_ref))
+        if fault == 'digest':
+            value['digest'] = '0' * 64
+        raw = canonical_json_bytes(value) if fault == 'digest' else json.dumps(value).encode()
+        pair_ref = store.put_bytes(raw, media_type='application/json')
+    with pytest.raises(ValidationError if fault in {'digest', 'unknown_field', 'parent_type'} else ValueError):
+        phase_exit_body(intent.body.primary_selection_ref, held_ref, pair_ref, store=store)

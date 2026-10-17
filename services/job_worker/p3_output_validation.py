@@ -6,7 +6,7 @@ import json
 from decimal import ROUND_HALF_EVEN,localcontext
 
 from packages.alpha_lifecycle.baseline_campaign import ReadbackStore,_read,run_baseline_pack,validate_baseline_selection,baseline_manifest_ref
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization,FamilyReview,PrimarySelection
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION,FamilyReview,PrimarySelection
 from packages.alpha_lifecycle.contracts.execution import BaselineManifest
 from packages.alpha_lifecycle.contracts.lifecycle import PrePublicationEvidence
 from services.job_store.p3_sql import PublicationProposal
@@ -159,7 +159,7 @@ def validate_holdout_output(job, inventory, outputs, store, view, *, progress=No
     result_ref = candidates[0]
     result = _read(outputs, result_ref, HoldoutOperationResult)
     intent = _read(store, job.payload.manifest_ref, P3OperationInput)
-    authorization = _read(store, job.payload.authorization_ref, RunAuthorization)
+    authorization = _read(store, job.payload.authorization_ref, RUN_AUTHORIZATION)
     if not isinstance(intent.body, HoldoutInput):
         raise ValueError('holdout requires its exact intent')
     request = derive_holdout_request(intent, authorization, expected_source=job.payload.expected_source)
@@ -235,7 +235,7 @@ def validate_official_output(job, result, custody: P3OutputCustody, inventory_re
     reader=_ClosedReader(store,(*inputs.values(),*output_refs),progress=progress)
     outputs=_ClosedReader(store,output_refs,progress=progress)
     intent=_read(reader,job.payload.manifest_ref,P3OperationInput)
-    authorization=_read(reader,job.payload.authorization_ref,RunAuthorization)
+    authorization=_read(reader,job.payload.authorization_ref,RUN_AUTHORIZATION)
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
     expected_payload=stage_alpha_campaign_payload(ReadbackStore(reader,reader),authorization,
         job.payload.expected_source,job.payload.logical_trial_id,canonical_json_bytes(intent),operation_input=intent)

@@ -685,3 +685,36 @@ print(json.dumps({
         "cash": "1007981.219859",
         "fees": "2007.791229",
     }
+
+
+# CR02: the native final-state ledger settles each fill's net delta once (golden approved 2026-09-27).
+from decimal import Decimal  # noqa: E402
+
+from runtime_v1.final_state import _ledger  # noqa: E402
+
+MICRO = Decimal("0.000001")
+
+
+def _native_fill(side: str, fee: str = "0", price: str = "1.5") -> dict[str, str]:  # canonical native text
+    return {"side": side, "quantity": "0.100001", "price": price, "commission": fee, "commission_currency": "USDT"}
+
+
+@pytest.mark.parametrize(("executions", "closing"), [
+    (((_native_fill("BUY"),),), "999.849999"),
+    (((_native_fill("BUY", "0.000001"),),), "999.849999"),
+    (((_native_fill("BUY", "0.000002"),),), "999.849997"),
+    (((_native_fill("BUY"), _native_fill("BUY")),), "999.699997"),
+    (((_native_fill("BUY"),), (_native_fill("SELL"),)), "1000.000001"),
+], ids=["buy_fee0", "buy_fee_1_micro", "buy_fee_2_micro", "two_fills", "buy_then_sell"])
+def test_native_ledger_settles_net_fill_delta_half_even(executions: tuple, closing: str) -> None:
+    collected = tuple(SimpleNamespace(fills=tuple(tuple(fill.items()) for fill in fills)) for fills in executions)
+
+    cash = _ledger(collected, Decimal("1000.000001"), "USDT", MICRO, MICRO)[0]
+
+    assert cash == Decimal(closing)
+
+
+@pytest.mark.parametrize(("opening", "closing"), [("1000.000001", "999.849999"), ("1000.000002", "999.850000")])
+def test_native_ledger_delta_is_independent_of_opening_parity(opening: str, closing: str) -> None:
+    collected = (SimpleNamespace(fills=(tuple(_native_fill("BUY").items()),)),)
+    assert _ledger(collected, Decimal(opening), "USDT", MICRO, MICRO)[0] == Decimal(closing)

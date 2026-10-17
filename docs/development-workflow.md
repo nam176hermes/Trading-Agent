@@ -1,5 +1,37 @@
 # Development workflow
 
+## Local development, publication by phase
+
+The operator approved the
+[phase workflow](superpowers/specs/2026-09-18-local-phase-workflow.md) on
+2026-09-18. Build and review a phase locally, freeze and qualify its candidate,
+then publish one main batch for hosted verification and external AI review.
+Resolve findings before finalizing the next phase plan. Corrective publication
+batches are allowed when review finds a material defect.
+
+Use small local changes and authorized local commits for recovery; do not push
+after every change. Run focused affected checks during implementation, integration
+checks at milestones, and the applicable full gates at candidate freeze. Reuse
+evidence only when its source, policy, inputs, environment and authority remain
+valid. A failure must retain its original result even after a later repair.
+
+Keep local source completion, local qualification, economic/product acceptance,
+publication and external review as separate verdicts. P3 pipeline completion
+does not prove an alpha passed economic acceptance. Preserve the North Star
+phase prerequisites and holdout rules.
+
+The authenticated local qualification lane needs the source changes in the
+[implementation plan](superpowers/plans/2026-09-18-local-phase-workflow.md).
+It is not active yet. Existing formal gates remain enforced; their HELD status
+does not require a push before continuing ordinary local development. Never
+fake GitHub environment variables or issue a PASS receipt from this policy.
+
+Push/PR/merge and protected host activation still require separate authority.
+Do not change CI triggers, branch protection or research acceptance thresholds
+merely to reduce development feedback time.
+
+## Development feedback
+
 The canonical release and CI entry points remain in the protected `Makefile`.
 Use `make test-all` for completion evidence. Use the commands below for the
 short feedback loop while editing:
@@ -44,6 +76,13 @@ a gate pass. The legacy component keeps its separate dependency and test graph.
 Hosted CI runs backend and dashboard tests through the governance topology
 owner; the common prerequisite target does not run them a second time.
 `make test-all` retains its local component checks.
+
+At candidate freeze, prepare `make build-dashboard` before `make test-all` when
+headless tests need a production build. The aggregate already includes audit,
+contract, backend and dashboard checks; do not rerun covered checks without
+changed inputs or a distinct evidence need. Hosted
+`make ci-portable NONINTERACTIVE=1` belongs to publication verification and
+requires genuine hosted identity, not a locally supplied run number.
 
 The workspace doctor verifies repository location, Git topology, temporary
 storage, generated contracts, and the paper-only execution boundary. It does

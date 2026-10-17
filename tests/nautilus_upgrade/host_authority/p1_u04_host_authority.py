@@ -151,7 +151,7 @@ def test_bwrap_routes_injected_pwd_to_exact_cargo() -> None:
     } == {
         "gid": 0,
         "mode": "0755",
-        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
+        "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
         "size": 72160,
         "type": "file",
         "uid": 0,
@@ -299,7 +299,7 @@ def test_bwrap_rejects_foreign_physical_cwd(
     } == {
         "gid": 0,
         "mode": "0755",
-        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
+        "sha256": "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71",
         "size": 72160,
         "type": "file",
         "uid": 0,

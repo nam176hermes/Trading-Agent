@@ -3,8 +3,11 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+import errno
 from inspect import signature
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +24,7 @@ from services.job_worker.process_runner import (
     ProcessOutcome,
     ProcessLineage,
 )
-from services.job_worker.recovery import ProcessIdentity
+from services.job_worker.recovery import ProcessIdentity, ProcProcessInspector
 from services.job_worker.results import ResultValidationError, ValidatedResult
 from services.job_worker.errors import SafetyBlockedError
 from services.job_worker.safety import KillSwitchState, SafetyMode
@@ -34,6 +37,83 @@ from services.job_worker.worker import (
 from services.market_data.ingestion import MarketDataIngestionError
 from services.market_data.repository import MarketDataPersistenceOutcome
 from tests.jobs.backend_contract_fixtures import BACKEND_COMMIT
+
+
+@pytest.mark.parametrize("proc_leaf", ["stat", "cmdline"])
+def test_proc_inspector_accepts_native_exit_after_path_open(monkeypatch, proc_leaf) -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, start_new_session=True,
+    )
+    streams = []
+    native_open = Path.open
+    try:
+        inspector = ProcProcessInspector()
+        live = inspector.inspect(child.pid)
+        assert live is not None and live.pid == live.process_group == child.pid
+        assert live.start_ticks > 0
+        target = Path(f"/proc/{child.pid}/{proc_leaf}")
+
+        def open_then_reap(path, *args, **kwargs):
+            stream = native_open(path, *args, **kwargs)
+            if path == target:
+                streams.append(stream)
+                child.communicate(input=b"x", timeout=5)
+                assert child.returncode == 0
+            return stream
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "open", open_then_reap)
+            try:
+                assert inspector.inspect(child.pid) is None
+            finally:
+                print({"native_child_pid": child.pid, "proc_leaf": proc_leaf,
+                       "child_exit": child.returncode,
+                       "streams_closed": bool(streams) and all(stream.closed for stream in streams)})
+        assert len(streams) == 1 and streams[0].closed
+    finally:
+        for stream in streams:
+            stream.close()
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("proc_leaf", ["stat", "cmdline"])
+@pytest.mark.parametrize("error_number", [errno.EPERM, errno.EIO])
+def test_proc_inspector_rejects_non_exit_errors(monkeypatch, tmp_path, proc_leaf, error_number) -> None:
+    root = tmp_path / "417"
+    root.mkdir()
+    (root / "stat").write_text("417 (worker) " + " ".join(["S", "1", "417", *["0"] * 16, "99"]))
+    (root / "cmdline").write_bytes(b"worker\0")
+    native_open = Path.open
+    failure = OSError(error_number, "controlled non-exit proc read failure")
+
+    def denied_open(path, *args, **kwargs):
+        if path == root / proc_leaf:
+            raise failure
+        return native_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_open)
+    with pytest.raises(OSError) as raised:
+        ProcProcessInspector(tmp_path).inspect(417)
+    assert raised.value is failure
+
+
+@pytest.mark.parametrize("stat_text,error_type,reason", [
+    ("417 worker", RuntimeError, "malformed"),
+    ("417 (worker) S 1", RuntimeError, "incomplete"),
+    ("417 (worker) " + " ".join(["S", "1", "wrong", *["0"] * 16, "99"]), ValueError, "invalid literal"),
+    ("417 (worker) " + " ".join(["S", "1", "0", *["0"] * 16, "99"]), ValueError, "identity values"),
+    ("417 (worker) " + " ".join(["S", "1", "417", *["0"] * 16, "-1"]), ValueError, "identity values"),
+])
+def test_proc_inspector_rejects_malformed_or_invalid_identity(tmp_path, stat_text, error_type, reason) -> None:
+    root = tmp_path / "417"
+    root.mkdir()
+    (root / "stat").write_text(stat_text)
+    (root / "cmdline").write_bytes(b"worker\0")
+    with pytest.raises(error_type, match=reason):
+        ProcProcessInspector(tmp_path).inspect(417)
 
 
 def claim(*, attempt_number=1, max_attempts=2):

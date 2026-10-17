@@ -32,7 +32,7 @@ def test_oos_cli_runs_three_children_and_retains_failed_candidate_proposal(synth
     monkeypatch.setattr('packages.alpha_lifecycle.sandbox.require_official_sandbox',lambda value:Path('/usr/bin/bwrap'))
     calls=[]
     grants=[]
-    monkeypatch.setattr(command,'parent_replica_fence',lambda:lambda:grants.append(len(calls)))
+    monkeypatch.setattr(command,'parent_replica_fence',lambda *,expires_at:lambda:grants.append(len(calls)))
     def executor(**kwargs):
         result=BubblewrapExecutor(**kwargs)
         def argv(request,result_path,output,seccomp_fd):

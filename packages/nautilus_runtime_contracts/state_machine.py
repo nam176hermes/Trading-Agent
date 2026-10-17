@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from fractions import Fraction
 
 from .events import (
     P1AccountObserved,
@@ -38,7 +39,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
     account_count = 0
     previous_simulation_time = events[0].simulation_time
     submitted_order_facts: dict[str, tuple[str, Decimal, str]] = {}
-    filled_quantities: dict[str, Decimal] = {}
+    filled_quantities: dict[str, Fraction] = {}   # exact cumulative fills (CR01)
     last_position = None
     last_account = None
     for expected, event in enumerate(events, start=2):
@@ -82,9 +83,9 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
                 raise ValueError("fill occurred before order submission")
             native_fill_ids.add(event.native_fill_id)
             side, submitted_quantity, _ = submitted_order_facts[event.client_order_id]
-            prior_quantity = filled_quantities.get(event.client_order_id, Decimal(0))
-            total_quantity = prior_quantity + event.quantity
-            if event.side != side or total_quantity > submitted_quantity:
+            prior_quantity = filled_quantities.get(event.client_order_id, Fraction(0))
+            total_quantity = prior_quantity + Fraction(event.quantity)
+            if event.side != side or total_quantity > Fraction(submitted_quantity):
                 raise ValueError("fill facts do not match the submitted order")
             filled_quantities[event.client_order_id] = total_quantity
             fill_count += 1
@@ -105,7 +106,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
     ):
         raise ValueError("final observations must immediately precede completion")
     if any(
-        filled_quantities.get(order_id, Decimal(0)) != facts[1]
+        filled_quantities.get(order_id, Fraction(0)) != Fraction(facts[1])
         for order_id, facts in submitted_order_facts.items()
     ):
         raise ValueError("completion cannot retain an unfinished order")

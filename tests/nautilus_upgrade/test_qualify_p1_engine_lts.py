@@ -207,6 +207,34 @@ def test_final_mode_binds_p1_h_and_p1_complete_into_lts_ready(tmp_path: Path) ->
     assert all(value is False for value in receipt["authority_limits"].values())
 
 
+def test_local_p1_readback_recomputes_all_nodes_and_requires_retained_external_bytes(tmp_path):
+    from copy import deepcopy
+    import hashlib
+    assert hasattr(qualifier, 'validate_complete_receipt'), 'complete P1 readback is missing'
+    leaf = b'explicit synthetic native/operator evidence for source testing'
+    digest = hashlib.sha256(leaf).hexdigest()
+    external = {}
+    paths = {}
+    for name, (schema, verdict) in qualifier._EXTERNAL_SPECS.items():
+        payload = json.loads(_external_receipt(schema, verdict))
+        payload['evidence_sha256s'] = [digest]
+        raw = qualifier.canonical_receipt_bytes(payload)
+        path = tmp_path/(name+'.json'); path.write_bytes(raw)
+        external[name] = raw
+        paths[name] = path
+    proof, code = qualifier.qualify(mode='final', source_identity=(COMMIT,TREE), source_clean=True, **paths)
+    assert code == 0
+    def validate(value, retained):
+        return qualifier.validate_complete_receipt(value, external=external,
+            retained=retained, source_identity=(COMMIT,TREE))
+    assert validate(proof, {digest:leaf}) == proof
+    with pytest.raises(ValueError): validate(proof, {})
+    for field in ('node_results', 'static_evidence_sha256s', 'qualification_dag'):
+        broken = deepcopy(proof)
+        broken['p1_h_complete'][field] = []
+        with pytest.raises(ValueError): validate(broken, {digest:leaf})
+
+
 def test_external_source_mismatch_authority_grant_and_dirty_source_fail_closed(
     tmp_path: Path,
 ) -> None:

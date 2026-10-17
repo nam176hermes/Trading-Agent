@@ -100,8 +100,10 @@ test('disabled reads are audit-pure and authorized mutations record only authori
       assert.equal((await response.json()).code, 'PROCESS_EXECUTION_DISABLED', routeName);
     }
 
-    const auditPath = path.join(researchRoot, 'memory', 'dashboard_mutation_audit.jsonl');
-    assert.equal(fs.existsSync(auditPath), false, 'read routes appended mutation audit');
+    const memory = path.join(researchRoot, 'memory');
+    const audits = fs.existsSync(memory)
+      ? fs.readdirSync(memory).filter((name) => name.startsWith('dashboard_mutation_audit')) : [];
+    assert.deepEqual(audits, [], 'read routes appended mutation audit');
 
     for (const routeName of ['close-position', 'service', 'keys']) {
       const route = await import(`../src/app/api/trading/${routeName}/route.ts`);
@@ -110,7 +112,8 @@ test('disabled reads are audit-pure and authorized mutations record only authori
       assert.equal((await response.json()).code, 'PROCESS_EXECUTION_DISABLED', routeName);
     }
 
-    const events = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
+    const events = fs.readdirSync(memory).filter((name) => name.startsWith('dashboard_mutation_audit')).sort()
+      .flatMap((name) => fs.readFileSync(path.join(memory, name), 'utf8').trim().split('\n').map(JSON.parse));
     assert.equal(events.length, 3);
     assert.deepEqual(events.map((event) => event.authorization_outcome), ['GRANTED', 'GRANTED', 'GRANTED']);
     assert.deepEqual(events.map((event) => event.action), ['position.close', 'service.control', 'keys.manage']);

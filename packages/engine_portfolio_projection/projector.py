@@ -321,17 +321,14 @@ def project_portfolio(
                             "non-zero position has no average entry price"
                         )
                     average = ((position * average) + gross) / next_position
-                cash = _round_half_even(
-                    cash - gross - fee_fraction, settlement.precision
-                )
+                # CR02: settle this fill's net delta (notional and fee) once, then add it exactly.
+                cash += _round_half_even(-gross - fee_fraction, settlement.precision)
             else:
                 if average is None or quantity_fraction > position:
                     raise ProjectionError("sell fill would create an unsupported short position")
                 next_position = position - quantity_fraction
                 realized += (price_fraction - average) * quantity_fraction * multiplier
-                cash = _round_half_even(
-                    cash + gross - fee_fraction, settlement.precision
-                )
+                cash += _round_half_even(gross - fee_fraction, settlement.precision)
                 if next_position == 0:
                     average = None
             position = next_position

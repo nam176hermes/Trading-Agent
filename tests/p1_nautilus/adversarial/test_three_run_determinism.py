@@ -11,8 +11,12 @@ import resource
 import subprocess
 import time
 
+import pytest
+
 from packages.job_contracts import JobState
+from packages.nautilus_runtime_contracts.events import P1RunCompleted, P1RunStarted
 from packages.nautilus_runtime_contracts.result import P1_RESULT_VALIDATOR_ID
+from packages.nautilus_runtime_contracts.semantic import semantic_digest
 from scripts.run_p1_nautilus_vertical_slice import (
     END,
     START,
@@ -23,6 +27,15 @@ from services.job_worker.artifacts import ArtifactMetadata
 from services.job_worker.engine_authority import BacktestEngineAuthorityFactory
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 from services.job_worker.engine_results import EngineResultValidator
+from services.job_worker.engine_spawn import (
+    ReadOnlyClosureMount,
+    _sealed_closure_file_snapshot,
+)
+from services.job_worker.engine_spawn_interface import EngineSpawnError
+from services.job_worker.p1_nautilus_closure import (
+    _lineage_mount,
+    derive_p1_product_lineage,
+)
 from tests.jobs.test_engine_result_validation import CODE_COMMIT, NOW
 from tests.jobs.test_engine_worker_lifecycle import Repository
 from tests.jobs.test_p1_parity_composition import (
@@ -40,6 +53,32 @@ from tests.p1_nautilus.test_instrument_factory_native import (
 
 ROOT = Path(__file__).parents[3]
 FIXTURES = ROOT / "tests/fixtures/p1_nautilus"
+
+
+def _product_lineage() -> ReadOnlyClosureMount:
+    path = Path(os.environ["P1_NAUTILUS_PRODUCT_LINEAGE"])
+    expected = derive_p1_product_lineage(
+        P1_REAL_BACKTEST_POLICY.closure_sha256,
+        P1_REAL_BACKTEST_POLICY.runtime_inventory_sha256,
+    )
+    mount = _lineage_mount(path.parent, expected)
+    assert mount.source == path
+    return mount
+
+
+def test_three_run_rejects_prior_product_lineage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lineage = derive_p1_product_lineage(
+        "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80",
+        P1_REAL_BACKTEST_POLICY.runtime_inventory_sha256,
+    )
+    path = tmp_path / "p1-product-lineage.json"
+    path.write_text(json.dumps(lineage, separators=(",", ":"), sort_keys=True) + "\n")
+    path.chmod(0o400)
+    monkeypatch.setenv("P1_NAUTILUS_PRODUCT_LINEAGE", str(path))
+    with pytest.raises(EngineSpawnError, match="P1 product lineage is invalid"):
+        _product_lineage()
 
 
 def _stdout(root: Path, claim: object, raw: bytes) -> ArtifactMetadata:
@@ -97,17 +136,27 @@ def _native_streams(
     entered = time.monotonic()
     with exact_g1_runtime() as runtime:
         if runtime is None:
-            assert "nautilus_trader" not in subprocess.run(
-                ["uv", "run", "python", "-c", "import sys;print(' '.join(sys.path))"],
-                cwd=ROOT,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout
+            assert (
+                "nautilus_trader"
+                not in subprocess.run(
+                    [
+                        "uv",
+                        "run",
+                        "python",
+                        "-c",
+                        "import sys;print(' '.join(sys.path))",
+                    ],
+                    cwd=ROOT,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+            )
             return None
         closure_attestation_ms = round((time.monotonic() - entered) * 1000)
         root, site_packages = runtime
-        script = r'''
+        product_lineage = _product_lineage()
+        script = r"""
 import json
 from pathlib import Path
 import sys
@@ -116,6 +165,7 @@ warnings.filterwarnings("ignore", message="Timestamp.utcnow is deprecated.*")
 sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import nautilus_trader
 from runtime_v1.backtest_runner import run_backtest
+from runtime_v1.bootstrap import load_product_lineage
 from runtime_v1.event_projector import CompletionAuthority, project_event_stream
 from runtime_v1.input_loader import ArtifactReference, RunBacktestRequest, RuntimeInputs
 
@@ -135,6 +185,7 @@ catalog = tuple(sorted(json.loads(open(sys.argv[5], "rb").read()).items()))
 schedule = freeze(json.loads(open(sys.argv[6], "rb").read()))
 market_data = open(sys.argv[7], "rb").read()
 streams = []
+lineage = load_product_lineage()
 for record in records:
     payload = record.pop("payload")
     request = RunBacktestRequest(
@@ -164,12 +215,12 @@ for record in records:
             realized_pnl=run.position_realized_pnl,
             unrealized_pnl=run.position_unrealized_pnl,
         ),
-        closure_digest="97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80",
+        closure_digest=lineage["closure_sha256"],
         upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
     )
     streams.append(stream.jsonl.decode("ascii"))
 print(json.dumps({"streams": streams}, ensure_ascii=True, separators=(",", ":"), sort_keys=True))
-'''
+"""
         command = exact_g1_command(
             root,
             site_packages,
@@ -189,15 +240,27 @@ print(json.dumps({"streams": streams}, ensure_ascii=True, separators=(",", ":"),
             ),
             (FIXTURES / "e2e/btcusdt-1m.jsonl", "/inputs/market-data.jsonl"),
         )
+        lineage_fd = _sealed_closure_file_snapshot(product_lineage)
+        command[command.index("--") : command.index("--")] = [
+            "--perms",
+            "0400",
+            "--ro-bind-data",
+            str(lineage_fd),
+            str(product_lineage.target),
+        ]
         native_started = time.monotonic()
-        completed = subprocess.run(
-            command,
-            cwd="/",
-            env={},
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd="/",
+                env={},
+                pass_fds=(lineage_fd,),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        finally:
+            os.close(lineage_fd)
         native_execution_ms = round((time.monotonic() - native_started) * 1000)
     assert completed.returncode == 0, completed.stderr
     assert completed.stderr == ""
@@ -238,6 +301,21 @@ def test_three_distinct_jobs_preserve_native_semantics_and_durable_portfolio(
             request=request,
             stdout=_stdout(artifact_root, claim, raw),
             exit_code=0,
+        )
+        # Compare business fields to the retained golden after current lineage validation.
+        # The accepted Class D rotation changes only the two closure lineage fields.
+        golden_events = tuple(
+            event.model_copy(
+                update={
+                    "closure_digest": "97185d4c0b6090353ba51c1aab25ed4ea4dfab08113b655fac623af9e7db2b80"
+                }
+            )
+            if isinstance(event, (P1RunStarted, P1RunCompleted))
+            else event
+            for event in validated.profile_result.events
+        )
+        assert semantic_digest(golden_events) == (
+            "728d439596c540683afa524fc8090cb8de4878878e96e1d21283f222318681b9"
         )
         calls: list[str] = []
         ingestor = _LoggedIngestor(calls)
@@ -296,9 +374,7 @@ def test_three_distinct_jobs_preserve_native_semantics_and_durable_portfolio(
                     ).encode("ascii")
                 ).hexdigest(),
                 "raw_portfolio_state_sha256": parity["portfolio_state_hash"],
-                "request_sha256": result.validation_metadata[
-                    "engine_request_sha256"
-                ],
+                "request_sha256": result.validation_metadata["engine_request_sha256"],
                 "semantic_sha256": validated.profile_result.semantic_sha256,
             }
         )
@@ -307,9 +383,7 @@ def test_three_distinct_jobs_preserve_native_semantics_and_durable_portfolio(
     assert len({result["attempt_id"] for result in results}) == 3
     assert len({result["request_sha256"] for result in results}) == 3
     assert len({result["batch_sha256"] for result in results}) == 3
-    assert {result["semantic_sha256"] for result in results} == {
-            "728d439596c540683afa524fc8090cb8de4878878e96e1d21283f222318681b9"
-    }
+    assert len({result["semantic_sha256"] for result in results}) == 1
     assert len({result["portfolio_state_sha256"] for result in results}) == 1
     evidence_path = os.environ.get("P1_QUALIFICATION_METRICS_PATH")
     if evidence_path is not None:

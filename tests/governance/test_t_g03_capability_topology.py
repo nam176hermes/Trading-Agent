@@ -292,6 +292,15 @@ def _valid_nautilus_sandbox_authority() -> dict[str, object]:
     }
 
 
+def test_native_sandbox_authority_accepts_only_the_approved_policy_and_binary() -> None:
+    sandbox = _valid_nautilus_sandbox_authority()
+    assert topology._nautilus_sandbox_authority_is_valid(sandbox)
+    for field in ("policy_sha256", "expected_sha256", "observed_sha256"):
+        assert not topology._nautilus_sandbox_authority_is_valid(
+            {**sandbox, field: "0" * 64},
+        )
+
+
 def _fixture_nautilus_toolchains(root: Path) -> tuple[Path, Path]:
     rust = root / "rust"
     llvm = root / "llvm"

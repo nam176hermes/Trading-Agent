@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import sys
 from pathlib import Path
 
@@ -25,3 +26,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="verify component introductions against embedded evidence",
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def disposable_connection_fence():
+    if os.environ.get("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN_REQUIRED") == "YES":
+        from tests.jobs._postgres import install_disposable_connection_fence
+        with pytest.MonkeyPatch.context() as patch:
+            install_disposable_connection_fence(patch)
+            yield
+    else:
+        yield

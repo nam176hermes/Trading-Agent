@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import selectors
 import subprocess
 import time
 import weakref
@@ -28,6 +29,134 @@ from services.job_worker.p1_engine_spawn import (
     claim_p1_paper_launch,
     is_issued_p1_paper_launch,
 )
+
+
+# PR03: one monotonic deadline per exchange (write + read, never reset), a bounded stderr tail, and the
+# existing frame bounds. 60 s bounds an operation that previously had no deadline; it is not an authority TTL.
+_EXCHANGE_SECONDS = 60.0
+_CLOSE_SECONDS = 60.0
+_STDERR_TAIL_BYTES = 65_536
+_MAX_RESPONSE_FRAMES = 64
+_CHUNK = 65_536
+_HEADER_AND_FRAME_BYTES = 4 + MAX_FRAME_BYTES   # stdout retained after end of input
+
+
+def _kill_and_reap(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=10)
+
+
+def _retain_stderr(tail: bytearray, chunk: bytes) -> None:
+    tail.extend(chunk)
+    del tail[:-_STDERR_TAIL_BYTES]
+
+
+def _exchange_frames(
+    process: subprocess.Popen[bytes],
+    raw: bytes,
+    pending: bytearray,
+    stderr_tail: bytearray,
+) -> bytes:
+    """Write one command frame and read frames until CHECKPOINT, multiplexing stdin/stdout/stderr under one
+    deadline. Bytes read past the checkpoint stay in PENDING. Any failure kills and reaps the child."""
+    deadline = time.monotonic() + _EXCHANGE_SECONDS
+    outgoing = memoryview(frame_payload(raw))
+    stdin, stdout, stderr = process.stdin, process.stdout, process.stderr
+    if stdin is None or stdout is None or stderr is None:
+        raise RuntimeError("paper child is not running")
+    stdin_fd, stdout_fd, stderr_fd = stdin.fileno(), stdout.fileno(), stderr.fileno()
+    try:
+        for descriptor in (stdin_fd, stdout_fd, stderr_fd):
+            os.set_blocking(descriptor, False)
+        response = bytearray()
+        frames = 0
+        with selectors.DefaultSelector() as selector:
+            selector.register(stdin_fd, selectors.EVENT_WRITE)
+            selector.register(stdout_fd, selectors.EVENT_READ)
+            selector.register(stderr_fd, selectors.EVENT_READ)
+            while True:
+                while len(pending) >= 4:
+                    size = int.from_bytes(pending[:4], "big")
+                    if not 0 < size <= MAX_FRAME_BYTES:
+                        raise RuntimeError("paper child response is oversized")
+                    if len(pending) < 4 + size:
+                        break
+                    frame = bytes(pending[: 4 + size])
+                    del pending[: 4 + size]
+                    response.extend(frame)
+                    frames += 1
+                    document = json.loads(frame[4:])
+                    if type(document) is dict and document.get("frame_type") == "CHECKPOINT":
+                        if outgoing:
+                            raise RuntimeError("paper child answered before reading the command")
+                        return bytes(response)
+                    if frames == _MAX_RESPONSE_FRAMES:
+                        raise RuntimeError("paper child response exceeds maximum frames")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("paper child exchange deadline expired")
+                for key, _events in selector.select(remaining):
+                    try:
+                        if key.fd == stdin_fd:
+                            outgoing = outgoing[os.write(stdin_fd, outgoing[:_CHUNK]) :]
+                            if not outgoing:
+                                selector.unregister(stdin_fd)
+                            continue
+                        chunk = os.read(key.fd, _CHUNK)
+                    except BlockingIOError:
+                        continue
+                    if key.fd == stderr_fd:
+                        if chunk:
+                            _retain_stderr(stderr_tail, chunk)
+                        else:
+                            selector.unregister(stderr_fd)
+                    elif chunk:
+                        pending.extend(chunk)
+                    else:
+                        raise RuntimeError("paper child response is truncated")
+    except BaseException:
+        _kill_and_reap(process)
+        raise
+
+
+def _close_child_input(
+    process: subprocess.Popen[bytes],
+    pending: bytearray,
+    stderr_tail: bytearray,
+) -> int:
+    """Close stdin, then drain stdout/stderr to EOF under one deadline before reaping; never blocks on a full
+    pipe. Stdout after end of input is retained up to one frame; more is a contract violation that kills and
+    reaps the child. Timeout raises subprocess.TimeoutExpired as before."""
+    deadline = time.monotonic() + _CLOSE_SECONDS
+    if process.stdin is not None and not process.stdin.closed:
+        process.stdin.close()
+    readers = {
+        stream.fileno(): target
+        for stream, target in ((process.stdout, pending), (process.stderr, stderr_tail))
+        if stream is not None and not stream.closed
+    }
+    with selectors.DefaultSelector() as selector:
+        for descriptor in readers:
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
+        while readers and (remaining := deadline - time.monotonic()) > 0:
+            for key, _events in selector.select(remaining):
+                try:
+                    chunk = os.read(key.fd, _CHUNK)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fd)
+                    del readers[key.fd]
+                elif readers[key.fd] is stderr_tail:
+                    _retain_stderr(stderr_tail, chunk)
+                elif len(pending) + len(chunk) > _HEADER_AND_FRAME_BYTES:
+                    _kill_and_reap(process)
+                    raise RuntimeError("paper child wrote more than one frame after end of input")
+                else:
+                    pending.extend(chunk)
+    return process.wait(timeout=max(0.0, deadline - time.monotonic()))
 
 
 def _read(path: Path, maximum: int = 4096) -> bytes:
@@ -117,6 +246,8 @@ class NautilusPaperProcess:
     _process: subprocess.Popen[bytes]
     _closure: P1EngineClosureAttestation
     _request: EngineCommandEnvelope
+    _stdout_pending: bytearray
+    _stderr_tail: bytearray
 
     def matches_authority(
         self,
@@ -165,25 +296,7 @@ class NautilusPaperProcess:
             or process.stdout is None
         ):
             raise RuntimeError("paper child is not running")
-        process.stdin.write(frame_payload(raw))
-        process.stdin.flush()
-        response = bytearray()
-        for _ in range(64):
-            header = process.stdout.read(4)
-            if len(header) != 4:
-                raise RuntimeError("paper child response is truncated")
-            size = int.from_bytes(header, "big")
-            if not 0 < size <= MAX_FRAME_BYTES:
-                raise RuntimeError("paper child response is oversized")
-            payload = process.stdout.read(size)
-            if len(payload) != size:
-                raise RuntimeError("paper child response is truncated")
-            response.extend(header)
-            response.extend(payload)
-            document = json.loads(payload)
-            if type(document) is dict and document.get("frame_type") == "CHECKPOINT":
-                return bytes(response)
-        raise RuntimeError("paper child response exceeds maximum frames")
+        return _exchange_frames(process, raw, self._stdout_pending, self._stderr_tail)
 
     def is_running(self) -> bool:
         if self._process.poll() is not None:
@@ -193,9 +306,7 @@ class NautilusPaperProcess:
         return True
 
     def close_input(self) -> int:
-        if self._process.stdin is not None and not self._process.stdin.closed:
-            self._process.stdin.close()
-        return self._process.wait(timeout=60)
+        return _close_child_input(self._process, self._stdout_pending, self._stderr_tail)
 
     def abort(self) -> None:
         if self._process.poll() is None:
@@ -267,6 +378,8 @@ def _bind_process(
         ("_process", process),
         ("_closure", closure),
         ("_request", request),
+        ("_stdout_pending", bytearray()),
+        ("_stderr_tail", bytearray()),
     ):
         object.__setattr__(value, name, item)
     _ISSUED.add(value)

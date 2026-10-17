@@ -15,44 +15,49 @@ from trading_control.phase3b_writer import (
     inspect_phase3b_dry_run,
     phase3b_run_id,
 )
-from trading_control.real_import import apply_real_plan, build_real_plan
-from tests.jobs._postgres import disposable_database, upgrade_to_head
+from trading_control.real_import import build_real_plan
+from tests.jobs._postgres import apply_disposable_real_plan, disposable_database, disposable_role_settings, upgrade_to_head
 
 
 REAL_ROOT = Path("/home/thenam176/.hermes/crypto-research")
-_TEST_DATABASE_NAME: str | None = None
+_TEST_DATABASE: DatabaseSettings | None = None
 
 
 def role_settings(filename: str) -> DatabaseSettings:
-    if _TEST_DATABASE_NAME is None:
+    if _TEST_DATABASE is None:
         raise RuntimeError("Control API test database fixture is not active")
-    values = dict(
-        line.split("=", 1)
-        for line in (Path.home() / ".config" / "trading-agent" / filename)
-        .read_text(encoding="utf-8")
-        .splitlines()
-        if line
-    )
-    values["TRADING_DATABASE_NAME"] = _TEST_DATABASE_NAME
-    return DatabaseSettings.from_env(values)
+    if filename != "postgres-migrator.env":
+        raise ValueError("Control API test role is not allowed")
+    return disposable_role_settings(_TEST_DATABASE, "trading_migrator")
 
 
 @pytest.fixture(scope="module")
 def phase3b_database() -> tuple[DatabaseSettings, object]:
-    global _TEST_DATABASE_NAME
+    global _TEST_DATABASE
     with disposable_database(
         operation_id="control-api-phase3b-transactions-v1"
     ) as owner:
-        _TEST_DATABASE_NAME = owner.database
+        _TEST_DATABASE = owner
         try:
             upgrade_to_head(owner)
             settings = role_settings("postgres-migrator.env")
-            apply_real_plan(
-                build_real_plan(REAL_ROOT), settings, apply=True, code_commit="test"
+            apply_disposable_real_plan(
+                build_real_plan(REAL_ROOT), owner, apply=True, code_commit="test"
             )
             yield settings, build_phase3b_backfill_plan(REAL_ROOT)
         finally:
-            _TEST_DATABASE_NAME = None
+            _TEST_DATABASE = None
+
+
+@pytest.fixture(autouse=True)
+def isolated_backfill_state(phase3b_database):
+    if _TEST_DATABASE is None:
+        raise RuntimeError("disposable Phase 3B owner is unavailable")
+    with psycopg.connect(_TEST_DATABASE.conninfo()) as connection:
+        connection.execute(
+            "TRUNCATE public.decision_field_lineage, public.cost_session_assets, "
+            "public.asset_source_lineage, public.phase3b_backfill_events, public.phase3b_backfill_runs"
+        )
 
 
 def test_real_phase3b_apply_and_second_apply_are_idempotent(

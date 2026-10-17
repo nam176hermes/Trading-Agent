@@ -859,3 +859,120 @@ def test_projection_rejects_unbounded_decimal_shape_before_digesting(
 
     with pytest.raises(ValueError, match="Decimal bounds"):
         _project(tuple(events))
+
+
+# CR02: settlement convention approved by the operator (2026-09-27): for each fill and currency,
+# HALF_EVEN(signed notional - commission) at the currency precision, added exactly to the balance.
+from fractions import Fraction  # noqa: E402
+
+
+def _oracle_cash(opening: str, fills: tuple[tuple[str, str, str, str], ...]) -> Decimal:
+    """Independent oracle: integer minor units and Fraction; no production rounding helper."""
+    scale = 10**6
+    minor = Fraction(opening) * scale
+    assert minor.denominator == 1
+    for side, quantity, price, fee in fills:
+        notional = Fraction(quantity) * Fraction(price)
+        net = (-notional if side == "BUY" else notional) - Fraction(fee)
+        minor += round(net * scale)                 # Fraction round: nearest, ties to even
+    return Decimal(int(minor)).scaleb(-6)
+
+
+def _settlement_stream(orders: tuple[tuple[str, tuple[tuple[str, str, str], ...]], ...], opening: str) -> tuple:
+    """One target/order per entry of ORDERS: (side, ((quantity, price, fee), ...)); observations use the oracle."""
+    base = _stream()
+    events: list[object] = [base[0]]
+    sequence, position, fees, done = 3, Fraction(0), Fraction(0), []
+    for index, (side, fills) in enumerate(orders, start=1):
+        quantity = sum((Decimal(q) for q, _, _ in fills), Decimal(0))
+        target, order = f"target-{index}", f"order-{index}"
+        events.append(base[1].model_copy(update={"sequence": sequence, "target_id": target,
+                                                 "source_signal_ids": (f"signal-{index}",),
+                                                 "target_weight": Decimal("1" if side == "BUY" else "0")}))
+        events.append(base[2].model_copy(update={"sequence": sequence + 1, "target_id": target, "quantity": quantity}))
+        events.append(base[3].model_copy(update={"sequence": sequence + 2, "target_id": target, "client_order_id": order,
+                                                 "native_order_id": f"native-order-{index}",
+                                                 "source_signal_ids": (f"signal-{index}",), "side": side,
+                                                 "quantity": quantity}))
+        sequence += 3
+        for number, (fill_quantity, price, fee) in enumerate(fills):
+            events.append(base[4].model_copy(update={"sequence": sequence, "client_order_id": order,
+                                                     "native_fill_id": f"native-fill-{index}-{number}", "side": side,
+                                                     "quantity": Decimal(fill_quantity), "price": Decimal(price),
+                                                     "fee": Decimal(fee)}))
+            sequence += 1
+            done.append((side, fill_quantity, price, fee))
+            fees += Fraction(fee)
+        position += Fraction(quantity) if side == "BUY" else -Fraction(quantity)
+        cash = _oracle_cash(opening, tuple(done))
+        average = Decimal("1.5") if position else Decimal("0")
+        events.append(base[5].model_copy(update={"sequence": sequence, "quantity": Decimal(position.numerator) /
+                                                 position.denominator if position else Decimal("0"),
+                                                 "average_entry_price": average, "realized_pnl": Decimal("0"),
+                                                 "unrealized_pnl": Decimal("0")}))
+        events.append(base[6].model_copy(update={"sequence": sequence + 1, "cash_balance": cash,
+                                                 "fees": Decimal(fees.numerator) / fees.denominator,
+                                                 "realized_pnl": Decimal("0"), "unrealized_pnl": Decimal("0")}))
+        sequence += 2
+    completion = base[-1].model_copy(update={
+        "sequence": sequence, "target_count": len(orders), "order_count": len(orders), "fill_count": len(done),
+        "final_cash": events[-1].cash_balance, "final_position": events[-2].quantity, "fees": events[-1].fees,
+        "realized_pnl": Decimal("0"), "unrealized_pnl": Decimal("0")})
+    return _redigest(tuple(events) + (completion,))
+
+
+BUY_0100001 = ("0.100001", "1.50")
+GOLDEN = [
+    ("buy_fee0", (("BUY", ((*BUY_0100001, "0"),)),), "999.849999"),
+    ("buy_fee_1_micro", (("BUY", ((*BUY_0100001, "0.000001"),)),), "999.849999"),
+    ("buy_fee_2_micro", (("BUY", ((*BUY_0100001, "0.000002"),)),), "999.849997"),
+    ("two_fills", (("BUY", ((*BUY_0100001, "0"), (*BUY_0100001, "0"))),), "999.699997"),
+    ("buy_then_sell", (("BUY", ((*BUY_0100001, "0"),)), ("SELL", ((*BUY_0100001, "0"),))), "1000.000001"),
+]
+
+
+@pytest.mark.parametrize(("case", "orders", "closing"), GOLDEN, ids=[item[0] for item in GOLDEN])
+def test_cash_settles_net_fill_delta_half_even(case: str, orders: tuple, closing: str) -> None:
+    fills = tuple((side, q, p, f) for side, parts in orders for q, p, f in parts)
+    assert _oracle_cash("1000.000001", fills) == Decimal(closing)          # oracle agrees with the approved table
+
+    projection = _project(_settlement_stream(orders, "1000.000001"), opening=_opening("1000.000001"))
+
+    assert projection.accounting.cash_balance == Decimal(closing)
+
+
+def test_cash_half_even_includes_fee_before_quantization() -> None:
+    # net -0.1500025 is a tie: one quantization of (notional - fee) gives -0.150002, never -0.150003.
+    orders = (("BUY", ((*BUY_0100001, "0.000001"),)),)
+    assert _project(_settlement_stream(orders, "1000.000001"),
+                    opening=_opening("1000.000001")).accounting.cash_balance == Decimal("999.849999")
+
+
+def test_cash_settlement_occurs_per_fill() -> None:
+    orders = (("BUY", ((*BUY_0100001, "0"), (*BUY_0100001, "0"))),)
+    projection = _project(_settlement_stream(orders, "1000.000001"), opening=_opening("1000.000001"))
+
+    assert projection.accounting.cash_balance == Decimal("999.699997")      # two deltas of -0.150002
+
+
+@pytest.mark.parametrize(("opening", "closing"), [("1000.000001", "999.849999"), ("1000.000002", "999.850000")])
+def test_settled_delta_is_independent_of_opening_parity(opening: str, closing: str) -> None:
+    orders = (("BUY", ((*BUY_0100001, "0"),)),)
+    assert _project(_settlement_stream(orders, opening), opening=_opening(opening)).accounting.cash_balance == Decimal(closing)
+
+
+def test_delta_rounding_survives_project_serialize_replay_restart() -> None:
+    orders = (("BUY", ((*BUY_0100001, "0"), (*BUY_0100001, "0"))), ("SELL", ((*BUY_0100001, "0.000001"),)))
+    projection = _project(_settlement_stream(orders, "1000.000001"), opening=_opening("1000.000001"))
+    envelopes = tuple(deserialize_event(serialize_event(item)) for item in _portfolio_envelopes(projection))
+
+    replayed = reduce_portfolio_events(envelopes)
+    restarted = reduce_portfolio_events(envelopes[:3])
+    for envelope in envelopes[3:]:
+        restarted = apply_portfolio_event(restarted, envelope)
+
+    expected = _oracle_cash("1000.000001", (("BUY", *BUY_0100001, "0"), ("BUY", *BUY_0100001, "0"),
+                                            ("SELL", *BUY_0100001, "0.000001")))
+    assert projection.accounting.cash_balance == expected
+    assert replayed.snapshot.balances[0].cash.amount == expected
+    assert restarted.model_dump_json() == replayed.model_dump_json()

@@ -158,6 +158,9 @@ grep -q '"code":"CLI_REQUIRED"' "$WORK/kill-off.json" \
   || fail 'kill-switch deactivation did not require CLI'
 [[ ! -e "$KILL_SWITCH_FILE" ]] || fail 'rejected kill-switch clear changed local state'
 
-[[ -s "$DATA_ROOT/memory/dashboard_mutation_audit.jsonl" ]] \
-  || fail 'mutation audit log was not written'
+# Each dashboard process writes its own dashboard_mutation_audit.p-<uuid>.jsonl (plus rotated segments).
+audit_logs=("$DATA_ROOT"/memory/dashboard_mutation_audit.*.jsonl)
+[[ -s "${audit_logs[0]}" ]] || fail 'mutation audit log was not written'
+cat "${audit_logs[@]}" | grep -q '"event":"dashboard_mutation_authorization"' \
+  || fail 'mutation audit log has no authorization record'
 printf 'mode authorization integration: PASS\n'

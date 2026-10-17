@@ -157,6 +157,7 @@
     "scripts/run_p3_alpha_campaign.py",
     "scripts/run_p3_driver_entry.py",
     "scripts/run_p3_evaluation_child.py",
+    "scripts/run_p3_native_child.py",
     "services/__init__.py",
     "services/job_store/__init__.py",
     "services/job_store/config.py",

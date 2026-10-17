@@ -827,10 +827,9 @@ def assemble_asset_json(
     if not ml_suggestion:
         try:
             from ml_predictor import predict_next
-            import lightgbm as lgb
-            model_path = data_root() / "models" / f"{symbol.lower()}_lightgbm_latest.txt"
-            if model_path.exists():
-                model = lgb.Booster(model_file=str(model_path))
+            from ml_predictor import load_model
+            model = load_model(symbol)  # refuses models trained on another feature contract
+            if model is not None:
                 ohlcv_raw = raw_data.get("ohlcv")
                 if ohlcv_raw:
                     import pandas as pd

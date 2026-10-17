@@ -6,6 +6,10 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from typing import Literal
+from packages.alpha_lifecycle.contracts.base import StrictModel,Text
+from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity,QualificationBinding
+from packages.data_contracts import ArtifactRefV1
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.p3_provenance import (
@@ -134,3 +138,85 @@ def derive_p3_status(root: Path) -> P3SourceStatus:
 
 
 __all__ = ["P3SourceStatus", "P3StatusGates", "derive_p3_status", "valid_status_output"]
+
+
+class LocalPhaseProfile(StrictModel):
+    schema_version: Literal['p3-local-phase-profile-v1']
+    identity: LocalRunIdentity
+    binding: QualificationBinding
+    phase_receipt_ref: ArtifactRefV1
+    store_root: Text
+    worker_credentials_directory: Text
+
+
+LOCAL_PHASE_PROFILE=Path('/etc/trading-agent/local-qualification/phase-exit.json')
+
+
+def derive_local_p3_status(root: Path):
+    """Opt-in local status; neither tracked status nor hosted promotion is rewritten."""
+    from contextlib import ExitStack
+    import psycopg
+    from packages.p3_provenance import LocalP3Status,PhaseExitReceiptV2
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.local_pre_p3 import read_local_pre_p3,validate_local_phase_binding
+    from packages.alpha_lifecycle.local_qualification import validate_local_qualification
+    from packages.runtime_release.config import read_protected_canonical_json_current,_absolute
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from services.job_store.config import JobStoreSettings
+    from importlib import import_module
+    WorkerRepository=import_module('services.job_store.worker_repository').WorkerRepository
+    validate_phase_exit_receipt=import_module('services.job_worker.p3_phase_readback').validate_phase_exit_receipt
+    source=None;phase=None;ready=None;qualified=False;blockers=[]
+    code='E_LOCAL_PREREQUISITES'
+    try:
+        ready=read_local_pre_p3(root)['PRE_P3_READY'];qualified=True;source=ready.binding.source
+        code='E_LOCAL_PHASE_PROFILE'
+        document,digest=read_protected_canonical_json_current(LOCAL_PHASE_PROFILE)
+        profile=LocalPhaseProfile.model_validate_json(canonical_json_bytes(document))
+        code='E_LOCAL_PHASE_BINDING'
+        store=LocalArtifactStore(_absolute(profile.store_root))
+        validate_local_phase_binding(root,profile.identity,profile.binding,ready,store=store)
+        code='E_LOCAL_PHASE_AUTHENTICATION'
+        approval=validate_local_qualification(profile.identity,profile.binding,store=store)
+        if approval.evidence_refs!=(profile.phase_receipt_ref,):
+            raise ValueError('phase approval must pin this exact receipt')
+        code='E_LOCAL_PHASE_COMMITTED_READBACK'
+        retained=_read(store,profile.phase_receipt_ref,PhaseExitReceiptV2)
+        with ExitStack() as stack:
+            publication=None
+            if retained.outcome in {'PASS','FAIL'}:
+                settings=JobStoreSettings.from_systemd_credentials(
+                    {'CREDENTIALS_DIRECTORY':str(_absolute(profile.worker_credentials_directory))},expected_user='trading_job_worker')
+                worker=stack.enter_context(WorkerRepository(settings));worker.assert_session_runtime_identity()
+                publication=worker.alpha_publication_repository(store)
+            value=validate_phase_exit_receipt(profile.phase_receipt_ref,repository=publication,store=store)
+            code='E_LOCAL_PHASE_SOURCE'
+            if (value.source!=source or value.identity!=profile.identity
+                or value.policy_digest!=profile.binding.policy_digest or value.input_ref!=profile.binding.input_ref
+                or value.environment_ref!=profile.binding.environment_ref):
+                raise ValueError('phase receipt differs from qualified binding')
+            code='E_LOCAL_PHASE_CHANGED'
+            if (validate_local_qualification(profile.identity,profile.binding,store=store)!=approval
+                or read_protected_canonical_json_current(LOCAL_PHASE_PROFILE)[1]!=digest):
+                raise ValueError('local phase authority changed during readback')
+            phase=value
+    except (OSError,ValueError,RuntimeError,psycopg.Error) as error:
+        blockers.append(getattr(error,'code',code))
+    # Source freshness is independent of phase availability. Recheck even when
+    # phase readback failed, and invalidate every dependent projection on drift.
+    if qualified:
+        try:
+            if read_local_pre_p3(root)['PRE_P3_READY']!=ready:
+                raise ValueError('local prerequisites changed during readback')
+        except (OSError,ValueError,RuntimeError,psycopg.Error) as error:
+            qualified=False;source=None;phase=None
+            blockers.append(getattr(error,'code','E_LOCAL_PREREQUISITES_CHANGED'))
+    outcome='HELD' if phase is None else phase.outcome
+    value=dict(schema_version='p3-local-source-status-v1',issuer_kind='LOCAL',qualified_source=source,
+        phase_exit_receipt_digest=None if phase is None else phase.digest,
+        source_qualification='PASS' if qualified else 'HELD',pipeline_complete='PASS' if phase is not None and outcome!='HELD' else 'HELD',
+        economic_outcome=outcome,local_complete='PASS' if outcome=='PASS' else 'HELD',
+        protected_promotion='HELD',published_complete='HELD',blocker_codes=tuple(blockers),
+        authority=dict(broker=False,live=False,network=False,production=False))
+    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    return LocalP3Status.model_validate_json(canonical_json_bytes(value))

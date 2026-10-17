@@ -3643,9 +3643,9 @@ def _nautilus_sandbox_authority_is_valid(
         sandbox["regular_file_status"]
         == "ROOT_OWNED_POLICY_BOUND_EXECUTABLE"
         and sandbox["policy_sha256"]
-        == "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+        == "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
         and sandbox["expected_sha256"]
-        == "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+        == "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71"
         and sandbox["observed_sha256"] == sandbox["expected_sha256"]
         and sandbox["expected_uid"] == sandbox["observed_uid"] == 0
         and sandbox["expected_gid"] == sandbox["observed_gid"] == 0
@@ -3689,10 +3689,10 @@ def _native_multi_authority_can_defer(
         {
             "regular_file_status": "ABSENT",
             "policy_sha256": (
-                "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+                "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
             ),
             "expected_sha256": (
-                "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+                "e318903862396f96de3df57264e0158682b952fd3fb53ac23d876413e7b30f71"
             ),
             "observed_sha256": EMPTY_SHA256,
             "expected_uid": 0,
@@ -4026,6 +4026,8 @@ def validate_receipt(
 def _validate_external_outcome(
     receipt: dict[str, object], expected: tuple[str, ...],
 ) -> None:
+    from scripts.validate_disposable_postgres_approval import APPROVAL_SOURCE_BINDING_PATHS
+
     code = str(receipt["capability_or_authority_code"])
     state = str(receipt["preflight_state"])
     fact = str(receipt["redacted_fact_class"])
@@ -4153,7 +4155,7 @@ def _validate_external_outcome(
                 or authority["approval_record_sha256"] == EMPTY_SHA256
                 or authority["approved_operation_count"]
                 != len(_disposable_pg_operations(code))
-                or authority["source_binding_count"] != 21
+                or authority["source_binding_count"] != len(APPROVAL_SOURCE_BINDING_PATHS)
                 or authority["fixture_plan_status"]
                 != (
                     "PRIVATE_RETAINED_FIXTURE_PLAN"
@@ -5028,7 +5030,7 @@ def _sandbox_authority_from_session(
     if (
         bwrap_policy_path == TRUSTED_BWRAP_POLICY
         and policy_sha256
-        != "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+        != "f584a08a1f0d05be55f3997ff557b9cda616574ff375013238fd3594841ff3e2"
     ):
         raise TopologyError("Nautilus sandbox policy identity drift")
     policy = session.policy or {}

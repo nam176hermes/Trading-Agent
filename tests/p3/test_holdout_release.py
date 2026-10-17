@@ -1,4 +1,6 @@
 """Private synthetic custody transport; never cross-UID/runtime qualification."""
+
+
 import hashlib
 import os
 import shutil
@@ -15,6 +17,66 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from services.job_worker.engine_spawn import _sealed_memfd, _memfd_create
 from tests.p3.test_reference_input import reference_seed  # noqa: F401
 from tests.p3.test_holdout_disclosure_client import disclosure  # noqa: F401
+
+
+@pytest.mark.parametrize('changed_field', [None, 'st_dev', 'st_ino', 'st_uid', 'st_gid',
+                                          'st_mode', 'st_nlink', 'st_size', 'st_mtime_ns', 'st_ctime_ns'])
+def test_socket_connect_allows_access_time_only_and_rejects_identity_drift(release_request, monkeypatch, changed_field):
+    """Synthetic OS/socket: no connection, plaintext or durable disclosure is opened."""
+    import stat
+    from types import SimpleNamespace
+    from services.job_worker import p3_holdout_release as wire
+    endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1',
+        socket_path='/run/p3/custodian.sock', custodian_uid=17001, research_uid=17002,
+        custodian_identity='custodian', research_identity='research')
+    values = dict(st_dev=1, st_ino=2, st_uid=17001, st_gid=17002, st_mode=stat.S_IFSOCK | 0o660,
+                  st_nlink=1, st_size=0, st_mtime_ns=10_000_000_000, st_ctime_ns=10_000_000_000, st_atime_ns=10_000_000_000)
+    def observation(values):
+        return os.stat_result(tuple(values[key] for key in
+            ('st_mode', 'st_ino', 'st_dev', 'st_nlink', 'st_uid', 'st_gid', 'st_size')) +
+            tuple(values[key] // 1_000_000_000 for key in ('st_atime_ns', 'st_mtime_ns', 'st_ctime_ns')),
+            {key: values[key] for key in ('st_atime_ns', 'st_mtime_ns', 'st_ctime_ns')})
+    before = observation(values)
+    values['st_atime_ns'] += 1_000_000_000
+    if changed_field:
+        values[changed_field] += 1
+    after = observation(values)
+    observations = iter((before, after))
+    root_stat = os.stat('/')
+    events = []
+    monkeypatch.setattr(wire, 'os', SimpleNamespace(
+        geteuid=lambda: 17002, fsencode=os.fsencode, O_RDONLY=os.O_RDONLY, O_DIRECTORY=os.O_DIRECTORY,
+        O_NOFOLLOW=os.O_NOFOLLOW, O_CLOEXEC=os.O_CLOEXEC,
+        open=lambda *args, **kwargs: 101, fstat=lambda fd: root_stat,
+        stat=lambda *args, **kwargs: next(observations), close=lambda fd: None))
+    class Channel:
+        family = socket.AF_UNIX
+        type = socket.SOCK_SEQPACKET
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def settimeout(self, seconds): assert seconds == 5
+        def connect(self, path): events.append('connect')
+        def getsockopt(self, *args): return struct.pack('3i', 123, 17001, 17001)
+        def send(self, raw, flags):
+            assert raw == canonical_json_bytes(release_request)
+            events.append('send')
+            return len(raw)
+    monkeypatch.setattr(wire, 'socket', SimpleNamespace(
+        socket=lambda *args: Channel(), AF_UNIX=socket.AF_UNIX, SOCK_SEQPACKET=socket.SOCK_SEQPACKET,
+        SOL_SOCKET=socket.SOL_SOCKET, SO_PEERCRED=socket.SO_PEERCRED, MSG_NOSIGNAL=socket.MSG_NOSIGNAL))
+    # Ancestor IDs in this identity-drift test are synthetic, not real owned FDs.
+    monkeypatch.setattr(wire, '_close_descriptors', lambda *fds: None)
+    monkeypatch.setattr(wire, 'receive_bundle', lambda *args: b'synthetic bundle')
+    def run():
+        return wire.request_bundle(endpoint, release_request,
+            fence=lambda: events.append('fence'), consume=lambda: events.append('consume'))
+    if changed_field:
+        with pytest.raises(ValueError, match='socket changed'):
+            run()
+        assert events == ['connect']
+    else:
+        assert run() == b'synthetic bundle'
+        assert events == ['connect', 'fence', 'consume', 'fence', 'send', 'fence']
 
 
 @pytest.fixture
@@ -228,7 +290,7 @@ def test_parent_rejects_unapproved_metadata_before_sql_or_custodian(disclosure,m
     assert not calls
 
 
-@pytest.mark.parametrize('fault', [None, 'after_bundle', 'between_metadata', 'after_view'])
+@pytest.mark.parametrize('fault', [None, 'after_bundle', 'between_metadata', 'after_view', 'local'])
 def test_release_retention_rechecks_authority_and_revokes_failed_view(released, disclosure, tmp_path, monkeypatch, fault):
     """Real custody/view validation; metadata approval, socket and SQL are synthetic."""
     from dataclasses import replace
@@ -253,6 +315,18 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     document['digest'] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
     intent_ref = store.put_bytes(canonical_json_bytes(document), media_type='application/json')
     claim = replace(claim, payload=claim.payload.model_copy(update={'manifest_ref': intent_ref}))
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
+    authorization = _read(store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
+    if fault == 'local':
+        from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
+        from tests.p3.test_local_qualification import sealed
+        document = authorization.model_dump(mode='json', exclude={'digest', 'issuer_attempt', 'issuer_run_id', 'issuer_workflow'})
+        document.update(schema_version='p3-local-run-authorization-v1', identity=dict(issuer_kind='LOCAL',
+            issuer_identity='synthetic', run_id='00000000-0000-4000-8000-000000000002', attempt=1,
+            host_id='a'*64, boot_id='00000000-0000-4000-8000-000000000001'))
+        authorization = LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(document)))
+        auth_ref = store.put_bytes(canonical_json_bytes(authorization), media_type='application/json')
+        claim = replace(claim, payload=claim.payload.model_copy(update={'authorization_ref': auth_ref}))
     request, manifest = HoldoutRequest.model_validate_json(graph[0]), _read(store, manifest_ref, HoldoutManifest)
     monkeypatch.setattr(holdout, 'validate_holdout_operation_input', lambda *args, **kwargs: (request, manifest))
     endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1', socket_path='/run/p3/custodian.sock',
@@ -264,6 +338,7 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     monkeypatch.setattr(WorkerRepository, 'consume_p3_holdout', lambda *args, **kwargs: events.append('consume'))
     def bundle(*args, **kwargs):
         nonlocal current
+        assert kwargs['io_deadline'] == (authorization.expires_at if fault == 'local' else None)
         kwargs['fence'](); kwargs['consume']()
         events.append('bundle')
         if fault == 'after_bundle': current = False
@@ -286,7 +361,7 @@ def test_release_retention_rechecks_authority_and_revokes_failed_view(released, 
     def release():
         return wire.release_holdout_view(claim, object.__new__(WorkerRepository), store,
             endpoint=endpoint, fence=fence, trace_id='test:retention')
-    if fault:
+    if fault and fault != 'local':
         with pytest.raises(ValueError, match='revoked'): release()
         assert len(writes) == {'after_bundle': 0, 'between_metadata': 1, 'after_view': 2}[fault]
         for value in views:
@@ -316,3 +391,261 @@ def test_custodian_credentials_use_fixed_separate_role(monkeypatch):
     assert set(calls)==set(credentials)
     assert 'private-test-value' not in repr(repository._settings)
     assert 'trading_p3_custodian' not in JOB_PLANE_DATABASE_USERS
+
+
+def test_local_io_budget_is_fresh_expiry_bounded_and_keeps_historical_default(monkeypatch):
+    from datetime import UTC,datetime,timedelta
+    from services.job_worker import p3_holdout_release as wire
+    now=datetime.now(UTC)
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return now
+    monkeypatch.setattr(wire,'datetime',Clock)
+    assert wire._io_timeout(None)==5
+    assert wire._io_timeout(now+timedelta(seconds=10))==10
+    assert wire._io_timeout(now+timedelta(hours=1))==300
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now)
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now-timedelta(seconds=1))
+    now+=timedelta(seconds=11)
+    with pytest.raises(ValueError,match='expired'):wire._io_timeout(now-timedelta(seconds=1))
+
+
+@pytest.mark.parametrize('owner', ['request', 'serve', 'receive', 'send'])
+@pytest.mark.parametrize('outcome', ['success', 'error', 'cancel'])
+def test_release_cleanup_ignores_caller_exception(released, release_request, tmp_path, monkeypatch, owner, outcome):
+    """Ambient KeyError is never this owner's primary; all IO/SQL seams are synthetic."""
+    import errno
+    import stat
+    from types import SimpleNamespace
+    from services.job_store.p3_custodian_release import CustodianReleaseRepository
+    from services.job_worker import artifacts, p3_holdout_release as wire
+
+    store, _, _, _, raw, _, _ = released
+    endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1',
+        socket_path='/synthetic/task/custodian.sock', custodian_uid=17001, research_uid=17002,
+        custodian_identity='custodian', research_identity='research')
+    # Successful serve_release rejects all incoming FDs, so owns none on its valid path.
+    descriptors = ([os.open(tmp_path / f'ancestor-{i}', os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+                    for i in range(3)] if owner == 'request' else
+                   [] if owner == 'serve' else [_sealed_memfd('synthetic-local-owner', raw, mode=0o400)])
+    order = list(reversed(descriptors)) if owner == 'request' else descriptors[:]
+    real_close = os.close
+    assert real_close is __import__('posix').close, 'previous owner leaked a close wrapper'
+    closed = []
+    cleanup = OSError(errno.EIO, 'synthetic close after FD retirement')
+    origin = ValueError('synthetic original cause')
+    primary = (KeyboardInterrupt('synthetic local cancellation') if outcome == 'cancel'
+               else RuntimeError('synthetic local error'))
+    primary.__cause__ = origin
+
+    def body():
+        if outcome != 'success': raise primary
+        return raw
+
+    def close(fd):
+        if fd not in descriptors: return real_close(fd)
+        closed.append(fd)
+        real_close(fd)
+        if fd == order[0]: raise cleanup
+
+    class Channel:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def settimeout(self, value): assert value == 5
+        def connect(self, path): pass
+        def send(self, packet, flags): return len(packet)
+        def sendmsg(self, packets, *args): body(); return len(packets[0])
+        def getsockopt(self, *args): body(); return struct.pack('3i', 1, os.getuid(), os.getgid())
+        def recvmsg(self, *args):
+            if owner == 'serve': return canonical_json_bytes(release_request), [], 0
+            return (canonical_json_bytes({'request_sha256': 'a' * 64}),
+                    [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack('i', descriptors[0]))], 0)
+
+    channel = Channel()
+    raised = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(artifacts.os, 'close', close)
+            if owner == 'request':
+                opened = iter(descriptors)
+                patch.setattr(wire, 'os', SimpleNamespace(**{name: getattr(os, name) for name in
+                    ('O_RDONLY', 'O_DIRECTORY', 'O_NOFOLLOW', 'O_CLOEXEC', 'fsencode')},
+                    geteuid=lambda: 17002, open=lambda *args, **kwargs: next(opened),
+                    fstat=lambda fd: None, stat=lambda *args, **kwargs: SimpleNamespace(
+                        st_mode=stat.S_IFSOCK | 0o660, st_uid=17001, st_dev=1, st_ino=2, st_gid=17002,
+                        st_nlink=1, st_size=0, st_mtime_ns=1, st_ctime_ns=1)))
+                patch.setattr(wire, '_safe_directory', lambda info: True)
+                patch.setattr(wire, '_peer', lambda *args: None)
+                patch.setattr(wire, 'socket', SimpleNamespace(socket=lambda *args: channel,
+                    AF_UNIX=socket.AF_UNIX, SOCK_SEQPACKET=socket.SOCK_SEQPACKET, MSG_NOSIGNAL=socket.MSG_NOSIGNAL))
+                patch.setattr(wire, 'receive_bundle', lambda *args: raw)
+                invoke = lambda: wire.request_bundle(endpoint, release_request, fence=body, consume=lambda: None)
+            elif owner == 'serve':
+                patch.setattr(wire, 'os', SimpleNamespace(geteuid=lambda: 17001, fsencode=os.fsencode))
+                patch.setattr(wire, '_peer', lambda *args: None)
+                patch.setattr(CustodianReleaseRepository, 'claim', lambda *args: None)
+                patch.setattr(CustodianReleaseRepository, 'fence', lambda *args: None)
+                patch.setattr(wire, 'send_bundle', lambda *args: None)
+                invoke = lambda: wire.serve_release(channel, endpoint, store,
+                    repository=object.__new__(CustodianReleaseRepository),
+                    request_sha256=hashlib.sha256(canonical_json_bytes(release_request)).hexdigest(),
+                    read_plaintext=lambda *args: body(), recheck_profile=lambda: endpoint)
+            elif owner == 'receive':
+                invoke = lambda: wire.receive_bundle(channel, 'a' * 64)
+            else:
+                patch.setattr(wire, '_sealed_memfd', lambda *args, **kwargs: descriptors[0])
+                invoke = lambda: wire.send_bundle(channel, 'a' * 64, raw)
+            try:
+                raise KeyError('synthetic unrelated caller exception')
+            except KeyError as ambient:
+                try:
+                    result = invoke()
+                except BaseException as error:
+                    raised = error
+                    result = None
+                assert raised is not ambient
+        assert os.close is real_close, 'bounded patch must end before owner assertions/teardown'
+        assert closed == order
+        for fd in descriptors:
+            with pytest.raises(OSError) as gone: os.fstat(fd)
+            assert gone.value.errno == errno.EBADF
+        if outcome == 'success':
+            assert raised is (cleanup if descriptors else None)
+            if not descriptors: assert result is None
+        else:
+            assert raised is primary
+            assert primary.__cause__ is (cleanup if descriptors else origin)
+            if descriptors: assert cleanup.__cause__ is origin
+    finally:
+        for fd in descriptors:
+            try: os.fstat(fd)
+            except OSError: continue
+            real_close(fd)
+
+
+@pytest.mark.parametrize('owner,fault', [
+    ('request', 'none'), ('request', 'first'), ('request', 'multiple'), ('request', 'cancel'),
+    ('serve', 'none'), ('serve', 'first'), ('serve', 'multiple'),
+    ('receive', 'none'), ('receive', 'first'), ('receive', 'multiple'), ('receive', 'cancel'),
+    ('send', 'none'), ('send', 'first'), ('send', 'cancel'),
+])
+def test_release_cleanup_closes_owned_fds_once_and_preserves_errors(tmp_path, monkeypatch, owner, fault):
+    """Real owned FDs, synthetic channels/path metadata; no socket/SQL/protected IO."""
+    import errno
+    import stat
+    from types import SimpleNamespace
+    from services.job_store.p3_custodian_release import CustodianReleaseRepository
+    from services.job_worker import p3_holdout_release as wire
+    from services.job_worker import artifacts
+
+    count = 1 if owner == 'send' or fault == 'cancel' and owner == 'receive' else 3
+    descriptors = []
+    for number in range(count):
+        path = tmp_path / f'owned-{number}'
+        descriptors.append(os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600))
+    order = list(reversed(descriptors)) if owner == 'request' else descriptors[:]
+    closed = []
+    first = OSError(errno.EIO, 'synthetic first close')
+    later = OSError(errno.EPERM, 'synthetic later close')
+    origin = RuntimeError('synthetic original cause')
+    primary = KeyboardInterrupt('synthetic cancellation')
+    primary.__cause__ = origin
+    real_close = os.close
+    assert real_close is __import__('posix').close, 'previous owner leaked a close wrapper'
+
+    def close(fd):
+        if fd not in descriptors:
+            return real_close(fd)
+        closed.append(fd)
+        real_close(fd)  # Model an ambiguous close error AFTER retiring the FD; never retry it.
+        if fault != 'none' and fd == order[0]:
+            raise first
+        if fault == 'multiple' and fd == order[1]:
+            raise later
+
+    endpoint = wire.CustodianEndpoint(schema_version='p3-custodian-endpoint-v1',
+        socket_path='/synthetic/task/custodian.sock', custodian_uid=17001, research_uid=17002,
+        custodian_identity='custodian', research_identity='research')
+    rights = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack(f'{count}i', *descriptors))]
+    events = []
+    class Channel:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def settimeout(self, value): assert value == 5
+        def connect(self, path): events.append('connect')
+        def send(self, raw, flags): events.append('send'); return len(raw)
+        def recvmsg(self, *args): return b'synthetic-invalid', rights, 0
+        def sendmsg(self, packets, *args):
+            if fault != 'none': raise primary
+            return len(packets[0])
+    channel = Channel()
+    raised = None
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(artifacts.os, 'close', close)
+            patch.setattr(wire, '_peer', lambda *args: None)
+            if owner == 'request':
+                opened = iter(descriptors)
+                fake_os = SimpleNamespace(**{name: getattr(os, name) for name in
+                    ('O_RDONLY', 'O_DIRECTORY', 'O_NOFOLLOW', 'O_CLOEXEC', 'fsencode')},
+                    geteuid=lambda: 17002, open=lambda *args, **kwargs: next(opened),
+                    fstat=lambda fd: None, stat=lambda *args, **kwargs: SimpleNamespace(
+                        st_mode=stat.S_IFSOCK | 0o660, st_uid=17001, st_dev=1, st_ino=2, st_gid=17002,
+                        st_nlink=1, st_size=0, st_mtime_ns=1, st_ctime_ns=1), close=close)
+                patch.setattr(wire, 'os', fake_os)
+                patch.setattr(wire, '_safe_directory', lambda info: True)
+                patch.setattr(wire, '_request_identity', lambda *args: None)
+                patch.setattr(wire, 'socket', SimpleNamespace(socket=lambda *args: channel,
+                    AF_UNIX=socket.AF_UNIX, SOCK_SEQPACKET=socket.SOCK_SEQPACKET, MSG_NOSIGNAL=socket.MSG_NOSIGNAL))
+                patch.setattr(wire, 'receive_bundle', lambda *args: b'synthetic bundle')
+                def fence():
+                    events.append('fence')
+                    if fault == 'cancel': raise primary
+                invoke = lambda: wire.request_bundle(endpoint, {}, fence=fence,
+                    consume=lambda: events.append('consume'))
+            elif owner == 'serve':
+                patch.setattr(wire, 'os', SimpleNamespace(geteuid=lambda: 17001, fsencode=os.fsencode, close=close))
+                invoke = lambda: wire.serve_release(channel, endpoint, None,
+                    repository=object.__new__(CustodianReleaseRepository), request_sha256='a' * 64,
+                    read_plaintext=lambda *args: pytest.fail('plaintext must not load'), recheck_profile=lambda: endpoint)
+            elif owner == 'receive':
+                if fault == 'cancel':
+                    channel.recvmsg = lambda *args: (canonical_json_bytes({'request_sha256': 'a' * 64}), rights, 0)
+                    def fstat(fd): raise primary
+                    patch.setattr(wire, 'os', SimpleNamespace(fstat=fstat, close=close))
+                invoke = lambda: wire.receive_bundle(channel, 'a' * 64)
+            else:
+                patch.setattr(wire, '_sealed_memfd', lambda *args, **kwargs: descriptors[0])
+                invoke = lambda: wire.send_bundle(channel, 'a' * 64, b'synthetic bundle')
+            try:
+                result = invoke()
+            except BaseException as error:
+                raised = error
+                result = None
+        assert os.close is real_close, 'bounded patch must end before owner assertions/teardown'
+        assert closed == order, 'every owned FD must be attempted once despite close errors'
+        for fd in descriptors:
+            with pytest.raises(OSError) as gone: os.fstat(fd)
+            assert gone.value.errno == errno.EBADF
+        if fault == 'cancel' or owner == 'send' and fault == 'first':
+            assert raised is primary
+            assert raised.__cause__ is first
+            assert first.__cause__ is origin  # Retain the primary's pre-existing explicit cause.
+        elif owner in {'serve', 'receive'}:
+            assert isinstance(raised, ValueError)
+            assert str(raised) == ('invalid custody request frame' if owner == 'serve'
+                                   else 'custody response is truncated, unbound or has wrong descriptors')
+            if fault != 'none': assert raised.__cause__ is first
+        elif fault != 'none':
+            assert raised is first  # No successful return when cleanup failed.
+        else:
+            assert raised is None
+            assert result == (b'synthetic bundle' if owner == 'request' else None)
+            if owner == 'request':
+                assert events == ['connect', 'fence', 'consume', 'fence', 'send', 'fence']
+    finally:
+        # Only task-owned still-open FDs; no retry inside the product after ambiguous close.
+        for fd in descriptors:
+            try: os.fstat(fd)
+            except OSError: continue
+            real_close(fd)

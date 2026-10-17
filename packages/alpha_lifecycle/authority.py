@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from packages.alpha_lifecycle.contracts.authority import ReviewApproval, RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import ReviewApproval, RunAuthorization, LocalRunAuthorization, LocalRunIdentity
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, Sha256, SourceIdentity, Text
 from packages.data_contracts import ArtifactRefV1
@@ -39,26 +40,38 @@ class AuthorityHeld(RuntimeError):
     """Required protected source, reviewer, or host authority is unavailable."""
 
 
-class _FixtureAuthorization(DigestModel):
+class _FixtureAuthorizationFields(DigestModel):
     """Private fixture request; it cannot authorize an official research operation."""
 
-    schema_version: Literal["p3-fixture-authorization-v1"]
     fixture_plan_ref: ArtifactRefV1
     review_ref: ArtifactRefV1
     operation: Literal["PARITY"]
     issued_at: CanonicalUtcDateTime
     expires_at: CanonicalUtcDateTime
     nonce: UUID
-    issuer_workflow: Text
-    issuer_run_id: Annotated[int, Field(ge=1)]
-    issuer_attempt: Annotated[int, Field(ge=1)]
     authority: SafeAuthority
 
     @model_validator(mode="after")
-    def _validity(self) -> "_FixtureAuthorization":
+    def _validity(self) -> "_FixtureAuthorizationFields":
         if not self.issued_at < self.expires_at <= self.issued_at + timedelta(hours=24):
             raise ValueError("fixture authorization validity must be positive and at most 24h")
         return self
+
+
+class _FixtureAuthorization(_FixtureAuthorizationFields):
+    schema_version: Literal['p3-fixture-authorization-v1']
+    issuer_workflow: Text
+    issuer_run_id: Annotated[int, Field(ge=1)]
+    issuer_attempt: Annotated[int, Field(ge=1)]
+
+
+class _LocalFixtureAuthorization(_FixtureAuthorizationFields):
+    schema_version: Literal['p3-local-fixture-authorization-v1']
+    identity: LocalRunIdentity
+
+
+FIXTURE_AUTHORIZATION = TypeAdapter(Annotated[_FixtureAuthorization | _LocalFixtureAuthorization,
+    Field(discriminator='schema_version')])
 
 
 class _RequestFile(BaseModel):
@@ -68,6 +81,74 @@ class _RequestFile(BaseModel):
     execution_source: SourceIdentity
     authorization: Annotated[RunAuthorization | _FixtureAuthorization, Field(discriminator="schema_version")]
     operation_input: P3OperationInput | None = None
+
+
+class _LocalRequestFile(BaseModel):
+    model_config = ConfigDict(extra='forbid',frozen=True,strict=True)
+    schema_version: Literal['p3-local-authority-request-v1']
+    execution_source: SourceIdentity
+    authorization: Annotated[LocalRunAuthorization | _LocalFixtureAuthorization,Field(discriminator='schema_version')]
+    operation_input: P3OperationInput | None = None
+
+
+_LOCAL_ROOT = Path('/etc/trading-agent/local-qualification')
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+
+
+def local_run_directory(identity: LocalRunIdentity) -> Path:
+    identity = LocalRunIdentity.model_validate(identity)
+    return Path('/run/trading-agent-p3/local')/identity.issuer_identity/f'{identity.run_id}-{identity.attempt}'
+
+
+def validate_local_operation_authority(authorization, source, *, root=_SOURCE_ROOT):
+    """Fresh protected request plus source qualification; no self-issued approval."""
+    path = _LOCAL_ROOT/authorization.identity.issuer_identity/'operations'/f'{authorization.nonce}.json'
+    request = _validate_local_request(path,source,authorization.operation,root=root)
+    if request.authorization != authorization:
+        raise AuthorityHeld('HELD E_AUTHORITY: local protected operation changed')
+    return request
+
+
+def _validate_local_request(path, source, operation, *, root=_SOURCE_ROOT):
+    from packages.runtime_release.config import read_protected_canonical_json_current, ProtectedAuthorityError
+    from packages.alpha_lifecycle.local_qualification import _host_identity
+    from packages.project_status import require_p3_source_ready
+    try:
+        document,digest = read_protected_canonical_json_current(path)
+        request = _LocalRequestFile.model_validate_json(canonical_json_bytes(document))
+        auth = request.authorization
+        expected = _LOCAL_ROOT/auth.identity.issuer_identity/'operations'/f'{auth.nonce}.json'
+        now = datetime.now(UTC)
+        if path != expected or request.execution_source != source or auth.operation != operation:
+            raise ValueError('local request source, operation or protected path differs')
+        if not auth.issued_at <= now < auth.expires_at:
+            raise ValueError('local operation authority is not current')
+        if _host_identity() != (auth.identity.host_id,auth.identity.boot_id):
+            raise ValueError('local operation host or boot differs')
+        if isinstance(auth,_LocalFixtureAuthorization) != (request.operation_input is None):
+            raise ValueError('local fixture and research inputs differ')
+        prerequisite = require_p3_source_ready(root,auth.identity)
+        if (prerequisite is None or prerequisite.binding.source != source or auth.expires_at > prerequisite.expires_at):
+            raise ValueError('local operation source or validity exceeds qualification')
+        if request.operation_input is not None:
+            # Official campaigns additionally need their InputSet admitted. The
+            # fixture lane never reaches here, so it can never certify official
+            # research. Every boundary re-runs this; it is not a lease.
+            from packages.alpha_lifecycle.local_research import read_local_research_inputs
+            from packages.local_pre_p3 import POLICY_PATH
+            research = read_local_research_inputs(auth.identity,source=source,
+                policy_digest=hashlib.sha256(canonical_json_bytes(
+                    json.loads((root/POLICY_PATH).read_bytes()))).hexdigest(),
+                input_set_ref=request.operation_input.input_set_ref)
+            if auth.expires_at > research.expires_at:
+                raise ValueError('local operation validity exceeds research inputs qualification')
+        if (read_protected_canonical_json_current(path)[1] != digest
+            or _host_identity() != (auth.identity.host_id,auth.identity.boot_id)
+            or not now <= datetime.now(UTC) < auth.expires_at):
+            raise ValueError('local operation authority changed during admission')
+        return request
+    except (OSError,ValueError,ProtectedAuthorityError) as error:
+        raise AuthorityHeld('HELD E_LOCAL_AUTHORITY: '+str(error)) from error
 
 
 def validate_workflow_operation(value: str) -> str:
@@ -81,7 +162,9 @@ def validate_request(
     path: Path,
     expected_source: SourceIdentity | None,
     operation: str,
-) -> _RequestFile:
+) -> _RequestFile | _LocalRequestFile:
+    if path.is_relative_to(_LOCAL_ROOT):
+        return _validate_local_request(path,expected_source,operation)
     descriptor = -1
     try:
         descriptor = os.open(
@@ -136,7 +219,8 @@ def validate_request(
     return request
 
 
-def _validate_workflow_context(authorization,source: SourceIdentity) -> None:
+def _validate_workflow_context(authorization,source: SourceIdentity, *, context=None) -> None:
+    context = os.environ if context is None else context
     expected_context = {
         "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
         "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": source.commit_sha,
@@ -145,12 +229,20 @@ def _validate_workflow_context(authorization,source: SourceIdentity) -> None:
         "GITHUB_RUN_ATTEMPT": str(authorization.issuer_attempt),
         "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
     }
-    if any(os.environ.get(key) != value for key, value in expected_context.items()):
+    if (authorization.issuer_workflow != 'p3-authority.yml'
+        or authorization.issuer_run_id < 1 or authorization.issuer_attempt < 1
+        or any(context.get(key) != value for key, value in expected_context.items())):
         raise AuthorityHeld("HELD E_ISSUER: request differs from the protected-main workflow context")
 
 
+def validate_operation_issuer(authorization, source, *, context=None, root=_SOURCE_ROOT):
+    if isinstance(authorization,(LocalRunAuthorization,_LocalFixtureAuthorization)):
+        return validate_local_operation_authority(authorization,source,root=root)
+    _validate_workflow_context(authorization,source,context=context)
+
+
 def build_alpha_campaign_payload(
-    authorization: RunAuthorization | _FixtureAuthorization,
+    authorization: RunAuthorization | LocalRunAuthorization | _FixtureAuthorization | _LocalFixtureAuthorization,
     source: SourceIdentity,
     workflow_operation: str,
     *, operation_input: P3OperationInput | None = None,
@@ -160,7 +252,7 @@ def build_alpha_campaign_payload(
     operation = validate_workflow_operation(workflow_operation)
     if authorization.operation != operation:
         raise AuthorityHeld("HELD E_OPERATION: authorization operation differs")
-    fixture = isinstance(authorization, _FixtureAuthorization)
+    fixture = isinstance(authorization, (_FixtureAuthorization,_LocalFixtureAuthorization))
     if fixture != (workflow_operation == "p3-integration-fixture-v1"):
         raise AuthorityHeld("HELD E_AUTHORITY: fixture and research authorization scopes differ")
     if fixture:

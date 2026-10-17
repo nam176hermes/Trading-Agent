@@ -11,7 +11,7 @@ import pytest
 
 from packages.alpha_lifecycle.holdout import derive_holdout_request
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView, build_holdout_calculation_view
-from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
 from packages.alpha_lifecycle.operation_input import P3OperationInput
 from packages.alpha_lifecycle.replica_store import _read
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -38,6 +38,10 @@ def test_projected_driver_imports(projected_release):
         'runpy.run_path(sys.argv[1]+"/scripts/run_p3_evaluation_child.py"); '
         'runpy.run_path(sys.argv[1]+"/scripts/run_p3_alpha_campaign.py")', str(projected_release)],
         cwd=projected_release, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    result = subprocess.run([sys.executable, '-I', '-B',
+        str(projected_release/'scripts/run_p3_driver_entry.py'), '--help'],
+        cwd=projected_release, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
@@ -95,6 +99,7 @@ def test_view_read_allows_access_time_update(tmp_path):
     assert read_calculation_view(path) == b'{}'
 
 
+@pytest.mark.parametrize('session_inputs', ['GITHUB','LOCAL'], indirect=True)
 @pytest.mark.parametrize('extra', [None, 'raw', 'unrelated'])
 def test_driver_holdout_validates_before_retention(session_inputs, reference_seed, projected_release, tmp_path, monkeypatch, capsys, extra):
     from scripts import run_p3_alpha_campaign as command
@@ -104,7 +109,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
     x = session_inputs
     job = x.claim('HOLDOUT')
     intent = _read(x.store, job.payload.manifest_ref, P3OperationInput)
-    auth = _read(x.store, job.payload.authorization_ref, RunAuthorization)
+    auth = _read(x.store, job.payload.authorization_ref, RUN_AUTHORIZATION)
     request = derive_holdout_request(intent, auth, expected_source=job.payload.expected_source)
     request_ref = x.store.put_bytes(canonical_json_bytes(request), media_type='application/json')
     view = HoldoutCalculationView(build_holdout_calculation_view(x.manifest, x.spec, x.store), x.manifest, x.spec)
@@ -125,7 +130,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
         '--job-id', job.job_id, '--output', str(output), '--holdout-view', str(view_path)]
     monkeypatch.setattr(sys, 'argv', argv)
     grants = []
-    monkeypatch.setattr(command, 'parent_replica_fence', lambda: lambda: grants.append(True))
+    monkeypatch.setattr(command, 'parent_replica_fence', lambda *, expires_at: lambda: grants.append(expires_at))
     monkeypatch.setattr(sandbox, 'require_official_sandbox', lambda path: path)
     def child_argv(self, manifest, result, output_dir, seccomp_fd, view_fd=None):
         return (sys.executable, '-I', '-B', str(root/'scripts/run_p3_evaluation_child.py'),
@@ -135,7 +140,7 @@ def test_driver_holdout_validates_before_retention(session_inputs, reference_see
         (x.store._root/ref.locator).unlink()
     before = set(x.store._root.iterdir())
     command.main()
-    assert grants and set(x.store._root.iterdir()) == before
+    assert grants and set(grants) == {auth.expires_at} and set(x.store._root.iterdir()) == before
     assert 'p3-holdout-operation-result-v1' in capsys.readouterr().out
     private = LocalArtifactStore(output/'artifacts')
     if extra:

@@ -153,3 +153,33 @@ def test_select_primary_cli_preserves_complete_failed_family(selection_run,tmp_p
                 validate_official_output(job,result,custody,inventory_ref)
     finally:
         custody.abandon()
+
+
+def test_family_disclosure_is_derived_from_committed_oos_receipts(retained_family):
+    from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport
+    from packages.alpha_lifecycle.local_campaign import family_disclosure, family_review_body, propose_operation
+    from packages.alpha_lifecycle.primary_selection import select_primary
+
+    store, inputs, family_ref = retained_family
+    expected = _read(store, family_ref, FamilyReview)
+    receipts = [_read(store, ref, CampaignClosureReport).publication_ref for ref in expected.candidate_report_refs]
+    disclosure = family_disclosure(expected.input_set_ref, receipts, store=store)
+    assert disclosure.candidate_report_refs == expected.candidate_report_refs
+    assert set(disclosure.trial_outcome_refs) == set(expected.trial_outcome_refs)
+    assert family_disclosure_digest(disclosure) == family_disclosure_digest(expected)
+    body = family_review_body(disclosure, expected.review_ref, source=inputs.source, store=store)
+    intent = propose_operation('p3-select-primary-v1', expected.input_set_ref, body, store=store)
+    assert select_primary(_read(store, intent.body.family_review_ref, FamilyReview), store) == select_primary(expected, store)
+
+
+def test_family_review_body_refuses_a_review_of_another_disclosure(retained_family):
+    from packages.alpha_lifecycle.contracts.lifecycle import CampaignClosureReport
+    from packages.alpha_lifecycle.local_campaign import family_disclosure, family_review_body
+
+    store, inputs, family_ref = retained_family
+    expected = _read(store, family_ref, FamilyReview)
+    receipts = [_read(store, ref, CampaignClosureReport).publication_ref for ref in expected.candidate_report_refs]
+    disclosure = family_disclosure(expected.input_set_ref, receipts, store=store)
+    partial = _changed(disclosure, trial_outcome_refs=[r.model_dump(mode='json') for r in disclosure.trial_outcome_refs[:-1]])
+    with pytest.raises(ValueError):
+        family_review_body(partial, expected.review_ref, source=inputs.source, store=store)

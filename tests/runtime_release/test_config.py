@@ -446,3 +446,15 @@ def test_application_attestation_rejects_wrong_running_interpreter(monkeypatch):
     with pytest.raises(config.ProtectedAuthorityError) as raised:
         config.attest_application_authority()
     assert raised.value.reason_code == "APPLICATION_RELEASE_INVALID"
+
+
+def test_protected_evidence_bound_does_not_expand_authority_documents(tmp_path,monkeypatch):
+    from packages.runtime_release import config
+    path=_install(tmp_path,monkeypatch,b'x'*70000)
+    with pytest.raises(config.ProtectedAuthorityError):config.read_protected_file_current(path)
+    assert hasattr(config,'read_protected_evidence_current'), 'bounded cross-principal proof reader is missing'
+    assert config.read_protected_evidence_current(path)==b'x'*70000
+    path.chmod(0o644)
+    with pytest.raises(config.ProtectedAuthorityError):config.read_protected_evidence_current(path)
+    path.write_bytes(b'x'*131073);path.chmod(0o444)
+    with pytest.raises(config.ProtectedAuthorityError):config.read_protected_evidence_current(path)

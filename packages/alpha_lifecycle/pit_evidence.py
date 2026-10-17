@@ -24,6 +24,14 @@ def _reference(ref: ArtifactRefV1, maximum: int, media: str = 'application/json'
         raise ValueError('revision artifact reference is outside its exact bound')
 
 
+def _read_evidence(store: ArtifactStore, ref: ArtifactRefV1) -> bytes:
+    _reference(ref, 131072, media=ref.media_type)
+    raw = store.read_bytes(ref)
+    if len(raw) != ref.size_bytes or hashlib.sha256(raw).hexdigest() != ref.content_sha256:
+        raise ValueError('qualification evidence bytes differ from their reference')
+    return raw
+
+
 class P3RevisionEntry(StrictModel):
     day: Day
     acquisition_ref: ArtifactRefV1

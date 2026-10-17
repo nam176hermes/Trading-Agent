@@ -3071,6 +3071,8 @@ def _validate_runtime_operation_bindings(
 
 def _canonical_job_projection(
     value: object,
+    *,
+    historical: bool = False,
 ) -> tuple[object, ...]:
     if not isinstance(value, dict) or any(
         field not in value for field in _CANONICAL_JOB_FIELDS
@@ -3078,6 +3080,19 @@ def _canonical_job_projection(
         raise EvidenceIncomplete(_SEMANTIC_REJECTION)
     projection = tuple(value[field] for field in _CANONICAL_JOB_FIELDS)
     job_id, state, attempt_count, reason_code, result_hash = projection
+    if historical:
+        # PR01: an enqueue/dedup response observed before the worker ran.
+        if (
+            not isinstance(job_id, str)
+            or not job_id
+            or state != "QUEUED"
+            or type(attempt_count) is not int
+            or attempt_count != 0
+            or reason_code is not None
+            or result_hash is not None
+        ):
+            raise EvidenceIncomplete(_SEMANTIC_REJECTION)
+        return projection
     if (
         not isinstance(job_id, str)
         or not job_id
@@ -3130,19 +3145,30 @@ def _validate_runtime_semantic_projection(
         )
         if len(list_items) != 1:
             raise EvidenceIncomplete(_SEMANTIC_REJECTION)
-        representations = (
-            database.get("job"),
-            detail_data.get("job"),
-            first_data.get("job"),
-            duplicate_data.get("job"),
-            list_items[0],
-            chain.get("dashboard_status"),
-        )
-        projections = tuple(
+        # PR01: identity is invariant across every observation; terminal fields are compared only
+        # between terminal observations, and the enqueue/dedup history keeps its QUEUED state.
+        terminal = {
             _canonical_job_projection(record)
-            for record in representations
-        )
-        if len(set(projections)) != 1:
+            for record in (
+                database.get("job"),
+                detail_data.get("job"),
+                list_items[0],
+                chain.get("dashboard_status"),
+            )
+        }
+        historical = {
+            _canonical_job_projection(record, historical=True)
+            for record in (first_data.get("job"), duplicate_data.get("job"))
+        }
+        if (
+            len(terminal) != 1
+            or len(historical) != 1
+            or next(iter(historical))[0] != next(iter(terminal))[0]
+            or first.get("status") != 201
+            or first_data.get("outcome") != "ENQUEUED"
+            or duplicate.get("status") != 200
+            or duplicate_data.get("outcome") != "DEDUPLICATED"
+        ):
             raise EvidenceIncomplete(_SEMANTIC_REJECTION)
         dashboard = _mapping(
             chain.get("dashboard_status"),
@@ -3416,6 +3442,7 @@ def _validate_runtime_exact_integers(runtime: Mapping[str, object]) -> None:
         _mapping(database.get("job"), "runtime database job"),
         _mapping(chain.get("dashboard_status"), "runtime dashboard status"),
     ]
+    historical_jobs = []
     for response_name in ("first_request", "duplicate_request"):
         response = _require_exact_integer_fields(
             chain.get(response_name),
@@ -3425,7 +3452,7 @@ def _validate_runtime_exact_integers(runtime: Mapping[str, object]) -> None:
             raise EvidenceIncomplete("runtime numeric evidence is invalid")
         body = _mapping(response.get("body"), "runtime response body")
         data = _mapping(body.get("data"), "runtime response data")
-        jobs.append(_mapping(data.get("job"), "runtime response job"))
+        historical_jobs.append(_mapping(data.get("job"), "runtime response job"))
     detail = _mapping(chain.get("api_detail"), "runtime API detail")
     jobs.append(
         _mapping(
@@ -3436,11 +3463,14 @@ def _validate_runtime_exact_integers(runtime: Mapping[str, object]) -> None:
     api_list = _mapping(chain.get("api_list"), "runtime API list")
     api_list_data = _mapping(api_list.get("data"), "runtime API list data")
     jobs.extend(_mapping_list(api_list_data.get("items"), "runtime API list items"))
-    for job in jobs:
+    for job, expected_attempts in (
+        *((job, len(attempts)) for job in jobs),
+        *((job, 0) for job in historical_jobs),   # PR01: observed before any attempt
+    ):
         numeric_job = _require_exact_integer_fields(job, ("attempt_count",))
         if not _runtime_integer_between(
             numeric_job["attempt_count"], 0, _MAX_SIGNED_64
-        ) or numeric_job["attempt_count"] != len(attempts):
+        ) or numeric_job["attempt_count"] != expected_attempts:
             raise EvidenceIncomplete("runtime numeric evidence is invalid")
 
     postgres_cleanup = _require_exact_integer_fields(

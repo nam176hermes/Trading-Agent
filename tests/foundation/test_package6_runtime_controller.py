@@ -11,7 +11,11 @@ from typing import Any
 
 import pytest
 
-from tests.foundation._package6_staging_fixture import Package6StagingLease
+from tests.foundation._package6_staging_fixture import (
+    Package6StagingLease,
+    package6_staging_lease,  # noqa: F401  (pytest fixture used by the PR01 tests)
+)
+from services.paper_runtime import evidence as evidence_module
 from services.paper_runtime import controller as controller_module
 from services.paper_runtime.controller import (
     EvidenceBundle,
@@ -490,6 +494,9 @@ def _sealed_runtime_fixture(
         "lease_expires_at": None,
         "cancel_requested_at": None,
     }
+    historical_job = dict(
+        job, state="QUEUED", attempt_count=0, reason_code=None, result_hash=None
+    )
     states = ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")
     events = [
         {
@@ -532,14 +539,15 @@ def _sealed_runtime_fixture(
             "attempts": 1,
             "status": "READY",
         },
+        # PR01: the producer keeps the enqueue/dedup responses as observed before the worker ran.
         first_request={
             "status": 201,
-            "body": {"data": {"job": dict(job), "outcome": "ENQUEUED"}},
+            "body": {"data": {"job": dict(historical_job), "outcome": "ENQUEUED"}},
         },
         duplicate_request={
             "status": 200,
             "body": {
-                "data": {"job": dict(job), "outcome": "DEDUPLICATED"}
+                "data": {"job": dict(historical_job), "outcome": "DEDUPLICATED"}
             },
         },
         api_list={"data": {"items": [dict(job)]}},
@@ -1525,3 +1533,73 @@ def test_later_cleanup_success_preserves_prior_failure_without_recovery_owner(
     ]
     assert failure.cleanup_failures
     assert failure.recovery_owner is None
+
+
+# PR01: enqueue/dedup history and terminal readback are validated as different lifecycle observations.
+def _runtime_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lease: Package6StagingLease
+) -> dict[str, Any]:
+    fixture = _sealed_runtime_fixture(tmp_path, monkeypatch, lease=lease)
+    snapshot = evidence_module._load_runtime_evidence_snapshot(fixture.bundle)
+    return json.loads(snapshot["runtime.json"])
+
+
+def _validate_runtime(runtime: dict[str, Any]) -> None:
+    evidence_module._validate_runtime_exact_integers(runtime)
+    evidence_module._validate_runtime_semantic_projection(runtime)
+
+
+def test_runtime_chain_accepts_queued_enqueue_and_terminal_readback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,  # noqa: F811
+) -> None:
+    fixture = _sealed_runtime_fixture(tmp_path, monkeypatch, lease=package6_staging_lease)
+    runtime = json.loads(
+        evidence_module._load_runtime_evidence_snapshot(fixture.bundle)["runtime.json"]
+    )
+    chain = runtime["chain"]
+    assert chain["first_request"]["body"]["data"]["job"]["state"] == "QUEUED"
+    assert chain["duplicate_request"]["body"]["data"]["job"]["attempt_count"] == 0
+    assert chain["database"]["job"]["state"] == "SUCCEEDED"
+    assert evidence_module.verify_runtime_evidence_bundle(fixture.bundle) is True
+    _validate_runtime(runtime)
+
+
+def _set(path: tuple[str, ...], value: object):
+    def mutate(runtime: dict[str, Any]) -> None:
+        target = runtime["chain"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+    return mutate
+
+
+_FIRST_JOB = ("first_request", "body", "data", "job")
+_DUP_JOB = ("duplicate_request", "body", "data", "job")
+
+
+@pytest.mark.parametrize("mutate", [
+    _set((*_DUP_JOB, "job_id"), "00000000-0000-0000-0000-000000000099"),        # other job
+    _set((*_FIRST_JOB, "job_id"), "00000000-0000-0000-0000-000000000099"),
+    _set((*_FIRST_JOB, "attempt_count"), 1),                                    # history claims an attempt
+    _set((*_DUP_JOB, "state"), "SUCCEEDED"),                                    # history rewritten as terminal
+    _set((*_FIRST_JOB, "result_hash"), "6" * 64),
+    _set((*_FIRST_JOB, "attempt_count"), False),                                # bool is not an int
+    _set(("database", "job", "attempt_count"), 0),                              # terminal without attempt
+    _set(("api_detail", "data", "job", "result_hash"), "5" * 64),               # terminal hash differs
+    _set(("dashboard_status", "attempt_count"), True),
+    _set(("first_request", "body", "data", "outcome"), "DEDUPLICATED"),
+    _set(("duplicate_request", "status"), 201),
+], ids=["dup-job-id", "first-job-id", "history-attempt", "history-terminal-state", "history-hash",
+        "history-bool", "terminal-attempt-0", "terminal-hash", "terminal-bool", "first-outcome", "dup-status"])
+def test_runtime_chain_rejects_wrong_historical_identity_or_terminal_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,  # noqa: F811
+    mutate,
+) -> None:
+    runtime = _runtime_document(tmp_path, monkeypatch, package6_staging_lease)
+    mutate(runtime)
+    with pytest.raises(EvidenceIncomplete):
+        _validate_runtime(runtime)

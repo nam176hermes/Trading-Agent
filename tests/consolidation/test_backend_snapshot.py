@@ -50,6 +50,28 @@ POST_IMPORT_EXTENSIONS = {
         "sha256": "25e5bee6e4d24bd4f4f29c6f990741fd25452af9191012d0ce56d58cf56fe497",
         "size": 19641,
     },
+    # Regression suites for the 2026-09-25 legacy audit fixes (Codex REVIEW F02-F07, A01-A06, K01).
+    "legacy/research-backend/tests/test_backtest_accounting.py": {
+        "git_blob": "5eab61d8eb5aa7f529cea2a0d834040e69c783aa",
+        "introduced_commit": "e9727015fb6c081be40c75002a48cfa8ec546619",
+        "mode": "100644",
+        "sha256": "d0b01787ea9a1a10b0bcd8a792e8c35a5ed0d79abf74491daf2bbf122d3182ad",
+        "size": 11309,
+    },
+    "legacy/research-backend/tests/test_backtest_chronology.py": {
+        "git_blob": "68095411cb293baed3decdd11b37ac451f98f240",
+        "introduced_commit": "04b27f3520a717ed427ce336242506c7ee604b30",
+        "mode": "100644",
+        "sha256": "b4caed04a3e76f50e158068e3c74992f25963665601789a8a20ebda6726bcb1a",
+        "size": 6590,
+    },
+    "legacy/research-backend/tests/test_causal_features.py": {
+        "git_blob": "c0e590ef0d10bc89bd96c59ab50a08a28d798cc8",
+        "introduced_commit": "c37101a84bfef0a59200a38e93195fe67f0a08ce",
+        "mode": "100644",
+        "sha256": "c3cf8081adf028b5fb056e1815f179699fec96f94cb88015cc9da3e7e6f0d8d8",
+        "size": 4243,
+    },
 }
 
 
@@ -75,6 +97,9 @@ def _assert_post_import_extensions(imported: set[str]) -> None:
     assert extensions == {
         "legacy/research-backend/nautilus_parity_adapter.py",
         "legacy/research-backend/tests/test_nautilus_parity_adapter.py",
+        "legacy/research-backend/tests/test_backtest_accounting.py",
+        "legacy/research-backend/tests/test_backtest_chronology.py",
+        "legacy/research-backend/tests/test_causal_features.py",
     }
     assert imported.isdisjoint(extensions)
 

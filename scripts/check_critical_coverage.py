@@ -728,6 +728,7 @@ def _run_dashboard_observations(
     records: list[dict[str, str]] = []
     logs: list[str] = []
     exit_codes: list[int] = []
+    raw_exit_codes: dict[str, int] = {}
     for test_file in test_files:
         result = subprocess.run(
             ["node", "--test", "--test-reporter=tap", test_file],
@@ -739,6 +740,7 @@ def _run_dashboard_observations(
             check=False,
         )
         logs.append(f"# file: {test_file}\n{result.stdout}")
+        raw_exit_codes[test_file] = result.returncode
         file_records = _dashboard_records(result.stdout, test_file)
         if not file_records:
             file_records.append(
@@ -757,8 +759,11 @@ def _run_dashboard_observations(
     _write_bytes(log_path, "".join(logs).encode("utf-8"))
     print("".join(logs), end="")
     report_path = report_dir / "critical-coverage-dashboard-tests.json"
-    _write_json(report_path, {"schema_version": 1, "tests": records})
-    return max(exit_codes, default=1), report_path
+    _write_json(report_path, {"schema_version": 1, "tests": records, "exit_codes": raw_exit_codes})
+    if not exit_codes:
+        return 1, report_path
+    # QG01: any nonzero child status fails; a signal (negative) status must not be hidden by max().
+    return max((code if code > 0 else 1 for code in exit_codes if code != 0), default=0), report_path
 
 
 def _evaluate_required_cases(

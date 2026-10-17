@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -95,6 +96,45 @@ def mode_request(**changes) -> SubmitOperatorCommandV1:
         ),
         **changes,
     )
+
+
+@pytest.mark.parametrize("boundary", ["lock", "load"])
+def test_cached_receipt_rejects_authority_changed_during_read(tmp_path, monkeypatch, boundary):
+    paths = provision_operator_state(tmp_path)
+    service = service_for(paths)
+    first = service.execute(actor(), mode_request())
+    before = {path: path.read_bytes() for path in paths.command_root.rglob("*.json")}
+    revoked = False
+
+    def recheck():
+        if revoked:
+            raise RuntimeError("authority changed")
+
+    locked = service.journal.locked
+    load = service.journal.load
+
+    @contextmanager
+    def changed_lock():
+        nonlocal revoked
+        with locked():
+            revoked = boundary == "lock"
+            yield
+
+    def changed_load(key):
+        nonlocal revoked
+        result = load(key)
+        revoked = True
+        return result
+
+    service.authority_recheck = recheck
+    monkeypatch.setattr(service.journal, "locked", changed_lock)
+    if boundary == "load":
+        monkeypatch.setattr(service.journal, "load", changed_load)
+    with pytest.raises(RuntimeError, match="authority changed"):
+        service.execute(actor(), mode_request())
+    assert {path: path.read_bytes() for path in paths.command_root.rglob("*.json")} == before
+    assert paths.mode_path.read_bytes() == b"paper\n"
+    assert service_for(paths).execute(actor(), mode_request()).receipt == first.receipt
 
 
 def test_cli_reads_state_and_web_cannot_read_or_set_mode(tmp_path: Path) -> None:

@@ -1924,3 +1924,27 @@ def test_supplied_incomplete_evidence_is_fail_not_deferred(tmp_path: Path) -> No
     assert result.stdout == ""
     assert result.stderr.startswith("NAUTILUS_TOOLCHAIN_INPUTS=FAIL reason=")
     assert "DEFERRED" not in result.stderr
+
+
+# C_new run-01: the accepted G1 candidate artifact (artifact manifest 24f1439a…) was built by generator 6b3ad5eb….
+# A later dead-code deletion changed the generator bytes and 535cb6f re-pinned toolchain-inputs.json to the new
+# hash without a G1 rebuild, so the owner materializer rejected G1. The generator must stay byte-identical to the one
+# the G1 artifact binds, and the committed manifest must name it.
+G1_ARTIFACT_GENERATOR_SHA256 = "6b3ad5eb2c6d4d513e28ed8e58bed2144142fde2f19aa323005eacc0e2e46192"
+
+
+def test_generator_and_manifest_bind_the_generator_of_the_accepted_g1_artifact() -> None:
+    manifest = json.loads((ROOT / "engines/nautilus/candidates/v1.231/toolchain-inputs.json").read_bytes())
+    assert hashlib.sha256(GENERATOR.read_bytes()).hexdigest() == G1_ARTIFACT_GENERATOR_SHA256
+    assert manifest["policy_hashes"]["generator_sha256"] == G1_ARTIFACT_GENERATOR_SHA256
+
+
+def test_owner_candidate_authority_rejects_a_changed_generator(tmp_path, monkeypatch) -> None:
+    import scripts.build_nautilus_engine as builder
+
+    changed = tmp_path / "write_nautilus_toolchain_inputs.py"
+    changed.write_bytes(GENERATOR.read_bytes() + b"\n# changed\n")
+    monkeypatch.setattr(builder, "_CANDIDATE_INPUT_GENERATOR", changed)
+
+    with pytest.raises(builder.VerificationError, match="generator_sha256 authority drifted"):
+        builder._verify_candidate_authority()

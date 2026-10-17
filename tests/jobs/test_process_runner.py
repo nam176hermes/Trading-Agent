@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import signal
@@ -243,6 +244,191 @@ def engine_spawn(*descriptors: int) -> EngineBuiltSpawn:
 
 def prepared_engine_spawn() -> PreparedEngineSpawn:
     return object.__new__(PreparedEngineSpawn)
+
+
+@pytest.mark.parametrize('close_errno', [errno.EIO, errno.EPERM], ids=['EIO', 'EPERM'])
+def test_identity_proven_reserve_close_does_not_close_reused_fd(monkeypatch, tmp_path, close_errno):
+    from services.job_worker import p3_output, process_runner as module
+    from services.job_worker.p3_spawn import P3BuiltSpawn, P3SpawnLineage, PreparedP3Spawn
+
+    owned = [os.open('/dev/null', os.O_RDONLY) for _ in range(2)]
+    attempts, reserve, replacement, consumed, abandoned, spawned, inspected = [], [], [], [], [], [], []
+    real_open, real_close = os.open, os.close
+    first = OSError(close_errno, 'synthetic reserve close failure after release')
+
+    class Custody:
+        def matches(self, job_id, attempt_id):
+            return (job_id, attempt_id) == (JOB_ID, ATTEMPT_ID)
+
+        def abandon(self):
+            abandoned.append(True)
+
+    prepared = object.__new__(PreparedP3Spawn)
+    built = P3BuiltSpawn(
+        JOB_ID, ATTEMPT_ID, (f'/proc/self/fd/{owned[0]}',), Path('/'), {},
+        tuple(owned), tuple(owned), 10, 'p3-fixture', '9' * 64, BACKEND_COMMIT,
+        P3SpawnLineage('a' * 64, 'b' * 64, 'c' * 64, 'd' * 64), Custody(), lambda: None,
+    )
+    process = FakeProcess([])
+    process._last = 0
+    runner_instance = runner(tmp_path, process, Inspector([identity()]), spawned)
+    inspect = runner_instance._inspector.inspect
+
+    def prove_identity(pid):
+        proven = inspect(pid)
+        inspected.append(proven)
+        return proven
+
+    def reserve_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == '/dev/null' and not reserve:
+            reserve.append(fd)
+        return fd
+
+    def close(fd):
+        if fd in owned or fd in reserve:
+            attempts.append(fd)
+        if reserve and fd == reserve[0] and not replacement:
+            assert inspected == [identity()]
+            old_identity = os.fstat(fd)
+            real_close(fd)
+            # Reallocate the exact number to a real, unrelated object before
+            # close reports failure. A retry would destroy this new owner.
+            fresh, peer = os.pipe()
+            if fresh != fd:
+                os.dup2(fresh, fd)
+                real_close(fresh)
+            real_close(peer)
+            replacement.append(os.fstat(fd))
+            assert replacement[0] != old_identity
+            raise first
+        real_close(fd)
+
+    monkeypatch.setattr(p3_output, 'P3OutputCustody', Custody)
+    monkeypatch.setattr(module, 'consume_prepared_p3_spawn', lambda token: consumed.append(token) or built)
+    monkeypatch.setattr(runner_instance._inspector, 'inspect', prove_identity)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'open', reserve_open)
+        patch.setattr(os, 'close', close)
+        try:
+            with pytest.raises(RuntimeError, match='PROCESS_GROUP_CLEANUP_UNPROVEN') as failure:
+                runner_instance.run(lambda: prepared, None, None,
+                    lambda _: HeartbeatDecision.CONTINUE, job_id=JOB_ID, attempt_id=ATTEMPT_ID)
+            assert failure.value.__cause__ is first
+            assert len(spawned) == 1 and inspected == [identity()]
+            assert consumed == [prepared] and abandoned == [True]
+            assert process.stdout.closed and process.stderr.closed
+            assert process.wait_timeout is not None
+            assert attempts == [*owned, *reserve]
+            assert os.fstat(reserve[0]) == replacement[0]
+            for fd in owned:
+                with pytest.raises(OSError) as closed:
+                    os.fstat(fd)
+                assert closed.value.errno == errno.EBADF
+        finally:
+            # Only these test-owned descriptors; RED may already close the
+            # replacement, and GREEN leaves it for its actual owner here.
+            for fd in {*owned, *reserve}:
+                try:
+                    real_close(fd)
+                except OSError as exc:
+                    assert exc.errno == errno.EBADF
+            process.stdout.close()
+            process.stderr.close()
+
+
+@pytest.mark.parametrize('phase', ['preflight', 'postspawn'])
+def test_p3_abandon_failure_still_closes_runner_owned_fds(monkeypatch, tmp_path, phase):
+    from services.job_worker import p3_output, process_runner as module
+    from services.job_worker.p3_spawn import P3BuiltSpawn, P3SpawnLineage, PreparedP3Spawn
+
+    primary = ValueError('synthetic runner refusal')
+    origin = RuntimeError('synthetic original refusal cause')
+    first = OSError(errno.EIO, 'synthetic custody abandon failure')
+    later = OSError(errno.EPERM, 'synthetic runner close failure')
+    owned = [os.open('/dev/null', os.O_RDONLY) for _ in range(2)]
+    attempted, consumed, abandoned, spawned = [], [], [], []
+    real_open, real_close = os.open, os.close
+
+    class Custody:
+        def matches(self, job_id, attempt_id):
+            return (job_id, attempt_id) == (JOB_ID, ATTEMPT_ID)
+
+        def abandon(self):
+            abandoned.append(True)
+            raise first
+
+    custody = Custody()
+    prepared = object.__new__(PreparedP3Spawn)
+    built = P3BuiltSpawn(
+        JOB_ID, ATTEMPT_ID, (f'/proc/self/fd/{owned[0]}',), Path('/'), {},
+        tuple(owned), tuple(owned), 10, 'p3-fixture', '9' * 64, BACKEND_COMMIT,
+        P3SpawnLineage('a' * 64, 'b' * 64, 'c' * 64, 'd' * 64), custody, lambda: None,
+    )
+    process = FakeProcess([])
+    process._last = 0
+    runner_instance = runner(tmp_path, process, Inspector([]), spawned)
+    safety_calls = 0
+
+    def refuse(*args):
+        raise primary from origin
+
+    def preflight():
+        nonlocal safety_calls
+        safety_calls += 1
+        if phase == 'preflight' and safety_calls == 2:
+            refuse()
+        return safety_evidence('3' * 64)
+
+    def reserve_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if path == '/dev/null':
+            owned.append(fd)
+        return fd
+
+    def close(fd):
+        if fd in owned:
+            attempted.append(fd)
+            real_close(fd)
+            if fd == owned[0] or (phase == 'postspawn' and fd == owned[-1]):
+                raise later
+        else:
+            real_close(fd)
+
+    monkeypatch.setattr(p3_output, 'P3OutputCustody', Custody)
+    monkeypatch.setattr(module, 'consume_prepared_p3_spawn', lambda token: consumed.append(token) or built)
+    if phase == 'postspawn':
+        monkeypatch.setattr(runner_instance._inspector, 'inspect', refuse)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'open', reserve_open)
+        patch.setattr(os, 'close', close)
+        try:
+            with pytest.raises(BaseException) as failure:
+                runner_instance.run(lambda: prepared, None, None,
+                    lambda _: HeartbeatDecision.CONTINUE, job_id=JOB_ID,
+                    attempt_id=ATTEMPT_ID, preflight=preflight)
+            assert len(owned) == 3
+            assert sorted(attempted) == sorted(owned)
+            for fd in owned:
+                with pytest.raises(OSError) as closed:
+                    os.fstat(fd)
+                assert closed.value.errno == errno.EBADF
+            assert consumed == [prepared] and abandoned == [True]
+            assert failure.value is primary
+            assert failure.value.__cause__ is first
+            assert first.__cause__ is origin
+            assert first is not later
+            if phase == 'preflight':
+                assert not spawned
+            else:
+                assert len(spawned) == 1
+                assert process.stdout.closed and process.stderr.closed
+                assert process.wait_timeout is not None
+        finally:
+            for fd in set(owned) - set(attempted):
+                real_close(fd)
+            process.stdout.close()
+            process.stderr.close()
 
 
 def test_engine_routing_marker_cannot_authorize_a_forged_spawn(
@@ -1611,6 +1797,82 @@ def test_leader_proc_reader_accepts_matching_zombie_evidence(monkeypatch) -> Non
     monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
 
     assert process_runner._read_leader_proc(417) == SessionMember(417, 417, 417, 99)
+
+
+def test_proc_reader_accepts_native_exit_after_stat_open(monkeypatch) -> None:
+    from services.job_worker import process_runner
+
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-c", "import sys; sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, start_new_session=True,
+    )
+    descriptor = -1
+    closed = False
+    native_close = os.close
+    try:
+        descriptor = os.open(f"/proc/{child.pid}/stat", os.O_RDONLY | os.O_NOFOLLOW)
+        child.communicate(input=b"x", timeout=5)
+        assert child.returncode == 0
+
+        def open_held_stat(path, _flags):
+            assert path == f"/proc/{child.pid}/stat"
+            return descriptor
+
+        def close_held_stat(fd):
+            nonlocal closed
+            assert fd == descriptor
+            native_close(fd)
+            closed = True
+
+        with monkeypatch.context() as patch:
+            patch.setattr(process_runner.os, "open", open_held_stat)
+            patch.setattr(process_runner.os, "close", close_held_stat)
+            try:
+                assert process_runner._read_member_proc(child.pid) is None
+            finally:
+                print({"native_child_pid": child.pid, "child_exit": child.returncode, "descriptor_closed": closed})
+        assert closed
+    finally:
+        if descriptor >= 0 and not closed:
+            native_close(descriptor)
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+
+
+@pytest.mark.parametrize("error_number", [errno.EPERM, errno.EIO])
+def test_proc_reader_rejects_non_exit_errors_and_closes_fd(monkeypatch, error_number) -> None:
+    from services.job_worker import process_runner
+
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    failure = OSError(error_number, "controlled non-exit proc read failure")
+
+    def failed_read(_fd, _size):
+        raise failure
+
+    monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
+    monkeypatch.setattr(process_runner.os, "read", failed_read)
+    with pytest.raises(OSError) as raised:
+        process_runner._read_leader_proc(417)
+    assert raised.value is failure
+    with pytest.raises(OSError) as closed:
+        os.fstat(read_fd)
+    assert closed.value.errno == errno.EBADF
+
+
+def test_proc_reader_rejects_malformed_stat_and_closes_fd(monkeypatch) -> None:
+    from services.job_worker import process_runner
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"417 (worker) S 1")
+    os.close(write_fd)
+    monkeypatch.setattr(process_runner.os, "open", lambda *args, **kwargs: read_fd)
+    with pytest.raises(OSError, match="proc stat shape is unsafe"):
+        process_runner._read_member_proc(417)
+    with pytest.raises(OSError) as closed:
+        os.fstat(read_fd)
+    assert closed.value.errno == errno.EBADF
 
 
 def test_mocked_fast_exit_keeps_zombie_for_leader_but_not_session_scan(monkeypatch) -> None:

@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord
+from packages.alpha_lifecycle.contracts.authority import CustodyRecord, LocalRunAuthorization
 from packages.alpha_lifecycle.contracts.models import StrictModel, Token
 from packages.alpha_lifecycle.custody import CustodianAttestation, ReleaseRequest, validate_release_request
 from packages.alpha_lifecycle.replica_store import ArtifactStore, _read
@@ -26,6 +26,7 @@ from services.job_store.records import ClaimedJob
 from services.job_store.worker_repository import WorkerRepository
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
 from packages.data_contracts import ArtifactRefV1
+from .artifacts import _close_descriptors
 
 
 class CustodianEndpoint(StrictModel):
@@ -60,8 +61,16 @@ def _request_identity(request: ReleaseRequest, endpoint: CustodianEndpoint) -> N
         raise ValueError('release request differs from the protected endpoint')
 
 
+def _io_timeout(deadline: datetime | None) -> float:
+    """LOCAL admission can exceed five seconds; IO remains bounded by its authority."""
+    if deadline is None:return 5
+    remaining=(deadline-datetime.now(UTC)).total_seconds()
+    if remaining<=0:raise ValueError('custody operation authority expired')
+    return min(300,remaining)
+
+
 def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
-    fence: Callable[[],None], consume: Callable[[],None],
+    fence: Callable[[],None], consume: Callable[[],None], io_deadline: datetime | None = None,
 ) -> bytes:
     """Research parent only, after metadata admission and committed disclosure.
 
@@ -74,6 +83,7 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
     path=Path(endpoint.socket_path)
     flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW|os.O_CLOEXEC
     directories: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         current=os.open('/',flags);directories.append(current)
         if not _safe_directory(os.fstat(current)):raise ValueError('unprotected custody ancestor')
@@ -85,21 +95,34 @@ def request_bundle(endpoint: CustodianEndpoint, request: ReleaseRequest, *,
             or stat.S_IMODE(before.st_mode)!=0o660):
             raise ValueError('custody socket ownership or mode differs')
         with socket.socket(socket.AF_UNIX,socket.SOCK_SEQPACKET) as channel:
-            channel.settimeout(5)
+            channel.settimeout(_io_timeout(io_deadline))
             channel.connect(f'/proc/self/fd/{current}/{path.name}')
             _peer(channel,endpoint.custodian_uid)
             after=os.stat(path.name,dir_fd=current,follow_symlinks=False)
-            if before!=after:raise ValueError('custody socket changed during connect')
+            # Connecting can update access time; all other socket metadata must stay pinned.
+            if any(getattr(before,key)!=getattr(after,key) for key in
+                ('st_dev','st_ino','st_uid','st_gid','st_mode','st_nlink','st_size','st_mtime_ns','st_ctime_ns')):
+                raise ValueError('custody socket changed during connect')
             fence()
             consume()
             fence()
             raw=canonical_json_bytes(request)
+            channel.settimeout(_io_timeout(io_deadline))
             if channel.send(raw,socket.MSG_NOSIGNAL)!=len(raw):raise ValueError('incomplete custody request')
             bundle=receive_bundle(channel,hashlib.sha256(raw).hexdigest())
             fence()
             return bundle
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for descriptor in reversed(directories):os.close(descriptor)
+        try:
+            _close_descriptors(*reversed(directories))
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store: ArtifactStore, *,
@@ -111,7 +134,7 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     It must also be supplied to every replica's before_spawn callback. This
     source helper does not enable HOLDOUT in the official worker or SQL lane.
     """
-    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.authority import RUN_AUTHORIZATION
     from packages.alpha_lifecycle.holdout import validate_holdout_operation_input
     from packages.alpha_lifecycle.operation_input import P3OperationInput, HoldoutInput
     from packages.alpha_lifecycle.custody import released_view
@@ -123,7 +146,7 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     fence()
     for ref in (claim.payload.manifest_ref,claim.payload.authorization_ref):_reference(ref,65536)
     intent=_read(store,claim.payload.manifest_ref,P3OperationInput)
-    authorization=_read(store,claim.payload.authorization_ref,RunAuthorization)
+    authorization=_read(store,claim.payload.authorization_ref,RUN_AUTHORIZATION)
     request,manifest=validate_holdout_operation_input(intent,authorization,
         expected_source=claim.payload.expected_source,store=store,now=datetime.now(UTC))
     if not isinstance(intent.body,HoldoutInput):raise ValueError('holdout body is required')
@@ -142,7 +165,8 @@ def release_holdout_view(claim: ClaimedJob, repository: WorkerRepository, store:
     validate_release_request(release,attestation,custody)
     def consume() -> None:
         _ = repository.consume_p3_holdout(claim,store,trace_id=trace_id)
-    raw=request_bundle(endpoint,release,fence=fence,consume=consume)
+    raw=request_bundle(endpoint,release,fence=fence,consume=consume,
+        io_deadline=authorization.expires_at if isinstance(authorization,LocalRunAuthorization) else None)
     fence()
     request_ref=store.put_bytes(canonical_json_bytes(request),media_type='application/json')
     fence()
@@ -161,7 +185,7 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
     repository: CustodianReleaseRepository,
     request_sha256: str,
     read_plaintext: Callable[[CustodyRecord],bytes],
-    recheck_profile: Callable[[],CustodianEndpoint],
+    recheck_profile: Callable[[],CustodianEndpoint], io_deadline: datetime | None = None,
 ) -> None:
     """One accepted connection in the independent custodian; never a daemon.
 
@@ -174,9 +198,10 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
         raise ValueError('custodian requires its concrete SQL release owner')
     if os.geteuid()!=endpoint.custodian_uid:raise ValueError('unapproved custodian UID')
     _peer(channel,endpoint.research_uid)
-    channel.settimeout(5)
+    channel.settimeout(_io_timeout(io_deadline))
     # recvmsg rather than recv ensures even rejected request-side FDs are closed.
     descriptors: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         raw,ancillary,flags=channel.recvmsg(65537,socket.CMSG_SPACE(16*4),socket.MSG_CMSG_CLOEXEC)[:3]
         for level,kind,value in ancillary:
@@ -203,9 +228,19 @@ def serve_release(channel: socket.socket, endpoint: CustodianEndpoint, metadata:
             raise ValueError('custodian plaintext differs from commitment')
         if recheck_profile()!=endpoint:raise ValueError('custodian profile changed')
         repository.fence(request)
+        channel.settimeout(_io_timeout(io_deadline))
         send_bundle(channel,hashlib.sha256(raw).hexdigest(),plaintext)
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for descriptor in descriptors:os.close(descriptor)
+        try:
+            _close_descriptors(*descriptors)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
@@ -215,6 +250,7 @@ def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
     Linux closes descriptors truncated out of the receive buffer itself.
     """
     descriptors: list[int]=[]
+    primary_error: BaseException | None = None
     try:
         packet,ancillary,flags=channel.recvmsg(513,socket.CMSG_SPACE(16*struct.calcsize('i')),
             socket.MSG_CMSG_CLOEXEC)[:3]
@@ -242,9 +278,17 @@ def receive_bundle(channel: socket.socket, request_sha256: str) -> bytes:
         if len(raw)!=info.st_size:
             raise ValueError('custody descriptor size changed')
         return raw
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        for fd in descriptors:
-            os.close(fd)
+        try:
+            _close_descriptors(*descriptors)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise
 
 
 def send_bundle(channel: socket.socket, request_sha256: str, raw: bytes) -> None:
@@ -252,10 +296,20 @@ def send_bundle(channel: socket.socket, request_sha256: str, raw: bytes) -> None
     if type(raw) is not bytes or not 0<len(raw)<=MAX_VIEW_BYTES:
         raise ValueError('custody bundle is outside its byte bound')
     fd=_sealed_memfd('p3-holdout-release',raw,mode=0o400)
+    primary_error: BaseException | None = None
     try:
         packet=canonical_json_bytes({'request_sha256':request_sha256})
         count=channel.sendmsg([packet],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('i',fd))],socket.MSG_NOSIGNAL)
         if count!=len(packet):
             raise ValueError('custody response was not sent completely')
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
-        os.close(fd)
+        try:
+            _close_descriptors(fd)
+        except OSError as cleanup_error:
+            if primary_error is not None:
+                cleanup_error.__cause__ = primary_error.__cause__
+                raise primary_error from cleanup_error
+            raise

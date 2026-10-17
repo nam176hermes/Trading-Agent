@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from decimal import Decimal
+from fractions import Fraction
 from types import MappingProxyType
 from typing import Annotated, Any, Literal, TypeAlias
 from uuid import UUID
@@ -207,10 +208,11 @@ class EngineTargetPortfolio(EngineModel):
             raise ValueError("positions contain duplicate instruments")
         if len(self.source_signal_ids) != len(set(self.source_signal_ids)):
             raise ValueError("source_signal_ids contain duplicates")
+        # Exact (CR01): Fraction sums do not depend on the ambient Decimal context.
         total_weight = sum(
-            (abs(position.target_weight) for position in self.positions), Decimal(0)
+            (abs(Fraction(position.target_weight)) for position in self.positions), Fraction(0)
         )
-        if total_weight > Decimal(1):
+        if total_weight > 1:
             raise ValueError("total absolute target weight must be <= 1")
         return self
 

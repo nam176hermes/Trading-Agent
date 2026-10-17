@@ -38,7 +38,28 @@ def test_probe_rejects_excess_or_inherited_pipe_without_leaking_processes(progra
     assert children[0].stdout.closed and children[0].stderr.closed
 
 
-@pytest.mark.parametrize('fault',[None,'version','capability','kernel','symlink','rename','fifo','mode','size'])
+def _probe_stdout(held="[(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]')]",
+                  nested="([(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]'), (4, 'pipe:[3]')], [])",
+                  native="([(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]'), (4, 'pipe:[4]')], [])",
+                  marker='P3_STARTUP_PROBE_PASS'):
+    """What the sandboxed program prints: three descriptor inventories, then the marker.
+
+    The process itself, the child it forks, and a child that execs -- a forked child inherits
+    every descriptor, one that execs keeps only those without close-on-exec, and research code
+    can create either.
+
+    The fake used to return the marker alone. That was accurate while the program printed
+    nothing else, and it stopped being accurate the moment the program started recording what
+    the boundary actually held -- which is the evidence the review asked for.
+    """
+    return (f'P3_STARTUP_FD_INVENTORY {held}\n'
+            f'P3_STARTUP_NESTED_FD_INVENTORY {nested}\n'
+            f'P3_STARTUP_NATIVE_FD_INVENTORY {native}\n{marker}\n').encode()
+
+
+@pytest.mark.parametrize('fault',[None,'version','capability','kernel','symlink','rename',
+                                 'fifo','mode','size','marker_only','no_nested_inventory',
+                                 'no_native_inventory','extra_line'])
 def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,monkeypatch,fault):
     from services.job_worker import p3_startup as module
     from packages.alpha_lifecycle.sandbox_policy import BWRAP_VERSION,BWRAP_CAPABILITIES,socket_filter_bytes
@@ -46,8 +67,10 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
     root=closure.python_root.parent/'probe-parent';root.mkdir(mode=0o700)
     preserved=root/'keep';preserved.write_bytes(b'user data')
     calls=[]
-    def execute(argv,passed):
-        calls.append((argv,passed))
+    def execute(argv,passed,file_size=65536,cloexec=()):
+        # The launch call now also carries the sealed-payload file-size budget and the
+        # descriptors to close at exec, so the fake records them rather than refusing them.
+        calls.append((argv,passed,file_size,cloexec))
         assert argv[0]==f'/proc/self/fd/{passed[0]}'
         assert all(not os.get_inheritable(fd) for fd in passed)
         if argv[-1]=='--version':
@@ -62,14 +85,24 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
             assert os.pread(int(argv[index-1]),mount.size+1,0)==mount.source.read_bytes()
         if fault=='kernel':
             return 1,b'',b'synthetic failure'
+        # The shape is part of what is checked, so dropping or padding a line has to fail.
+        # Accepting the bare marker again would quietly give up the descriptor evidence.
+        if fault=='marker_only':
+            return 0,b'P3_STARTUP_PROBE_PASS\n',b''
+        if fault=='no_nested_inventory':
+            return 0,b"P3_STARTUP_FD_INVENTORY [(0, '/dev/null')]\nP3_STARTUP_PROBE_PASS\n",b''
+        if fault=='no_native_inventory':
+            return 0,_probe_stdout().replace(b'P3_STARTUP_NATIVE_FD_INVENTORY ',b'OTHER '),b''
+        if fault=='extra_line':
+            return 0,_probe_stdout()+b'unexpected\n',b''
         output=int(argv[argv.index('--bind-fd')+1])
         if fault=='symlink':
             target=root/'target';target.write_bytes(b'allowed')
             os.symlink(target,'probe-output',dir_fd=output)
-            return 0,b'P3_STARTUP_PROBE_PASS\n',b''
+            return 0,_probe_stdout(),b''
         if fault=='fifo':
             os.mkfifo('probe-output',mode=0o600,dir_fd=output)
-            return 0,b'P3_STARTUP_PROBE_PASS\n',b''
+            return 0,_probe_stdout(),b''
         fd=os.open('probe-output',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600,dir_fd=output)
         try:
             os.write(fd,b'allowed!' if fault=='size' else b'allowed')
@@ -80,7 +113,7 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
             original.rename(root/'moved')
             original.mkdir(mode=0o700)
             (original/'preserve-replacement').write_bytes(b'replacement')
-        return 0,b'P3_STARTUP_PROBE_PASS\n',b''
+        return 0,_probe_stdout(),b''
     monkeypatch.setattr(module,'_run_probe',execute)
     before=set(os.listdir('/proc/self/fd'))
     if fault:
@@ -91,6 +124,9 @@ def test_startup_uses_pinned_files_and_cleans_only_its_probe(synthetic_provider,
         assert proof['closure_sha256']==closure.closure_sha256 and proof['root_absent'] is True
         assert proof['bound_job_id']==closure.bound_job_id
         assert proof['bound_payload_fingerprint']==closure.bound_payload_fingerprint
+        assert proof['fd_inventory']=="[(0, '/dev/null'), (1, 'pipe:[1]'), (2, 'pipe:[2]')]"
+        assert proof['nested_fd_inventory'].endswith(', [])')
+        assert proof['native_fd_inventory'].endswith(', [])')
         assert len(calls)==3
     assert set(os.listdir('/proc/self/fd'))==before
     if fault=='rename':

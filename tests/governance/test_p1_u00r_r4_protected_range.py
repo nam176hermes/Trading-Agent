@@ -17,14 +17,18 @@ P3_ROOT_MANIFEST_BLOB = "2c1ff193803bcb0d94e1b06cfa71de19ab7ce579"
 # PR 71 audited security lock; the original candidate remains independently pinned.
 P3_ROOT_LOCK_BLOB = "cd95c41f7ae4f3b254100849933506e9b3e7981b"
 HISTORICAL_P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
+# R05 operator-approved distro bubblewrap re-pin; retain exact policy bytes/mode.
+# Owner A: exact cache exception; all other ACCEPTED_A entries remain unchanged.
+P3_PROTECTED149_INPUT_CACHE_BLOB = "99f81a613afb160ffb2122b9706d0916f026a9fe"
+P3_SEALED_UV_POLICY_BLOB = "825316c8ab8742ac7212a9638ed0a91f44287f81"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
 # Approved one-entry offset cache; extraction bytes remain regression-tested.
 CURRENT_EXTRACTOR_BLOB = "2924016c660796c110ddcec76effee69df812039"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
 )
-# M7 fixture repair covers one/multiple real packs; reader assertions remain exact.
-PACK_LAYOUT_TEST_BLOB = "fe7f9dd03e39f62150fcf826887690a643d115c9"
+# Reviewed M7/M4 fixtures cover real packs and existing fanout; reader assertions remain exact.
+PACK_LAYOUT_TEST_BLOB = "22aa8236048dc3cea333cd773ce23c248423807b"
 TASK1_ACCEPTED_PATHS = ("tests/governance/nautilus_pin_inventory/test_source_io.py",)
 OVERLAY_PATH = "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md"
 ACCEPTED_A_PATHS = (
@@ -34,7 +38,6 @@ ACCEPTED_A_PATHS = (
     "engines/nautilus/llvm-toolchain-policy.json",
     "engines/nautilus/paper-compatibility-runtime-closure-policy.json",
     "engines/nautilus/runtime-closure-policy.json",
-    "engines/nautilus/sealed-uv-exec-policy.json",
     "engines/nautilus/wheel-cache-policy.json",
     "engines/nautilus/toolchain-inputs.json",
     "scripts/prepare_nautilus_input_cache.py",
@@ -73,7 +76,14 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
-        assert _entry(head, path) == _entry(ACCEPTED_A, path)
+        if path == "scripts/prepare_nautilus_input_cache.py":
+            assert _entry(head, path) == f"100644 blob {P3_PROTECTED149_INPUT_CACHE_BLOB}\t{path}"
+        else:
+            assert _entry(head, path) == _entry(ACCEPTED_A, path)
+    assert _entry(head, "engines/nautilus/sealed-uv-exec-policy.json") == (
+        f"100644 blob {P3_SEALED_UV_POLICY_BLOB}\t"
+        "engines/nautilus/sealed-uv-exec-policy.json"
+    )
     assert _entry(head, "Makefile") == f"100644 blob {P3_REVIEWED_MAKEFILE_BLOB}\tMakefile"
     assert _entry(head, "pyproject.toml") == (
         f"100644 blob {P3_ROOT_MANIFEST_BLOB}\tpyproject.toml"

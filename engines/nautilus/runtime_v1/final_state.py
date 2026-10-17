@@ -9,7 +9,7 @@ import json
 from .bootstrap import RuntimeBootstrapError, require_product_lineage
 from .currency_metadata import currency_quanta
 from .event_collector import collect_executions
-from .event_projector import CompletionAuthority
+from .event_projector import CompletionAuthority, _settled_cash
 from .paper_prefix import validated_target_prefix
 
 
@@ -164,17 +164,13 @@ def _ledger(
                     )
                     average = (position * average + quantity * price) / new_position
                     position = new_position
-                    cash = (cash - quantity * price - fee).quantize(
-                        quote_quantum, rounding=ROUND_HALF_EVEN
-                    )
+                    cash = _settled_cash(cash, "BUY", quantity, price, fee, quote_quantum)
                 elif fill["side"] == "SELL" and quantity <= position:
                     realized += (price - average) * quantity
                     position = (position - quantity).quantize(
                         base_quantum, rounding=ROUND_HALF_EVEN
                     )
-                    cash = (cash + quantity * price - fee).quantize(
-                        quote_quantum, rounding=ROUND_HALF_EVEN
-                    )
+                    cash = _settled_cash(cash, "SELL", quantity, price, fee, quote_quantum)
                     if position == 0:
                         average = Decimal(0)
                 else:

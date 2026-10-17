@@ -84,3 +84,57 @@ def test_strategy_bridge_has_no_provider_runtime_or_execution_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imports.add(node.module)
     assert not any(name == blocked or name.startswith(f"{blocked}.") for name in imports for blocked in forbidden)
+
+
+# CR01: the gross-weight cap must be exact at the domain, engine and bridge boundaries, in every Decimal context.
+import decimal  # noqa: E402
+
+from packages.engine_contracts.commands import (  # noqa: E402
+    EngineInstrumentId,
+    EngineTargetPortfolio,
+    EngineTargetPosition,
+)
+
+
+def _engine_target(*weights: str) -> EngineTargetPortfolio:
+    return EngineTargetPortfolio(
+        target_id=TARGET_ID,
+        positions=tuple(
+            EngineTargetPosition(instrument=EngineInstrumentId(symbol=f"A{index}-USD", product_type=ProductType.CRYPTO_SPOT,
+                                                               venue="ALPACA"),
+                                 target_weight=Decimal(weight))
+            for index, weight in enumerate(weights)
+        ),
+        source_signal_ids=(SIGNAL_A,),
+        effective_at=EFFECTIVE_AT,
+        schema_version="1.0.0",
+    )
+
+
+@pytest.mark.parametrize("precision", [2, 28, 80])
+@pytest.mark.parametrize(("weights", "accepted"), [
+    (("0.67", "0.334"), False),        # 1.004
+    (("1", "1E-29"), False),           # 1 + 1e-29
+    (("0.67", "0.33"), True),          # exactly 1
+    (("-0.67", "0.33"), True),         # gross 1
+])
+def test_target_gross_weight_is_exact_at_domain_engine_and_bridge_boundaries(
+    precision: int, weights: tuple[str, ...], accepted: bool,
+) -> None:
+    positions = tuple(position(f"A{index}-USD", weight) for index, weight in enumerate(weights))
+    forged = TargetPortfolio.model_construct(
+        target_id=TARGET_ID, positions=positions, source_signal_ids=(SIGNAL_A,), effective_at=EFFECTIVE_AT,
+        schema_version="1.0.0",
+    )
+    with decimal.localcontext(decimal.Context(prec=precision)):
+        if accepted:
+            target(positions=positions)
+            _engine_target(*weights)
+            bridge_target_portfolio(forged)
+        else:
+            with pytest.raises(ValueError, match="total absolute target weight"):
+                target(positions=positions)
+            with pytest.raises(ValueError, match="total absolute target weight"):
+                _engine_target(*weights)
+            with pytest.raises(TargetStrategyBridgeError, match="invalid canonical target"):
+                bridge_target_portfolio(forged)

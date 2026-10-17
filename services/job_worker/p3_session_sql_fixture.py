@@ -38,7 +38,7 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
                     connection.execute(text('RESET ROLE'))
                     command.upgrade(config, REVISION)
             command.upgrade(config, REVISION)
-            from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256
+            from services.job_store.p3_catalog import SESSION_CATALOG_SQL, LEGACY_SESSION_CATALOG_SHA256 as SESSION_CATALOG_SHA256
             connection.execute(text("SET LOCAL search_path=pg_catalog"))
             assert connection.execute(text(SESSION_CATALOG_SQL)).scalar() == SESSION_CATALOG_SHA256
     finally:
@@ -72,7 +72,7 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
         assert _probe_repository(api_repository, REVISION, session=True) == (True, True)
     with WorkerRepository(settings) as repository:
         _check_terminal_boundaries(sock, name, source, repository)
-        repository.assert_session_runtime_identity()
+        repository.assert_session_runtime_identity(revision=REVISION)
         with _rejected(RuntimeError):
             repository.assert_p3_runtime_identity()
         job, graph = seed()
@@ -144,7 +144,7 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
         custodian_settings = SocketSettings('localhost', 5432, name, 'trading_p3_custodian', 'synthetic')
         with _rejected(ValueError):
             CustodianReleaseRepository(custodian_settings).claim(release)
-        custodian = CustodianReleaseRepository(custodian_settings, session=True)
+        custodian = CustodianReleaseRepository(custodian_settings, session=True, revision=REVISION)
         custodian.claim(release)
         custodian.fence(release)
         with _rejected(psycopg.errors.UniqueViolation):
@@ -207,7 +207,7 @@ def check_session_holdout(sock: Path, name: str, source: SourceIdentity) -> dict
             assert repository.session_attempt_state(raced) == (expected, expected.value)
             assert not repository.session_result_matches(raced, 'f'*64)
             assert repository.pre_spawn_control(*rid, 30, alpha_campaign=True, session_workflow=(1, 1)) == 'STALE'
-        repository.assert_session_runtime_identity()
+        repository.assert_session_runtime_identity(revision=REVISION)
 
         class AbsentProcess:
             def inspect(self, pid: int) -> ProcessIdentity | None:
