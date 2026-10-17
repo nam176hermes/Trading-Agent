@@ -14,7 +14,9 @@ REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
 P3_REVIEWED_MAKEFILE_BLOB = "b2cf2dcea80400b9c8ca3dcd4ed4d1f5dd91ceaf"
 # PR 56 reviewed dev security refresh; all runtime/input authority pins remain.
 P3_ROOT_MANIFEST_BLOB = "2c1ff193803bcb0d94e1b06cfa71de19ab7ce579"
-P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
+# PR 71 audited security lock; the original candidate remains independently pinned.
+P3_ROOT_LOCK_BLOB = "cd95c41f7ae4f3b254100849933506e9b3e7981b"
+HISTORICAL_P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
 # Approved one-entry offset cache; extraction bytes remain regression-tested.
 CURRENT_EXTRACTOR_BLOB = "2924016c660796c110ddcec76effee69df812039"
@@ -77,6 +79,9 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
         f"100644 blob {P3_ROOT_MANIFEST_BLOB}\tpyproject.toml"
     )
     assert _entry(head, "uv.lock") == f"100644 blob {P3_ROOT_LOCK_BLOB}\tuv.lock"
+    assert _entry("366790e9f7d75b9e8fdd277381f095fb62c940e3", "uv.lock") == (
+        f"100644 blob {HISTORICAL_P3_ROOT_LOCK_BLOB}\tuv.lock"
+    )
     assert _entry(ACCEPTED_A, "scripts/build_nautilus_engine.py") == (
         "100644 blob 193c20272ef8eff4ccc9660069b9f523c4105f54\t"
         "scripts/build_nautilus_engine.py"

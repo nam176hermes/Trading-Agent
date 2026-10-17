@@ -11,6 +11,11 @@ network endpoint was accessed.
 
 The machine-readable record is [baseline-inventory.json](baseline-inventory.json).
 
+The component dependency hashes were refreshed for the audited PR 71 security
+update at `f5b61afbd43ddc2cd63aeaf1f913c0243764713d`. The capture above still
+describes the original baseline; this dependency refresh grants no runtime or
+qualification authority.
+
 ## Component and dependency authority
 
 | Component | Runtime | Manifest and lock authority |

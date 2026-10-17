@@ -90,11 +90,27 @@ def _registration_references(roots: tuple[Path, ...]) -> tuple[Path, ...]:
         for source in root.rglob("*")
         if _is_production_source(source)
     )
-    return tuple(
-        source
-        for source in sorted(sources)
-        if _SANDBOX_REFERENCE.search(source.read_text(encoding="utf-8"))
-    )
+    references: list[Path] = []
+    for source in sorted(sources):
+        text = source.read_text(encoding="utf-8")
+        if source.parts[-3:] == ("packages", "nautilus_upgrade_authority", "lts.py"):
+            # Literal classification metadata is not a runtime registration.
+            tree = ast.parse(text)
+            tree.body = [
+                node for node in tree.body
+                if not (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "_CLASS_D_PATHS"
+                    and isinstance(node.value, ast.Set)
+                    and all(isinstance(item, ast.Constant) and type(item.value) is str for item in node.value.elts)
+                )
+            ]
+            text = ast.unparse(tree)
+        if _SANDBOX_REFERENCE.search(text):
+            references.append(source)
+    return tuple(references)
 
 
 def _import_candidates(tree: ast.AST) -> tuple[str, ...]:
@@ -380,6 +396,24 @@ def test_registration_source_roots_exclude_sandbox_tests_and_generated_files(tmp
         source.write_text('register("execution_sandbox")\n', encoding="utf-8")
 
     assert _registration_references(_activation_source_roots(tmp_path)) == (active,)
+
+
+@pytest.mark.parametrize(
+    ("statement", "blocked"),
+    (
+        ('_CLASS_D_PATHS = {"packages/execution_sandbox/client.py"}\n', False),
+        ('_CLASS_D_PATHS = {"packages/execution_sandbox/client.py"}; register("execution_sandbox")\n', True),
+        ('_CLASS_D_PATHS = {"packages/execution_sandbox/client.py"}\nimport packages.execution_sandbox\n', True),
+        ('_CLASS_D_PATHS = {load("execution_sandbox")}\n', True),
+    ),
+)
+def test_registration_distinguishes_literal_policy_paths_from_activation(
+    tmp_path: Path, statement: str, blocked: bool
+) -> None:
+    policy = tmp_path / "packages" / "nautilus_upgrade_authority" / "lts.py"
+    policy.parent.mkdir(parents=True)
+    policy.write_text(statement, encoding="utf-8")
+    assert _registration_references((tmp_path / "packages",)) == ((policy,) if blocked else ())
 
 
 def test_registration_source_roots_include_legacy_exchange_provider_surface(tmp_path: Path) -> None:

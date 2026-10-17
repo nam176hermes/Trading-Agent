@@ -219,6 +219,9 @@ _CLASS_D_PREFIXES = ("packages/engine_contracts/", "packages/nautilus_runtime_co
 _CLASS_D_PATHS = {
     "docs/implementation/p1-real-nautilus/lts/p1-engine-lts-policy-v2.json",
     "packages/nautilus_upgrade_authority/lts.py",
+    "packages/execution_sandbox/client.py",
+    "packages/execution_sandbox/models.py",
+    "scripts/qualify_p1_nautilus.py",
 }
 _CLASS_C_PATHS = {"packages/domain/recovery.py", "pyproject.toml", "uv.lock"}
 _CLASS_C_PREFIXES = (

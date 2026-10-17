@@ -170,6 +170,31 @@ def test_class_b_requires_native_and_acceptance_nodes() -> None:
 @pytest.mark.parametrize(
     "path",
     (
+        "packages/execution_sandbox/client.py",
+        "packages/execution_sandbox/models.py",
+        "scripts/qualify_p1_nautilus.py",
+    ),
+)
+def test_p3_publication_boundaries_require_operator_policy(path: str) -> None:
+    decision = classify_p1_change((path,), "A", False)
+
+    assert decision.change_class is P1ChangeClass.D
+    assert decision.disposition is P1ImpactDisposition.HELD
+    assert decision.reasons == ("class_d_requires_operator_policy",)
+    assert decision.required_node_ids == ()
+
+
+def test_unregistered_sandbox_path_stays_unclassified() -> None:
+    decision = classify_p1_change(("packages/execution_sandbox/unregistered.py",), "A", False)
+
+    assert decision.change_class is P1ChangeClass.D
+    assert decision.disposition is P1ImpactDisposition.HELD
+    assert decision.reasons == ("invalid_or_unclassified_path",)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
         "engines/nautilus/runtime-closure-policy.json",
         "engines/nautilus/candidates/1.231/toolchain-inputs.json",
         "engines/nautilus/runtime_v1/runtime-inventory.json",

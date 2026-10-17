@@ -162,6 +162,17 @@ def test_noncanonical_matrix_bytes_fail_closed(context: closure._ValidationConte
     _error(context, "P0_CLOSURE_JSON_NONCANONICAL")
 
 
+def test_foundation_requires_exact_public_historical_sources() -> None:
+    raw = (ROOT / ".github/workflows/foundation.yml").read_bytes()
+    assert closure._foundation_workflow_valid(raw)
+    for original, replacement in (
+        (b"3f62908385be289999ccd14eed2e4007efdbf9e2", b"0" * 40),
+        (b"git fetch --no-tags origin", b"git fetch --no-tags untrusted"),
+    ):
+        assert original in raw
+        assert not closure._foundation_workflow_valid(raw.replace(original, replacement))
+
+
 def test_foundation_requires_retained_output_before_p3_promotion_attestation() -> None:
     raw = (ROOT / ".github/workflows/foundation.yml").read_bytes()
     guarded = b'if test -f "$output"; then echo \'generated=true\' >> "$GITHUB_OUTPUT"; fi'
