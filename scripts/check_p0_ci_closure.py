@@ -670,11 +670,20 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             "LIVE_TRADING_APPROVED": '"false"',
         }:
             return False
-        expected = _approved_common_steps() + [
+        expected = _approved_common_steps()
+        expected[1][1].update({"version": '\"0.11.7\"', "cache-local-path": "/home/runner/.cache/uv"})
+        expected += [
             (
                 {
                     "name": "Install transport test tools",
                     "run": "sudo apt-get update && sudo apt-get install --no-install-recommends -y bubblewrap squashfs-tools",
+                },
+                {},
+            ),
+            (
+                {
+                    "name": "Prepare pinned P3 source-test inputs",
+                    "run": "set -euo pipefail; test \"$(uv cache dir)\" = \"$HOME/.cache/uv\"; archive=\"$HOME/.cache/trading-agent/runtime-release/cpython-3.11.15+20260414-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz\"; install -d -m 0700 -- \"$(dirname \"$archive\")\"; curl --fail --location --proto \"=https\" --tlsv1.2 \"https://github.com/astral-sh/python-build-standalone/releases/download/20260414/cpython-3.11.15%2B20260414-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz\" --output \"$archive\"; printf \"%s  %s\\n\" \"b702a19b26cbd007abf9ccbaa45dfdff99e9dbd646d89c9f3c9bb7b501aea44f\" \"$archive\" | sha256sum --check --strict; printf \"%s  %s\\n\" \"cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4\" \"$(command -v uv)\" | sha256sum --check --strict; inputs=\"${RUNNER_TEMP:?}/p3-source-test-inputs\"; test ! -e \"$inputs\"; install -d -m 0700 -- \"$inputs\"; uv export --frozen --no-emit-project --no-annotate --no-header --output-file \"$inputs/requirements.txt\"; uv venv --python .venv/bin/python \"$inputs/venv\"; uv pip sync \"$inputs/requirements.txt\" --python \"$inputs/venv/bin/python\" --require-hashes --strict --only-binary=:all: --link-mode copy --no-python-downloads; rm -rf -- \"$inputs\"",
                 },
                 {},
             ),
@@ -785,7 +794,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         verify_steps = _steps(job)
         if [_step_contract(step) for step in verify_steps] != _expected_step_contracts(expected):
             return False
-        if _direct_map(_block(verify_steps[9], 8, "env"), 10) != {
+        if _direct_map(_block(verify_steps[10], 8, "env"), 10) != {
             "GH_TOKEN": "${{ github.token }}"
         }:
             return False

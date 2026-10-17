@@ -184,6 +184,17 @@ def test_ci_installs_transport_tools_before_validation() -> None:
     assert workflow.index("Install transport test tools") < workflow.index("Run canonical local and CI gate")
 
 
+def test_ci_prepares_pinned_offline_source_composition_inputs() -> None:
+    from packages.runtime_release.v2 import PAPER_PYTHON_RUNTIME_PROVENANCE, PAPER_UV_PROVENANCE
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert 'version: "0.11.7"' in workflow
+    assert "cache-local-path: /home/runner/.cache/uv" in workflow
+    assert "--require-hashes --strict --only-binary=:all:" in workflow
+    for digest in (PAPER_PYTHON_RUNTIME_PROVENANCE["upstream_archive_sha256"], PAPER_UV_PROVENANCE["sha256"]):
+        assert digest in workflow
+    assert workflow.index("Prepare pinned P3 source-test inputs") < workflow.index("Run canonical local and CI gate")
+
+
 def test_canonical_ci_is_an_alias_for_the_portable_gate() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
