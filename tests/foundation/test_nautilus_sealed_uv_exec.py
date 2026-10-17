@@ -312,8 +312,14 @@ def _canonical_json(document: dict[str, object]) -> bytes:
 
 def _policy_commit_parent(policy: Path) -> str:
     relative = policy.relative_to(ROOT)
+    # Squash publication changes ancestry, not the policy's original source binding.
+    source = "366790e9f7d75b9e8fdd277381f095fb62c940e3"
+    assert subprocess.run(
+        ["git", "show", f"{source}:{relative}"],
+        cwd=ROOT, check=True, capture_output=True,
+    ).stdout == policy.read_bytes()
     policy_commit = subprocess.run(
-        ["git", "log", "-1", "--format=%H", "--", str(relative)],
+        ["git", "log", "-1", "--format=%H", source, "--", str(relative)],
         cwd=ROOT,
         check=True,
         capture_output=True,

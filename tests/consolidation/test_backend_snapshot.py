@@ -31,6 +31,8 @@ from import_component_snapshot import CliError
 BACKEND_COMMIT = "59578f984b72d5d03583a2c06b15a53a224b31c8"
 BACKEND_TREE = "54e688e9f144aecd2ee204ab95953f7c57069d3c"
 DESTINATION_PREFIX = "legacy/research-backend"
+# Publication is squashed; original introductions remain bound to the tagged source.
+P3_SOURCE_REVISION = "366790e9f7d75b9e8fdd277381f095fb62c940e3"
 
 # The approved manifest remains immutable evidence for the atomic backend import.
 # These two Phase 4 files were introduced later in the monorepo, so they are
@@ -129,7 +131,7 @@ def _assert_post_import_extensions(imported: set[str]) -> None:
         introductions = subprocess.run(
             [
                 "git", "-C", str(ROOT), "log", "--diff-filter=A", "--format=%H",
-                "HEAD", "--", relative,
+                P3_SOURCE_REVISION, "--", relative,
             ],
             check=True,
             stdout=subprocess.PIPE,

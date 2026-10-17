@@ -174,7 +174,14 @@ def test_ci_fetches_exact_historical_review_objects_before_validation() -> None:
     assert "git fetch --no-tags origin" in fetch
     assert "3f62908385be289999ccd14eed2e4007efdbf9e2" in fetch
     assert "a606dbc9862744f5db9ca8325fcc3e18b60d8df1" in fetch
+    assert "366790e9f7d75b9e8fdd277381f095fb62c940e3" in fetch
     assert workflow.index("Fetch immutable historical review sources") < workflow.index("Run canonical local and CI gate")
+
+
+def test_ci_installs_transport_tools_before_validation() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "sudo apt-get update && sudo apt-get install --no-install-recommends -y bubblewrap squashfs-tools" in workflow
+    assert workflow.index("Install transport test tools") < workflow.index("Run canonical local and CI gate")
 
 
 def test_canonical_ci_is_an_alias_for_the_portable_gate() -> None:

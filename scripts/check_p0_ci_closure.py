@@ -673,8 +673,15 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         expected = _approved_common_steps() + [
             (
                 {
+                    "name": "Install transport test tools",
+                    "run": "sudo apt-get update && sudo apt-get install --no-install-recommends -y bubblewrap squashfs-tools",
+                },
+                {},
+            ),
+            (
+                {
                     "name": "Fetch immutable historical review sources",
-                    "run": "git fetch --no-tags origin 3f62908385be289999ccd14eed2e4007efdbf9e2 a606dbc9862744f5db9ca8325fcc3e18b60d8df1",
+                    "run": "git fetch --no-tags origin 3f62908385be289999ccd14eed2e4007efdbf9e2 a606dbc9862744f5db9ca8325fcc3e18b60d8df1 366790e9f7d75b9e8fdd277381f095fb62c940e3",
                 },
                 {},
             ),
@@ -778,7 +785,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         verify_steps = _steps(job)
         if [_step_contract(step) for step in verify_steps] != _expected_step_contracts(expected):
             return False
-        if _direct_map(_block(verify_steps[8], 8, "env"), 10) != {
+        if _direct_map(_block(verify_steps[9], 8, "env"), 10) != {
             "GH_TOKEN": "${{ github.token }}"
         }:
             return False
