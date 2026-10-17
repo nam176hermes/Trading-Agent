@@ -17,7 +17,7 @@ jobs:
   verify:
     name: verify-${{ github.event_name }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
       attestations: read
