@@ -17,7 +17,7 @@
       "manifest": "pyproject.toml",
       "manifest_sha256": "dec0ab937874a667a99eadf898a2b4c4200daa5f84ba5ece1b08692c5e04f308",
       "lockfile": "uv.lock",
-      "lockfile_sha256": "7ea3745e21108f73b232485a159e643f6f68d3deec865c308b566bb7579ef87c"
+      "lockfile_sha256": "9180db4298209fd66209609891bbb3abc79de070750210f97a356bf1072b46f7"
     },
     {
       "component": "legacy-research-backend",
@@ -25,15 +25,15 @@
       "manifest": "legacy/research-backend/pyproject.toml",
       "manifest_sha256": "c48580d90a1ca82d019a79e8315f5400b0da8ef8c40ba71f32061cc1e2e49474",
       "lockfile": "legacy/research-backend/uv.lock",
-      "lockfile_sha256": "f50e7eb3330edd02166e002aafb0b7b96ca1c51aa3df7ef6cb1e5d0a87510b14"
+      "lockfile_sha256": "fe48fdc3a68bf8429ceb9abffe293f461282f5e05bc6cef0849e7889b1b0656d"
     },
     {
       "component": "dashboard",
       "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
       "manifest": "apps/dashboard/package.json",
-      "manifest_sha256": "7457c1c230ee5ebb37cb558beafe1ac0bb1c5dbdd6a1b11dc34e0ee34ae6a254",
+      "manifest_sha256": "73c9d895ccfd5a2ea71949979dd61ee9bcee89df92781724439b491781ae3ffe",
       "lockfile": "apps/dashboard/package-lock.json",
-      "lockfile_sha256": "0c585c186852cccfadb537f94ef11926a82108a0ef7f52bd24d27dbd575ddc4d"
+      "lockfile_sha256": "71328684c215d6716e964ac282e61c8709fc617195c6a6d8fa5df28ca6143b5f"
     },
     {
       "component": "sealed-paper-release",
@@ -277,7 +277,7 @@
     "No listed source-code pin, frozen historical authority, stale v2 document, or historical provisioning pin asserts deployed database state or authorizes an activation, migration, or revision change."
   ],
   "dependency_inventory_refresh": {
-    "source_commit": "bb6c4a6f22cac3c212e31d1712428cb69a000033",
-    "reason": "PR 56 reviewed security updates: Next 16.3.4, Sharp 0.35.4, httpx2/httpcore2 2.12.0 and js-yaml 4.3.2. Historical capture and migration authority are unchanged."
+    "source_commit": "f5b61afbd43ddc2cd63aeaf1f913c0243764713d",
+    "reason": "PR 71 audited root, legacy and dashboard security updates and fail-loud local Next lint glob shim. Historical capture and migration authority are unchanged; no runtime or qualification authority."
   }
 }

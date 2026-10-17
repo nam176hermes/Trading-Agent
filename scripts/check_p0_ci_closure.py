@@ -673,6 +673,13 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         expected = _approved_common_steps() + [
             (
                 {
+                    "name": "Fetch immutable historical review sources",
+                    "run": "git fetch --no-tags origin 3f62908385be289999ccd14eed2e4007efdbf9e2 a606dbc9862744f5db9ca8325fcc3e18b60d8df1",
+                },
+                {},
+            ),
+            (
+                {
                     "name": "Classify P1-H change impact from base authority",
                     "if": "github.event_name == 'pull_request'",
                     "run": "set -euo pipefail; base_sha=\"${{ github.event.pull_request.base.sha }}\"; resolved_base=\"$(git rev-parse --verify \"$base_sha^{commit}\")\"; test \"$resolved_base\" = \"$base_sha\"; authority_root=\"${RUNNER_TEMP:?}/p1-h-base-authority\"; if test -e \"$authority_root\" || test -L \"$authority_root\"; then exit 2; fi; install -d -m 0700 -- \"$authority_root\"; test \"$(stat -c '%u:%a' -- \"$authority_root\")\" = \"$(id -u):700\"; git archive \"$base_sha\" | tar -x -C \"$authority_root\"; decision_path=\"$authority_root/decision.json\"; if PYTHONPATH=\"$authority_root\" uv run python \"$authority_root/scripts/classify_p1_h_impact.py\" --repo \"$GITHUB_WORKSPACE\" --base \"$base_sha\" --head \"$GITHUB_SHA\" > \"$decision_path\"; then cat \"$decision_path\"; exit 0; else status=$?; fi; cat \"$decision_path\"; test \"$status\" -eq 2; uv run python -c 'import json,sys; decision=json.load(open(sys.argv[1], encoding=\"utf-8\")); assert decision.get(\"change_class\") == \"D\"; assert decision.get(\"disposition\") == \"HELD\"; assert decision.get(\"reasons\") == [\"class_d_requires_operator_policy\"]' \"$decision_path\"; test \"${{ contains(github.event.pull_request.labels.*.name, 'p1-class-d-approved') }}\" = \"true\"",
@@ -771,7 +778,7 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
         verify_steps = _steps(job)
         if [_step_contract(step) for step in verify_steps] != _expected_step_contracts(expected):
             return False
-        if _direct_map(_block(verify_steps[7], 8, "env"), 10) != {
+        if _direct_map(_block(verify_steps[8], 8, "env"), 10) != {
             "GH_TOKEN": "${{ github.token }}"
         }:
             return False

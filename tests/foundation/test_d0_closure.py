@@ -168,6 +168,15 @@ def test_portable_component_snapshot_proof_is_root_test_local() -> None:
     assert "test-dashboard:\n\tcd apps/dashboard && npm test" in makefile
 
 
+def test_ci_fetches_exact_historical_review_objects_before_validation() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    fetch = workflow.split("name: Fetch immutable historical review sources", 1)[1].split("- name:", 1)[0]
+    assert "git fetch --no-tags origin" in fetch
+    assert "3f62908385be289999ccd14eed2e4007efdbf9e2" in fetch
+    assert "a606dbc9862744f5db9ca8325fcc3e18b60d8df1" in fetch
+    assert workflow.index("Fetch immutable historical review sources") < workflow.index("Run canonical local and CI gate")
+
+
 def test_canonical_ci_is_an_alias_for_the_portable_gate() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
