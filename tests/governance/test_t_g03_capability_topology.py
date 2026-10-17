@@ -4171,3 +4171,35 @@ def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_pa
         assert commands[0][0].startswith("/proc/self/fd/")
         assert commands[1][0].startswith("/proc/self/fd/")
         assert uv.lstat().st_ino != original_named_uv_inode
+
+
+def test_bwrap_loopback_policy_denial_is_exact_and_never_passes(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    code = "NATIVE-BWRAP-OS-SANDBOX"
+    denial = b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n"
+    with _available_native_probe_factory(tmp_path)(code) as fixture:
+        pending = replace(fixture, state="PROBE_PENDING")
+        def probe(exit_code: int, stdout: bytes, stderr: bytes):
+            return topology._execute_native_probe(
+                pending, runner=lambda command, **kwargs: subprocess.CompletedProcess(command, exit_code, stdout, stderr),
+            )
+        session = probe(1, b"", denial)
+        assert (session.state, session.fact) == ("UNAVAILABLE", "RUNNER_POLICY_DISALLOWS_USERNS")
+        for exit_code, stdout, stderr in (
+            (2, b"", denial), (1, b"partial", denial),
+            (1, b"", denial + b"extra"),
+            (1, b"", denial.replace(b"Operation not permitted", b"Invalid argument")),
+        ):
+            assert probe(exit_code, stdout, stderr).state == "BROKEN"
+        rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+        expected = topology._expected_rows(rows, code)[1]
+        receipt = topology.make_native_receipt(
+            context=_native_context(), code=code, expected=expected, collected=(),
+            session=session, outcome="DEFERRED", selected_test_count=0, passed=0, failed=0, unavailable=len(expected),
+        )
+        topology._validate_native_outcome(receipt, expected)
+        forged_pass = dict(receipt, outcome="PASS", preflight_state="AVAILABLE", redacted_fact_class="NATIVE_CAPABILITY_VALIDATED",
+            collected_node_ids=list(expected), selected_test_count=len(expected), passed=len(expected), unavailable=0)
+        with pytest.raises(topology.TopologyError, match="lacks exact probe"):
+            topology._validate_native_outcome(forged_pass, expected)

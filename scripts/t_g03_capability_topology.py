@@ -764,6 +764,8 @@ def _native_schema_for_code(code: object) -> str:
 NATIVE_DENIAL_STDERR = {
     "NATIVE-BWRAP-OS-SANDBOX": frozenset({
         b"bwrap: Creating new namespace failed: Operation not permitted\n",
+        # A namespace policy can also deny loopback setup inside the new namespace.
+        b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
         b"bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> or <file:///usr/share/doc/bubblewrap/README.Debian.gz>.\n",
     }),
     "NATIVE-USERNS-ROOT-PROVISION": frozenset({
