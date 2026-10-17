@@ -171,6 +171,7 @@ def test_foundation_requires_exact_public_historical_sources() -> None:
         (b"git fetch --no-tags origin", b"git fetch --no-tags untrusted"),
         (b"-y bubblewrap squashfs-tools", b"-y squashfs-tools"),
         (b'version: "0.11.7"', b'version: "latest"'),
+        (b"uv run python -m scripts.check_ci_native_prerequisites", b"true"),
         (b"cache-local-path: /home/runner/.cache/uv", b"cache-local-path: /tmp/cache"),
         (b"b702a19b26cbd007abf9ccbaa45dfdff99e9dbd646d89c9f3c9bb7b501aea44f", b"0" * 64),
         (b"cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4", b"0" * 64),

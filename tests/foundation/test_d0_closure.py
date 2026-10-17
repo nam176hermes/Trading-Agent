@@ -344,3 +344,9 @@ def test_track_c_source_head_defers_runtime_activation() -> None:
         "TRADING_JOB_API_EXPECTED_REVISION=0011_engine_backtest_worker_authority"
         in systemd_example
     )
+
+
+def test_ci_checks_native_prerequisites_before_the_expensive_gate() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "uv run python -m scripts.check_ci_native_prerequisites" in workflow
+    assert workflow.index("Install transport test tools") < workflow.index("Check native prerequisites before the full gate") < workflow.index("Run canonical local and CI gate")
