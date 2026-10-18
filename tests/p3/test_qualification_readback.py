@@ -351,10 +351,9 @@ def test_fixture_execution_rejects_authorization_outside_its_review(integration_
     monkeypatch.setattr(p3_integration.subprocess,'run',lambda *a,**kw:SimpleNamespace(stdout=b''))
     monkeypatch.setattr(p3_integration,'canonical_source_identity',lambda _:source.model_dump(mode='json'))
     monkeypatch.setattr(p3_integration,'_read_review',lambda *a:ReviewApproval.model_validate_json(store.read_bytes(review_ref)))
-    for name,value in dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',GITHUB_REF='refs/heads/main',
-        GITHUB_SHA=source.commit_sha,GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',GITHUB_REF_PROTECTED='true',
-        GITHUB_EVENT_NAME='workflow_dispatch',
-        GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main').items(): monkeypatch.setenv(name,value)
+    from tests.p3.github_lane import GithubLane
+    GithubLane(monkeypatch,source=source,run_id=authorization['issuer_run_id'],
+        attempt=authorization['issuer_attempt'],operation='p3-integration-fixture-v1')
     executor=p3_integration.P3IntegrationFixtureExecutor(store=store,closure_config=object(),
         private_root=tmp_path,review_file=tmp_path/'synthetic-review')
     with pytest.raises(AuthorityHeld,match='approval'): executor._attest(job)

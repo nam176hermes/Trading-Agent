@@ -410,10 +410,10 @@ class P3HoldoutSession:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
+    def _host(self, claim: ClaimedJob, digest: str, *, admission: bool = False) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
-            job_id=claim.job_id, payload=claim.payload, context=os.environ)
+            job_id=claim.job_id, payload=claim.payload, admission=admission)
         identity = canonical_json_bytes(profile.model_dump(mode='json', exclude={'job_id', 'payload', 'custodian_endpoint'}))
         if (closure.source != self.profile.source or closure.environment_ref != self.profile.environment_ref
             or closure.closure_sha256 != self.profile.closure_sha256
@@ -452,7 +452,7 @@ class P3HoldoutSession:
                 or stage.attempts != (*self._attempts, current)):
                 raise ValueError('session protected attempt chain differs from current claim')
             self._stage_digest = stage_digest
-            _ = self._host(claim, digest)
+            _ = self._host(claim, digest, admission=True)
             authorization = _read(self._store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
             intent = _read(self._store, claim.payload.manifest_ref, P3OperationInput)
             body = intent.body

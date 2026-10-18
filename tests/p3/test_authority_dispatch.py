@@ -69,17 +69,7 @@ def test_dispatch_body_is_closed_and_idempotent_by_authorization_nonce() -> None
     assert body.priority == 0
 
 
-@pytest.mark.parametrize(
-    "drift",
-    (
-        None,
-        "GITHUB_SHA",
-        "GITHUB_RUN_ID",
-        "GITHUB_WORKFLOW_REF",
-        "GITHUB_REF_PROTECTED",
-        "GITHUB_EVENT_NAME",
-    ),
-)
+@pytest.mark.parametrize("drift", (None, "head", "revoked", "stale", "operation", "host"))
 def test_shape_preflight_does_not_emit_an_execution_approval(
     tmp_path, monkeypatch, drift
 ):
@@ -101,9 +91,10 @@ def test_shape_preflight_does_not_emit_an_execution_approval(
     body.pop("digest")
     body["digest"] = hashlib.sha256(canonical_json_bytes(body)).hexdigest()
     request["operation_input"] = json.loads(intent(input_set_ref=body["input_set_ref"]))
-    path = tmp_path / "request.json"
-    path.write_bytes(canonical_json_bytes(request))
-    path.chmod(0o600)
+    from tests.p3.github_lane import GithubLane
+    lane = GithubLane(monkeypatch, source=source)
+    lane.admit_inputs(body["input_set_ref"])
+    path = lane.request(request)
     monkeypatch.setattr(
         p3_authority,
         "canonical_source_identity",
@@ -117,19 +108,8 @@ def test_shape_preflight_does_not_emit_an_execution_approval(
             "p3_alpha_development_allowed": True,
         },
     )
-    context = {
-        "GITHUB_ACTIONS": "true",
-        "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
-        "GITHUB_REF": "refs/heads/main",
-        "GITHUB_SHA": source.commit_sha,
-        "GITHUB_REF_PROTECTED": "true",
-        "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_RUN_ID": "1",
-        "GITHUB_RUN_ATTEMPT": "1",
-        "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
-    }
-    for key, value in context.items():
-        monkeypatch.setenv(key, "wrong" if key == drift else value)
+    if drift:
+        lane.drift(drift, "p3-baselines-v1")
     output = tmp_path / "output"
     if drift:
         from packages.alpha_lifecycle.authority import AuthorityHeld
@@ -159,6 +139,7 @@ def dispatch_fixture(tmp_path,monkeypatch):
     from packages.data_catalog.artifact_store import LocalArtifactStore
     from packages.engine_contracts.serialization import canonical_json_bytes
     from packages.job_contracts import payload_fingerprint
+    import json
     from scripts import p3_authority as command
     from services.job_worker import p3_integration
     from tests.jobs.test_job_api import job_record
@@ -184,23 +165,19 @@ def dispatch_fixture(tmp_path,monkeypatch):
         nonce='00000000-0000-4000-8000-000000000001',issuer_workflow='p3-authority.yml',issuer_run_id=1,
         issuer_attempt=1,authority=safe)
     authorization=_FixtureAuthorization.model_validate_json(store.read_bytes(auth_ref))
-    request=tmp_path/'request.json'
-    request.write_bytes(canonical_json_bytes(dict(schema_version='p3-authority-request-file-v1',
-        execution_source=source,authorization=authorization)))
-    request.chmod(0o600)
+    from tests.p3.github_lane import GithubLane
+    lane=GithubLane(monkeypatch,source=source,operation='p3-integration-fixture-v1')
+    request=lane.request(json.loads(canonical_json_bytes(dict(schema_version='p3-authority-request-file-v1',
+        execution_source=source,authorization=authorization))))
     payload=build_alpha_campaign_payload(authorization,source,'p3-integration-fixture-v1')
     monkeypatch.setattr(command,'canonical_source_identity',lambda root:source.model_dump(mode='json'))
     monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='PASS',PRE_P3_READY='PASS'),p3_alpha_development_allowed=True))
     monkeypatch.setattr(p3_integration,'_read_review',lambda *args:ReviewApproval.model_validate_json(store.read_bytes(review_ref)))
     monkeypatch.setattr(p3_integration,'_read_authority_bytes',lambda path:store.read_bytes(plan_ref))
     monkeypatch.setattr(command,'_read_token',lambda path:'synthetic-test-token')
-    for name,value in dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',GITHUB_REF='refs/heads/main',
-        GITHUB_SHA=source.commit_sha,GITHUB_REF_PROTECTED='true',GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ID='1',
-        GITHUB_RUN_ATTEMPT='1',GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main').items():
-        monkeypatch.setenv(name,value)
     record=replace(job_record(),job_type='ALPHA_CAMPAIGN',payload=payload,payload_fingerprint=payload_fingerprint(payload),priority=0)
     calls=[]
-    state=SimpleNamespace(worker_ran=False, request_json=command._request_json)
+    state=SimpleNamespace(worker_ran=False, request_json=command._request_json, lane=lane)
     def api(method,path,token,body=None):
         calls.append((method,path))
         envelope=dict(schema_version='1.0.0',trace_id='synthetic.flow',generated_at=utc(now))
@@ -454,8 +431,7 @@ def test_wait_stops_on_job_api_authentication_failure(dispatch_fixture, monkeypa
     assert requests == ['GET'] and not (args[2]/'job-result.json').exists()
 
 
-@pytest.mark.parametrize('fault',[None,'GITHUB_REPOSITORY','GITHUB_REF','GITHUB_SHA','GITHUB_RUN_ID',
-    'GITHUB_RUN_ATTEMPT','GITHUB_ACTIONS','GITHUB_REF_PROTECTED','GITHUB_EVENT_NAME','GITHUB_WORKFLOW_REF',
+@pytest.mark.parametrize('fault',[None,'head','revoked','stale','operation','host',
     'rejected','subject','expired','same_actor','source','policy'])
 def test_fixture_stage_verifies_review_and_workflow_before_any_write(dispatch_fixture,monkeypatch,fault):
     from datetime import timedelta
@@ -464,13 +440,13 @@ def test_fixture_stage_verifies_review_and_workflow_before_any_write(dispatch_fi
     from packages.engine_contracts.serialization import canonical_json_bytes
     from services.job_worker import p3_integration
     from tests.p3.test_publication import _changed
-    command,args,kwargs,_,_=dispatch_fixture
+    command,args,kwargs,_,state=dispatch_fixture
     request,payload=command._validated_request(args[0],args[3])
     store=LocalArtifactStore(kwargs['artifact_root'])
     plan=p3_integration.FixturePlan.model_validate_json(store.read_bytes(payload.manifest_ref))
     approval=p3_integration._read_review(kwargs['review_file'],request.authorization.review_ref)
-    if fault and fault.startswith('GITHUB_'):
-        monkeypatch.setenv(fault,'wrong')
+    if fault in state.lane.DRIFTS:
+        state.lane.drift(fault,'p3-integration-fixture-v1')
     elif fault=='policy':
         plan=_changed(plan,policy_set_sha256='0'*64)
     elif fault:
@@ -501,18 +477,18 @@ def test_fixture_stage_verifies_review_and_workflow_before_any_write(dispatch_fi
         assert actual==payload and writes
 
 
-@pytest.mark.parametrize('drift',['GITHUB_REPOSITORY','GITHUB_REF','GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'])
+@pytest.mark.parametrize('drift',['head','revoked','stale','operation','host'])
 def test_fixture_worker_rejects_replayed_enqueue_before_credentials(dispatch_fixture,monkeypatch,drift):
     from packages.alpha_lifecycle.authority import AuthorityHeld
     from services.job_worker import main
-    command,args,kwargs,_,_=dispatch_fixture
+    command,args,kwargs,_,state=dispatch_fixture
     command.enqueue(*args,**kwargs)
     values=dict(TRADING_WORKER_PROFILE='p3-fixture-v1',P3_OPERATION=args[3],
         P3_AUTHORITY_REQUEST_FILE=str(args[0]),P3_PREFLIGHT_DIRECTORY=str(args[2]),
         P3_ARTIFACT_ROOT=str(kwargs['artifact_root']),P3_MANIFEST_FILE=str(kwargs['manifest_file']),
         P3_REVIEW_FILE=str(kwargs['review_file']),CREDENTIALS_DIRECTORY='/synthetic/credentials')
     for key,value in values.items(): monkeypatch.setenv(key,value)
-    monkeypatch.setenv(drift,'wrong')
+    state.lane.drift(drift,'p3-integration-fixture-v1')
     def forbidden(*args,**kwargs): pytest.fail('invalid fixture context reached runtime credentials or database')
     monkeypatch.setattr(main,'attest_worker_runtime_authority',forbidden)
     monkeypatch.setattr(main.JobStoreSettings,'from_systemd_credentials',forbidden)

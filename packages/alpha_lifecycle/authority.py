@@ -165,80 +165,84 @@ def validate_request(
 ) -> _RequestFile | _LocalRequestFile:
     if path.is_relative_to(_LOCAL_ROOT):
         return _validate_local_request(path,expected_source,operation)
-    descriptor = -1
+    from packages.alpha_lifecycle.github_run import RUN_ROOT
+    if path.is_relative_to(RUN_ROOT):
+        return _validate_github_request(path,expected_source,operation)
+    # GITHUB requests are published by the protected host controller only; a
+    # caller-owned request file can no longer carry GitHub authority.
+    raise AuthorityHeld("HELD E_AUTHORITY: request must be root-published at its protected path")
+
+
+def _validate_github_request(path: Path, source: SourceIdentity | None, operation: str) -> _RequestFile:
+    """Root-published request at the run-derived path of an API-attested run."""
+    from packages.runtime_release.config import read_protected_canonical_json_current, ProtectedAuthorityError
+    from packages.alpha_lifecycle.github_run import github_run_directory, GithubRunHeld
     try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        info = os.fstat(descriptor)
-    except OSError as error:
-        raise AuthorityHeld("HELD E_AUTHORITY: request file is unavailable") from error
-    try:
-        if (
-            not path.is_absolute()
-            or not stat.S_ISREG(info.st_mode)
-            or info.st_uid not in {0, os.geteuid()}
-            or stat.S_IMODE(info.st_mode) != 0o600
-            or info.st_nlink != 1
-            or not 1 <= info.st_size <= 65_536
-        ):
-            raise AuthorityHeld("HELD E_AUTHORITY: request file must be private regular 0600")
-        raw = os.read(descriptor, info.st_size + 1)
-        if len(raw) != info.st_size:
-            raise AuthorityHeld("HELD E_AUTHORITY: request file identity changed")
-        request = _RequestFile.model_validate_json(raw)
-    except AuthorityHeld:
-        raise
-    except Exception as error:
-        raise AuthorityHeld("HELD E_AUTHORITY: request contract is invalid") from error
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    if expected_source is None or request.execution_source != expected_source:
-        raise AuthorityHeld("HELD E_SOURCE: request is not bound to current source")
-    if request.authorization.operation != operation:
-        raise AuthorityHeld("HELD E_OPERATION: authorization operation differs")
-    if (
-        request.authorization.issuer_workflow != "p3-authority.yml"
-        or request.authorization.issuer_run_id < 1
-        or request.authorization.issuer_attempt < 1
-    ):
-        raise AuthorityHeld("HELD E_AUTHORITY: authorization issuer is invalid")
-    now = datetime.now(UTC)
-    if not request.authorization.issued_at <= now < request.authorization.expires_at:
-        raise AuthorityHeld("HELD E_AUTHORITY: authorization is not current")
-    if isinstance(request.authorization, _FixtureAuthorization):
-        if request.operation_input is not None:
-            raise AuthorityHeld("HELD E_AUTHORITY: fixture cannot carry an official operation input")
-    elif request.operation_input is None:
-        raise AuthorityHeld("HELD E_OPERATION: official operation input is required")
-    _validate_workflow_context(request.authorization,expected_source)
+        document, _ = read_protected_canonical_json_current(path)
+        request = _RequestFile.model_validate_json(canonical_json_bytes(document))
+        auth = request.authorization
+        expected = github_run_directory(auth.issuer_run_id, auth.issuer_attempt)/'operations'/f'{auth.nonce}.json'
+    except (OSError, ValueError, ProtectedAuthorityError, GithubRunHeld) as error:
+        raise AuthorityHeld('HELD E_AUTHORITY: protected GitHub request is unavailable') from error
+    if path != expected:
+        raise AuthorityHeld('HELD E_AUTHORITY: GitHub request is not at its run-derived path')
+    if source is None or request.execution_source != source:
+        raise AuthorityHeld('HELD E_SOURCE: request is not bound to current source')
+    if auth.operation != operation:
+        raise AuthorityHeld('HELD E_OPERATION: authorization operation differs')
+    if not auth.issued_at <= datetime.now(UTC) < auth.expires_at:
+        raise AuthorityHeld('HELD E_AUTHORITY: authorization is not current')
+    if isinstance(auth, _FixtureAuthorization) != (request.operation_input is None):
+        raise AuthorityHeld('HELD E_OPERATION: fixture and research inputs differ')
+    run = _validate_workflow_context(auth, source)
+    if request.operation_input is not None:
+        from packages.alpha_lifecycle.github_run import read_github_research_inputs
+        try:
+            read_github_research_inputs(run, source=source, input_set_ref=request.operation_input.input_set_ref)
+        except GithubRunHeld as error:
+            raise AuthorityHeld('HELD E_RESEARCH_INPUTS: '+str(error)) from error
     return request
 
 
-def _validate_workflow_context(authorization,source: SourceIdentity, *, context=None) -> None:
-    context = os.environ if context is None else context
-    expected_context = {
-        "GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "nam176hermes/Trading-Agent",
-        "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": source.commit_sha,
-        "GITHUB_REF_PROTECTED": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
-        "GITHUB_RUN_ID": str(authorization.issuer_run_id),
-        "GITHUB_RUN_ATTEMPT": str(authorization.issuer_attempt),
-        "GITHUB_WORKFLOW_REF": "nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main",
-    }
-    if (authorization.issuer_workflow != 'p3-authority.yml'
-        or authorization.issuer_run_id < 1 or authorization.issuer_attempt < 1
-        or any(context.get(key) != value for key, value in expected_context.items())):
-        raise AuthorityHeld("HELD E_ISSUER: request differs from the protected-main workflow context")
+# In-session stages are admitted under the HOLDOUT run that owns the session.
+_SESSION_STAGES = frozenset({'PARITY', 'PHASE_EXIT'})
 
 
-def validate_operation_issuer(authorization, source, *, context=None, root=_SOURCE_ROOT):
+def _validate_workflow_context(authorization, source: SourceIdentity, *, admission: bool = True):
+    """Bind a GITHUB authorization to the controller's API attestation of its run.
+
+    The environment is never consulted: any process can set GITHUB_* variables.
+    """
+    from packages.runtime_release.config import read_protected_canonical_json_current, ProtectedAuthorityError
+    from packages.alpha_lifecycle.github_run import GithubRunHeld, WORKFLOW, github_run_directory, read_github_run
+    if authorization.issuer_workflow != WORKFLOW:
+        raise AuthorityHeld("HELD E_ISSUER: authorization issuer workflow differs")
+    try:
+        run, _ = read_github_run(authorization.issuer_run_id, authorization.issuer_attempt, admission=admission)
+    except GithubRunHeld as error:
+        raise AuthorityHeld("HELD E_ISSUER: "+str(error)) from error
+    if run.head_sha != source.commit_sha:
+        raise AuthorityHeld("HELD E_ISSUER: attested run executes another source")
+    if WORKFLOW_OPERATIONS.get(run.operation) == authorization.operation:
+        return run
+    if run.operation != 'p3-holdout-primary-v1' or authorization.operation not in _SESSION_STAGES:
+        raise AuthorityHeld("HELD E_ISSUER: authorization operation differs from the attested run")
+    try:
+        directory = github_run_directory(authorization.issuer_run_id, authorization.issuer_attempt)
+        session, _ = read_protected_canonical_json_current(directory/'session.json')
+    except (OSError, ProtectedAuthorityError, GithubRunHeld) as error:
+        raise AuthorityHeld("HELD E_SESSION: session stage requires the protected HOLDOUT session") from error
+    if (session.get('schema_version') != 'p3-holdout-session-v1' or session.get('source') != source.model_dump(mode='json')
+            or (session.get('workflow_run_id'), session.get('workflow_attempt'))
+            != (authorization.issuer_run_id, authorization.issuer_attempt)):
+        raise AuthorityHeld("HELD E_SESSION: protected session belongs to another run or source")
+    return run
+
+
+def validate_operation_issuer(authorization, source, *, admission: bool = True, root=_SOURCE_ROOT):
     if isinstance(authorization,(LocalRunAuthorization,_LocalFixtureAuthorization)):
         return validate_local_operation_authority(authorization,source,root=root)
-    _validate_workflow_context(authorization,source,context=context)
+    _validate_workflow_context(authorization,source,admission=admission)
 
 
 def build_alpha_campaign_payload(

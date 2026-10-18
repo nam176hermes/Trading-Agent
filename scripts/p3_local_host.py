@@ -382,7 +382,7 @@ def main():
         from services.job_worker.p3_host_profile import read_official_profile
         profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(command['profile']))
         result, _ = read_official_profile(_absolute(command['path']), command['digest'],
-            job_id=profile.job_id, payload=profile.payload, context=os.environ)
+            job_id=profile.job_id, payload=profile.payload, admission=True)
     elif command['action'] == 'session-ref':
         result = session_ref_action(command)
     elif command['action'] == 'native-profile':

@@ -48,7 +48,7 @@ def run_official_once(values,*,build_worker):
         raise ValueError('P3 protected run directory is unavailable')
     path=directory/'profile.json'
     _,digest=read_protected_canonical_json_current(path)
-    profile,closure=read_official_profile(path,digest,job_id=job_id,payload=body.payload,context=values)
+    profile,closure=read_official_profile(path,digest,job_id=job_id,payload=body.payload,admission=True)
     if local != isinstance(profile,LocalOfficialHostProfileLane):
         raise ValueError('P3 launcher and protected profile issuer lanes differ')
     if Path(profile.store_root)!=paths['P3_ARTIFACT_ROOT']:
@@ -58,7 +58,7 @@ def run_official_once(values,*,build_worker):
     probe_p3_startup(closure,private_root=Path(profile.output_root))
 
     def attest_closure():
-        current=read_official_profile(path,digest,job_id=job_id,payload=body.payload,context=values)
+        current=read_official_profile(path,digest,job_id=job_id,payload=body.payload,admission=False)
         if current!=(profile,closure):
             raise ValueError('P3 official profile or closure changed after startup')
         return closure
@@ -168,13 +168,13 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
                         if candidate.payload.operation != operation:
                             raise ValueError('protected host selected an out-of-order job')
                         profile, closure = read_official_profile(path.with_name('profile.json'), digest,
-                            job_id=candidate.job_id, payload=candidate.payload, context=values)
+                            job_id=candidate.job_id, payload=candidate.payload, admission=True)
                         break
                     time.sleep(0.25)
             _, digest = read_protected_canonical_json_current(path.with_name('profile.json'))
             def attest():
                 current = read_official_profile(path.with_name('profile.json'), digest,
-                    job_id=profile.job_id, payload=profile.payload, context=values)
+                    job_id=profile.job_id, payload=profile.payload, admission=False)
                 if current != (profile, closure):
                     raise ValueError('session stage closure changed')
                 return closure

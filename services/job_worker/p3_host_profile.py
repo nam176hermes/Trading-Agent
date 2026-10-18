@@ -229,7 +229,7 @@ def _verify_image_transport(profile, python_root: Path, mounts):
 
 def read_official_profile(
     path: Path, expected_digest: str, *, job_id: str, payload: object,
-    context: Mapping[str, str],
+    admission: bool,
 ) -> tuple[OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
            CompleteP3Closure]:
     """Recheck root custody, current source/gates, qualified inputs and exact file bytes.
@@ -272,7 +272,7 @@ def read_official_profile(
         or isinstance(profile,LocalOfficialHostProfileLane) and profile.identity != getattr(authorization,'identity',None)):
         raise ValueError('P3 protected profile and operation issuer differ')
     try:
-        validate_operation_issuer(authorization,source,context=context,root=ROOT)
+        validate_operation_issuer(authorization,source,admission=admission,root=ROOT)
     except AuthorityHeld as error:
         raise ValueError('P3 protected profile differs from the current workflow or local authority') from error
     if stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,payload.logical_trial_id,

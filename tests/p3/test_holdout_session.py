@@ -118,7 +118,7 @@ def session_inputs(reference_seed, tmp_path, monkeypatch, request):
         custodian_uid=17001, research_uid=17002, custodian_identity='custodian', research_identity='research')
     # Only protected-host custody is injected. Current stage review validation
     # uses the real immutable CAS, payload builder and review/expiry checks.
-    def host_reader(path, expected_digest, *, job_id, payload, context):
+    def host_reader(path, expected_digest, *, job_id, payload, admission):
         if digest(host) != expected_digest or host['job_id'] != job_id or host['payload'] != payload:
             raise ValueError('host profile changed')
         intent = _read(store, payload.manifest_ref, P3OperationInput)

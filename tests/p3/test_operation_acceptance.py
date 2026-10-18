@@ -110,34 +110,51 @@ def _dispatch_inputs(tmp_path,monkeypatch):
     return dispatch,authority,authorization,intent,review,payload
 
 
-@pytest.mark.parametrize('mode', ['accepted','denied','missing_credentials'])
-def test_official_dispatch_accepts_sql_authority_before_job_api(tmp_path,monkeypatch,mode):
+@pytest.mark.parametrize('mode', ['accepted','denied'])
+def test_authority_accept_is_separate_from_worker_enqueue(tmp_path,monkeypatch,mode):
+    """SQL acceptance runs under the authority UID; enqueue never opens that credential."""
     dispatch,authority,authorization,intent,review,payload = _dispatch_inputs(tmp_path,monkeypatch)
-    if mode == 'missing_credentials':
-        monkeypatch.delenv('P3_AUTHORITY_CREDENTIALS_DIRECTORY',raising=False)
-    else:
-        monkeypatch.setenv('P3_AUTHORITY_CREDENTIALS_DIRECTORY',str(tmp_path/'credentials'))
     calls = []
     def accept(a,i,r,*,credential_directory):
         assert (a,i,r) == (authorization,intent,review)
-        assert credential_directory == tmp_path/'credentials'
+        assert credential_directory == tmp_path/'authority-credentials'
         calls.append('accept')
         if mode == 'denied':
             raise authority.AuthorityHeld('HELD E_SQL_AUTHORITY: denied')
     monkeypatch.setattr(authority,'accept_operation_authorization',accept)
+    if mode == 'denied':
+        with pytest.raises(authority.AuthorityHeld):
+            dispatch.accept(tmp_path/'request',intent.workflow_operation,review_file=tmp_path/'review',
+                credentials_directory=tmp_path/'authority-credentials')
+    else:
+        dispatch.accept(tmp_path/'request',intent.workflow_operation,review_file=tmp_path/'review',
+            credentials_directory=tmp_path/'authority-credentials')
+    assert calls == ['accept']
+    # The worker's enqueue path: no acceptance call even with the variable present.
+    monkeypatch.setenv('P3_AUTHORITY_CREDENTIALS_DIRECTORY',str(tmp_path/'authority-credentials'))
+    monkeypatch.setattr(authority,'accept_operation_authorization',
+        lambda *args,**kwargs:pytest.fail('enqueue must not hold the authority login'))
     class Enqueued(Exception):
         pass
     def post(method,path,token,body):
-        assert calls == ['accept']
         assert (method,path) == ('POST','/v1/jobs')
-        calls.append('post')
         raise Enqueued
     monkeypatch.setattr(dispatch,'_request_json',post)
-    expected = Enqueued if mode == 'accepted' else authority.AuthorityHeld
-    with pytest.raises(expected):
-        dispatch.dispatch(tmp_path/'request',tmp_path/'token',tmp_path/'output',intent.workflow_operation,
+    with pytest.raises(Enqueued):
+        dispatch.enqueue(tmp_path/'request',tmp_path/'token',tmp_path/'output',intent.workflow_operation,
             artifact_root=tmp_path/'cas',manifest_file=tmp_path/'manifest',review_file=tmp_path/'review')
-    assert calls == (['accept','post'] if mode == 'accepted' else ['accept'] if mode == 'denied' else [])
+
+
+def test_accept_refuses_fixture_or_local_authority(tmp_path,monkeypatch):
+    dispatch,authority,authorization,intent,review,payload = _dispatch_inputs(tmp_path,monkeypatch)
+    monkeypatch.setattr(authority,'accept_operation_authorization',
+        lambda *args,**kwargs:pytest.fail('only official GitHub authority is accepted'))
+    request = SimpleNamespace(authorization=authorization,operation_input=None)
+    monkeypatch.setattr(dispatch,'_validated_request',lambda *args:(request,payload))
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    with pytest.raises(AuthorityHeld):
+        dispatch.accept(tmp_path/'request',intent.workflow_operation,review_file=tmp_path/'review',
+            credentials_directory=tmp_path/'authority-credentials')
 
 
 def test_local_enqueue_does_not_read_protected_acceptance_credentials(tmp_path,monkeypatch):
