@@ -35,7 +35,8 @@ def test_official_entry_has_no_database_before_all_host_checks(synthetic_provide
     values=dict(P3_OPERATION='p3-baselines-v1',P3_AUTHORITY_REQUEST_FILE='/synthetic/request',
         P3_PREFLIGHT_DIRECTORY='/synthetic/enqueue',P3_ARTIFACT_ROOT=str(provider._store_root),
         P3_MANIFEST_FILE='/synthetic/manifest',P3_REVIEW_FILE='/synthetic/review',
-        GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='2',
+        # Forged context must be ignored: the run comes from the admitted authorization.
+        GITHUB_RUN_ID='999',GITHUB_RUN_ATTEMPT='9',
         CREDENTIALS_DIRECTORY='/synthetic/other' if fault=='credential_directory' else '/synthetic/protected-worker-credentials')
     profile=SimpleNamespace(store_root=str(provider._store_root),output_root=str(provider._output_root),
         worker_credentials_directory='/synthetic/protected-worker-credentials')
@@ -44,6 +45,22 @@ def test_official_entry_has_no_database_before_all_host_checks(synthetic_provide
         if fault==name:
             raise ValueError('synthetic '+name+' refusal')
         return value
+    from datetime import UTC,datetime,timedelta
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from tests.p3.test_github_authority import _authorization
+    authorization=RunAuthorization.model_validate_json(canonical_json_bytes(_authorization(issuer_run_id=123,issuer_attempt=2,
+        issued_at=(datetime.now(UTC)-timedelta(minutes=1)).isoformat().replace('+00:00','Z'),
+        expires_at=(datetime.now(UTC)+timedelta(minutes=30)).isoformat().replace('+00:00','Z'))))
+    monkeypatch.setattr(module,'canonical_source_identity',lambda root:closure.source.model_dump(mode='json'))
+    monkeypatch.setattr(module,'validate_request',lambda path,source,operation:step('request',SimpleNamespace(authorization=authorization)))
+    from services.job_worker import p3_local_runtime as runtime
+    monkeypatch.setattr(runtime,'local_runtime_guard',lambda authority,identity,source,expires:(
+        step('guard',None),lambda **kwargs:None)[1] if identity.run_id==123 and identity.attempt==2 else pytest.fail('wrong run'))
+    class Preflight:
+        def __init__(self,*args,**kwargs): pass
+        def __call__(self): step('safety',None)
+    monkeypatch.setattr(runtime,'LocalRuntimeSafetyPreflight',Preflight)
     monkeypatch.setattr(module,'read_enqueued_job',lambda *args,**kwargs:step('enqueue',(job.job_id,SimpleNamespace(payload=job.payload),'synthetic-operator')))
     def protected(path):
         assert path==Path('/run/trading-agent-p3/123-2/profile.json')
@@ -71,10 +88,12 @@ def test_official_entry_has_no_database_before_all_host_checks(synthetic_provide
         def __init__(self,*args): step('database',None)
         def __enter__(self): return self
         def __exit__(self,*args): calls.append('closed')
-        def assert_p3_runtime_identity(self): calls.append('schema')
+        def assert_session_runtime_identity(self): calls.append('schema')
+        def assert_p3_runtime_identity(self): pytest.fail('official operations use the session catalog')
     monkeypatch.setattr(module,'WorkerRepository',Repository)
     def worker(repository,source,**kwargs):
         assert kwargs['p3_job_id']==job.job_id
+        assert isinstance(kwargs['p3_safety_preflight'],Preflight) and 'p3_runtime_guard' not in kwargs
         actual=kwargs['p3_spawn_provider']._attest_closure()
         assert actual==closure
         return SimpleNamespace(run_once=lambda:step('run',True))
@@ -86,7 +105,8 @@ def test_official_entry_has_no_database_before_all_host_checks(synthetic_provide
         assert 'database' not in calls
     else:
         assert module.run_official_once(values,build_worker=worker)==0
-        assert calls[:8]==['enqueue','profile','probe','profile','authority','credentials','profile','database']
+        assert calls[:11]==['request','enqueue','profile','probe','profile','authority','guard','safety',
+            'credentials','profile','database']
         assert calls[-2:]==['run','closed']
 
 

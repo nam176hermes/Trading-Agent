@@ -1,4 +1,4 @@
-"""Bind a complete sealed LOCAL source runtime to independent host approval."""
+"""Bind a complete sealed source runtime to independent host approval (LOCAL or GITHUB lane)."""
 from collections.abc import Callable
 from datetime import UTC,datetime
 import os
@@ -6,9 +6,10 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 from typing import Annotated,Literal
+from uuid import UUID
 
 from pydantic import Field
-from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
+from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity,LocalRunIdentity
 from packages.alpha_lifecycle.contracts.base import StrictModel,SourceIdentity,Sha256,Text
 from packages.alpha_lifecycle.local_qualification import _host_identity
 from packages.engine_contracts.serialization import CanonicalUtcDateTime,canonical_json_bytes
@@ -18,6 +19,30 @@ from packages.runtime_release.config import read_protected_canonical_json_curren
 ROOT=Path(__file__).resolve().parents[2]
 PROFILE_ROOT=Path('/etc/trading-agent/local-qualification')
 OFFICIAL_DATA_ROOT=Path('/var/lib/trading-agent-local/p3-official')
+GITHUB_DATA_ROOT=Path('/var/lib/trading-agent-p3/github')
+
+
+def runtime_profile_path(identity):
+    """Protected runtime approval for this lane's run; never taken from the environment."""
+    if isinstance(identity,GithubRunIdentity):
+        from packages.alpha_lifecycle.github_run import github_run_directory
+        return github_run_directory(identity.run_id,identity.attempt)/'runtime.json'
+    return PROFILE_ROOT/LocalRunIdentity.model_validate(identity).issuer_identity/'runtime.json'
+
+
+def safety_source_root(identity):
+    if isinstance(identity,GithubRunIdentity):
+        return GITHUB_DATA_ROOT/f'{identity.run_id}-{identity.attempt}'/'safety'
+    return OFFICIAL_DATA_ROOT/str(LocalRunIdentity.model_validate(identity).run_id)/'safety'
+
+
+def _run_host(identity):
+    """GITHUB host/boot come from the controller's current API attestation of the run."""
+    if isinstance(identity,GithubRunIdentity):
+        from packages.alpha_lifecycle.github_run import read_github_run
+        run,_=read_github_run(identity.run_id,identity.attempt,admission=False)
+        return run.host_id,run.boot_id
+    return identity.host_id,identity.boot_id
 
 
 def refresh_local_safety_evidence(authority, identity):
@@ -25,21 +50,20 @@ def refresh_local_safety_evidence(authority, identity):
     from scripts.build_p1_package6_host_authority import _digest_file, _replace_activation
     from services.safety_state_exporter.exporter import SafetyStateExporter, source_fingerprint
     runtime=authority.runtime_authority
-    identity=LocalRunIdentity.model_validate(identity)
-    source_root=OFFICIAL_DATA_ROOT/str(identity.run_id)/'safety'
+    if not isinstance(identity,GithubRunIdentity):
+        identity=LocalRunIdentity.model_validate(identity)
+    source_root=safety_source_root(identity)
     if (runtime.scope!='PACKAGE6_STAGING_ONLY' or Path(sys.executable)!=runtime.application_python
         or runtime.safety.source_fingerprint!=source_fingerprint(source_root)
-        or _host_identity()!=(identity.host_id,identity.boot_id)):
-        raise ValueError('LOCAL safety producer differs from its attested host or source root')
+        or _host_identity()!=_run_host(identity)):
+        raise ValueError('P3 safety producer differs from its attested host or source root')
     SafetyStateExporter(canonical_source_root=source_root,mounted_source_root=source_root,
         output_path=runtime.runtime_paths.safety_snapshot,exporter_commit=runtime.source_commit,
         gate_source={'LIVE_EXECUTION_ENABLED':'false','LIVE_TRADING_APPROVED':'false'}).export_once()
     _replace_activation(runtime,_digest_file(runtime.runtime_paths.safety_snapshot))
 
 
-class LocalRuntimeProfile(StrictModel):
-    schema_version: Literal['p3-local-runtime-profile-v1']
-    identity: LocalRunIdentity
+class _RuntimeProfileFields(StrictModel):
     source: SourceIdentity
     application_root: Text
     application_python: Text
@@ -51,13 +75,29 @@ class LocalRuntimeProfile(StrictModel):
     revoked: bool
 
 
+class LocalRuntimeProfile(_RuntimeProfileFields):
+    schema_version: Literal['p3-local-runtime-profile-v1']
+    identity: LocalRunIdentity
+
+
+class GithubRuntimeProfile(_RuntimeProfileFields):
+    """Per-run approval published by the host controller after authenticating the run."""
+    schema_version: Literal['p3-github-runtime-profile-v1']
+    identity: GithubRunIdentity
+    host_id: Sha256
+    boot_id: UUID
+
+
 def validate_runtime_binding(profile,runtime,authorization,source):
     """The caller authenticates profile custody and invokes the existing attester."""
     now=datetime.now(UTC)
     material=runtime._material
+    github=type(profile) is GithubRuntimeProfile
+    host=(profile.host_id,profile.boot_id) if github else (profile.identity.host_id,profile.identity.boot_id)
     if (material is None or runtime.scope!='PACKAGE6_STAGING_ONLY' or profile.revoked
+        or github!=isinstance(authorization.identity,GithubRunIdentity)
         or profile.identity!=authorization.identity or profile.source!=source
-        or _host_identity()!=(profile.identity.host_id,profile.identity.boot_id)
+        or _host_identity()!=host
         or profile.uid!=os.geteuid()
         or _absolute(profile.application_root)!=ROOT or runtime.application_root!=ROOT
         or _absolute(profile.application_python)!=Path(sys.executable)
@@ -68,13 +108,14 @@ def validate_runtime_binding(profile,runtime,authorization,source):
         or not material.authority_generated_at<=profile.issued_at<=now<authorization.expires_at<=profile.expires_at<=material.authority_expires_at
         or _git(ROOT,'status','--porcelain','--untracked-files=all')
         or SourceIdentity.model_validate(canonical_source_identity(ROOT))!=source):
-        raise ValueError('LOCAL runtime differs from protected source, host or validity binding')
+        raise ValueError('P3 runtime differs from protected source, host or validity binding')
 
 
 def require_local_runtime(authority,identity,source,expires_at):
-    path=PROFILE_ROOT/identity.issuer_identity/'runtime.json'
+    path=runtime_profile_path(identity)
     document,digest=read_protected_canonical_json_current(path)
-    profile=LocalRuntimeProfile.model_validate_json(canonical_json_bytes(document))
+    model=GithubRuntimeProfile if isinstance(identity,GithubRunIdentity) else LocalRuntimeProfile
+    profile=model.model_validate_json(canonical_json_bytes(document))
     validate_runtime_binding(profile,authority.runtime_authority,
         SimpleNamespace(identity=identity,expires_at=expires_at),source)
     if read_protected_canonical_json_current(path)[1]!=digest:

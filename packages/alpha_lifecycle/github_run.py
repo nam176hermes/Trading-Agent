@@ -53,6 +53,16 @@ def github_run_directory(run_id: int, attempt: int) -> Path:
     return RUN_ROOT/f'{run_id}-{attempt}'
 
 
+def github_run_identity(authorization) -> GithubRunIdentity:
+    """Structural identity of an official GITHUB authorization (authenticated elsewhere)."""
+    if authorization.issuer_workflow != WORKFLOW:
+        raise GithubRunHeld('authorization was not issued for p3-authority.yml')
+    github_run_directory(authorization.issuer_run_id, authorization.issuer_attempt)
+    return GithubRunIdentity(issuer_kind='GITHUB', issuer_identity='p3-authority', repository=REPOSITORY,
+                             workflow_ref=WORKFLOW, run_id=authorization.issuer_run_id,
+                             attempt=authorization.issuer_attempt)
+
+
 class ResponseDigests(StrictModel):
     run: Sha256
     jobs: Sha256
@@ -244,6 +254,6 @@ def authenticate_run(fetch: Fetch, *, run_id: int, attempt: int, expected: Expec
 
 __all__ = [
     'ADMISSION_MAX_AGE', 'ExpectedRun', 'GithubResearchInputs', 'GithubRunAttestation', 'GithubRunHeld',
-    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'github_run_directory', 'read_github_research_inputs',
+    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'github_run_directory', 'github_run_identity', 'read_github_research_inputs',
     'read_github_run',
 ]

@@ -26,6 +26,22 @@ def test_fixture_entry_binds_enqueue_before_database_and_recovery(monkeypatch,fa
         calls.append('enqueue')
         return 'job_fixture',SimpleNamespace(payload=SimpleNamespace() if fault=='payload' else payload),'synthetic.operator'
     monkeypatch.setattr(p3_authority,'read_enqueued_job',read_job)
+    from datetime import UTC,datetime,timedelta
+    from packages.alpha_lifecycle import authority as authority_module
+    from packages.engine_contracts import canonical_json_bytes
+    from tests.p3.test_local_qualification import sealed
+    now=datetime.now(UTC)
+    fixture=authority_module._FixtureAuthorization.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-fixture-authorization-v1',fixture_plan_ref=payload.manifest_ref,review_ref=payload.manifest_ref,
+        operation='PARITY',issued_at=now.isoformat().replace('+00:00','Z'),
+        expires_at=(now+timedelta(hours=1)).isoformat().replace('+00:00','Z'),nonce='00000000-0000-4000-8000-000000000002',
+        issuer_workflow='p3-authority.yml',issuer_run_id=123,issuer_attempt=1,
+        authority=dict(broker=False,live=False,network=False,production=False)))))
+    monkeypatch.setattr(authority_module,'validate_request',lambda *a,**k:SimpleNamespace(authorization=fixture))
+    def runtime(authority,identity,source,expires):
+        assert (identity.run_id,identity.attempt)==(123,1)
+        calls.append('runtime')
+    monkeypatch.setattr('services.job_worker.p3_local_runtime.require_local_runtime',runtime)
     monkeypatch.setattr(main,'attest_worker_runtime_authority',lambda:calls.append('authority') or SimpleNamespace(
         application_revision='0'*40 if fault=='revision' else payload.expected_source.commit_sha))
     monkeypatch.setattr(main.JobStoreSettings,'from_env',lambda **kwargs:pytest.fail('fixture used ambient database values'))
@@ -38,10 +54,11 @@ def test_fixture_entry_binds_enqueue_before_database_and_recovery(monkeypatch,fa
         def __init__(self,*args): calls.append('database')
         def __enter__(self): return self
         def __exit__(self,*args): calls.append('closed')
-        def assert_p3_runtime_identity(self): calls.append('schema')
+        def assert_session_runtime_identity(self): calls.append('schema')
+        def assert_p3_runtime_identity(self): pytest.fail('GitHub fixture used the old catalog')
     monkeypatch.setattr(main,'WorkerRepository',Repository)
-    def build(repository,source,*,authority,job_id=None):
-        assert job_id=='job_fixture'
+    def build(repository,source,*,authority,job_id=None,p3_runtime_guard=None):
+        assert job_id=='job_fixture' and callable(p3_runtime_guard)
         calls.append('build')
         return SimpleNamespace(run_once=lambda:calls.append('run') or True)
     monkeypatch.setattr(main,'build_p3_fixture_worker',build)
@@ -51,7 +68,7 @@ def test_fixture_entry_binds_enqueue_before_database_and_recovery(monkeypatch,fa
         assert 'database' not in calls and 'build' not in calls
     else:
         assert main.main()==0
-        assert calls==['enqueue','authority','credentials','enqueue','database','schema','build','run','closed']
+        assert calls==['enqueue','authority','runtime','credentials','enqueue','database','schema','build','run','closed']
 
 
 @pytest.mark.parametrize('fault',[None,'mixed','runtime'])
@@ -94,7 +111,7 @@ def test_local_fixture_entry_requires_local_request_before_current_catalog(monke
     monkeypatch.setattr(main,'WorkerRepository',Repository)
     monkeypatch.setattr(main,'build_p3_fixture_worker',lambda *a,**k:SimpleNamespace(run_once=lambda:True))
     if fault:
-        with pytest.raises(ValueError,match='local fixture'):main.main()
+        with pytest.raises(ValueError,match='fixture'):main.main()
         assert not calls
     else:
         assert main.main()==0 and calls==['database','current-catalog']
