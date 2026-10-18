@@ -1,10 +1,10 @@
 """One workflow-bound P3 attempt after protected startup; no import-time action."""
 from pathlib import Path
 from functools import partial
-import re
 
 from packages.alpha_lifecycle.authority import WORKFLOW_OPERATIONS, validate_request, local_run_directory
-from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity,LocalRunAuthorization
+from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity,LocalRunAuthorization,RunAuthorization
+from packages.alpha_lifecycle.github_run import github_run_directory,github_run_identity
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
 from packages.pre_p3_provenance import canonical_source_identity
 from packages.data_catalog.artifact_store import LocalArtifactStore
@@ -22,33 +22,34 @@ def run_official_once(values,*,build_worker):
     operation=values.get('P3_OPERATION')
     if WORKFLOW_OPERATIONS.get(operation) not in {'BASELINES','REGISTER_FAMILY','OOS','HOLDOUT'}:
         raise ValueError('P3 official operation is not implemented')
-    local = values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL'
-    directory=None
-    request=None
-    if values.get('P3_ISSUER_KIND','GITHUB') not in {'LOCAL','GITHUB'}:
+    lane=values.get('P3_ISSUER_KIND','GITHUB')
+    if lane not in {'LOCAL','GITHUB'}:
         raise ValueError('P3 issuer lane is invalid')
-    if not local:
-        run_id,attempt=(values.get(name,'') for name in ('GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT'))
-        if any(re.fullmatch('[1-9][0-9]{0,19}',value) is None for value in (run_id,attempt)):
-            raise ValueError('P3 official workflow identity is invalid')
-        directory=Path(f'/run/trading-agent-p3/{run_id}-{attempt}')
+    local = lane=='LOCAL'
     paths={name:_absolute(values.get(name)) for name in (
         'P3_AUTHORITY_REQUEST_FILE','P3_PREFLIGHT_DIRECTORY','P3_ARTIFACT_ROOT','P3_MANIFEST_FILE','P3_REVIEW_FILE')}
+    # Both lanes admit the protected request first; the run directory is derived from
+    # its authenticated authorization, never from GITHUB_* variables.
+    root=Path(__file__).resolve().parents[2]
+    request=validate_request(paths['P3_AUTHORITY_REQUEST_FILE'],
+        SourceIdentity.model_validate(canonical_source_identity(root)),WORKFLOW_OPERATIONS[operation])
     if local:
-        root=Path(__file__).resolve().parents[2]
-        request=validate_request(paths['P3_AUTHORITY_REQUEST_FILE'],
-            SourceIdentity.model_validate(canonical_source_identity(root)),WORKFLOW_OPERATIONS[operation])
         identity=getattr(request.authorization,'identity',None)
         if not isinstance(identity,LocalRunIdentity):
             raise ValueError('local launcher requires protected local operation authority')
         directory=local_run_directory(identity)
+    else:
+        if not isinstance(request.authorization,RunAuthorization):
+            raise ValueError('GitHub launcher requires protected official run authority')
+        identity=github_run_identity(request.authorization)
+        directory=github_run_directory(identity.run_id,identity.attempt)
     job_id,body,_=read_enqueued_job(paths['P3_AUTHORITY_REQUEST_FILE'],paths['P3_PREFLIGHT_DIRECTORY'],operation,
         artifact_root=paths['P3_ARTIFACT_ROOT'],manifest_file=paths['P3_MANIFEST_FILE'],review_file=paths['P3_REVIEW_FILE'])
     if directory is None:
         raise ValueError('P3 protected run directory is unavailable')
     path=directory/'profile.json'
     _,digest=read_protected_canonical_json_current(path)
-    profile,closure=read_official_profile(path,digest,job_id=job_id,payload=body.payload,context=values)
+    profile,closure=read_official_profile(path,digest,job_id=job_id,payload=body.payload,admission=True)
     if local != isinstance(profile,LocalOfficialHostProfileLane):
         raise ValueError('P3 launcher and protected profile issuer lanes differ')
     if Path(profile.store_root)!=paths['P3_ARTIFACT_ROOT']:
@@ -58,36 +59,34 @@ def run_official_once(values,*,build_worker):
     probe_p3_startup(closure,private_root=Path(profile.output_root))
 
     def attest_closure():
-        current=read_official_profile(path,digest,job_id=job_id,payload=body.payload,context=values)
+        current=read_official_profile(path,digest,job_id=job_id,payload=body.payload,admission=False)
         if current!=(profile,closure):
             raise ValueError('P3 official profile or closure changed after startup')
         return closure
 
     attest_closure()
     authority=attest_worker_runtime_authority()
-    runtime_guard=None
-    safety_preflight=None
-    if local:
-        from .p3_local_runtime import local_runtime_guard, LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
-        if request is None or not isinstance(request.authorization,LocalRunAuthorization):
-            raise ValueError('LOCAL official authorization is unavailable')
-        runtime_guard=local_runtime_guard(authority,request.authorization.identity,closure.source,request.authorization.expires_at)
-        safety_preflight=LocalRuntimeSafetyPreflight(authority,request.authorization.identity,
-            closure.source,request.authorization.expires_at,
-            runtime_guard=runtime_guard,
-            refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,request.authorization.identity))
-        safety_preflight()
+    from .p3_local_runtime import local_runtime_guard, LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
+    if not isinstance(request.authorization,(LocalRunAuthorization,RunAuthorization)):
+        raise ValueError('P3 official authorization is unavailable')
+    # Staging-scope runtime approval and the six-second safety refresh apply to both lanes.
+    runtime_guard=local_runtime_guard(authority,identity,closure.source,request.authorization.expires_at)
+    safety_preflight=LocalRuntimeSafetyPreflight(authority,identity,
+        closure.source,request.authorization.expires_at,
+        runtime_guard=runtime_guard,
+        refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,identity))
+    safety_preflight()
     if authority.application_revision!=closure.source.commit_sha:
         raise ValueError('P3 official worker revision differs from its closure')
-    if local and WORKFLOW_OPERATIONS.get(operation) == 'HOLDOUT':
-        from .p3_session import await_local_session_owner
-        if request is None or safety_preflight is None:
-            raise ValueError('LOCAL owner lost startup authority')
+    if WORKFLOW_OPERATIONS.get(operation) == 'HOLDOUT':
+        # Both lanes: the worker records its own process before SQL and waits for the root
+        # controller to bind exactly this process into the protected session.
+        from .p3_session import await_session_owner
         owner_preflight = safety_preflight
         def owner_guard():
             attest_closure()
             owner_preflight()
-        await_local_session_owner(profile, closure, host_profile_digest=digest,
+        await_session_owner(profile, closure, directory=directory, identity=identity, host_profile_digest=digest,
             expires_at=request.authorization.expires_at, guard=owner_guard)
     settings=JobStoreSettings.from_systemd_credentials(
         {'CREDENTIALS_DIRECTORY':profile.worker_credentials_directory},expected_user='trading_job_worker')
@@ -97,19 +96,19 @@ def run_official_once(values,*,build_worker):
     with WorkerRepository(settings) as repository:
         if WORKFLOW_OPERATIONS.get(operation) == 'HOLDOUT':
             return run_session(values, repository=repository, profile=profile, closure=closure,
-                authority=authority, build_worker=build_worker, runtime_guard=runtime_guard)
-        if local:
-            repository.assert_session_runtime_identity()
-        else:
-            repository.assert_p3_runtime_identity()
-        safety_kwargs=({'p3_safety_preflight':safety_preflight} if local else {'p3_runtime_guard':runtime_guard})
-        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,**safety_kwargs)
+                authority=authority, build_worker=build_worker, runtime_guard=runtime_guard,
+                directory=directory, identity=identity)
+        # One campaign ledger at the session catalog serves every official operation.
+        repository.assert_session_runtime_identity()
+        worker=build_worker(repository,values,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,
+            p3_safety_preflight=safety_preflight)
         # Processing an attempt is not research success; workflow wait must read
         # its canonical terminal Job API result and retained operation receipt.
         return 0 if worker.run_once() else 2
 
 
-def run_session(values, *, repository: WorkerRepository, profile, closure, authority, build_worker, runtime_guard=None) -> int:
+def run_session(values, *, repository: WorkerRepository, profile, closure, authority, build_worker, runtime_guard=None,
+                directory: Path, identity) -> int:
     """Consume three independently approved jobs in one bounded process lifetime.
 
     Protected stage profiles are supplied by the existing host authority. Waiting
@@ -125,22 +124,20 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
     from .p3_host_profile import OFFICIAL_PROFILE, LocalOfficialHostProfileLane, read_official_profile
     from .p3_spawn import P3SpawnProvider
     from .worker import WORKER_LEASE_SECONDS
-    path = (local_run_directory(profile.identity)/'session.json' if isinstance(profile,LocalOfficialHostProfileLane)
-        else Path(f"/run/trading-agent-p3/{values['GITHUB_RUN_ID']}-{values['GITHUB_RUN_ATTEMPT']}/session.json"))
+    path = directory/'session.json'
     store = LocalArtifactStore(Path(profile.store_root))
     with P3HoldoutSession(path, store=store) as session:
         safety_preflight=None
-        if isinstance(profile,LocalOfficialHostProfileLane):
-            if runtime_guard is None:raise ValueError('LOCAL session lost runtime approval')
+        if runtime_guard is not None:
             # Preserve the startup digest for the whole session; stage-specific
             # approvals keep their own expiry checks in the existing fences.
             runtime_guard=partial(runtime_guard,deadline=session.profile.workflow_deadline)
             runtime_guard()
             from .p3_local_runtime import LocalRuntimeSafetyPreflight, refresh_local_safety_evidence
-            safety_preflight=LocalRuntimeSafetyPreflight(authority,profile.identity,closure.source,
+            safety_preflight=LocalRuntimeSafetyPreflight(authority,identity,closure.source,
                 session.profile.workflow_deadline,
                 runtime_guard=runtime_guard,
-                refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,profile.identity))
+                refresh_dynamic_evidence=partial(refresh_local_safety_evidence,authority,identity))
         if (session.profile.source != closure.source or session.profile.environment_ref != profile.environment_ref
             or session.profile.closure_sha256 != closure.closure_sha256):
             raise ValueError('session differs from admitted startup closure')
@@ -168,13 +165,13 @@ def run_session(values, *, repository: WorkerRepository, profile, closure, autho
                         if candidate.payload.operation != operation:
                             raise ValueError('protected host selected an out-of-order job')
                         profile, closure = read_official_profile(path.with_name('profile.json'), digest,
-                            job_id=candidate.job_id, payload=candidate.payload, context=values)
+                            job_id=candidate.job_id, payload=candidate.payload, admission=True)
                         break
                     time.sleep(0.25)
             _, digest = read_protected_canonical_json_current(path.with_name('profile.json'))
             def attest():
                 current = read_official_profile(path.with_name('profile.json'), digest,
-                    job_id=profile.job_id, payload=profile.payload, context=values)
+                    job_id=profile.job_id, payload=profile.payload, admission=False)
                 if current != (profile, closure):
                     raise ValueError('session stage closure changed')
                 return closure

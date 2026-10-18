@@ -18,7 +18,7 @@ def test_official_composition_reuses_canonical_worker_publication_and_recovery(s
         def alpha_publication_repository(self,store):
             assert store is provider._store
             return publisher
-    authority=SimpleNamespace(runtime_authority=SimpleNamespace(scope='PACKAGE6_STAGING_ONLY') if local else object(),runtime_paths=SimpleNamespace(
+    authority=SimpleNamespace(runtime_authority=SimpleNamespace(scope='PACKAGE6_STAGING_ONLY'),runtime_paths=SimpleNamespace(
         artifact_root=tmp_path,reports_root=tmp_path,signals_root=tmp_path),
         safety_snapshot_path=tmp_path/'safety',safety_exporter_commit='a'*40,
         safety_source_fingerprint='b'*64,application_revision=job.payload.expected_source.commit_sha)
@@ -33,10 +33,14 @@ def test_official_composition_reuses_canonical_worker_publication_and_recovery(s
     def runtime_guard():
         from services.job_worker.errors import SafetyBlockedError
         if revoked[0]:raise SafetyBlockedError('SAFETY_AUTHORITY_CHANGED','LOCAL runtime revoked')
-    supplied={'P3_ISSUER_KIND':'LOCAL','TRADING_PACKAGE6_APPROVAL_SHA256':'f'*64} if local else {}
+    supplied={'P3_ISSUER_KIND':'LOCAL' if local else 'GITHUB','TRADING_PACKAGE6_APPROVAL_SHA256':'f'*64}
+    # Both lanes refuse official composition without pinned runtime approval.
+    with pytest.raises(ValueError,match='pinned runtime approval'):
+        main.build_worker(Repository(),supplied,authority=authority,p3_spawn_provider=provider,p3_job_id=job_id)
+    assert calls==[]
     result=main.build_worker(Repository(),supplied,
         authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,
-        p3_runtime_guard=runtime_guard if local else None)
+        p3_runtime_guard=runtime_guard)
     assert [name for name,_ in calls]==['safety','recover','worker']
     assert calls[1][1]==dict(recovery_id='worker-startup-recovery',alpha_campaign=True,fixture_only=False,
         **({'job_id':job_id} if job_id is not None else {}))
@@ -46,11 +50,11 @@ def test_official_composition_reuses_canonical_worker_publication_and_recovery(s
     assert result['prepare_spawn']==provider.prepare
     assert result['p3_fixture_executor'] is None
     assert result['engine_spawn_provider'] is None
-    with pytest.raises(ValueError,match='LOCAL safety refresh'):
-        main.build_worker(Repository(),{'P3_ISSUER_KIND':'LOCAL'} if local else {},
+    with pytest.raises(ValueError,match='P3 safety refresh'):
+        main.build_worker(Repository(),{'P3_ISSUER_KIND':'LOCAL' if local else 'GITHUB'},
             authority=authority,p3_spawn_provider=provider,p3_job_id=job_id,
             p3_safety_preflight=lambda:None)
-    if local:
+    if True:
         assert supplied['TRADING_PACKAGE6_APPROVAL_SHA256']=='f'*64
         with pytest.raises(ValueError,match='legacy research fixture'):
             main.build_worker(Repository(),{**supplied,'TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH':'/tmp/legacy'},
@@ -86,11 +90,12 @@ def test_local_safety_refresh_composition_is_bound_before_recovery(synthetic_pro
         return main.build_worker(Repository(),{'P3_ISSUER_KIND':'GITHUB' if case=='github' else 'LOCAL'},
             authority=authority,p3_spawn_provider=provider,p3_job_id=job.job_id,
             p3_runtime_guard=(lambda:None) if case=='mixed-guard' else None,p3_safety_preflight=preflight)
-    if case=='accepted':
+    if case in {'accepted','github'}:
+        # The GITHUB lane composes the same staging-scope refresh as LOCAL.
         assert build()['safety_preflight'] is preflight
         assert events==['safety','recover','worker']
     else:
-        with pytest.raises(ValueError,match='LOCAL safety refresh'):build()
+        with pytest.raises(ValueError,match='P3 safety refresh'):build()
         assert events==[]
 
 

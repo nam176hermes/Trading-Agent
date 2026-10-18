@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 import socket
 
-from packages.alpha_lifecycle.contracts.authority import CustodyRecord,LocalRunIdentity,LocalRunAuthorization
+from packages.alpha_lifecycle.contracts.authority import CustodyRecord,GithubRunIdentity,LocalRunIdentity,LocalRunAuthorization,RunAuthorization
 from packages.alpha_lifecycle.authority import validate_local_operation_authority
 from packages.alpha_lifecycle.contracts.base import Sha256,SourceIdentity,StrictModel
 from packages.alpha_lifecycle.custody import ReleaseRequest
@@ -41,10 +41,19 @@ class LocalCustodianProfile(_CustodianProfileFields):
     authorization_ref: ArtifactRefV1
 
 
-CUSTODIAN_PROFILE=TypeAdapter(Annotated[CustodianHostProfile | LocalCustodianProfile,Field(discriminator='schema_version')])
+class GithubCustodianProfile(_CustodianProfileFields):
+    """Hosted session custody, bound to the API-attested run that owns the HOLDOUT."""
+    schema_version: Literal['p3-github-custodian-profile-v1']
+    identity: GithubRunIdentity
+    authorization_ref: ArtifactRefV1
 
 
-def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProfile | LocalCustodianProfile:
+_SESSION_CUSTODY={'p3-custodian-session-profile-v1','p3-local-custodian-profile-v1','p3-github-custodian-profile-v1'}
+CUSTODIAN_PROFILE=TypeAdapter(Annotated[CustodianHostProfile | LocalCustodianProfile | GithubCustodianProfile,
+    Field(discriminator='schema_version')])
+
+
+def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProfile | LocalCustodianProfile | GithubCustodianProfile:
     try:
         document,digest=read_protected_canonical_json_current(path)
     except ProtectedAuthorityError as error:
@@ -52,8 +61,7 @@ def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProf
     if digest!=expected_digest:raise ValueError('custodian profile digest changed')
     profile=CUSTODIAN_PROFILE.validate_json(canonical_json_bytes(document))
     _request_identity(profile.request,profile.endpoint)
-    catalog = (SESSION_CATALOG_SHA256 if profile.schema_version in {'p3-custodian-session-profile-v1','p3-local-custodian-profile-v1'}
-        else CUSTODIAN_CATALOG_SHA256)
+    catalog = SESSION_CATALOG_SHA256 if profile.schema_version in _SESSION_CUSTODY else CUSTODIAN_CATALOG_SHA256
     if (profile.request.source!=SourceIdentity.model_validate(canonical_source_identity(ROOT))
         or profile.catalog_sha256!=catalog):
         raise ValueError('custodian source or catalog differs')
@@ -73,6 +81,29 @@ def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProf
             or hashlib.sha256(canonical_json_bytes(derive_holdout_request(intent,authorization,
                 expected_source=profile.request.source))).hexdigest()!=profile.request.holdout_request_sha256):
             raise ValueError('local custodian request differs from protected operation')
+    if isinstance(profile,GithubCustodianProfile):
+        # Custodian release is an admission point: the run must be freshly attested and the
+        # run-published request must still be the reviewed HOLDOUT this profile names.
+        from packages.alpha_lifecycle.replica_store import _read
+        from packages.alpha_lifecycle.holdout import derive_holdout_request
+        from packages.alpha_lifecycle.authority import AuthorityHeld, validate_request
+        from packages.alpha_lifecycle.github_run import github_run_directory
+        authorization=_read(LocalArtifactStore(Path(profile.metadata_root)),profile.authorization_ref,RunAuthorization)
+        identity=profile.identity
+        if ((authorization.issuer_run_id,authorization.issuer_attempt)!=(identity.run_id,identity.attempt)
+            or authorization.operation!='HOLDOUT'
+            or profile.authorization_ref.content_sha256!=profile.request.authorization_digest):
+            raise ValueError('hosted custodian operation run or digest differs')
+        try:
+            admitted=validate_request(github_run_directory(identity.run_id,identity.attempt)/'operations'/
+                f'{authorization.nonce}.json',profile.request.source,'HOLDOUT')
+        except AuthorityHeld as error:
+            raise ValueError('hosted custodian operation is not currently admitted') from error
+        intent=admitted.operation_input
+        if (admitted.authorization!=authorization or intent is None or intent.digest!=profile.request.intent_digest
+            or hashlib.sha256(canonical_json_bytes(derive_holdout_request(intent,authorization,
+                expected_source=profile.request.source))).hexdigest()!=profile.request.holdout_request_sha256):
+            raise ValueError('hosted custodian request differs from protected operation')
     if read_protected_canonical_json_current(path)[1]!=expected_digest:
         raise ValueError('custodian profile changed during admission')
     return profile
@@ -93,12 +124,15 @@ def serve_profiled_release(channel: socket.socket,*,profile_path: Path,profile_d
         return profile.endpoint
     repository=CustodianReleaseRepository.from_systemd_credentials(
         {'CREDENTIALS_DIRECTORY':profile.credentials_directory},
-        session=profile.schema_version in {'p3-custodian-session-profile-v1','p3-local-custodian-profile-v1'})
+        session=profile.schema_version in _SESSION_CUSTODY)
     store=LocalArtifactStore(root)
     io_deadline=None
     if isinstance(profile,LocalCustodianProfile):
         from packages.alpha_lifecycle.replica_store import _read
         io_deadline=_read(store,profile.authorization_ref,LocalRunAuthorization).expires_at
+    elif isinstance(profile,GithubCustodianProfile):
+        from packages.alpha_lifecycle.replica_store import _read
+        io_deadline=_read(store,profile.authorization_ref,RunAuthorization).expires_at
     serve_release(channel,profile.endpoint,store,repository=repository,
         request_sha256=hashlib.sha256(canonical_json_bytes(profile.request)).hexdigest(),
         read_plaintext=read_plaintext,recheck_profile=recheck,io_deadline=io_deadline)

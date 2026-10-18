@@ -178,14 +178,15 @@ def build_worker(
     p3_profile = p3_fixture_executor is not None or p3_spawn_provider is not None
     if p3_safety_preflight is not None:
         from .p3_local_runtime import LocalRuntimeSafetyPreflight
-        if (not p3_profile or values.get('P3_ISSUER_KIND','GITHUB')!='LOCAL'
+        if (not p3_profile or values.get('P3_ISSUER_KIND','GITHUB') not in {'LOCAL','GITHUB'}
             or p3_runtime_guard is not None or type(p3_safety_preflight) is not LocalRuntimeSafetyPreflight
             or not p3_safety_preflight.matches_authority(selected_authority)):
-            raise ValueError('LOCAL safety refresh requires its exact P3 runtime authority')
+            raise ValueError('P3 safety refresh requires its exact P3 runtime authority')
         safety_preflight=p3_safety_preflight
-    elif p3_profile and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
+    elif p3_profile:
+        # Both issuer lanes run official and fixture work only under pinned runtime approval.
         if p3_runtime_guard is None:
-            raise ValueError('LOCAL P3 worker requires pinned runtime approval')
+            raise ValueError('P3 worker requires pinned runtime approval')
         base_preflight=safety_preflight
         def safety_preflight():
             p3_runtime_guard()
@@ -193,7 +194,7 @@ def build_worker(
             p3_runtime_guard()
             return evidence
     elif p3_runtime_guard is not None:
-        raise ValueError('LOCAL runtime guard requires a LOCAL P3 worker')
+        raise ValueError('P3 runtime guard requires a P3 worker')
 
     # Fail before the worker can recover leases, claim, or construct a runner.
     safety_preflight()
@@ -340,11 +341,11 @@ def _fixture_job(values):
         raise ValueError('fixture worker enqueue operation differs')
     lane=values.get('P3_ISSUER_KIND','GITHUB')
     if lane not in {'LOCAL','GITHUB'}:raise ValueError('fixture issuer lane differs')
-    if lane=='LOCAL':
-        from packages.alpha_lifecycle.authority import validate_request,_LocalFixtureAuthorization
-        admitted=validate_request(paths['P3_AUTHORITY_REQUEST_FILE'],payload.expected_source,'PARITY')
-        if not isinstance(admitted.authorization,_LocalFixtureAuthorization):
-            raise ValueError('local fixture launcher requires protected local fixture authority')
+    from packages.alpha_lifecycle.authority import validate_request,_FixtureAuthorization,_LocalFixtureAuthorization
+    admitted=validate_request(paths['P3_AUTHORITY_REQUEST_FILE'],payload.expected_source,'PARITY')
+    expected=_LocalFixtureAuthorization if lane=='LOCAL' else _FixtureAuthorization
+    if not isinstance(admitted.authorization,expected):
+        raise ValueError('fixture launcher requires protected fixture authority of its lane')
     return binding[0],payload,binding[2]
 
 def main() -> int:
@@ -360,14 +361,19 @@ def main() -> int:
     if fixture_binding is not None and authority.application_revision!=fixture_binding[1].expected_source.commit_sha:
         raise ValueError('fixture worker revision differs from workflow source')
     runtime_guard=None
-    if fixture_binding is not None and values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
-        from packages.alpha_lifecycle.authority import validate_request,_LocalFixtureAuthorization
+    if fixture_binding is not None:
+        from packages.alpha_lifecycle.authority import validate_request,_FixtureAuthorization,_LocalFixtureAuthorization
+        from packages.alpha_lifecycle.github_run import github_run_identity
         from .p3_local_runtime import local_runtime_guard
         from pathlib import Path
         admitted=validate_request(Path(values['P3_AUTHORITY_REQUEST_FILE']),fixture_binding[1].expected_source,'PARITY')
-        if not isinstance(admitted.authorization,_LocalFixtureAuthorization):
-            raise ValueError('LOCAL fixture authorization is unavailable')
-        runtime_guard=local_runtime_guard(authority,admitted.authorization.identity,fixture_binding[1].expected_source,
+        if isinstance(admitted.authorization,_LocalFixtureAuthorization):
+            identity=admitted.authorization.identity
+        elif isinstance(admitted.authorization,_FixtureAuthorization):
+            identity=github_run_identity(admitted.authorization)
+        else:
+            raise ValueError('fixture authorization is unavailable')
+        runtime_guard=local_runtime_guard(authority,identity,fixture_binding[1].expected_source,
             admitted.authorization.expires_at)
     idle_seconds = float(values.get("TRADING_WORKER_IDLE_SECONDS", "1"))
     settings = (
@@ -383,12 +389,10 @@ def main() -> int:
         raise ValueError('fixture worker enqueue changed before database admission')
     with WorkerRepository(settings) as repository:
         if fixture_binding is not None:
-            if values.get('P3_ISSUER_KIND','GITHUB')=='LOCAL':
-                repository.assert_session_runtime_identity()
-            else:
-                repository.assert_p3_runtime_identity()
+            # The fixture worker uses the campaign ledger's session catalog in both lanes.
+            repository.assert_session_runtime_identity()
             worker = build_p3_fixture_worker(repository,values,authority=authority,job_id=fixture_binding[0],
-                **({"p3_runtime_guard":runtime_guard} if runtime_guard is not None else {}))
+                p3_runtime_guard=runtime_guard)
             return 0 if worker.run_once() else 2
         repository.assert_runtime_identity(
             expected_user="trading_job_worker",

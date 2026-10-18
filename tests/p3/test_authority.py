@@ -25,7 +25,8 @@ def test_workflow_operation_is_a_closed_enum() -> None:
 def test_authority_request_rejects_group_readable_file(tmp_path) -> None:
     path = tmp_path/"request.json"; path.write_text("{}")
     path.chmod(0o640)
-    with pytest.raises(AuthorityHeld,match="0600"):
+    # A caller-owned file can no longer carry GitHub authority, whatever its mode.
+    with pytest.raises(AuthorityHeld,match="root-published"):
         validate_request(path,expected_source=None,operation="BASELINES")
 
 
@@ -65,13 +66,14 @@ def _request(expires_at: str) -> tuple[dict[str, object], SourceIdentity]:
     }, source
 
 
-def test_authority_request_is_source_bound_and_unexpired(tmp_path) -> None:
+def test_authority_request_is_source_bound_and_unexpired(monkeypatch) -> None:
+    from tests.p3.github_lane import GithubLane
     request, source = _request("2026-01-01T01:00:00Z")
-    path = tmp_path / "request.json"
-    path.write_text(json.dumps(request))
-    path.chmod(0o600)
+    path = GithubLane(monkeypatch, source=source).request(request)
     with pytest.raises(AuthorityHeld, match="not current"):
-        validate_request(path.resolve(), source, "BASELINES")
+        validate_request(path, source, "BASELINES")
+    with pytest.raises(AuthorityHeld, match="source"):
+        validate_request(path, source.model_copy(update={"commit_sha": "0" * 40}), "BASELINES")
 
 
 def test_protected_request_builds_one_closed_worker_payload() -> None:
@@ -108,15 +110,9 @@ def test_fixture_authorization_has_no_official_input_set_dependency(tmp_path,mon
     authorization["expires_at"] = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
     authorization.pop("digest")
     authorization["digest"] = hashlib.sha256(canonical_json_bytes(authorization)).hexdigest()
-    path = tmp_path / "fixture-request.json"
-    path.write_text(json.dumps(request)); path.chmod(0o600)
-    for key,value in dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',
-        GITHUB_REF='refs/heads/main',GITHUB_SHA=source.commit_sha,GITHUB_REF_PROTECTED='true',
-        GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ID=str(authorization['issuer_run_id']),
-        GITHUB_RUN_ATTEMPT=str(authorization['issuer_attempt']),
-        GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main').items():
-        monkeypatch.setenv(key,value)
-    validated = validate_request(path.resolve(), source, "PARITY")
+    from tests.p3.github_lane import GithubLane
+    path = GithubLane(monkeypatch, source=source, operation="p3-integration-fixture-v1").request(request)
+    validated = validate_request(path, source, "PARITY")
     payload = build_alpha_campaign_payload(validated.authorization, source, "p3-integration-fixture-v1")
     assert payload.manifest_ref.model_dump(mode="json") == authorization["fixture_plan_ref"]
     assert not hasattr(validated.authorization, "input_set_ref")

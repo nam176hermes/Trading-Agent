@@ -17,7 +17,7 @@ from pydantic import BeforeValidator, Field, TypeAdapter, model_validator
 from packages.alpha_lifecycle.contracts.base import StrictModel, SourceIdentity, Sha256
 from packages.alpha_lifecycle.contracts.models import json_array
 from packages.alpha_lifecycle.contracts.authority import (CustodyRecord, RUN_AUTHORIZATION,
-    RunAuthorizationValue, LocalRunAuthorization, LocalRunIdentity)
+    RunAuthorizationValue, LocalRunAuthorization, LocalRunIdentity, GithubRunIdentity)
 from packages.alpha_lifecycle.authority import local_run_directory
 from packages.alpha_lifecycle.contracts.execution import HoldoutManifest
 from packages.alpha_lifecycle.holdout_view import HoldoutCalculationView
@@ -45,6 +45,9 @@ if TYPE_CHECKING:
     from .safety_state import SafetyEvidence
 
 _STAGES = ('HOLDOUT', 'PARITY', 'PHASE_EXIT')
+# Hosted HOLDOUT→PARITY→PHASE_EXIT session bound. The measured LOCAL session took
+# 48 min 47 s including two mid-session reviews, so the former 37 minutes could not hold.
+HOSTED_SESSION_MINUTES = 150
 
 
 class SessionAttempt(StrictModel):
@@ -95,7 +98,7 @@ class SessionProfile(_SessionProfileFields):
 
     @model_validator(mode='after')
     def _hosted_bound(self):
-        if self.workflow_deadline > self.issued_at + timedelta(minutes=37):
+        if self.workflow_deadline > self.issued_at + timedelta(minutes=HOSTED_SESSION_MINUTES):
             raise ValueError('hosted session exceeds its workflow maximum')
         return self
 
@@ -114,10 +117,8 @@ class LocalSessionProfile(_SessionProfileFields):
 SESSION_PROFILE = TypeAdapter(Annotated[SessionProfile | LocalSessionProfile,Field(discriminator='schema_version')])
 
 
-class LocalSessionOwnerObservation(StrictModel):
+class _OwnerObservationFields(StrictModel):
     """Untrusted worker observation; the root controller must inspect the process."""
-    schema_version: Literal['p3-local-session-owner-observation-v1']
-    identity: LocalRunIdentity
     source: SourceIdentity
     job_id: str
     host_profile_sha256: Sha256
@@ -133,9 +134,17 @@ class LocalSessionOwnerObservation(StrictModel):
         return self
 
 
-class LocalSessionLaunch(StrictModel):
-    schema_version: Literal['p3-local-session-launch-v1']
+class LocalSessionOwnerObservation(_OwnerObservationFields):
+    schema_version: Literal['p3-local-session-owner-observation-v1']
     identity: LocalRunIdentity
+
+
+class GithubSessionOwnerObservation(_OwnerObservationFields):
+    schema_version: Literal['p3-session-owner-observation-v1']
+    identity: GithubRunIdentity
+
+
+class _SessionLaunchFields(StrictModel):
     source: SourceIdentity
     job_id: str
     host_profile_sha256: Sha256
@@ -147,7 +156,32 @@ class LocalSessionLaunch(StrictModel):
     workflow_deadline: CanonicalUtcDateTime
 
 
-def await_local_session_owner(profile, closure, *, host_profile_digest, expires_at, guard):
+class LocalSessionLaunch(_SessionLaunchFields):
+    schema_version: Literal['p3-local-session-launch-v1']
+    identity: LocalRunIdentity
+
+
+class GithubSessionLaunch(_SessionLaunchFields):
+    schema_version: Literal['p3-session-launch-v1']
+    identity: GithubRunIdentity
+
+
+def session_lane(identity):
+    """(launch, observation, session) models and observation schema for the issuer lane."""
+    if isinstance(identity, GithubRunIdentity):
+        return GithubSessionLaunch, GithubSessionOwnerObservation, SessionProfile, 'p3-session-owner-observation-v1'
+    return LocalSessionLaunch, LocalSessionOwnerObservation, LocalSessionProfile, 'p3-local-session-owner-observation-v1'
+
+
+def session_belongs_to(session, identity) -> bool:
+    """The session was parsed by its lane's model; this binds it to the admitted run."""
+    if isinstance(identity, GithubRunIdentity):
+        return ((getattr(session, 'workflow_run_id', None), getattr(session, 'workflow_attempt', None))
+                == (identity.run_id, identity.attempt))
+    return getattr(session, 'identity', None) == identity
+
+
+def await_session_owner(profile, closure, *, directory: Path, identity, host_profile_digest, expires_at, guard):
     """Observe the post-exec worker before SQL, then await exact root admission."""
     from io import BytesIO
     from .artifacts import ArtifactWriter
@@ -155,7 +189,8 @@ def await_local_session_owner(profile, closure, *, host_profile_digest, expires_
     now = datetime.now(UTC)
     if expires_at <= now:
         raise ValueError('session authority already expired')
-    path = local_run_directory(profile.identity)/'session.json'
+    launch_model, observation_model, session_model, observation_schema = session_lane(identity)
+    path = directory/'session.json'
     launch_path = path.with_name('session-launch.json')
     # Root may still be publishing immediately after fork; no SQL or observation yet.
     publish_deadline = time.monotonic() + min(60, (expires_at-now).total_seconds())
@@ -173,17 +208,17 @@ def await_local_session_owner(profile, closure, *, host_profile_digest, expires_
                 time.sleep(0.25)
                 continue
             raise
-    launch = LocalSessionLaunch.model_validate_json(canonical_json_bytes(launch_document))
+    launch = launch_model.model_validate_json(canonical_json_bytes(launch_document))
     deadline = launch.workflow_deadline
     parent = ProcProcessInspector().inspect(os.getpid())
-    if (parent is None or launch.identity != profile.identity or launch.source != closure.source
+    if (parent is None or launch.identity != identity or launch.source != closure.source
         or launch.job_id != profile.job_id or launch.host_profile_sha256 != host_profile_digest
         or launch.worker_pid != os.getpid() or launch.worker_start_ticks != parent.start_ticks
         or launch.worker_uid != os.geteuid() or launch.controller_pid != os.getppid()
         or not launch.issued_at <= datetime.now(UTC) < deadline <= expires_at):
         raise ValueError('session owner differs from protected transport launch')
-    observation = LocalSessionOwnerObservation.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-session-owner-observation-v1', identity=profile.identity,
+    observation = observation_model.model_validate_json(canonical_json_bytes(dict(
+        schema_version=observation_schema, identity=identity,
         source=closure.source, job_id=profile.job_id, host_profile_sha256=host_profile_digest,
         parent=dict(pid=parent.pid, process_group=parent.process_group, start_ticks=parent.start_ticks,
                     command_fingerprint=parent.command_fingerprint),
@@ -215,8 +250,8 @@ def await_local_session_owner(profile, closure, *, host_profile_digest, expires_
                 time.sleep(0.25)
                 continue
             raise
-        session = LocalSessionProfile.model_validate_json(canonical_json_bytes(document))
-        if (session.parent != parent or session.identity != profile.identity
+        session = session_model.model_validate_json(canonical_json_bytes(document))
+        if (session.parent != parent or not session_belongs_to(session, identity)
             or session.source != closure.source or session.closure_sha256 != closure.closure_sha256
             or canonical_json_bytes(session.environment_ref) != canonical_json_bytes(profile.environment_ref)
             or session.issued_at != observation.issued_at or session.workflow_deadline != deadline
@@ -328,10 +363,15 @@ class P3HoldoutSession:
         self._digest: str
         document, self._digest = read_protected_canonical_json_current(profile_path)
         self.profile = SESSION_PROFILE.validate_json(canonical_json_bytes(document))
+        from packages.alpha_lifecycle.github_run import github_run_directory
         expected = (local_run_directory(self.profile.identity)/'session.json' if isinstance(self.profile,LocalSessionProfile)
-            else Path(f'/run/trading-agent-p3/{self.profile.workflow_run_id}-{self.profile.workflow_attempt}/session.json'))
+            else github_run_directory(self.profile.workflow_run_id, self.profile.workflow_attempt)/'session.json')
         if profile_path != expected:
             raise ValueError('session profile must use its workflow-owned path')
+        self._run_binding = None
+        if isinstance(self.profile, SessionProfile):
+            # The hosted session stays bound to the attestation it started under (PR77-05).
+            self._run_binding = self._hosted_run_binding()
         self._path: Path = profile_path
         self._store: LocalArtifactStore = store
         self._view: HoldoutCalculationView | None = None
@@ -363,12 +403,28 @@ class P3HoldoutSession:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def _hosted_run_binding(self):
+        from packages.alpha_lifecycle.github_run import read_github_run
+        run, _ = read_github_run(self.profile.workflow_run_id, self.profile.workflow_attempt, admission=False)
+        return run.mode, run.head_sha, run.operation, run.runner_name, run.research_inputs_sha256, run.host_id, run.boot_id
+
     def _check_owner(self) -> None:
         if isinstance(self.profile,LocalSessionProfile):
             from packages.alpha_lifecycle.local_qualification import _host_identity
             if _host_identity() != (self.profile.identity.host_id,self.profile.identity.boot_id):
                 self.close()
                 raise ValueError('local session host identity changed')
+        else:
+            # In-stage fence: the run attestation must still be present (revocation is by
+            # deletion) and bound to this host/boot; admission freshness is not re-required.
+            from packages.alpha_lifecycle.github_run import GithubRunHeld
+            try:
+                current = self._hosted_run_binding()
+            except GithubRunHeld:
+                current = None
+            if current is None or current != self._run_binding:
+                self.close()
+                raise ValueError('hosted session run attestation was revoked or changed')
         if (self._closed or time.monotonic() >= self._deadline
             or not self.profile.issued_at <= datetime.now(UTC) < self.profile.expires_at
             or os.getpid() != self.profile.parent.pid
@@ -410,10 +466,10 @@ class P3HoldoutSession:
             self.close()
             raise
 
-    def _host(self, claim: ClaimedJob, digest: str) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
+    def _host(self, claim: ClaimedJob, digest: str, *, admission: bool = False) -> tuple['ANY_OFFICIAL_PROFILE', 'CompleteP3Closure']:
         from .p3_host_profile import read_official_profile
         profile, closure = read_official_profile(self._path.with_name('profile.json'), digest,
-            job_id=claim.job_id, payload=claim.payload, context=os.environ)
+            job_id=claim.job_id, payload=claim.payload, admission=admission)
         identity = canonical_json_bytes(profile.model_dump(mode='json', exclude={'job_id', 'payload', 'custodian_endpoint'}))
         if (closure.source != self.profile.source or closure.environment_ref != self.profile.environment_ref
             or closure.closure_sha256 != self.profile.closure_sha256
@@ -452,7 +508,7 @@ class P3HoldoutSession:
                 or stage.attempts != (*self._attempts, current)):
                 raise ValueError('session protected attempt chain differs from current claim')
             self._stage_digest = stage_digest
-            _ = self._host(claim, digest)
+            _ = self._host(claim, digest, admission=True)
             authorization = _read(self._store, claim.payload.authorization_ref, RUN_AUTHORIZATION)
             intent = _read(self._store, claim.payload.manifest_ref, P3OperationInput)
             body = intent.body
@@ -522,8 +578,7 @@ class P3HoldoutSession:
             from packages.alpha_lifecycle.native_request import prepare_native_commitment
             commitment = prepare_native_commitment(manifest_ref, self._spec, view)
             self.native_commitment_ref = self.put_bytes(canonical_json_bytes(commitment), media_type='application/json')
-            if isinstance(self.profile, LocalSessionProfile):  # GITHUB lane not verified for notes.
-                publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
+            publish_session_ref(profile.output_root, active[0].job_id, 'NATIVE_COMMITMENT', self.native_commitment_ref)
             self.fence()
             return request_ref, manifest_ref
         except BaseException:
@@ -638,8 +693,7 @@ class P3HoldoutSession:
             primary_parity_ref=refs[0], baseline_parity_ref=refs[1], store=self,
             native_parent_proof_ref=self.native_parent_proof_ref)
         self.parity_pair_ref = self.put_bytes(canonical_json_bytes(pair), media_type='application/json')
-        if isinstance(self.profile, LocalSessionProfile):
-            publish_session_ref(self._host(active[0], active[2])[0].output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
+        publish_session_ref(self._host(active[0], active[2])[0].output_root, active[0].job_id, 'PARITY_PAIR', self.parity_pair_ref)
         return results[0]
 
     def read_bytes(self, ref: ArtifactRefV1) -> bytes:

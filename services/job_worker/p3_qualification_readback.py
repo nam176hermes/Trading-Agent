@@ -172,7 +172,7 @@ def validate_integration_receipt(
     from packages.alpha_lifecycle.authority import FIXTURE_AUTHORIZATION, _LocalFixtureAuthorization
     from packages.alpha_lifecycle.contracts.authority import INTEGRATION_RECEIPT,LocalIntegrationReceipt,ReviewApproval
     from packages.job_contracts import AlphaCampaignOperation,AlphaCampaignPayload
-    from .p3_integration import FIXTURE_PLAN,LocalFixturePlan,ROOT
+    from .p3_integration import FIXTURE_PLAN,GithubFixturePlan,ROOT,plan_matches_lane
     from .p3_fixture_sql import validate_sql_fixture_checks
     from .p3_fixture_native import native_fixture_definition
 
@@ -206,7 +206,7 @@ def validate_integration_receipt(
         and (receipt.workflow_run_id,receipt.workflow_attempt)==(authorization.issuer_run_id,authorization.issuer_attempt))
     if (receipt.source!=source or plan.source!=source or review.source!=source
         or authorization.fixture_plan_ref!=fixture_payload.manifest_ref
-        or not issuer_matches or isinstance(plan,LocalFixturePlan)!=local
+        or not issuer_matches or not plan_matches_lane(plan,authorization)
         or review.verdict!='APPROVED' or review.operator_identity==review.reviewer_identity
         or not review.issued_at<=authorization.issued_at<authorization.expires_at<=review.expires_at
         or plan.digest not in review.subject_digests
@@ -219,7 +219,8 @@ def validate_integration_receipt(
     progress()
     sql=_object(_read(receipt.sql_proof_ref,store,media_type='application/json',max_bytes=65536),
         ('source','checks','sql_revision','postgres_binary_sha256','started_at','finished_at','cleanup')
-        + (('native_process_checks','session_holdout_checks','local_identity_checks') if local else ()))
+        + (('native_process_checks','session_holdout_checks','local_identity_checks') if local
+           else ('native_process_checks','session_holdout_checks') if isinstance(plan,GithubFixturePlan) else ()))
     if (sql['source']!=source.model_dump(mode='json') or sql['sql_revision']!=plan.sql_revision
         or sql['postgres_binary_sha256']!=postgres_binary_sha256):
         raise ValueError('qualification SQL source, binary or required checks differ')
@@ -227,6 +228,9 @@ def validate_integration_receipt(
     if local:
         from .p3_fixture_sql import validate_local_sql_fixture_checks
         validate_local_sql_fixture_checks(sql)
+    elif isinstance(plan,GithubFixturePlan):
+        from .p3_fixture_sql import validate_github_sql_fixture_checks
+        validate_github_sql_fixture_checks(sql)
     instants=[]
     for key in ('started_at','finished_at'):
         value=sql[key]

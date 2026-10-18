@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from packages.alpha_lifecycle.authority import validate_operation_review, WORKFLOW_OPERATIONS
 from packages.alpha_lifecycle.baseline_campaign import validate_research_inputs
-from packages.alpha_lifecycle.contracts.authority import INTEGRATION_RECEIPT, LocalRunAuthorization
+from packages.alpha_lifecycle.contracts.authority import INTEGRATION_RECEIPT, GithubRunIdentity, LocalRunAuthorization, RunAuthorization
 from packages.alpha_lifecycle.contracts.data import DailyBar, DatasetEvidence
 from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity, InputSet
 from packages.alpha_lifecycle.contracts.results import RegimeThreshold
@@ -310,11 +310,19 @@ def prepare_authorization(intent, *, identity, source, review_ref, store, now: d
     inputs = _read(store, intent.input_set_ref, InputSet)
     if inputs.source != source:
         raise ValueError('operation InputSet source differs')
-    authorization = _seal(dict(schema_version='p3-local-run-authorization-v1', identity=identity,
-        input_set_ref=intent.input_set_ref, review_ref=review_ref, operation=intent.operation,
+    common = dict(input_set_ref=intent.input_set_ref, review_ref=review_ref, operation=intent.operation,
         allowed_alpha_ids=intent.allowed_alpha_ids, issued_at=now.isoformat().replace('+00:00', 'Z'),
         expires_at=expires_at.isoformat().replace('+00:00', 'Z'),
-        nonce=str(uuid4()), authority=dict(broker=False, live=False, network=False, production=False)), LocalRunAuthorization)
+        nonce=str(uuid4()), authority=dict(broker=False, live=False, network=False, production=False))
+    if isinstance(identity, GithubRunIdentity):
+        # The host controller seals this only after authenticating the run through the API.
+        if identity.workflow_ref != 'p3-authority.yml' or identity.issuer_identity != 'p3-authority':
+            raise ValueError('GitHub operation authority must come from p3-authority.yml')
+        authorization = _seal(dict(schema_version='p3-run-authorization-v1', issuer_workflow=identity.workflow_ref,
+            issuer_run_id=identity.run_id, issuer_attempt=identity.attempt, **common), RunAuthorization)
+    else:
+        authorization = _seal(dict(schema_version='p3-local-run-authorization-v1', identity=identity, **common),
+            LocalRunAuthorization)
     review = validate_operation_review(authorization, source, intent, store, now=now)
     store.read_bytes(review.evidence_ref)
     return authorization

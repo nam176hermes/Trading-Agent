@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
 from packages.alpha_lifecycle.data_view import seal_research_dataset
 from packages.alpha_lifecycle.local_custody import (
-    LocalCustodyCipherProfile, decrypt_custody_bundle, seal_custody_rows,
+    GithubCustodyCipherProfile, LocalCustodyCipherProfile, decrypt_custody_bundle, seal_custody_rows,
 )
 from packages.alpha_lifecycle.local_qualification import _host_identity
 from packages.alpha_lifecycle.pit_evidence import _reference
@@ -27,17 +27,26 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.runtime_release.config import read_protected_canonical_json_current
 from scripts.seal_p3_dataset import _committed_source
 from services.job_worker.p3_custodian_profile import (
-    LocalCustodianProfile, read_custodian_profile, serve_profiled_release,
+    GithubCustodianProfile, LocalCustodianProfile, read_custodian_profile, serve_profiled_release,
 )
+
+GITHUB_CIPHER_PATH=Path('/etc/trading-agent-p3/github/custody-cipher.json')
 
 
 def prepare(configuration):
     if os.geteuid()!=configuration['custodian_uid']:
         raise ValueError('custody producer must run as the declared custodian UID')
     source=_committed_source()
-    identity=LocalRunIdentity.model_validate_json(canonical_json_bytes(configuration['identity']))
-    if _host_identity()!=(identity.host_id,identity.boot_id):
-        raise ValueError('custody producer host or boot differs')
+    # GITHUB custody precedes any run: it binds this host, and the hosted session binds the run.
+    github=configuration.get('lane')=='GITHUB'
+    if github:
+        if 'identity' in configuration:
+            raise ValueError('GITHUB custody is identity-free until a run is attested')
+        identity=None
+    else:
+        identity=LocalRunIdentity.model_validate_json(canonical_json_bytes(configuration['identity']))
+        if _host_identity()!=(identity.host_id,identity.boot_id):
+            raise ValueError('custody producer host or boot differs')
     output=Path(configuration['output'])
     if output.exists() or output.resolve().is_relative_to(ROOT):
         raise ValueError('custody proposal output must be new and outside source')
@@ -63,10 +72,12 @@ def prepare(configuration):
         custodian_identity=configuration['custodian_identity'],research_identity=configuration['research_identity'],
         access_policy_digest=configuration['access_policy_digest'],binary=Path('/usr/bin/gpg'),
         binary_sha256=configuration['gpg_binary_sha256'],version=configuration['gpg_version'])
-    profile=LocalCustodyCipherProfile.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-custody-cipher-profile-v1',identity=identity,source=source,
-        custodian_uid=os.geteuid(),store_root=str(store._root),key_ref=key_ref,
-        gpg_binary_sha256=configuration['gpg_binary_sha256'],gpg_version=configuration['gpg_version'])))
+    pins=dict(source=source,custodian_uid=os.geteuid(),store_root=str(store._root),key_ref=key_ref,
+        gpg_binary_sha256=configuration['gpg_binary_sha256'],gpg_version=configuration['gpg_version'])
+    profile=(GithubCustodyCipherProfile.model_validate_json(canonical_json_bytes(dict(
+            schema_version='p3-github-custody-cipher-profile-v1',host_id=_host_identity()[0],**pins)))
+        if github else LocalCustodyCipherProfile.model_validate_json(canonical_json_bytes(dict(
+            schema_version='p3-local-custody-cipher-profile-v1',identity=identity,**pins))))
     result.update(source=source,identity=identity,cipher_profile_proposal=profile,
         holdout_dataset_ref=store.put_bytes(canonical_json_bytes(datasets[0]),media_type='application/json'),
         buffer_dataset_ref=store.put_bytes(canonical_json_bytes(datasets[1]),media_type='application/json'))
@@ -77,18 +88,25 @@ def prepare(configuration):
         stream.write(canonical_json_bytes(result)+b'\n');stream.flush();os.fsync(stream.fileno())
 
 
-def serve(profile_path, profile_digest, listener_fd):
-    profile=read_custodian_profile(profile_path,profile_digest)
-    if not isinstance(profile,LocalCustodianProfile) or os.geteuid()!=profile.endpoint.custodian_uid:
-        raise ValueError('LOCAL custody listener requires its protected custodian UID')
-    cipher_path=Path('/etc/trading-agent/local-qualification')/profile.identity.issuer_identity/'custody-cipher.json'
+def plaintext_reader(profile):
+    """Decrypt only through the protected cipher pins of the profile's own lane."""
+    github=isinstance(profile,GithubCustodianProfile)
+    cipher_path=(GITHUB_CIPHER_PATH if github else
+        Path('/etc/trading-agent/local-qualification')/profile.identity.issuer_identity/'custody-cipher.json')
 
     def read_plaintext(custody):
         document,digest=read_protected_canonical_json_current(cipher_path)
-        cipher=LocalCustodyCipherProfile.model_validate_json(canonical_json_bytes(document))
-        if (cipher.identity!=profile.identity or cipher.source!=profile.request.source
-            or cipher.custodian_uid!=os.geteuid()
-            or _host_identity()!=(cipher.identity.host_id,cipher.identity.boot_id)):
+        if github:
+            from packages.alpha_lifecycle.github_run import read_github_run
+            cipher=GithubCustodyCipherProfile.model_validate_json(canonical_json_bytes(document))
+            # Release is an admission point: a fresh attestation of exactly this run and host.
+            run,_=read_github_run(profile.identity.run_id,profile.identity.attempt,admission=True)
+            bound=(cipher.host_id==run.host_id and _host_identity()==(run.host_id,run.boot_id))
+        else:
+            cipher=LocalCustodyCipherProfile.model_validate_json(canonical_json_bytes(document))
+            bound=(cipher.identity==profile.identity
+                and _host_identity()==(cipher.identity.host_id,cipher.identity.boot_id))
+        if (not bound or cipher.source!=profile.request.source or cipher.custodian_uid!=os.geteuid()):
             raise ValueError('custody cipher profile identity, source or host differs')
         _reference(cipher.key_ref,64,media='application/octet-stream')
         store=LocalArtifactStore(Path(cipher.store_root))
@@ -97,6 +115,16 @@ def serve(profile_path, profile_digest, listener_fd):
         if read_protected_canonical_json_current(cipher_path)[1]!=digest:
             raise ValueError('custody cipher profile changed during decryption')
         return raw
+    return read_plaintext
+
+
+def serve(profile_path, profile_digest, listener_fd):
+    from services.job_worker.p3_session import HOSTED_SESSION_MINUTES
+    profile=read_custodian_profile(profile_path,profile_digest)
+    if (not isinstance(profile,(LocalCustodianProfile,GithubCustodianProfile))
+            or os.geteuid()!=profile.endpoint.custodian_uid):
+        raise ValueError('custody listener requires its protected custodian UID')
+    read_plaintext=plaintext_reader(profile)
 
     if listener_fd<=2:
         raise ValueError('custody requires a dedicated inherited listener')
@@ -104,7 +132,7 @@ def serve(profile_path, profile_digest, listener_fd):
         if (listener.family!=socket.AF_UNIX or listener.type!=socket.SOCK_SEQPACKET
             or listener.getsockname()!=profile.endpoint.socket_path):
             raise ValueError('custody listener differs from protected endpoint')
-        listener.settimeout(37*60)
+        listener.settimeout(HOSTED_SESSION_MINUTES*60)
         channel,_=listener.accept()
         with channel:
             serve_profiled_release(channel,profile_path=profile_path,profile_digest=profile_digest,

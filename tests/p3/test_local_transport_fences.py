@@ -850,9 +850,19 @@ def test_the_run_directory_is_derived_from_the_protected_identity(monkeypatch):
                              '/00000000-0000-4000-8000-000000000002-1')
 
 
-def test_a_github_identity_is_not_admitted_to_the_local_run(monkeypatch):
-    with pytest.raises(TransportHeld, match='LOCAL lane operation'):
+def test_a_relabelled_local_identity_is_not_admitted_as_a_github_run(monkeypatch):
+    with pytest.raises(TransportHeld, match='GITHUB run identity is invalid'):
         transport._official_run_directory({'identity': dict(_identity(), issuer_kind='GITHUB')})
+
+
+def test_a_github_identity_derives_its_attested_run_directory():
+    from pathlib import Path
+    identity = dict(issuer_kind='GITHUB', issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
+                    workflow_ref='p3-authority.yml', run_id=41, attempt=2, host_id='a'*64,
+                    boot_id='00000000-0000-4000-8000-000000000001')
+    assert transport._official_run_directory({'identity': identity}) == Path('/run/trading-agent-p3/41-2')
+    with pytest.raises(TransportHeld):
+        transport._official_run_directory({'identity': dict(identity, issuer_kind='OTHER')})
 
 
 def test_run_refuses_without_the_protected_host_profile(tmp_path, monkeypatch):
@@ -1404,3 +1414,51 @@ def test_durable_publication_applies_exact_mode_under_private_umask(tmp_path):
         assert stat.S_IMODE(target.stat().st_mode) == 0o444
     finally:
         os.umask(previous)
+
+
+def _github_identity(**overrides):
+    return dict(issuer_kind='GITHUB', issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
+                workflow_ref='p3-authority.yml', run_id=41, attempt=2, host_id='a' * 64,
+                boot_id='b' * 8 + '-0000-4000-8000-000000000003', **overrides)
+
+
+def _github_protected(staged=None):
+    nonce = '00000000-0000-4000-8000-000000000004'
+    request = staged or {'authorization': {'schema_version': 'p3-run-authorization-v1', 'issuer_run_id': 41,
+                                          'issuer_attempt': 2, 'nonce': nonce}}
+    documents = {
+        '/run/trading-agent-p3/41-2/profile.json': _host_profile(),
+        '/run/trading-agent-p3/41-2/runtime.json': _runtime_profile(),
+        '/run/trading-agent-p3/41-2/authority-request.json': request,
+        f'/run/trading-agent-p3/41-2/operations/{nonce}.json': request,
+    }
+    def read(path):
+        if str(path) in documents:
+            return documents[str(path)], 'digest'
+        raise FileNotFoundError(path)
+    return read
+
+
+def test_github_worker_environment_uses_the_run_published_request_and_lane(tmp_path, monkeypatch):
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current', _github_protected())
+    environment = transport._worker_environment(dict(_run_request(), identity=_github_identity()),
+        tmp_path, 'release', tmp_path/'worker')
+    assert environment['P3_ISSUER_KIND'] == 'GITHUB'
+    assert environment['P3_AUTHORITY_REQUEST_FILE'] == \
+        '/run/trading-agent-p3/41-2/operations/00000000-0000-4000-8000-000000000004.json'
+    assert environment['P3_APPLICATION_PYTHON'] == '/opt/stage/application/.venv/bin/python3.11'
+    assert not any(key.startswith('GITHUB_') for key in environment)
+
+
+@pytest.mark.parametrize('staged', [
+    {'authorization': {'schema_version': 'p3-run-authorization-v1', 'issuer_run_id': 42, 'issuer_attempt': 2,
+                       'nonce': '00000000-0000-4000-8000-000000000004'}},
+    {'authorization': {'schema_version': 'p3-local-run-authorization-v1', 'identity': {},
+                       'nonce': '00000000-0000-4000-8000-000000000004'}},
+])
+def test_github_worker_environment_refuses_another_run_or_lane(tmp_path, monkeypatch, staged):
+    monkeypatch.setattr('packages.runtime_release.config.read_protected_canonical_json_current',
+                        _github_protected(staged))
+    with pytest.raises(TransportHeld, match='run or lane differs'):
+        transport._worker_environment(dict(_run_request(), identity=_github_identity()),
+                                      tmp_path, 'release', tmp_path/'worker')

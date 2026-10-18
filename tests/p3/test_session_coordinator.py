@@ -3,6 +3,7 @@
 These checks exercise sequencing and recovery, not protected-host qualification.
 Calculation/child/custody and SQL capabilities have separate executable checks.
 """
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -102,12 +103,12 @@ def test_coordinator_keeps_one_view_and_never_reclaims(session_inputs, monkeypat
     if fault:
         with pytest.raises((ValueError, RuntimeError)):
             coordinator.run_session(values, repository=repository, profile=initial, closure=closure,
-                authority=object(), build_worker=build)
+                authority=object(), build_worker=build, directory=Path('/run/trading-agent-p3/1-1'), identity=None)
         assert len(claims) <= 2
         if fault == 'cancel': assert cleanups == [('job_PARITY', JobState.CANCELLED)]
     else:
         assert coordinator.run_session(values, repository=repository, profile=initial, closure=closure,
-            authority=object(), build_worker=build) == 0
+            authority=object(), build_worker=build, directory=Path('/run/trading-agent-p3/1-1'), identity=None) == 0
         assert executions == ['HOLDOUT', 'PARITY', 'PHASE_EXIT']
         assert claims == session.completed_jobs == ['job_HOLDOUT', 'job_PARITY', 'job_PHASE_EXIT']
         assert not cleanups
@@ -126,9 +127,25 @@ def test_official_entry_dispatches_holdout_to_session_after_host_admission(synth
         P3_PREFLIGHT_DIRECTORY='/synthetic/enqueue', P3_ARTIFACT_ROOT=str(provider._store_root),
         P3_MANIFEST_FILE='/synthetic/manifest', P3_REVIEW_FILE='/synthetic/review',
         GITHUB_RUN_ID='1', GITHUB_RUN_ATTEMPT='1', CREDENTIALS_DIRECTORY='/synthetic/credentials')
+    from datetime import UTC, datetime, timedelta
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from services.job_worker import p3_local_runtime
+    from tests.p3.test_github_authority import _authorization
+    now = datetime.now(UTC)
+    authorization = RunAuthorization.model_validate_json(canonical_json_bytes(_authorization(operation='HOLDOUT',
+        issuer_run_id=1, issuer_attempt=1, issued_at=(now-timedelta(minutes=1)).isoformat().replace('+00:00','Z'),
+        expires_at=(now+timedelta(minutes=30)).isoformat().replace('+00:00','Z'))))
+    monkeypatch.setattr(module, 'canonical_source_identity', lambda root: closure.source.model_dump(mode='json'))
+    monkeypatch.setattr(module, 'validate_request', lambda *a: SimpleNamespace(authorization=authorization))
+    monkeypatch.setattr(p3_local_runtime, 'local_runtime_guard', lambda *a: (lambda **k: None))
+    monkeypatch.setattr(p3_local_runtime, 'LocalRuntimeSafetyPreflight', lambda *a, **k: (lambda: None))
     monkeypatch.setattr(module, 'read_enqueued_job', lambda *a, **k: (job.job_id, SimpleNamespace(payload=job.payload), 'operator'))
     monkeypatch.setattr(module, 'read_protected_canonical_json_current', lambda *a: ({}, 'a'*64))
     monkeypatch.setattr(module, 'read_official_profile', lambda *a, **k: (profile, closure))
+    from services.job_worker import p3_session
+    owners = []
+    monkeypatch.setattr(p3_session, 'await_session_owner', lambda *a, **k: owners.append(k))
     monkeypatch.setattr(module, 'probe_p3_startup', lambda *a, **k: None)
     authority = SimpleNamespace(application_revision=closure.source.commit_sha)
     monkeypatch.setattr(module, 'attest_worker_runtime_authority', lambda: authority)
@@ -141,6 +158,11 @@ def test_official_entry_dispatches_holdout_to_session_after_host_admission(synth
     monkeypatch.setattr(module, 'WorkerRepository', Repository)
     def session(actual, **kwargs):
         assert actual is values and kwargs['profile'] is profile and kwargs['authority'] is authority
+        # The run directory comes from the admitted authorization, not from GITHUB_* values.
+        assert kwargs['directory'] == Path('/run/trading-agent-p3/1-1')
+        assert (kwargs['identity'].run_id, kwargs['identity'].attempt) == (1, 1)
+        # The hosted owner handshake completed first, bound to the same run directory.
+        assert owners and owners[0]['directory'] == kwargs['directory']
         return 3
     monkeypatch.setattr(module, 'run_session', session)
     assert module.run_official_once(values, build_worker=object()) == 3
@@ -182,7 +204,8 @@ def test_local_session_rejects_replacement_while_constructing_preflight(tmp_path
         pytest.fail('replacement reached worker construction with a newly pinned approval')
     with pytest.raises(SafetyBlockedError):
         p3_official.run_session({}, repository=object(), profile=profile, closure=closure,
-            authority=object(), build_worker=no_worker, runtime_guard=original_guard)
+            authority=object(), build_worker=no_worker, runtime_guard=original_guard,
+            directory=tmp_path, identity=profile.identity)
     assert reads[0] == 'operation-deadline' and all(value == deadline for value in reads[1:])
 
 

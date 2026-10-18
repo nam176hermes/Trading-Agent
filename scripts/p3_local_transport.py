@@ -1617,8 +1617,15 @@ def _official_run_directory(request: dict) -> Path:
     from packages.alpha_lifecycle.authority import local_run_directory   # noqa: PLC0415
     from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity  # noqa: PLC0415
     identity = request['identity']
+    if identity.get('issuer_kind') == 'GITHUB':
+        # The GITHUB run directory is derived from the attested run, exactly as the worker does.
+        from scripts.p3_lane import identity_from_transport, run_directory  # noqa: PLC0415
+        try:
+            return run_directory(identity_from_transport(identity))
+        except (KeyError, ValueError) as error:
+            raise TransportHeld('GITHUB run identity is invalid') from error
     if identity.get('issuer_kind') != 'LOCAL':
-        raise TransportHeld('run is a LOCAL lane operation')
+        raise TransportHeld('run is not an admitted issuer lane operation')
     # Parsed from JSON, not from the dict: the identity model is strict, so a run_id that
     # arrived as the string every protected request actually carries is not a UUID instance
     # and `model_validate` rejects it.
@@ -1647,7 +1654,10 @@ def _runtime_authority(request: dict) -> dict:
     """The protected LOCAL runtime profile for this issuer, read fresh each time it is used."""
     from packages.runtime_release.config import (                        # noqa: PLC0415
         ProtectedAuthorityError, read_protected_canonical_json_current)
-    path = STORE_ROOT / request['identity']['issuer_identity'] / 'runtime.json'
+    if request['identity'].get('issuer_kind') == 'GITHUB':
+        path = _official_run_directory(request) / 'runtime.json'
+    else:
+        path = STORE_ROOT / request['identity']['issuer_identity'] / 'runtime.json'
     try:
         document, _ = read_protected_canonical_json_current(path)
     except (FileNotFoundError, OSError, ProtectedAuthorityError) as error:
@@ -1711,14 +1721,23 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
     from uuid import UUID
     staged = protected(directory/'authority-request.json', 'staged operation request')
     authorization = staged.get('authorization', {})
-    if (authorization.get('schema_version') != 'p3-local-run-authorization-v1'
+    github = request['identity'].get('issuer_kind') == 'GITHUB'
+    if github:
+        from scripts.p3_lane import identity_from_transport  # noqa: PLC0415
+        identity = identity_from_transport(request['identity'])
+        if (authorization.get('schema_version') != 'p3-run-authorization-v1'
+            or (authorization.get('issuer_run_id'), authorization.get('issuer_attempt'))
+                != (identity.run_id, identity.attempt)):
+            raise TransportHeld('staged operation run or lane differs')
+    elif (authorization.get('schema_version') != 'p3-local-run-authorization-v1'
         or authorization.get('identity') != request['identity']):
         raise TransportHeld('staged operation identity or lane differs')
     try:
         nonce = str(UUID(authorization['nonce']))
     except (KeyError, ValueError, TypeError, AttributeError):
         raise TransportHeld('staged operation nonce is invalid') from None
-    authority_path = STORE_ROOT/request['identity']['issuer_identity']/'operations'/f'{nonce}.json'
+    authority_path = (directory/'operations'/f'{nonce}.json' if github
+        else STORE_ROOT/request['identity']['issuer_identity']/'operations'/f'{nonce}.json')
     if protected(authority_path, 'current operation request') != staged:
         raise TransportHeld('staged operation differs from current protected authority')
     operation_directory = directory
@@ -1729,7 +1748,8 @@ def _worker_environment(request: dict, mount: Path, release_root: str, private: 
     return dict(
         PATH='/usr/bin:/bin', LANG='C.UTF-8', LC_ALL='C.UTF-8', TZ='UTC',
         HOME=str(private), PYTHONHASHSEED='0', PYTHONDONTWRITEBYTECODE='1',
-        P3_OPERATION=operation, P3_ISSUER_KIND='LOCAL', TRADING_WORKER_PROFILE='p3-official-v1',
+        P3_OPERATION=operation, P3_ISSUER_KIND='GITHUB' if github else 'LOCAL',
+        TRADING_WORKER_PROFILE='p3-official-v1',
         P3_AUTHORITY_REQUEST_FILE=str(authority_path),
         P3_PREFLIGHT_DIRECTORY=str(preflight),
         P3_ARTIFACT_ROOT=absolute(host, 'store_root', 'host profile'),
@@ -1889,7 +1909,8 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
     """Bind the actual fork child and the original pre-build budget for the worker."""
     from datetime import UTC, datetime, timedelta
     from packages.runtime_release.config import read_protected_canonical_json_current
-    from services.job_worker.p3_session import LocalSessionLaunch
+    from services.job_worker.p3_session import session_lane
+    from scripts.p3_lane import identity_from_transport
     if invocation_deadline is None or invocation_started is None or invocation_expires_at is None:
         raise TransportHeld('official holdout lost its original transport interval')
     directory = _official_run_directory(request)
@@ -1900,8 +1921,12 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
     expires = min(invocation_expires_at, now+timedelta(seconds=deadline-observed))
     if now >= expires:
         raise TransportHeld('official holdout authority expired before launch publication')
-    value = LocalSessionLaunch.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-session-launch-v1', identity=request['identity'],
+    identity = identity_from_transport(request['identity'])
+    launch_model = session_lane(identity)[0]
+    value = launch_model.model_validate_json(canonical_json_bytes(dict(
+        schema_version=('p3-session-launch-v1' if request['identity'].get('issuer_kind') == 'GITHUB'
+                        else 'p3-local-session-launch-v1'),
+        identity=identity.model_dump(mode='json'),
         source=host['payload']['expected_source'], job_id=host['job_id'], host_profile_sha256=digest,
         worker_pid=child, worker_start_ticks=_process_start_time(child), worker_uid=descriptor['worker_uid'],
         controller_pid=os.getpid(), issued_at=invocation_started.isoformat().replace('+00:00','Z'),

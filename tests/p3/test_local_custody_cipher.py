@@ -56,3 +56,49 @@ def test_custody_cli_refuses_wrong_uid_before_reading_private_inputs(tmp_path):
     configuration.write_text(json.dumps({'custodian_uid':os.geteuid()+1}))
     with pytest.raises(ValueError,match='custodian UID'):
         main(['prepare','--configuration',str(configuration)])
+
+
+def test_github_custody_producer_is_identity_free(tmp_path, monkeypatch):
+    import os
+    from scripts import prepare_p3_local_custody as module
+    monkeypatch.setattr(module, '_committed_source', lambda: {'commit_sha': 'a'*40})
+    with pytest.raises(ValueError, match='identity-free'):
+        module.prepare({'custodian_uid': os.geteuid(), 'lane': 'GITHUB', 'identity': {'issuer_kind': 'LOCAL'}})
+
+
+@pytest.mark.parametrize('fault', [None, 'host', 'source', 'uid', 'revoked', 'other_run'])
+def test_github_custody_reader_binds_attested_run_host_and_source(monkeypatch, fault):
+    import os
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from scripts import prepare_p3_local_custody as module
+    from tests.p3.github_lane import GithubLane, HOST
+    source = SourceIdentity(commit_sha='a'*40, tree_sha='b'*40, closure_schema_version='v1',
+        closure_policy_sha256='c'*64, closure_sha256='d'*64)
+    lane = GithubLane(monkeypatch, source=source, run_id=41, attempt=2, operation='p3-holdout-primary-v1')
+    monkeypatch.setattr(module, '_host_identity', lambda: HOST)
+    key = dict(content_sha256='e'*64, locator='e'*64+'.blob', size_bytes=64, media_type='application/octet-stream')
+    cipher = dict(schema_version='p3-github-custody-cipher-profile-v1', host_id='0'*64 if fault == 'host' else HOST[0],
+        source=dict(source.model_dump(mode='json'), commit_sha='9'*40) if fault == 'source' else source.model_dump(mode='json'),
+        custodian_uid=os.geteuid()+(1 if fault == 'uid' else 0), store_root='/srv/custody', key_ref=key,
+        gpg_binary_sha256='f'*64, gpg_version='gpg (GnuPG) 2.4.4')
+    lane.documents[module.GITHUB_CIPHER_PATH] = cipher
+    if fault == 'revoked':
+        lane.drift('revoked', 'p3-holdout-primary-v1')
+    run = 42 if fault == 'other_run' else 41
+    profile = module.GithubCustodianProfile.model_construct(
+        identity=GithubRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='GITHUB',
+            issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent', workflow_ref='p3-authority.yml',
+            run_id=run, attempt=2))), request=SimpleNamespace(source=source))
+    decrypted = []
+    monkeypatch.setattr(module, 'decrypt_custody_bundle', lambda *a, **k: decrypted.append(k) or b'plaintext')
+    monkeypatch.setattr(module, 'LocalArtifactStore', lambda root: SimpleNamespace(read_bytes=lambda ref: b'k'*64))
+    reader = module.plaintext_reader(profile)
+    if fault:
+        with pytest.raises(ValueError):
+            reader(object())
+        assert decrypted == []
+    else:
+        assert reader(object()) == b'plaintext' and len(decrypted) == 1

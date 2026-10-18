@@ -25,7 +25,7 @@ from packages.alpha_lifecycle.authority import (
     validate_workflow_operation,
 )
 from packages.alpha_lifecycle.contracts.base import SourceIdentity
-from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization, RunAuthorization
+from packages.alpha_lifecycle.contracts.authority import RunAuthorization
 from packages.engine_contracts.serialization import canonical_json_bytes
 from packages.job_contracts import AlphaCampaignPayload, EnqueueJobBody, JobMetadata, payload_fingerprint
 from packages.pre_p3_provenance import canonical_source_identity
@@ -179,21 +179,9 @@ def enqueue(request_file: Path, token_file: Path, output_dir: Path, workflow_ope
     authorization = request.authorization
     payload, review = _stage_request(request, payload, workflow_operation,
         LocalArtifactStore(artifact_root), manifest_file, review_file)
-    # LOCAL SQL acceptance runs under the separate authority UID. The Job API
-    # requires the exact accepted bytes and rechecks protected authority inside
-    # its enqueue transaction; the worker never receives that SQL credential.
-    if request.operation_input is not None and not isinstance(authorization, LocalRunAuthorization):
-        from packages.alpha_lifecycle.authority import AuthorityHeld
-        from services.job_store.p3_operation_authority import accept_operation_authorization
-        if not isinstance(authorization, RunAuthorization):
-            raise AuthorityHeld('HELD E_SQL_AUTHORITY: official authorization type required')
-        credential_directory = os.environ.get("P3_AUTHORITY_CREDENTIALS_DIRECTORY")
-        if not credential_directory:
-            raise AuthorityHeld("HELD E_SQL_AUTHORITY: protected acceptance credentials unavailable")
-        accept_operation_authorization(
-            authorization, request.operation_input, review,
-            credential_directory=Path(credential_directory),
-        )
+    # SQL acceptance runs earlier, under the separate authority UID (`accept`).
+    # The SQL gate refuses an unaccepted payload inside the enqueue transaction;
+    # the enqueuing worker never holds the authority credential.
     token = _read_token(token_file)
     body = build_enqueue_body(payload, authorization.nonce)
     enqueue_raw = _request_json(
@@ -203,6 +191,22 @@ def enqueue(request_file: Path, token_file: Path, output_dir: Path, workflow_ope
     job_id = _enqueue_job_id(enqueue_raw, body, review.operator_identity)
     _write(output_dir, "enqueue-response.json", enqueue_raw)
     return job_id, body, review.operator_identity
+
+
+def accept(request_file: Path, workflow_operation: str, *, review_file: Path, credentials_directory: Path) -> None:
+    """Authority UID only: SQL-accept exactly one reviewed official GITHUB operation."""
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    from services.job_store.p3_operation_authority import accept_operation_authorization
+    from services.job_worker.p3_integration import _read_review
+    # Revalidates the root-published request, a fresh API attestation of its run
+    # and the reviewed research inputs before any SQL credential is opened.
+    request, _ = _validated_request(request_file, workflow_operation)
+    authorization = request.authorization
+    if not isinstance(authorization, RunAuthorization) or request.operation_input is None:
+        raise AuthorityHeld("HELD E_SQL_AUTHORITY: official GitHub authorization required")
+    review = _read_review(review_file, authorization.review_ref)
+    accept_operation_authorization(authorization, request.operation_input, review,
+        credential_directory=credentials_directory)
 
 
 def _enqueue_job_id(enqueue_raw, body, operator):
@@ -282,7 +286,7 @@ def _wait(job_id, body, operator, token_file, output_dir, *, request_file):
 
 if __name__ == "__main__":
     parser=argparse.ArgumentParser()
-    parser.add_argument("command",choices=("preflight","prepare-inputs","dispatch","enqueue","wait"))
+    parser.add_argument("command",choices=("preflight","prepare-inputs","dispatch","enqueue","wait","accept"))
     parser.add_argument("--request-file",type=Path,required=True)
     parser.add_argument("--output-dir",type=Path,required=True)
     parser.add_argument("--operation",required=True)
@@ -290,7 +294,14 @@ if __name__ == "__main__":
     parser.add_argument("--artifact-root",type=Path)
     parser.add_argument("--manifest-file",type=Path)
     parser.add_argument("--review-file",type=Path)
+    parser.add_argument("--credentials-directory",type=Path)
     args=parser.parse_args()
+    if args.command == "accept":
+        if args.review_file is None or args.credentials_directory is None:
+            parser.error("accept requires review-file and credentials-directory")
+        accept(args.request_file,args.operation,review_file=args.review_file,
+               credentials_directory=args.credentials_directory)
+        raise SystemExit(0)
     if args.command in {"dispatch", "enqueue", "wait"}:
         if any(value is None for value in (args.token_file,args.artifact_root,args.manifest_file,args.review_file)):
             parser.error("execution commands require token, artifact-root, manifest-file and review-file")

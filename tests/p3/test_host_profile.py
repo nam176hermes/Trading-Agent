@@ -13,7 +13,7 @@ def test_unprotected_profile_cannot_issue_a_closure(tmp_path):
     path=tmp_path/'profile.json';path.write_bytes(b'{}\n');path.chmod(0o444)
     with pytest.raises(ValueError):
         read_official_profile(path,hashlib.sha256(b'{}\n').hexdigest(),
-            job_id='job_'+'1'*32,payload=None,context={})
+            job_id='job_'+'1'*32,payload=None,admission=True)
 
 
 @pytest.fixture
@@ -41,11 +41,10 @@ def profile_inputs(synthetic_provider,monkeypatch):
         integration_receipt_ref=inputs.integration_receipt_ref.model_dump(mode='json'),
         qualification_job_detail_ref=store.put_bytes(b'{}',media_type='application/json').model_dump(mode='json'),
         postgres_binary_sha256='b'*64)
-    context=dict(GITHUB_ACTIONS='true',GITHUB_REPOSITORY='nam176hermes/Trading-Agent',
-        GITHUB_REF='refs/heads/main',GITHUB_SHA=closure.source.commit_sha,GITHUB_REF_PROTECTED='true',
-        GITHUB_EVENT_NAME='workflow_dispatch',GITHUB_RUN_ID=str(auth.issuer_run_id),
-        GITHUB_RUN_ATTEMPT=str(auth.issuer_attempt),
-        GITHUB_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main')
+    from tests.p3.github_lane import GithubLane
+    # The run context is the controller's protected API attestation, never the environment.
+    context=GithubLane(monkeypatch,source=closure.source,run_id=auth.issuer_run_id,
+        attempt=auth.issuer_attempt,operation=job.payload.logical_trial_id)
     def digest():
         return hashlib.sha256(canonical_json_bytes(document)+b'\n').hexdigest()
     monkeypatch.setattr(module,'read_protected_canonical_json_current',lambda path:(document,digest()))
@@ -64,7 +63,7 @@ def profile_inputs(synthetic_provider,monkeypatch):
 def test_profile_reconstructs_bound_closure_and_rechecks_receipt(profile_inputs):
     module,provider,job,closure,document,context,digest,observations=profile_inputs
     profile,actual=module.read_official_profile(Path('/synthetic/profile.json'),digest(),
-        job_id=job.job_id,payload=job.payload,context=context)
+        job_id=job.job_id,payload=job.payload,admission=True)
     assert actual==closure
     assert profile.store_root==str(provider._store_root)
     assert profile.worker_credentials_directory==document['worker_credentials_directory']
@@ -82,7 +81,7 @@ def test_profile_requires_explicit_canonical_worker_credentials(profile_inputs,v
         document['worker_credentials_directory']=value
     with pytest.raises(ValueError):
         module.read_official_profile(Path('/synthetic/profile.json'),digest(),
-            job_id=job.job_id,payload=job.payload,context=context)
+            job_id=job.job_id,payload=job.payload,admission=True)
 
 
 @pytest.mark.parametrize('fault',['digest','job','payload','source','context','gates','receipt','inventory','file'])
@@ -99,7 +98,7 @@ def test_profile_rejects_changed_binding_or_evidence(profile_inputs,monkeypatch,
         monkeypatch.setattr(module,'canonical_source_identity',lambda root:dict(
             closure.source.model_dump(mode='json'),commit_sha='9'*40))
     elif fault=='context':
-        context['GITHUB_RUN_ATTEMPT']='2'
+        context.attest(job.payload.logical_trial_id,observed_at='2020-01-01T00:00:00Z')
     elif fault=='gates':
         monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates={
             'HWC_SOURCE_READY':'HELD','PRE_P3_READY':'PASS'},p3_alpha_development_allowed=False))
@@ -116,7 +115,7 @@ def test_profile_rejects_changed_binding_or_evidence(profile_inputs,monkeypatch,
         receipt='bad retained proof',inventory='schema_version|files',file='file identity differs')
     with pytest.raises(ValueError,match=reasons[fault]):
         module.read_official_profile(Path('/synthetic/profile.json'),expected,
-            job_id=job.job_id,payload=job.payload,context=context)
+            job_id=job.job_id,payload=job.payload,admission=True)
 
 
 def test_holdout_profile_requires_a_custodian_endpoint(profile_inputs):
@@ -158,7 +157,7 @@ def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profil
     checked=[]
     def gates(root,expected=None): checked.append(('gates',expected))
     def issuer(authorization,source,**kwargs):
-        assert source==closure.source and authorization==auth and kwargs['context']=={}
+        assert source==closure.source and authorization==auth and kwargs['admission'] is True
         # The real LOCAL issuer authenticates prerequisites before returning.
         gates(kwargs['root'],authorization.identity)
         checked.append(('issuer',authorization.identity))
@@ -168,9 +167,9 @@ def test_local_profile_preserves_runtime_checks_and_rejects_mixed_issuers(profil
     monkeypatch.setattr(module,'validate_integration_job_result',lambda *a,**k:SimpleNamespace(
         identity=auth.identity.model_copy(update={'attempt':2}) if fault=='qualification_identity' else auth.identity))
     if fault:
-        with pytest.raises(ValueError):module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,context={})
+        with pytest.raises(ValueError):module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,admission=True)
     else:
-        profile,actual=module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,context={})
+        profile,actual=module.read_official_profile(Path('/synthetic/profile'),digest(),job_id=job.job_id,payload=job.payload,admission=True)
         assert actual==replace(closure,bound_payload_fingerprint=__import__('packages.job_contracts',fromlist=['payload_fingerprint']).payload_fingerprint(job.payload)) and profile.identity==auth.identity
         assert checked==[('gates',auth.identity),('issuer',auth.identity)]
 
@@ -265,7 +264,7 @@ def test_local_v2_resolves_to_its_own_class_and_carries_an_image():
     ('p3-local-official-host-profile-v1', {'image': _image_descriptor()}, 'v1 cannot carry an image'),
     ('p3-local-official-host-profile-v2', {}, 'v2 cannot omit its image'),
     ('p3-official-host-profile-v1', {'image': _image_descriptor()}, 'GITHUB cannot carry an image'),
-    ('p3-official-host-profile-v2', {}, 'GITHUB has no v2 lane'),
+    ('p3-official-host-profile-v2', {}, 'GITHUB v2 cannot omit its image'),
     ('p3-local-official-host-profile-v3', {}, 'unknown version'),
 ])
 def test_cross_lane_and_cross_version_profiles_are_rejected(schema_version, extra, reason):
@@ -274,6 +273,20 @@ def test_cross_lane_and_cross_version_profiles_are_rejected(schema_version, extr
     document = _host_profile_document(schema_version, identity=_V2_IDENTITY, **extra)
     with pytest.raises(ValueError):
         OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+
+
+def test_github_v2_carries_an_image_without_a_local_identity_and_uses_the_v2_policy():
+    from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_V2_SHA256
+    from services.job_worker.p3_host_profile import (
+        OFFICIAL_PROFILE, LocalOfficialHostProfileLane, OfficialHostProfileV2, _transport_policy)
+    document = _host_profile_document('p3-official-host-profile-v2', image=_image_descriptor())
+    document.pop('identity', None)
+    profile = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+    assert type(profile) is OfficialHostProfileV2
+    assert not isinstance(profile, LocalOfficialHostProfileLane)
+    assert _transport_policy(profile) == SANDBOX_PROFILE_V2_SHA256
+    with pytest.raises(ValueError):
+        OFFICIAL_PROFILE.validate_json(canonical_json_bytes(dict(document, identity=_V2_IDENTITY)))
 
 
 def test_lane_base_answers_for_both_local_versions_and_never_for_github():

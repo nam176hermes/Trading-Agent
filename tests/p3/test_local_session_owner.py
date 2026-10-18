@@ -12,9 +12,10 @@ from services.job_worker.recovery import ProcProcessInspector
 from tests.jobs.test_worker_lifecycle import claim
 
 
-@pytest.mark.parametrize('fault', [None, 'owner', 'deadline', 'expired', 'guard'])
+@pytest.mark.parametrize('lane', ['LOCAL', 'GITHUB'])
+@pytest.mark.parametrize('fault', [None, 'owner', 'deadline', 'expired', 'guard', 'other_run'])
 @pytest.mark.parametrize('minutes', [37, 55])
-def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, monkeypatch, fault, minutes):
+def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, monkeypatch, fault, minutes, lane):
     from services.job_worker import p3_session as module
     from packages.runtime_release.config import ProtectedAuthorityError
     from packages.alpha_lifecycle.local_qualification import _host_identity
@@ -23,6 +24,11 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
     identity = LocalRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='LOCAL',
         issuer_identity='test-owner', run_id='00000000-0000-4000-8000-000000000002',
         attempt=1, host_id=host, boot_id=str(boot))))
+    if lane == 'GITHUB':
+        from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+        identity = GithubRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='GITHUB',
+            issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
+            workflow_ref='p3-authority.yml', run_id=41, attempt=2)))
     source = SourceIdentity(commit_sha='a'*40, tree_sha='b'*40, closure_schema_version='v1',
         closure_policy_sha256='c'*64, closure_sha256='d'*64)
     job = claim()
@@ -34,7 +40,8 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
     issued = datetime.now(UTC)-timedelta(minutes=3)
     deadline = issued+timedelta(minutes=minutes)
     process = ProcProcessInspector().inspect(os.getpid())
-    launch = dict(schema_version='p3-local-session-launch-v1', worker_pid=os.getpid(),
+    launch = dict(schema_version='p3-local-session-launch-v1' if lane == 'LOCAL' else 'p3-session-launch-v1',
+        worker_pid=os.getpid(),
         worker_start_ticks=process.start_ticks, worker_uid=os.geteuid(), controller_pid=os.getppid(),
         identity=identity, source=source, job_id=job.job_id, host_profile_sha256='a'*64,
         issued_at=issued.isoformat().replace('+00:00','Z'),
@@ -52,7 +59,10 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
     monkeypatch.setattr(config, 'read_protected_canonical_json_current', lambda _:(
         dict(payload=dict(expected_source=source), job_id=job.job_id), 'a'*64))
     monkeypatch.setattr(transport, '_durable_write', lambda _, raw, **__:produced.append(json.loads(raw)))
-    transport._publish_session_launch(dict(identity=identity), dict(worker_uid=os.geteuid()),
+    carried = identity.model_dump(mode='json')
+    if lane == 'GITHUB':
+        carried.update(host_id=host, boot_id=str(boot))
+    transport._publish_session_launch(dict(identity=carried), dict(worker_uid=os.geteuid()),
         os.getpid(), monotonic_end, monotonic_end+1, issued, deadline)
     assert produced == [json.loads(canonical_json_bytes(launch))]
     launch = produced[0]
@@ -76,6 +86,12 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
             parent=observation['parent'], identity=identity, boot_id=str(boot),
             issued_at=observation['issued_at'], expires_at=observation['workflow_deadline'],
             workflow_deadline=observation['workflow_deadline'])
+        if lane == 'LOCAL' and fault == 'other_run':
+            value['identity'] = {**json.loads(canonical_json_bytes(identity)), 'attempt': 2}
+        if lane == 'GITHUB':
+            value.pop('identity')
+            value.update(schema_version='p3-holdout-session-v1', workflow_run_id=41,
+                         workflow_attempt=3 if fault == 'other_run' else 2)
         # Session expiry is strictly earlier than enclosing deadline by model contract.
         end = datetime.fromisoformat(value['workflow_deadline'].replace('Z','+00:00'))
         value['expires_at'] = (end-timedelta(seconds=1)).isoformat().replace('+00:00','Z')
@@ -88,16 +104,16 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
         if fault == 'guard': raise ValueError('runtime withdrawn')
     if fault:
         with pytest.raises(ValueError):
-            module.await_local_session_owner(profile, closure, host_profile_digest='a'*64,
+            module.await_session_owner(profile, closure, directory=tmp_path, identity=identity, host_profile_digest='a'*64,
                 expires_at=datetime.now(UTC)-timedelta(seconds=1) if fault=='expired' else expiry,
                 guard=guard)
     else:
-        observation = module.await_local_session_owner(profile, closure, host_profile_digest='a'*64,
+        observation = module.await_session_owner(profile, closure, directory=tmp_path, identity=identity, host_profile_digest='a'*64,
             expires_at=expiry, guard=guard)
         assert observation.parent == ProcProcessInspector().inspect(os.getpid())
         assert len(reads) == 2 and reads[0] == reads[1]
         assert observation.issued_at == issued
         assert observation.workflow_deadline == deadline
         with pytest.raises((OSError, ValueError)):
-            module.await_local_session_owner(profile, closure, host_profile_digest='a'*64,
+            module.await_session_owner(profile, closure, directory=tmp_path, identity=identity, host_profile_digest='a'*64,
                 expires_at=expiry, guard=guard)

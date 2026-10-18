@@ -138,10 +138,19 @@ class LocalOfficialHostProfileV2(LocalOfficialHostProfileLane):
     image: P3RuntimeImageDescriptor
 
 
+class OfficialHostProfileV2(_OfficialHostProfileFields):
+    """GITHUB lane on the SquashFS image transport; v1 sealed files cannot carry the closure."""
+    schema_version: Literal['p3-official-host-profile-v2']
+    image: P3RuntimeImageDescriptor
+
+
+_IMAGE_PROFILES = (LocalOfficialHostProfileV2, OfficialHostProfileV2)
+
+
 if P3RuntimeImageDescriptor.model_fields['schema_version'].annotation != Literal[IMAGE_SCHEMA_VERSION]:
     raise RuntimeError('P3 image descriptor schema version differs from the pinned constant')
 
-ANY_OFFICIAL_PROFILE = OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2
+ANY_OFFICIAL_PROFILE = OfficialHostProfile | OfficialHostProfileV2 | LocalOfficialHostProfile | LocalOfficialHostProfileV2
 # Typed explicitly: inferred through Annotated, validate_json loses the union and every
 # isinstance narrowing downstream degrades to Unknown.
 OFFICIAL_PROFILE: TypeAdapter[ANY_OFFICIAL_PROFILE] = TypeAdapter(Annotated[
@@ -171,7 +180,7 @@ def _transport_policy(profile) -> str:
     Read from the concrete class, never from the lane base: this is a version question,
     and answering it from the lane would let a v2 profile present the v1 identity.
     """
-    return SANDBOX_PROFILE_V2_SHA256 if type(profile) is LocalOfficialHostProfileV2 else SANDBOX_PROFILE_SHA256
+    return SANDBOX_PROFILE_V2_SHA256 if type(profile) in _IMAGE_PROFILES else SANDBOX_PROFILE_SHA256
 
 
 def _verify_image_transport(profile, python_root: Path, mounts):
@@ -181,7 +190,7 @@ def _verify_image_transport(profile, python_root: Path, mounts):
     the verified Python root rather than supplied separately, so the interpreter that was
     just read back and the roots that get bound cannot come from different places.
     """
-    if type(profile) is not LocalOfficialHostProfileV2:
+    if type(profile) not in _IMAGE_PROFILES:
         return None,None
     image=profile.image
     if python_root.name!=image.python_root:
@@ -229,9 +238,8 @@ def _verify_image_transport(profile, python_root: Path, mounts):
 
 def read_official_profile(
     path: Path, expected_digest: str, *, job_id: str, payload: object,
-    context: Mapping[str, str],
-) -> tuple[OfficialHostProfile | LocalOfficialHostProfile | LocalOfficialHostProfileV2,
-           CompleteP3Closure]:
+    admission: bool,
+) -> tuple[ANY_OFFICIAL_PROFILE, CompleteP3Closure]:
     """Recheck root custody, current source/gates, qualified inputs and exact file bytes.
 
     The producer must authenticate the retained Job API observation. A real pinned
@@ -244,10 +252,10 @@ def read_official_profile(
     if digest!=expected_digest:
         raise ValueError('P3 protected profile digest changed')
     profile=OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
-    # The discriminated union admits exactly these three, and the transport and lane
+    # The discriminated union admits exactly these four, and the transport and lane
     # questions below read the concrete class. Stating that here keeps the returned type
     # the one the union defines rather than the shared lane base a reader could assume.
-    if type(profile) not in (OfficialHostProfile,LocalOfficialHostProfile,LocalOfficialHostProfileV2):
+    if type(profile) not in (OfficialHostProfile,OfficialHostProfileV2,LocalOfficialHostProfile,LocalOfficialHostProfileV2):
         raise ValueError('P3 protected profile is not one of the admitted profile versions')
     _absolute(profile.worker_credentials_directory)
     validate_p3_job_id(job_id)
@@ -272,7 +280,8 @@ def read_official_profile(
         or isinstance(profile,LocalOfficialHostProfileLane) and profile.identity != getattr(authorization,'identity',None)):
         raise ValueError('P3 protected profile and operation issuer differ')
     try:
-        validate_operation_issuer(authorization,source,context=context,root=ROOT)
+        validate_operation_issuer(authorization,source,workflow_operation=payload.logical_trial_id,
+            admission=admission,root=ROOT)
     except AuthorityHeld as error:
         raise ValueError('P3 protected profile differs from the current workflow or local authority') from error
     if stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,payload.logical_trial_id,

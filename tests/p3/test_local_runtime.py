@@ -230,3 +230,56 @@ def test_session_runtime_deadline_keeps_startup_digest(monkeypatch):
     assert seen==['operation-expiry','session-deadline']
     digest[0]='b'*64
     with pytest.raises(SafetyBlockedError):session_guard()
+
+
+def _github_identity(run_id=7, attempt=1):
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+    return GithubRunIdentity(issuer_kind='GITHUB', issuer_identity='p3-authority',
+        repository='nam176hermes/Trading-Agent', workflow_ref='p3-authority.yml', run_id=run_id, attempt=attempt)
+
+
+@pytest.mark.parametrize('fault',[None,'attempt','host','revoked','expired','local_profile','local_authorization'])
+def test_github_runtime_binding_is_per_run_and_host(tmp_path,monkeypatch,fault):
+    from uuid import UUID
+    from services.job_worker import p3_local_runtime as module
+    from tests.p3.test_enqueue_freshness import local_request
+    request,local_auth,_=local_request()
+    source=request.payload.expected_source
+    now=datetime.now(UTC)
+    root=Path(module.__file__).resolve().parents[2]
+    host=('c'*64,UUID('00000000-0000-4000-8000-000000000009'))
+    common=dict(source=source,application_root=str(root),application_python=sys.executable,uid=os.geteuid(),
+        static_authority_sha256='a'*64,package6_approval_sha256='b'*64,
+        issued_at=now-timedelta(minutes=2),expires_at=now+timedelta(minutes=10),revoked=False)
+    profile=module.GithubRuntimeProfile(schema_version='p3-github-runtime-profile-v1',identity=_github_identity(),
+        host_id=host[0],boot_id=host[1],**common)
+    authorization=SimpleNamespace(identity=_github_identity(),expires_at=now+timedelta(minutes=5))
+    material=SimpleNamespace(authority_sha256='a'*64,authority_generated_at=now-timedelta(minutes=2),
+        authority_expires_at=now+timedelta(minutes=15))
+    runtime=SimpleNamespace(scope='PACKAGE6_STAGING_ONLY',application_root=root,
+        application_python=Path(sys.executable),source_commit=source.commit_sha,source_tree=source.tree_sha,
+        package6_approval_sha256='b'*64,_material=material)
+    monkeypatch.setattr(module,'canonical_source_identity',lambda root:source.model_dump())
+    monkeypatch.setattr(module,'_git',lambda *a:b'')
+    monkeypatch.setattr(module,'_host_identity',lambda:host)
+    if fault=='attempt':authorization.identity=_github_identity(attempt=2)
+    if fault=='host':monkeypatch.setattr(module,'_host_identity',lambda:('0'*64,host[1]))
+    if fault=='revoked':profile=profile.model_copy(update={'revoked':True})
+    if fault=='expired':profile=profile.model_copy(update={'expires_at':now+timedelta(minutes=1)})
+    if fault=='local_profile':
+        profile=module.LocalRuntimeProfile(schema_version='p3-local-runtime-profile-v1',identity=local_auth.identity,**common)
+    if fault=='local_authorization':authorization=local_auth
+    if fault:
+        with pytest.raises(ValueError):module.validate_runtime_binding(profile,runtime,authorization,source)
+    else:module.validate_runtime_binding(profile,runtime,authorization,source)
+
+
+def test_runtime_and_safety_paths_are_derived_per_lane():
+    from services.job_worker import p3_local_runtime as module
+    from tests.p3.test_enqueue_freshness import local_request
+    _,local_auth,_=local_request()
+    assert module.runtime_profile_path(_github_identity()) == Path('/run/trading-agent-p3/7-1/runtime.json')
+    assert module.safety_source_root(_github_identity()) == Path('/var/lib/trading-agent-p3/github/7-1/safety')
+    identity=local_auth.identity
+    assert module.runtime_profile_path(identity) == Path('/etc/trading-agent/local-qualification')/identity.issuer_identity/'runtime.json'
+    assert module.safety_source_root(identity) == Path('/var/lib/trading-agent-local/p3-official')/str(identity.run_id)/'safety'

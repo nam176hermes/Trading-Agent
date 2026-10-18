@@ -82,7 +82,7 @@ def test_local_retention_rechecks_qualification_within_postrun_budget(
         clock[0] += 24.5  # Other bounded pre-retention work in the pressure reproduction.
     def fence():
         profile, current = module.read_official_profile(Path('/synthetic/profile'), digest(),
-            job_id=job.job_id, payload=job.payload, context={})
+            job_id=job.job_id, payload=job.payload, admission=False)
         assert profile.identity == auth.identity
         assert current == replace(closure, bound_payload_fingerprint=payload_fingerprint(job.payload))
         clock[0] += 9.0  # Other owner/worker work; measured write intervals were about12.6s.

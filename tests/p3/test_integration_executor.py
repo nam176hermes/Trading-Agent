@@ -402,3 +402,31 @@ def test_cleanup_success_keeps_ordinary_failure_classification(tmp_path, monkeyp
 
     assert (final['final_state'], final['reason_code']) == ('FAILED', 'P3_INTEGRATION_FAILED')
     assert not [path for path in root.iterdir() if path.name.startswith('p3-native-')]
+
+
+def test_fixture_plan_must_match_its_issuer_lane():
+    from services.job_worker import p3_integration as module
+    github = object.__new__(module._FixtureAuthorization)
+    local = object.__new__(module._LocalFixtureAuthorization)
+    plans = {kind: object.__new__(kind) for kind in (module.FixturePlan, module.LocalFixturePlan, module.GithubFixturePlan)}
+    assert module.plan_matches_lane(plans[module.GithubFixturePlan], github)
+    assert not module.plan_matches_lane(plans[module.FixturePlan], github)  # 0026 v1 qualifies nothing current
+    assert not module.plan_matches_lane(plans[module.LocalFixturePlan], github)
+    assert module.plan_matches_lane(plans[module.LocalFixturePlan], local)
+    assert not module.plan_matches_lane(plans[module.GithubFixturePlan], local)
+
+
+@pytest.mark.parametrize('fault', [None, 'revision', 'local', 'native', 'session'])
+def test_hosted_sql_fixture_requires_session_coverage_without_local_identity(fault):
+    import copy
+    from services.job_worker.p3_fixture_sql import _SESSION_FIXTURE_COVERAGE, validate_github_sql_fixture_checks
+    proof = dict(sql_revision='0033_p3_core_closure_repair', **copy.deepcopy(_SESSION_FIXTURE_COVERAGE))
+    if fault == 'revision': proof['sql_revision'] = '0026_p3_holdout_disclosure'
+    if fault == 'local': proof['local_identity_checks'] = {'verdict': 'PASS'}
+    if fault == 'native': proof['native_process_checks']['identity_denials'] = 7
+    if fault == 'session': proof.pop('session_holdout_checks')
+    if fault:
+        with pytest.raises(ValueError):
+            validate_github_sql_fixture_checks(proof)
+    else:
+        validate_github_sql_fixture_checks(proof)

@@ -1,5 +1,7 @@
 # P3 LOCAL official completion
 
+The hosted lane is described in the [GITHUB official runbook](github-official-runbook.md).
+
 The approved campaign remains A0–A3. A completed implementation, a successful
 job, a qualified source and an economic P3 PASS are different outcomes.
 `NONE_QUALIFIED` and economic FAIL keep P3 economic completion and P4 HELD.

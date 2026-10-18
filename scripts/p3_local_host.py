@@ -1,4 +1,4 @@
-"""LOCAL v2 host profiles from the mounted image and an authenticated queued job.
+"""v2 host profiles (LOCAL or GITHUB lane) from the mounted image and an authenticated queued job.
 
 Private CAS/preflight access stays under the worker UID. Only root publishes the
 profile; the existing worker consumer still validates it before SQL admission.
@@ -24,7 +24,9 @@ from packages.job_contracts import EnqueueJobBody
 from packages.runtime_release.config import _absolute, read_protected_canonical_json_current
 from services.job_store.records import validate_p3_job_id
 from services.job_worker.p3_holdout_release import CustodianEndpoint
-from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2, _HostFiles
+from services.job_worker.p3_host_profile import (
+    OFFICIAL_PROFILE, LocalOfficialHostProfileV2, OfficialHostProfileV2, _HostFiles,
+)
 
 
 class HostInputs(StrictModel):
@@ -148,14 +150,15 @@ def validate_transition(previous, profile):
         'p3-holdout-primary-v1', 'p3-native-parity-v1', 'p3-phase-exit-v1')
     before, after = previous.payload.logical_trial_id, profile.payload.logical_trial_id
     if (before not in operations[:-1] or after != operations[operations.index(before)+1]
-        or previous.job_id == profile.job_id or previous.identity != profile.identity
+        or previous.job_id == profile.job_id or type(previous) is not type(profile)
+        or getattr(previous, 'identity', None) != getattr(profile, 'identity', None)
         or previous.payload.expected_source != profile.payload.expected_source
         or previous.environment_ref != profile.environment_ref):
         raise ValueError('host transition is out of order or changes campaign identity')
 
 
 def next_session_host(previous, job_id, payload):
-    profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(dict(
+    profile = type(previous).model_validate_json(canonical_json_bytes(dict(
         previous.model_dump(mode='json'), job_id=job_id, payload=payload, custodian_endpoint=None)))
     validate_transition(previous, profile)
     if payload.operation not in {'PARITY', 'PHASE_EXIT'}:
@@ -166,8 +169,13 @@ def next_session_host(previous, job_id, payload):
 def assemble_profile(settings, identity, payload, integration_ref, closure, inventory_ref):
     if closure.source != payload.expected_source:
         raise ValueError('mounted closure source differs from admitted payload')
-    return LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-official-host-profile-v2', identity=identity,
+    # The GITHUB profile carries no identity: its run is the protected directory it lives in.
+    kind = identity.get('issuer_kind') if isinstance(identity, dict) else identity.issuer_kind
+    lane = (dict(schema_version='p3-official-host-profile-v2') if kind == 'GITHUB'
+            else dict(schema_version='p3-local-official-host-profile-v2', identity=identity))
+    model = OfficialHostProfileV2 if kind == 'GITHUB' else LocalOfficialHostProfileV2
+    return model.model_validate_json(canonical_json_bytes(dict(
+        **lane,
         job_id=closure.bound_job_id, payload=payload, environment_ref=closure.environment_ref,
         store_root=settings.store_root, output_root=settings.output_root,
         worker_credentials_directory=settings.worker_credentials_directory,
@@ -202,7 +210,7 @@ def prepare_host(request, root, deadline):
 
 
 def activate_mounted_host(request, root, descriptor, inventory, deadline, prepared):
-    from packages.local_authority import AuthorityStore
+    from scripts.p3_lane import identity_from_transport, issuer_lock
     from scripts.p3_local_controller import publish_protected
     from scripts.p3_local_transport import build_v2_closure, _official_run_directory, _worker_environment
     settings, settings_digest, observed, environment = prepared
@@ -216,7 +224,7 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
     profile = assemble_profile(settings, request['identity'], payload,
         observed['integration_receipt_ref'], closure, inventory_ref)
     path = directory/'profile.json'
-    with AuthorityStore(profile.identity.issuer_identity).locked():
+    with issuer_lock(identity_from_transport(request['identity'])):
         if (read_protected_canonical_json_current(directory/'host-inputs.json')[1] != settings_digest
             or _worker_environment(request, root/'mnt', request['release_root'], root/'worker',
                 host=settings.model_dump(mode='json')) != environment
@@ -225,7 +233,7 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
         authenticate_job(settings, observed)
         previous = None
         if path.exists():
-            previous = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(
+            previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(
                 read_protected_canonical_json_current(path)[0]))
             validate_transition(previous, profile)
             previous_succeeded(settings, previous)
@@ -243,43 +251,40 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
 
 
 def install_next_host(request_path, preflight, manifest, review):
-    """Admit only the next queued PARITY/PHASE_EXIT in the original live owner."""
-    from packages.alpha_lifecycle.authority import (
-        _LocalRequestFile, local_run_directory, validate_local_operation_authority,
-    )
-    from packages.local_authority import AuthorityStore
+    """Admit only the next queued PARITY/PHASE_EXIT in the original live owner (either lane)."""
+    from scripts.p3_lane import admitted_operation, issuer_kind, issuer_lock
     from scripts.p3_local_controller import _protected_model, publish_protected, _committed_source
     from packages.alpha_lifecycle.contracts.base import SourceIdentity
-    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
-    from services.job_worker.p3_session import LocalSessionProfile, SessionStageProfile
+    from services.job_worker.p3_session import SessionStageProfile, session_belongs_to, session_lane
     from services.job_worker.recovery import ProcProcessInspector
     if os.geteuid() != 0:
         raise PermissionError('host transition requires root')
-    request = _protected_model(request_path, _LocalRequestFile)
-    auth = request.authorization
     source = SourceIdentity.model_validate(_committed_source())
-    if (not isinstance(auth, LocalRunAuthorization)
-        or request.operation_input is None or auth.operation not in {'PARITY', 'PHASE_EXIT'}
-        or validate_local_operation_authority(auth, source) != request):
-        raise ValueError('host transition requires a current reviewed LOCAL stage')
-    directory = local_run_directory(auth.identity)
+    request, identity, directory = admitted_operation(request_path, source=source)
+    auth = request.authorization
+    if request.operation_input is None or auth.operation not in {'PARITY', 'PHASE_EXIT'}:
+        raise ValueError('host transition requires a current reviewed session stage')
+    session_model = session_lane(identity)[2]
     settings = _protected_model(directory/'host-inputs.json', HostInputs)
-    session = _protected_model(directory/'session.json', LocalSessionProfile)
-    previous = _protected_model(directory/'profile.json', LocalOfficialHostProfileV2)
+    session = _protected_model(directory/'session.json', session_model)
+    previous_document, _ = read_protected_canonical_json_current(directory/'profile.json')
+    previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(previous_document))
+    if type(previous) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2):
+        raise ValueError('host transition requires an image-transport session profile')
     now = datetime.now(UTC)
-    if (session.identity != auth.identity or session.source != source
+    if (not session_belongs_to(session, identity) or session.source != source
         or now >= session.expires_at or ProcProcessInspector().inspect(session.parent.pid) != session.parent):
         raise ValueError('original session owner or authority is unavailable')
     deadline = time.monotonic() + (session.expires_at-now).total_seconds()
     from scripts.p3_local_transport import _runtime_authority, _official_deadline
-    runtime = _runtime_authority(dict(identity=auth.identity.model_dump(mode='json')))
+    runtime = _runtime_authority(dict(identity=identity.model_dump(mode='json')))
     if runtime['uid'] != previous.image.worker_uid:
         raise ValueError('qualified runtime role changed during the session')
     deadline = _official_deadline(deadline, runtime.get('expires_at'))
     environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
         P3_APPLICATION_ROOT=str(_absolute(runtime['application_root'])),
         P3_APPLICATION_PYTHON=str(_absolute(runtime['application_python'])),
-        P3_ISSUER_KIND='LOCAL', P3_OPERATION=request.operation_input.workflow_operation,
+        P3_ISSUER_KIND=issuer_kind(identity), P3_OPERATION=request.operation_input.workflow_operation,
         P3_AUTHORITY_REQUEST_FILE=str(request_path), P3_PREFLIGHT_DIRECTORY=str(preflight),
         P3_MANIFEST_FILE=str(manifest), P3_REVIEW_FILE=str(review))
     observed = as_worker(previous.image.worker_uid, previous.image.worker_gid, deadline, environment,
@@ -289,16 +294,18 @@ def install_next_host(request_path, preflight, manifest, review):
     if (observed['environment_ref'] != profile.environment_ref.model_dump(mode='json')
         or observed['integration_receipt_ref'] != profile.integration_receipt_ref.model_dump(mode='json')):
         raise ValueError('late stage changes admitted environment or integration')
-    with AuthorityStore(auth.identity.issuer_identity).locked():
+    with issuer_lock(identity):
         stage = _protected_model(directory/'stage.json', SessionStageProfile)
         session_digest = read_protected_canonical_json_current(directory/'session.json')[1]
+        current_previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(
+            read_protected_canonical_json_current(directory/'profile.json')[0]))
         if (stage.session_sha256 != session_digest or stage.attempts[-1].job_id != previous.job_id
-            or _protected_model(directory/'session.json', LocalSessionProfile) != session
-            or _protected_model(directory/'profile.json', LocalOfficialHostProfileV2) != previous
+            or _protected_model(directory/'session.json', session_model) != session
+            or current_previous != previous
             or _protected_model(directory/'host-inputs.json', HostInputs) != settings
             or datetime.now(UTC) >= session.expires_at
             or ProcProcessInspector().inspect(session.parent.pid) != session.parent
-            or validate_local_operation_authority(auth, source) != request):
+            or admitted_operation(request_path, source=source)[0] != request):
             raise ValueError('stage, owner or authority changed before host transition')
         previous_succeeded(settings, previous)
         authenticate_job(settings, observed)
@@ -380,9 +387,11 @@ def main():
             canonical_json_bytes(inventory), media_type='application/json')
     elif command['action'] == 'read-profile':
         from services.job_worker.p3_host_profile import read_official_profile
-        profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(command['profile']))
+        profile = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(command['profile']))
+        if type(profile) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2):
+            raise ValueError('host helper reads only image-transport profiles')
         result, _ = read_official_profile(_absolute(command['path']), command['digest'],
-            job_id=profile.job_id, payload=profile.payload, context=os.environ)
+            job_id=profile.job_id, payload=profile.payload, admission=True)
     elif command['action'] == 'session-ref':
         result = session_ref_action(command)
     elif command['action'] == 'native-profile':

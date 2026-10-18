@@ -92,6 +92,20 @@ def test_operation_proposal_requires_existing_body_and_independent_review(tmp_pa
         with pytest.raises(ValueError):
             prepare_authorization(intent, identity=identity, review_ref=_seal(store, **{**review, **change}),
                 store=store, source=inputs.source, now=now, expires_at=now+timedelta(minutes=20))
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity, RunAuthorization
+    github = GithubRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='GITHUB',
+        issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent', workflow_ref='p3-authority.yml',
+        run_id=7, attempt=1)))
+    hosted = prepare_authorization(intent, identity=github, review_ref=review_ref, store=store,
+        source=inputs.source, now=now, expires_at=now+timedelta(minutes=20))
+    assert type(hosted) is RunAuthorization
+    assert (hosted.issuer_workflow, hosted.issuer_run_id, hosted.issuer_attempt) == ('p3-authority.yml', 7, 1)
+    with pytest.raises(ValueError):
+        prepare_authorization(intent, identity=github.model_copy(update={'workflow_ref':'foundation.yml'}),
+            review_ref=review_ref, store=store, source=inputs.source, now=now, expires_at=now+timedelta(minutes=20))
+    with pytest.raises(ValueError):
+        prepare_authorization(intent, identity=github, review_ref=review_ref, store=store,
+            source=inputs.source, now=now, expires_at=now+timedelta(minutes=40))
     missing = manifest_ref.model_copy(update={'content_sha256':'0'*64, 'locator':'0'*64+'.blob'})
     with pytest.raises((OSError, ValueError)):
         propose_operation('p3-baselines-v1', manifest.input_set_ref, {'baseline_manifest_ref':missing}, store=store)
