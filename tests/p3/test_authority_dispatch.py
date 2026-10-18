@@ -149,13 +149,13 @@ def dispatch_fixture(tmp_path,monkeypatch):
     root=tmp_path/'store'; root.mkdir(mode=0o700)
     store=LocalArtifactStore(root)
     safe=dict(broker=False,live=False,network=False,production=False)
-    plan_ref=_seal(store,schema_version='p3-integration-fixture-plan-v1',source=source,
+    plan_ref=_seal(store,schema_version='p3-github-integration-fixture-plan-v2',source=source,
         purpose='SYNTHETIC_ONLY',native_request_digest='1'*64,
         policy_set_sha256=hashlib.sha256((p3_integration.ROOT/'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes()).hexdigest(),
-        sql_revision='0026_p3_holdout_disclosure',cleanup_policy='OWNED_ROOTS_ONLY')
+        sql_revision='0033_p3_core_closure_repair',cleanup_policy='OWNED_ROOTS_ONLY')
     now=datetime.now(UTC)
     def utc(value): return value.isoformat(timespec='microseconds').replace('+00:00','Z')
-    plan=p3_integration.FixturePlan.model_validate_json(store.read_bytes(plan_ref))
+    plan=p3_integration.GithubFixturePlan.model_validate_json(store.read_bytes(plan_ref))
     review_ref=_seal(store,schema_version='p3-review-approval-v1',source=source,subject_digests=(plan.digest,),
         operator_identity='operator-1',reviewer_identity='synthetic-reviewer',review_execution_id='synthetic-review',
         verdict='APPROVED',issued_at=utc(now-timedelta(minutes=2)),expires_at=utc(now+timedelta(hours=2)),
@@ -443,7 +443,7 @@ def test_fixture_stage_verifies_review_and_workflow_before_any_write(dispatch_fi
     command,args,kwargs,_,state=dispatch_fixture
     request,payload=command._validated_request(args[0],args[3])
     store=LocalArtifactStore(kwargs['artifact_root'])
-    plan=p3_integration.FixturePlan.model_validate_json(store.read_bytes(payload.manifest_ref))
+    plan=p3_integration.GithubFixturePlan.model_validate_json(store.read_bytes(payload.manifest_ref))
     approval=p3_integration._read_review(kwargs['review_file'],request.authorization.review_ref)
     if fault in state.lane.DRIFTS:
         state.lane.drift(fault,'p3-integration-fixture-v1')

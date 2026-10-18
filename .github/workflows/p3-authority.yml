@@ -1,4 +1,7 @@
 name: P3 Authority
+# The run name binds the dispatched operation; the protected host controller compares it
+# with the REST API before it admits anything for this run.
+run-name: p3 ${{ inputs.operation }}
 
 on:
   workflow_dispatch:
@@ -22,74 +25,103 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: p3-authority
+  cancel-in-progress: false
+
 jobs:
-  preflight:
-    runs-on: [self-hosted, p3-authority]
-    timeout-minutes: 37
+  # The job holds no secrets, credentials or sudo. A root host controller authenticates this
+  # run through the GitHub REST API, binds a just-in-time runner carrying the per-run label,
+  # admits and executes the operation, and publishes only public-safe results to the outbox.
+  p3:
+    runs-on: [self-hosted, p3-authority, 'p3-run-${{ github.run_id }}-${{ github.run_attempt }}']
+    timeout-minutes: ${{ inputs.operation == 'p3-holdout-primary-v1' && 180 || 60 }}
+    outputs:
+      phase_exit: ${{ steps.result.outputs.phase_exit }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          ref: ${{ github.sha }}
-      - name: Validate fixed protected request
-        id: enqueue
-        env:
-          P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
-          P3_AUTHORITY_CREDENTIALS_DIRECTORY: ${{ inputs.operation != 'p3-integration-fixture-v1' && secrets.P3_AUTHORITY_CREDENTIALS_DIRECTORY || '' }}
-          P3_JOB_API_TOKEN_FILE: ${{ secrets.P3_JOB_API_TOKEN_FILE }}
-          P3_ARTIFACT_ROOT: ${{ secrets.P3_ARTIFACT_ROOT }}
-          P3_MANIFEST_FILE: ${{ secrets.P3_MANIFEST_FILE }}
-          P3_REVIEW_FILE: ${{ secrets.P3_REVIEW_FILE }}
-          P3_OPERATION: ${{ inputs.operation }}
+      - name: Guard protected-main dispatch
         run: |
           set -euo pipefail
-          if [[ "$P3_OPERATION" == 'p3-integration-fixture-v1' ]]; then
-            unset P3_AUTHORITY_CREDENTIALS_DIRECTORY
-          fi
           if [[ "${{ github.repository }}" != "nam176hermes/Trading-Agent" ]]; then exit 64; fi
           if [[ "${{ github.ref }}" != 'refs/heads/main' ]]; then exit 64; fi
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          case "$P3_OPERATION" in
-            p3-integration-fixture-v1|p3-baselines-v1|p3-register-family-v1|p3-oos-a0-v1|p3-oos-a1-v1|p3-oos-a2-v1|p3-oos-a3-v1|p3-select-primary-v1|p3-holdout-primary-v1|p3-native-parity-v1|p3-phase-exit-v1) ;;
-            *) exit 64 ;;
-          esac
-          uv run --frozen python scripts/p3_authority.py enqueue --request-file "$P3_AUTHORITY_REQUEST_FILE" --token-file "$P3_JOB_API_TOKEN_FILE" --output-dir "$RUNNER_TEMP/p3-preflight" --operation "$P3_OPERATION" --artifact-root "$P3_ARTIFACT_ROOT" --manifest-file "$P3_MANIFEST_FILE" --review-file "$P3_REVIEW_FILE"
-      - name: Execute the bound P3 job once
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_SHA" = "$GITHUB_WORKFLOW_SHA"
+
+      - name: Await the protected controller result
+        id: result
         env:
-          TRADING_WORKER_PROFILE: ${{ inputs.operation == 'p3-integration-fixture-v1' && 'p3-fixture-v1' || 'p3-official-v1' }}
-          P3_OPERATION: ${{ inputs.operation }}
-          P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
-          P3_PREFLIGHT_DIRECTORY: ${{ runner.temp }}/p3-preflight
-          P3_ARTIFACT_ROOT: ${{ secrets.P3_ARTIFACT_ROOT }}
-          P3_MANIFEST_FILE: ${{ secrets.P3_MANIFEST_FILE }}
-          P3_REVIEW_FILE: ${{ secrets.P3_REVIEW_FILE }}
-          CREDENTIALS_DIRECTORY: ${{ secrets.P3_WORKER_CREDENTIALS_DIRECTORY }}
-          P3_PRIVATE_ROOT: ${{ inputs.operation == 'p3-integration-fixture-v1' && secrets.P3_PRIVATE_ROOT || '' }}
-          P3_NATIVE_RUNTIME_ROOT: ${{ inputs.operation == 'p3-integration-fixture-v1' && secrets.P3_NATIVE_RUNTIME_ROOT || '' }}
-          P3_NATIVE_ARTIFACT_DIRECTORY: ${{ inputs.operation == 'p3-integration-fixture-v1' && secrets.P3_NATIVE_ARTIFACT_DIRECTORY || '' }}
-          P3_SANDBOX_EXECUTABLE: ${{ inputs.operation == 'p3-integration-fixture-v1' && secrets.P3_SANDBOX_EXECUTABLE || '' }}
-        run: |
-          set -euo pipefail
-          unset P3_AUTHORITY_CREDENTIALS_DIRECTORY
-          uv run --frozen python -m services.job_worker
-      - name: Read the canonical terminal result
-        if: ${{ always() && steps.enqueue.outcome == 'success' }}
-        env:
-          P3_AUTHORITY_REQUEST_FILE: ${{ secrets.P3_AUTHORITY_REQUEST_FILE }}
-          P3_JOB_API_TOKEN_FILE: ${{ secrets.P3_JOB_API_TOKEN_FILE }}
-          P3_ARTIFACT_ROOT: ${{ secrets.P3_ARTIFACT_ROOT }}
-          P3_MANIFEST_FILE: ${{ secrets.P3_MANIFEST_FILE }}
-          P3_REVIEW_FILE: ${{ secrets.P3_REVIEW_FILE }}
           P3_OPERATION: ${{ inputs.operation }}
         run: |
           set -euo pipefail
-          unset P3_AUTHORITY_CREDENTIALS_DIRECTORY
-          uv run --frozen python scripts/p3_authority.py wait --request-file "$P3_AUTHORITY_REQUEST_FILE" --token-file "$P3_JOB_API_TOKEN_FILE" --output-dir "$RUNNER_TEMP/p3-preflight" --operation "$P3_OPERATION" --artifact-root "$P3_ARTIFACT_ROOT" --manifest-file "$P3_MANIFEST_FILE" --review-file "$P3_REVIEW_FILE"
+          outbox="/srv/trading-agent-p3/outbox/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          destination="${RUNNER_TEMP:?}/p3"
+          install -d -m 0700 -- "$destination"
+          # The job timeout bounds this wait; the controller never extends it.
+          until test -f "$outbox/status.json"; do sleep 15; done
+          for name in $(ls -A -- "$outbox"); do
+            case "$name" in
+              status.json|p3-phase-exit-v2.json|p3-phase-exit-v1.json) cp -- "$outbox/$name" "$destination/$name" ;;
+              *) echo "unexpected outbox file" >&2; exit 65 ;;
+            esac
+          done
+          /usr/bin/python3 -I - "$destination" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, pathlib, sys
+          root = pathlib.Path(sys.argv[1])
+          status = json.loads((root / 'status.json').read_bytes())
+          if status.get('schema_version') != 'p3-github-run-status-v1':
+              raise SystemExit('status schema differs')
+          v1 = (root / 'p3-phase-exit-v1.json').exists()
+          if v1 != (status.get('phase_exit') == 'PASS'):
+              raise SystemExit('phase exit receipt and status differ')
+          print('phase_exit=' + ('PASS' if v1 else 'NONE'))
+          if status.get('outcome') != 'SUCCEEDED':
+              raise SystemExit('P3 operation did not succeed: ' + str(status.get('outcome')))
+          PY
+
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: ${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/p3-preflight
+          path: ${{ runner.temp }}/p3
           if-no-files-found: error
           retention-days: 30
+
+  attest-phase-exit:
+    name: attest-phase-exit
+    if: inputs.operation == 'p3-holdout-primary-v1' && needs.p3.outputs.phase_exit == 'PASS'
+    needs: p3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download the P3 phase exit receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p3
+
+      - name: Bind the receipt to this protected-main run
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          /usr/bin/python3 -I - "$RUNNER_TEMP/p3/p3-phase-exit-v1.json" <<'PY'
+          import json, os, sys
+          receipt = json.loads(open(sys.argv[1], 'rb').read())
+          expected = dict(schema_version='p3-phase-exit-v1', status='PASS',
+                          qualification_workflow='p3-authority.yml',
+                          qualification_run_id=int(os.environ['GITHUB_RUN_ID']),
+                          qualification_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          if any(receipt.get(key) != value for key, value in expected.items()):
+              raise SystemExit('phase exit receipt does not bind this run')
+          if receipt['source']['commit_sha'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('phase exit receipt source differs from this run')
+          PY
+
+      - name: Attest the P3 phase exit receipt
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/p3/p3-phase-exit-v1.json

@@ -183,8 +183,8 @@ def integration_proof(native_proof):
 def _integration_proof(native_proof):
     import json
     from datetime import timedelta
-    from services.job_worker.p3_integration import FixturePlan
-    from services.job_worker.p3_fixture_sql import REQUIRED_SQL_CHECKS,ROOT
+    from services.job_worker.p3_integration import GithubFixturePlan
+    from services.job_worker.p3_fixture_sql import REQUIRED_SQL_CHECKS,ROOT,_SESSION_FIXTURE_COVERAGE
     from packages.alpha_lifecycle.authority import _FixtureAuthorization
     from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt,ReviewApproval
     from packages.job_contracts import AlphaCampaignPayload
@@ -192,10 +192,10 @@ def _integration_proof(native_proof):
     source=context['source'];store=context['store']
     now=datetime.fromisoformat(json.loads(store.read_bytes(native_ref))['runs'][0]['request']['event_time'].replace('Z','+00:00'))
     safe=dict(broker=False,live=False,network=False,production=False)
-    plan_ref=_seal(store,FixturePlan,schema_version='p3-integration-fixture-plan-v1',source=source,
+    plan_ref=_seal(store,GithubFixturePlan,schema_version='p3-github-integration-fixture-plan-v2',source=source,
         purpose='SYNTHETIC_ONLY',native_request_digest=context['expected_request_digest'],
         policy_set_sha256=hashlib.sha256((ROOT/'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes()).hexdigest(),
-        sql_revision='0026_p3_holdout_disclosure',cleanup_policy='OWNED_ROOTS_ONLY')
+        sql_revision='0033_p3_core_closure_repair',cleanup_policy='OWNED_ROOTS_ONLY')
     review_ref=_seal(store,ReviewApproval,schema_version='p3-review-approval-v1',source=source,
         subject_digests=[json.loads(store.read_bytes(plan_ref))['digest']],operator_identity='synthetic-operator',
         reviewer_identity='synthetic-reviewer',review_execution_id='synthetic-review',verdict='APPROVED',
@@ -215,7 +215,7 @@ def _integration_proof(native_proof):
         'UPGRADE_0020_p3_alpha_campaign_authority_PASS','API_ENQUEUE_PASS','WORKER_CLAIM_PASS',
         'WORKER_START_PASS','WORKER_BUSY_HEARTBEAT_PASS','WORKER_DURABLE_RESULT_PASS'
         })+['RESEARCH_PUBLICATION_REQUIRES_COMPLETE_DECISION_BATCH_PASS'],
-        sql_revision='0026_p3_holdout_disclosure',postgres_binary_sha256='d'*64,
+        sql_revision='0033_p3_core_closure_repair',postgres_binary_sha256='d'*64,**_SESSION_FIXTURE_COVERAGE,
         started_at=(now+timedelta(minutes=1)).isoformat(),finished_at=(now+timedelta(minutes=2)).isoformat(),cleanup=sql_cleanup)),media_type='application/json')
     cleanup_ref=store.put_bytes(canonical_json_bytes(dict(schema_version='p3-fixture-cleanup-v1',source=source,
         native_root_absent=True,native_process_cleanup=True,sql_cleanup=sql_cleanup)),media_type='application/json')
@@ -245,7 +245,7 @@ def test_integration_readback_rejects_rehashed_cross_artifact_drift(integration_
     from datetime import timedelta,timezone
     from packages.alpha_lifecycle.authority import _FixtureAuthorization
     from packages.alpha_lifecycle.contracts.authority import IntegrationReceipt,ReviewApproval
-    from services.job_worker.p3_integration import FixturePlan
+    from services.job_worker.p3_integration import GithubFixturePlan as FixturePlan
     from services.job_worker.p3_qualification_readback import validate_integration_receipt
     ref,context=integration_proof;store=context['store'];payload=context['fixture_payload']
     def load(reference): return json.loads(store.read_bytes(reference))

@@ -47,7 +47,21 @@ class LocalFixturePlan(_FixturePlanFields):
     sql_revision: Literal['0033_p3_core_closure_repair']
 
 
-FIXTURE_PLAN=TypeAdapter(Annotated[FixturePlan | LocalFixturePlan,Field(discriminator='schema_version')])
+class GithubFixturePlan(_FixturePlanFields):
+    """Hosted fixture at the campaign ledger's session catalog. The SQL fixture always migrates
+    to head, so the 0026 v1 plan can no longer qualify current source."""
+    schema_version: Literal['p3-github-integration-fixture-plan-v2']
+    sql_revision: Literal['0033_p3_core_closure_repair']
+
+
+FIXTURE_PLAN=TypeAdapter(Annotated[FixturePlan | LocalFixturePlan | GithubFixturePlan,Field(discriminator='schema_version')])
+
+
+def plan_matches_lane(plan, authorization) -> bool:
+    """LOCAL uses the LOCAL plan; GITHUB uses the hosted v2 plan; the v1 plan qualifies nothing current."""
+    if isinstance(authorization,_LocalFixtureAuthorization):
+        return isinstance(plan,LocalFixturePlan)
+    return isinstance(plan,GithubFixturePlan)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +116,7 @@ def _read_review(path: Path, reference: ArtifactRefV1) -> ReviewApproval:
 
 
 def validate_fixture_authority(
-    payload: object, authorization: object, plan: FixturePlan | LocalFixturePlan, review: ReviewApproval,
+    payload: object, authorization: object, plan: FixturePlan | LocalFixturePlan | GithubFixturePlan, review: ReviewApproval,
 ) -> None:
     """Shared admission and execution checks; performs no writes or SQL access."""
     if (not isinstance(payload,AlphaCampaignPayload) or payload.operation!='PARITY'
@@ -112,7 +126,7 @@ def validate_fixture_authority(
     source=payload.expected_source
     now=datetime.now(UTC)
     if (authorization.fixture_plan_ref!=payload.manifest_ref or plan.source!=source
-        or isinstance(plan,LocalFixturePlan)!=isinstance(authorization,_LocalFixtureAuthorization)
+        or not plan_matches_lane(plan,authorization)
         or not authorization.issued_at<=now<authorization.expires_at):
         raise AuthorityHeld('HELD E_AUTHORITY: fixture scope/source/expiry differs')
     validate_operation_issuer(authorization,source,root=ROOT)
@@ -201,8 +215,11 @@ class P3IntegrationFixtureExecutor:
                 'schema_version':'p3-native-fixture-proof-v1','source':source,'runs':native_records,
             }),media_type='application/json')
             stage = 'SQL'
+            hosted = isinstance(plan,GithubFixturePlan)
             sql = run_sql_fixture(source,progress=progress,heartbeat=heartbeat,
                                   local_identity_source_checks=isinstance(authorization,_LocalFixtureAuthorization),
+                                  native_process_source_checks=hosted,session_holdout_source_checks=hosted,
+                                  custodian_release_source_checks=hosted,
                                   owned_root=self.private_root/("sql-"+hashlib.sha256(
                                       f"{job.job_id}/{job.attempt_id}".encode()).hexdigest()[:32]))
             cleanup = sql.get('cleanup')
@@ -219,6 +236,9 @@ class P3IntegrationFixtureExecutor:
             if isinstance(authorization,_LocalFixtureAuthorization):
                 from .p3_fixture_sql import validate_local_sql_fixture_checks
                 validate_local_sql_fixture_checks(sql)
+            elif hosted:
+                from .p3_fixture_sql import validate_github_sql_fixture_checks
+                validate_github_sql_fixture_checks(sql)
             sql_ref = self.store.put_bytes(canonical_json_bytes(sql),media_type='application/json')
             progress()
             stage = 'CLEANUP'

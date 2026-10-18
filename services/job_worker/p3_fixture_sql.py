@@ -65,16 +65,21 @@ def validate_sql_fixture_checks(checks,*,process_identity_bound=True):
         raise ValueError('qualification SQL check inventory differs from the exact source fixture')
 
 
+_SESSION_FIXTURE_COVERAGE={
+    'native_process_checks':dict(verdict='PASS',role_denials=5,null_denials=12,identity_denials=8,
+        lock_fences=6,concurrent_winners=1,crash_recovery='TERMINAL_NO_RETRY'),
+    'session_holdout_checks':dict(verdict='PASS',ordinary_holdout_claim='CLOSED',concurrent_winners=1,
+        workflow_denials=2,role_denials=5,null_denials=9,cancelled_and_expired='REJECTED',
+        expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
+        late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
+        expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
+}
+
+
 def validate_local_sql_fixture_checks(proof):
     from services.job_store.p3_catalog import SESSION_CATALOG_SHA256,SESSION_REVISION
     expected={
-        'native_process_checks':dict(verdict='PASS',role_denials=5,null_denials=12,identity_denials=8,
-            lock_fences=6,concurrent_winners=1,crash_recovery='TERMINAL_NO_RETRY'),
-        'session_holdout_checks':dict(verdict='PASS',ordinary_holdout_claim='CLOSED',concurrent_winners=1,
-            workflow_denials=2,role_denials=5,null_denials=9,cancelled_and_expired='REJECTED',
-            expired_during_claim='ROLLED_BACK',one_use_disclosure='ACTUAL_PRIVATE_CLAIM',
-            late_stage_lease_and_authority_expiry='ROLLED_BACK',late_stage_success_and_publication_readback='PASS',
-            expanded_catalog_acl_drift=6,migration_parent_drift='REJECTED'),
+        **_SESSION_FIXTURE_COVERAGE,
         'local_identity_checks':dict(verdict='PASS',enqueue_freshness=dict(revoked='REJECTED',expired='REJECTED',
             after_insert='ROLLED_BACK',intent='REJECTED',changed='ROLLED_BACK',dedup='CURRENT_AUTHORITY_REQUIRED',
             api_status=503,role_denials=4),catalog_sha256=SESSION_CATALOG_SHA256,concurrent_winners=1,
@@ -85,6 +90,17 @@ def validate_local_sql_fixture_checks(proof):
     if (proof['sql_revision']!=SESSION_REVISION or any(
         canonical_json_bytes(proof.get(name))!=canonical_json_bytes(value) for name,value in expected.items())):
         raise ValueError('local SQL identity, catalog, native or lifecycle coverage differs')
+
+    return expected
+
+
+def validate_github_sql_fixture_checks(proof):
+    """Hosted fixture: the same session, native and custodian SQL coverage, without LOCAL identity."""
+    from services.job_store.p3_catalog import SESSION_REVISION
+    expected=_SESSION_FIXTURE_COVERAGE
+    if (proof['sql_revision']!=SESSION_REVISION or 'local_identity_checks' in proof or any(
+        canonical_json_bytes(proof.get(name))!=canonical_json_bytes(value) for name,value in expected.items())):
+        raise ValueError('hosted SQL catalog, native or lifecycle coverage differs')
 
 
 def _alpha_request() -> EnqueueJobRequest:
