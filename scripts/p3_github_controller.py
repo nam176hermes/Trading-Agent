@@ -258,6 +258,9 @@ def serve_operation(api, plan: ControllerPlan, primitives: Primitives, operation
             result = primitives.execute(run, operation, admitted)
             if refresher.failed is not None:
                 result = dict(result, outcome='HELD')
+            # Phase receipts leave the host only with a SUCCEEDED, still-attested operation.
+            if result.get('outcome') != 'SUCCEEDED':
+                result = dict(result, files={}, phase_exit='NONE')
             files = {name: value for name, value in result.get('files', {}).items()}
             files['status.json'] = status_document(operation, run, result)
             write_outbox(plan, primitives, run_id, attempt, files)

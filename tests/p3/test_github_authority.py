@@ -1,5 +1,6 @@
 """GITHUB requests: protected path, API-attested run context, operation binding, inputs."""
 from datetime import timedelta
+import json
 import hashlib
 from pathlib import Path
 
@@ -153,7 +154,9 @@ def _issuer(operation, protected, session=False):
         protected[RUN_DIR/'session.json'] = dict(schema_version='p3-holdout-session-v1', source=SOURCE,
                                                  workflow_run_id=7, workflow_attempt=1)
     authorization = RunAuthorization.model_validate_json(canonical_json_bytes(_authorization(operation=operation)))
-    return validate_operation_issuer(authorization, SourceIdentity.model_validate(SOURCE), admission=False)
+    workflow = {'PARITY': 'p3-native-parity-v1', 'PHASE_EXIT': 'p3-phase-exit-v1'}[operation]
+    return validate_operation_issuer(authorization, SourceIdentity.model_validate(SOURCE), workflow_operation=workflow,
+                                     admission=False)
 
 
 @pytest.mark.parametrize('operation', ['PARITY', 'PHASE_EXIT'])
@@ -184,3 +187,68 @@ def test_no_production_caller_passes_environment_context():
                         and any(keyword.arg == 'context' for keyword in node.keywords)):
                     offenders.append(f'{path.relative_to(root)}:{node.lineno}')
     assert offenders == []
+
+
+def _fixture_request(protected):
+    fixture = {k: v for k, v in _authorization(operation='PARITY').items() if k not in ('input_set_ref', 'allowed_alpha_ids', 'digest')}
+    fixture.update(schema_version='p3-fixture-authorization-v1', fixture_plan_ref=_ref('a' * 64))
+    return _request(protected, sealed(fixture), operation_input=None)
+
+
+def test_fake_run_is_held_without_a_pinned_rehearsal_receipt_even_without_inputs(lane):
+    """PR77-01: a recorded-API run must never admit anything an OFFICIAL campaign could cite."""
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    protected, publish = lane
+    publish(operation='p3-integration-fixture-v1', mode='FAKE')
+    with pytest.raises(AuthorityHeld):
+        _validate(_fixture_request(protected), 'PARITY')
+    publish(operation='p3-holdout-primary-v1', mode='FAKE')
+    with pytest.raises(AuthorityHeld):
+        _issuer('PARITY', protected, session=True)
+
+
+def test_fake_run_with_a_pinned_rehearsal_receipt_admits_the_fixture(lane):
+    protected, publish = lane
+    store = Store()
+    inputs = research_inputs(store, campaign='REHEARSAL')
+    protected[Path('/etc/trading-agent-p3/github/research-inputs.json')] = inputs
+    protected[Path('/etc/trading-agent-p3/github/research-inputs-review.json')] = store.review
+    pin = hashlib.sha256(canonical_json_bytes(inputs) + b'\n').hexdigest()
+    _publish_run(protected, operation='p3-integration-fixture-v1', mode='FAKE', research_inputs_sha256=pin)
+    assert _validate(_fixture_request(protected), 'PARITY').operation_input is None
+
+
+@pytest.mark.parametrize('attested,requested', [
+    ('p3-oos-a0-v1', 'p3-oos-a1-v1'), ('p3-oos-a1-v1', 'p3-select-primary-v1'), ('p3-oos-a3-v1', 'p3-oos-a3-v1'),
+])
+def test_run_admits_only_its_exact_workflow_operation(lane, attested, requested):
+    """PR77-02: one OOS dispatch can never admit another arm or the selection."""
+    from packages.alpha_lifecycle.authority import AuthorityHeld, _validate_workflow_context
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    protected, publish = lane
+    publish(operation=attested)
+    authorization = RunAuthorization.model_validate_json(canonical_json_bytes(_authorization(operation='OOS')))
+    source = SourceIdentity.model_validate(SOURCE)
+    if attested == requested:
+        assert _validate_workflow_context(authorization, source, workflow_operation=requested).operation == attested
+        return
+    with pytest.raises(AuthorityHeld):
+        _validate_workflow_context(authorization, source, workflow_operation=requested)
+
+
+@pytest.mark.parametrize('attested', ['p3-integration-fixture-v1', 'p3-native-parity-v1', 'p3-phase-exit-v1'])
+def test_parity_and_exit_are_never_admitted_outside_the_holdout_session(lane, attested):
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    protected, publish = lane
+    publish(operation=attested)
+    with pytest.raises(AuthorityHeld):
+        _issuer('PARITY', protected, session=True)
+
+
+def test_fixture_request_requires_a_fixture_dispatch(lane):
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    protected, publish = lane
+    publish(operation='p3-native-parity-v1')
+    with pytest.raises(AuthorityHeld):
+        _validate(_fixture_request(protected), 'PARITY')

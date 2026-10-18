@@ -129,7 +129,7 @@ def validate_fixture_authority(
         or not plan_matches_lane(plan,authorization)
         or not authorization.issued_at<=now<authorization.expires_at):
         raise AuthorityHeld('HELD E_AUTHORITY: fixture scope/source/expiry differs')
-    validate_operation_issuer(authorization,source,root=ROOT)
+    validate_operation_issuer(authorization,source,workflow_operation='p3-integration-fixture-v1',root=ROOT)
     for reference,value in ((payload.authorization_ref,authorization),(payload.manifest_ref,plan),(authorization.review_ref,review)):
         raw=canonical_json_bytes(value)
         if (reference.media_type!='application/json' or reference.size_bytes!=len(raw)

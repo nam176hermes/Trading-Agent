@@ -614,7 +614,8 @@ def test_v1_bridge_refuses_real_fail_fake_runs_and_rehearsals(committed_exit,fau
         phase_exit_v1(ref,repository=repository,store=store,run=run,research=research)
 
 
-@pytest.mark.parametrize('fault',[None,'other_run','local_identity','inputs','sql_changed','rejected_head'])
+@pytest.mark.parametrize('fault',[None,'other_run','local_identity','inputs','sql_changed','rejected_head',
+                                   'fake_run','rehearsal'])
 def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,fault):
     """Mapping proof only: SQL-authenticated readback is substituted with a PASS outcome."""
     import hashlib
@@ -637,6 +638,10 @@ def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,
         lifecycle_status=SimpleNamespace(value=status),qualification_decision=SimpleNamespace(value='PASS'))))
     if fault=='other_run':
         run,_=_bridge_lane(run_id=42)
+    if fault=='fake_run':
+        run.mode='FAKE'      # PR77-04: refused although the substituted outcome is PASS
+    if fault=='rehearsal':
+        research.campaign='REHEARSAL'
     if fault=='inputs':
         research.input_ref=real.environment_ref
     if fault=='sql_changed':

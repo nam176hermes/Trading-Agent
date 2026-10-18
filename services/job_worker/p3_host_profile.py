@@ -280,7 +280,8 @@ def read_official_profile(
         or isinstance(profile,LocalOfficialHostProfileLane) and profile.identity != getattr(authorization,'identity',None)):
         raise ValueError('P3 protected profile and operation issuer differ')
     try:
-        validate_operation_issuer(authorization,source,admission=admission,root=ROOT)
+        validate_operation_issuer(authorization,source,workflow_operation=payload.logical_trial_id,
+            admission=admission,root=ROOT)
     except AuthorityHeld as error:
         raise ValueError('P3 protected profile differs from the current workflow or local authority') from error
     if stage_alpha_campaign_payload(ReadbackStore(store,store),authorization,source,payload.logical_trial_id,

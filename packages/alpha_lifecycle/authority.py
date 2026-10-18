@@ -194,7 +194,8 @@ def _validate_github_request(path: Path, source: SourceIdentity | None, operatio
         raise AuthorityHeld('HELD E_AUTHORITY: authorization is not current')
     if isinstance(auth, _FixtureAuthorization) != (request.operation_input is None):
         raise AuthorityHeld('HELD E_OPERATION: fixture and research inputs differ')
-    run = _validate_workflow_context(auth, source)
+    run = _validate_workflow_context(auth, source, workflow_operation=(
+        'p3-integration-fixture-v1' if request.operation_input is None else request.operation_input.workflow_operation))
     if request.operation_input is not None:
         from packages.alpha_lifecycle.github_run import read_github_research_inputs
         try:
@@ -204,28 +205,36 @@ def _validate_github_request(path: Path, source: SourceIdentity | None, operatio
     return request
 
 
-# In-session stages are admitted under the HOLDOUT run that owns the session.
-_SESSION_STAGES = frozenset({'PARITY', 'PHASE_EXIT'})
+# In-session stages are admitted only under the HOLDOUT run that owns the session.
+_SESSION_STAGES = frozenset({'p3-native-parity-v1', 'p3-phase-exit-v1'})
 
 
-def _validate_workflow_context(authorization, source: SourceIdentity, *, admission: bool = True):
+def _validate_workflow_context(authorization, source: SourceIdentity, *, workflow_operation: str,
+                               admission: bool = True):
     """Bind a GITHUB authorization to the controller's API attestation of its run.
 
     The environment is never consulted: any process can set GITHUB_* variables.
     """
     from packages.runtime_release.config import read_protected_canonical_json_current, ProtectedAuthorityError
-    from packages.alpha_lifecycle.github_run import GithubRunHeld, WORKFLOW, github_run_directory, read_github_run
+    from packages.alpha_lifecycle.github_run import (
+        GithubRunHeld, WORKFLOW, github_run_directory, read_github_run, require_admissible_mode,
+    )
     if authorization.issuer_workflow != WORKFLOW:
         raise AuthorityHeld("HELD E_ISSUER: authorization issuer workflow differs")
+    if WORKFLOW_OPERATIONS.get(workflow_operation) != authorization.operation:
+        raise AuthorityHeld("HELD E_OPERATION: workflow operation and authorization differ")
     try:
         run, _ = read_github_run(authorization.issuer_run_id, authorization.issuer_attempt, admission=admission)
+        require_admissible_mode(run)
     except GithubRunHeld as error:
         raise AuthorityHeld("HELD E_ISSUER: "+str(error)) from error
     if run.head_sha != source.commit_sha:
         raise AuthorityHeld("HELD E_ISSUER: attested run executes another source")
-    if WORKFLOW_OPERATIONS.get(run.operation) == authorization.operation:
+    # Exact dispatch match: one OOS dispatch never admits another arm, the selection, or a
+    # PARITY/PHASE_EXIT outside its HOLDOUT session.
+    if run.operation == workflow_operation and workflow_operation not in _SESSION_STAGES:
         return run
-    if run.operation != 'p3-holdout-primary-v1' or authorization.operation not in _SESSION_STAGES:
+    if run.operation != 'p3-holdout-primary-v1' or workflow_operation not in _SESSION_STAGES:
         raise AuthorityHeld("HELD E_ISSUER: authorization operation differs from the attested run")
     try:
         directory = github_run_directory(authorization.issuer_run_id, authorization.issuer_attempt)
@@ -239,10 +248,11 @@ def _validate_workflow_context(authorization, source: SourceIdentity, *, admissi
     return run
 
 
-def validate_operation_issuer(authorization, source, *, admission: bool = True, root=_SOURCE_ROOT):
+def validate_operation_issuer(authorization, source, *, workflow_operation: str, admission: bool = True,
+                              root=_SOURCE_ROOT):
     if isinstance(authorization,(LocalRunAuthorization,_LocalFixtureAuthorization)):
         return validate_local_operation_authority(authorization,source,root=root)
-    _validate_workflow_context(authorization,source,admission=admission)
+    _validate_workflow_context(authorization,source,workflow_operation=workflow_operation,admission=admission)
 
 
 def build_alpha_campaign_payload(

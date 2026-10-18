@@ -644,3 +644,21 @@ def test_root_note_read_binds_runtime_to_this_session_before_the_worker_helper(m
         with pytest.raises(ValueError):
             controller.read_session_ref('/request.json', 'NATIVE_COMMITMENT')
         assert calls == []
+
+
+
+@pytest.mark.parametrize('change', ['runner_name', 'operation', 'research_inputs_sha256', 'mode'])
+def test_hosted_session_closes_when_its_run_attestation_changes(session_inputs, monkeypatch, change):
+    """PR77-05: a refreshed attestation must keep the binding the session started under."""
+    from tests.p3.github_lane import GithubLane
+    x = session_inputs
+    x.session._check_owner()
+    lane = GithubLane(monkeypatch, source=x.session.profile.source, run_id=1, attempt=1,
+                      operation='p3-holdout-primary-v1')
+    if change == 'operation':
+        lane.attest('p3-baselines-v1')
+    else:
+        value = dict(runner_name='p3-jit-other', research_inputs_sha256='9' * 64, mode='FAKE')[change]
+        lane.attest('p3-holdout-primary-v1', **{change: value})
+    with pytest.raises(ValueError, match='attestation'):
+        x.session._check_owner()

@@ -686,7 +686,7 @@ scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATIO
 scripts/p3_authority.py|220|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_authority.py|274|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_github_controller.py|202|BaseException|TOOLING_MIGRATION|RETURN
-scripts/p3_github_controller.py|270|Exception|TOOLING_MIGRATION|PASS
+scripts/p3_github_controller.py|273|Exception|TOOLING_MIGRATION|PASS
 scripts/p3_local_controller.py|588|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_local_host.py|89|Exception|TOOLING_MIGRATION|PASS
 scripts/p3_local_install_approval.py|93|Exception|TOOLING_MIGRATION|RETURN
@@ -797,10 +797,10 @@ services/job_worker/p3_official.py|237|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|55|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_output.py|239|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_session.py|317|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|454|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|532|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|573|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/p3_session.py|646|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|465|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|543|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|584|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/p3_session.py|657|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|327|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|522|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/p3_spawn.py|533|BaseException|PRODUCTION_CRITICAL|OTHER

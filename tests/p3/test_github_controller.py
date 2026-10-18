@@ -178,7 +178,9 @@ def test_refresh_failure_revokes_the_attestation_and_holds_the_result(monkeypatc
         while ('revoke', '/run/trading-agent-p3/7-1/github-run.json') not in events:
             assert __import__('time').monotonic() < time_limit
             __import__('time').sleep(0.01)
-        return dict(outcome='SUCCEEDED', files={})
+        return dict(outcome='SUCCEEDED', phase_exit='PASS', files={'p3-phase-exit-v1.json': b'{}'})
     value, published = primitives(events, execute=slow)
     module.serve_operation(api, plan(), value, 'p3-baselines-v1')
-    assert json.loads(published['/srv/trading-agent-p3/outbox/7-1/status.json'])['outcome'] == 'HELD'
+    status = json.loads(published['/srv/trading-agent-p3/outbox/7-1/status.json'])
+    assert status['outcome'] == 'HELD' and status['phase_exit'] == 'NONE'
+    assert '/srv/trading-agent-p3/outbox/7-1/p3-phase-exit-v1.json' not in published  # PR77-03

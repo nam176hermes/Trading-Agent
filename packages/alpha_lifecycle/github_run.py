@@ -148,6 +148,23 @@ def read_github_run(run_id: int, attempt: int, *, admission: bool,
     return run, digest
 
 
+def require_admissible_mode(run: GithubRunAttestation) -> None:
+    """A recorded-API (FAKE) run admits nothing unless it pins a REHEARSAL receipt.
+
+    Checked for every GITHUB admission, including fixture and in-session stages that carry
+    no operation input, so FAKE evidence can never look like a genuine hosted run.
+    """
+    if run.mode == 'GITHUB':
+        return
+    document, digest = _protected(RESEARCH_INPUTS_PATH)
+    try:
+        inputs = GithubResearchInputs.model_validate_json(canonical_json_bytes(document))
+    except ValueError as error:
+        raise GithubRunHeld('research inputs receipt is invalid') from error
+    if digest != run.research_inputs_sha256 or inputs.campaign != 'REHEARSAL':
+        raise GithubRunHeld('recorded-API runs may only use pinned REHEARSAL inputs')
+
+
 def read_github_research_inputs(run: GithubRunAttestation, *, source: SourceIdentity,
                                 input_set_ref: ArtifactRefV1,
                                 now: datetime | None = None) -> GithubResearchInputs:
@@ -254,6 +271,6 @@ def authenticate_run(fetch: Fetch, *, run_id: int, attempt: int, expected: Expec
 
 __all__ = [
     'ADMISSION_MAX_AGE', 'ExpectedRun', 'GithubResearchInputs', 'GithubRunAttestation', 'GithubRunHeld',
-    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'github_run_directory', 'github_run_identity', 'read_github_research_inputs',
+    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'require_admissible_mode', 'github_run_directory', 'github_run_identity', 'read_github_research_inputs',
     'read_github_run',
 ]

@@ -368,6 +368,10 @@ class P3HoldoutSession:
             else github_run_directory(self.profile.workflow_run_id, self.profile.workflow_attempt)/'session.json')
         if profile_path != expected:
             raise ValueError('session profile must use its workflow-owned path')
+        self._run_binding = None
+        if isinstance(self.profile, SessionProfile):
+            # The hosted session stays bound to the attestation it started under (PR77-05).
+            self._run_binding = self._hosted_run_binding()
         self._path: Path = profile_path
         self._store: LocalArtifactStore = store
         self._view: HoldoutCalculationView | None = None
@@ -399,6 +403,11 @@ class P3HoldoutSession:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    def _hosted_run_binding(self):
+        from packages.alpha_lifecycle.github_run import read_github_run
+        run, _ = read_github_run(self.profile.workflow_run_id, self.profile.workflow_attempt, admission=False)
+        return run.mode, run.head_sha, run.operation, run.runner_name, run.research_inputs_sha256, run.host_id, run.boot_id
+
     def _check_owner(self) -> None:
         if isinstance(self.profile,LocalSessionProfile):
             from packages.alpha_lifecycle.local_qualification import _host_identity
@@ -408,12 +417,14 @@ class P3HoldoutSession:
         else:
             # In-stage fence: the run attestation must still be present (revocation is by
             # deletion) and bound to this host/boot; admission freshness is not re-required.
-            from packages.alpha_lifecycle.github_run import GithubRunHeld, read_github_run
+            from packages.alpha_lifecycle.github_run import GithubRunHeld
             try:
-                read_github_run(self.profile.workflow_run_id, self.profile.workflow_attempt, admission=False)
+                current = self._hosted_run_binding()
             except GithubRunHeld:
+                current = None
+            if current is None or current != self._run_binding:
                 self.close()
-                raise ValueError('hosted session run attestation was revoked or changed') from None
+                raise ValueError('hosted session run attestation was revoked or changed')
         if (self._closed or time.monotonic() >= self._deadline
             or not self.profile.issued_at <= datetime.now(UTC) < self.profile.expires_at
             or os.getpid() != self.profile.parent.pid
