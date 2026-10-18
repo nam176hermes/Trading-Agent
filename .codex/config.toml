@@ -1,0 +1,172 @@
+# Project defaults for new trusted sessions; explicit session choices win.
+# Keep credentials, providers and machine sandbox policy in the user config.
+model = "gpt-6-astra"
+model_reasoning_effort = "high"
+web_search = "live"
+
+# Preserve the operator's existing project setting.
+[features]
+goals = false
+
+[mcp_servers.serena]
+command = "serena"
+args = ["start-mcp-server", "--context", "codex", "--project-from-cwd", "--enable-web-dashboard", "False", "--open-web-dashboard", "False"]
+
+# External-repository research is opt-in; local source uses Codebase Memory/Serena.
+[mcp_servers.deepwiki]
+enabled = false
+
+# Artifact capabilities are opt-in for tasks that actually request these outputs.
+# This does not uninstall plugins or change workspace-managed connector state.
+[plugins."presentations@openai-primary-runtime"]
+enabled = false
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = false
+
+[plugins."latex@openai-bundled"]
+enabled = false
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = false
+
+# Optional reasoning helper; re-enable explicitly for a task that needs it.
+[mcp_servers.sequential-thinking]
+enabled = false
+
+# App IDs from the installed plugin manifests; these are project-only denials.
+# Workspace-managed plugin installation itself is not changed by local settings.
+[apps.connector_68df33b1a2d081918778431a9cfca8ba]
+enabled = false # Canva
+
+[apps.asdk_app_69d3e5ee6a708191baa733f7b8931995]
+enabled = false # Supabase
+
+# Exact installed paths: no global deletion and no blanket scientific-skill ban.
+# CLI 0.147.0 needs scripts/codex_project.py to apply these to its actual prompt.
+# Paths are host/version-specific; recheck this list after moving/updating skills.
+[skills]
+config = [
+  # Life science, medicine, laboratories and unrelated physical sciences
+  { path = "/home/thenam176/.agents/skills/adaptyv/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/anndata/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/arboreto/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/astropy/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/benchling-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/biopython/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/bioservices/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/cellxgene-census/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/cirq/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/clinical-decision-support/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/clinical-reports/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/cobrapy/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/datamol/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/deepchem/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/deeptools/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/depmap/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/diffdock/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/dnanexus-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/esm/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/etetoolkit/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/flowio/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/fluidsim/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/geniml/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/geomaster/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/geopandas/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/gget/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/ginkgo-cloud-lab/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/glycoengineering/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/gtars/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/histolab/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/imaging-data-commons/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/iso-13485-certification/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/labarchive-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/lamindb/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/latchbio-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/matchms/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/medchem/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/molecular-dynamics/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/molfeat/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/neurokit2/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/neuropixels-analysis/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/omero-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/opentrons-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pathml/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pennylane/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/phylogenetics/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/primekg/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/protocolsio-integration/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pydeseq2/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pydicom/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pyhealth/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pylabrobot/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pymatgen/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pyopenms/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pysam/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pytdc/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/qiskit/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/qutip/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/rdkit/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/rowan/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/scanpy/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/scikit-bio/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/scikit-survival/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/scvelo/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/scvi-tools/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/tiledbvcf/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/torchdrug/SKILL.md", enabled = false },
+  # Unrequested personal analysis and screen observation
+  { path = "/home/thenam176/.agents/skills/autoskill/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/consciousness-council/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/dhdna-profiler/SKILL.md", enabled = false },
+  # Marketing, mobile and competing visual styles
+  { path = "/mnt/c/Users/thenam/.codex/skills/brandkit/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/brutalist-skill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/gpt-tasteskill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/image-to-code-skill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/imagegen-frontend-mobile/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/imagegen-frontend-web/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/soft-skill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/stitch-skill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/taste-skill/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/taste-skill-v1/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/skills/website-cloner/SKILL.md", enabled = false },
+  # Redundant default workflows and duplicate PDF name
+  { path = "/mnt/c/Users/thenam/.codex/skills/output-skill/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/agent-reach/SKILL.md", enabled = false },
+  { path = "/home/thenam176/.agents/skills/pdf/SKILL.md", enabled = false },
+  # Off-stack plugin skills: canva
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-brand-check/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-branded-presentation/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-bulk-create/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-design-feedback/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-edit-design/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-implement-feedback/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-resize-for-social-media/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/canva/16.0.0/skills/canva-translate-design/SKILL.md", enabled = false },
+  # Off-stack plugin skills: circleci
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/circleci/1.0.4/skills/builds/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/circleci/1.0.4/skills/chunk/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/circleci/1.0.4/skills/cli/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/circleci/1.0.4/skills/config/SKILL.md", enabled = false },
+  # Off-stack plugin skills: hyperframes
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/hyperframes/0.1.2/skills/gsap/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/hyperframes/0.1.2/skills/hyperframes/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/hyperframes/0.1.2/skills/hyperframes-cli/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/hyperframes/0.1.2/skills/hyperframes-registry/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/hyperframes/0.1.2/skills/website-to-hyperframes/SKILL.md", enabled = false },
+  # Off-stack plugin skills: supabase
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/supabase/1.0.0/skills/supabase/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/supabase/1.0.0/skills/supabase-postgres-best-practices/SKILL.md", enabled = false },
+  # Off-stack plugin skills: test-android-apps
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/test-android-apps/0.1.2/skills/android-emulator-qa/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-curated-remote/test-android-apps/0.1.2/skills/android-performance/SKILL.md", enabled = false },
+  # Explicit skill exclusions for the four artifact plugins already disabled above.
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-bundled/latex/0.2.8/skills/latex-compile/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-bundled/latex/0.2.8/skills/latex-doctor/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-bundled/latex/0.2.8/skills/texlive-runtime-installer/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-primary-runtime/presentations/26.826.12353/skills/presentations/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-primary-runtime/spreadsheets/26.826.12353/skills/spreadsheets/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-primary-runtime/spreadsheets/26.826.12353/skills/excel-live-control/SKILL.md", enabled = false },
+  { path = "/mnt/c/Users/thenam/.codex/plugins/cache/openai-primary-runtime/template-creator/26.826.12353/skills/template-creator/SKILL.md", enabled = false },
+]

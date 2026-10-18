@@ -1,0 +1,523 @@
+{
+  "as_of": "2026-10-15",
+  "scope": "Read-only public metadata and selective source downloads. Downloaded does not mean fully reviewed or executed. Default-branch source may differ from stable release.",
+  "nautilus_latest_stable_verified": {
+    "tag": "v1.231.0",
+    "published_at": "2026-08-02T18:53:49Z",
+    "prerelease": false,
+    "url": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v1.231.0"
+  },
+  "repositories": [
+    {
+      "repo": "AI4Finance-Foundation/FinRobot",
+      "default_branch": "master",
+      "head_sha": "2717499b8e30f242640af08c4ad9afd1113c2d45",
+      "commit_date": "2026-09-28T11:24:51Z",
+      "retrieved_at": "2026-10-15T04:34:07.376185+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "desktop-v0.1.0",
+          "published_at": "2026-07-07T07:49:05Z",
+          "prerelease": false,
+          "url": "https://github.com/AI4Finance-Foundation/FinRobot/releases/tag/desktop-v0.1.0"
+        },
+        {
+          "tag": "v1.0.0",
+          "published_at": "2026-03-20T13:01:44Z",
+          "prerelease": false,
+          "url": "https://github.com/AI4Finance-Foundation/FinRobot/releases/tag/v1.0.0"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "a18b26396e0ca785364e0379dc9c40d2efa988d1b591d5199e357478f1f911eb",
+          "url": "https://github.com/AI4Finance-Foundation/FinRobot/blob/2717499b8e30f242640af08c4ad9afd1113c2d45/README.md"
+        }
+      ]
+    },
+    {
+      "repo": "Starlien95/Awesome-TradingAI",
+      "default_branch": "main",
+      "head_sha": "1043d32e3eed6b6072de1c315c4cc549fc9506db",
+      "commit_date": "2026-10-14T19:38:20Z",
+      "retrieved_at": "2026-10-15",
+      "recent_releases_observed": [],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "dab7372d4c7b3988079112f5c94b8bcafee6f5ad114abf4101783a38f159c479",
+          "url": "https://github.com/Starlien95/Awesome-TradingAI/blob/1043d32e3eed6b6072de1c315c4cc549fc9506db/README.md"
+        },
+        {
+          "path": "docs/METHOD_CAPABILITY_MATRIX.md",
+          "sha256": "f8ec6fc87ca910da684ea273c06f68246260e8ae4446da1497a3d2d1965e5f92",
+          "url": "https://github.com/Starlien95/Awesome-TradingAI/blob/1043d32e3eed6b6072de1c315c4cc549fc9506db/docs/METHOD_CAPABILITY_MATRIX.md"
+        },
+        {
+          "path": "docs/concepts/reproducibility.md",
+          "sha256": "dd06019ebc17306257b8c477d8ee0d26721c2fa68c155c0d9ca53d3e7f89a018",
+          "url": "https://github.com/Starlien95/Awesome-TradingAI/blob/1043d32e3eed6b6072de1c315c4cc549fc9506db/docs/concepts/reproducibility.md"
+        }
+      ]
+    },
+    {
+      "repo": "TauricResearch/TradingAgents",
+      "default_branch": "main",
+      "head_sha": "1394a3f72aa4393e1a98f51b382434c4b4c2d972",
+      "commit_date": "2026-10-03T21:30:07Z",
+      "retrieved_at": "2026-10-15T04:34:07.089051+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v0.6.0",
+          "published_at": "2026-10-03T21:30:11Z",
+          "prerelease": false,
+          "url": "https://github.com/TauricResearch/TradingAgents/releases/tag/v0.6.0"
+        },
+        {
+          "tag": "v0.5.2",
+          "published_at": "2026-09-29T05:59:23Z",
+          "prerelease": false,
+          "url": "https://github.com/TauricResearch/TradingAgents/releases/tag/v0.5.2"
+        },
+        {
+          "tag": "v0.5.1",
+          "published_at": "2026-09-24T07:51:56Z",
+          "prerelease": false,
+          "url": "https://github.com/TauricResearch/TradingAgents/releases/tag/v0.5.1"
+        },
+        {
+          "tag": "v0.5.0",
+          "published_at": "2026-09-18T05:43:43Z",
+          "prerelease": false,
+          "url": "https://github.com/TauricResearch/TradingAgents/releases/tag/v0.5.0"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "3ac96a364eb115d4d93ed9ad8abd691b8c25e2583524222d715ccf869578df3d",
+          "url": "https://github.com/TauricResearch/TradingAgents/blob/1394a3f72aa4393e1a98f51b382434c4b4c2d972/README.md"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "6bab6bf67e05125097f612a9d2adfd079b260e7e12ecde906346cf2f4828d4b8",
+          "url": "https://github.com/TauricResearch/TradingAgents/blob/1394a3f72aa4393e1a98f51b382434c4b4c2d972/pyproject.toml"
+        },
+        {
+          "path": "tests/test_fundamentals_lookahead.py",
+          "sha256": "8cd249e743423a36ef07253d92a5d94db2025f7e4cb2c155aa04b2040c1acc19",
+          "url": "https://github.com/TauricResearch/TradingAgents/blob/1394a3f72aa4393e1a98f51b382434c4b4c2d972/tests/test_fundamentals_lookahead.py"
+        },
+        {
+          "path": "tradingagents/backtest.py",
+          "sha256": "997232fc9530771a3e83dadbe1ee49bb78a642ef2c97cbbb70c410821373ef00",
+          "url": "https://github.com/TauricResearch/TradingAgents/blob/1394a3f72aa4393e1a98f51b382434c4b4c2d972/tradingagents/backtest.py"
+        },
+        {
+          "path": "tradingagents/graph/trading_graph.py",
+          "sha256": "7cbd1602cd30026b7ced30fcd1478fbaef274466cf710b248f1f2cd701eca020",
+          "url": "https://github.com/TauricResearch/TradingAgents/blob/1394a3f72aa4393e1a98f51b382434c4b4c2d972/tradingagents/graph/trading_graph.py"
+        }
+      ]
+    },
+    {
+      "repo": "ccxt/ccxt",
+      "default_branch": "master",
+      "head_sha": "9a42b3fd76559fbd77b84776b9b6df41b8828e64",
+      "commit_date": "2026-10-14T20:59:41Z",
+      "retrieved_at": "2026-10-15T04:34:05.188452+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v4.5.88",
+          "published_at": "2026-10-14T10:40:18Z",
+          "prerelease": false,
+          "url": "https://github.com/ccxt/ccxt/releases/tag/v4.5.88"
+        },
+        {
+          "tag": "v4.5.87",
+          "published_at": "2026-10-13T08:39:44Z",
+          "prerelease": false,
+          "url": "https://github.com/ccxt/ccxt/releases/tag/v4.5.87"
+        },
+        {
+          "tag": "v4.5.86",
+          "published_at": "2026-10-13T04:57:31Z",
+          "prerelease": false,
+          "url": "https://github.com/ccxt/ccxt/releases/tag/v4.5.86"
+        },
+        {
+          "tag": "v4.5.85",
+          "published_at": "2026-10-01T06:20:56Z",
+          "prerelease": false,
+          "url": "https://github.com/ccxt/ccxt/releases/tag/v4.5.85"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "12f43d750b26eb4ea8d4f53ff07472a170838359e84b1aceaa21ef77ec51ce1e",
+          "url": "https://github.com/ccxt/ccxt/blob/9a42b3fd76559fbd77b84776b9b6df41b8828e64/README.md"
+        },
+        {
+          "path": "package.json",
+          "sha256": "5d7673c9a66d220853aebb9e794da01e9b3571d9d3425bdfc62f2bd48da94f31",
+          "url": "https://github.com/ccxt/ccxt/blob/9a42b3fd76559fbd77b84776b9b6df41b8828e64/package.json"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "85d7df19de62acc7e129e9efcf5fb78495e327bdd3757b2e1eef1f3595daeddc",
+          "url": "https://github.com/ccxt/ccxt/blob/9a42b3fd76559fbd77b84776b9b6df41b8828e64/pyproject.toml"
+        },
+        {
+          "path": "wiki/Manual.md",
+          "sha256": "b83381f0f0c25c8ec516f428caea4106f7be0467ad5e1cffb435729acec335df",
+          "url": "https://github.com/ccxt/ccxt/blob/9a42b3fd76559fbd77b84776b9b6df41b8828e64/wiki/Manual.md"
+        }
+      ]
+    },
+    {
+      "repo": "freqtrade/freqtrade",
+      "default_branch": "develop",
+      "head_sha": "183351d57b26b006659bc9ed390a046bd47809fc",
+      "commit_date": "2026-10-14T05:05:59Z",
+      "retrieved_at": "2026-10-15T04:34:05.067544+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "2026.9",
+          "published_at": "2026-09-29T17:06:05Z",
+          "prerelease": false,
+          "url": "https://github.com/freqtrade/freqtrade/releases/tag/2026.9"
+        },
+        {
+          "tag": "2026.8",
+          "published_at": "2026-08-31T04:34:31Z",
+          "prerelease": false,
+          "url": "https://github.com/freqtrade/freqtrade/releases/tag/2026.8"
+        },
+        {
+          "tag": "2026.7",
+          "published_at": "2026-07-31T18:04:13Z",
+          "prerelease": false,
+          "url": "https://github.com/freqtrade/freqtrade/releases/tag/2026.7"
+        },
+        {
+          "tag": "2026.6",
+          "published_at": "2026-06-29T12:29:39Z",
+          "prerelease": false,
+          "url": "https://github.com/freqtrade/freqtrade/releases/tag/2026.6"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "119d586166ae397b05f9763caf7f90e2d27792f90c8455c04ac3455e14a40d89",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/README.md"
+        },
+        {
+          "path": "docs/backtesting.md",
+          "sha256": "dc74cad035e679e4f361fe4c7cff4c8dd2dd62f534c39f7b5b012d307dee7fd9",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/docs/backtesting.md"
+        },
+        {
+          "path": "docs/freqai.md",
+          "sha256": "784af9a1da69638095f6a21b1dd8a2e1b69b47a02370cb51cd69d8467a4211fa",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/docs/freqai.md"
+        },
+        {
+          "path": "docs/lookahead-analysis.md",
+          "sha256": "74efd3f0fa1de61c70b99464a304fc23581b96132585ef508fa8a303592edd09",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/docs/lookahead-analysis.md"
+        },
+        {
+          "path": "docs/recursive-analysis.md",
+          "sha256": "8015e081a6cf06a0235eb40cca7865ffe5b10c0ed6a34ba2537e463053dec260",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/docs/recursive-analysis.md"
+        },
+        {
+          "path": "freqtrade/optimize/analysis/lookahead.py",
+          "sha256": "25b02b2d4f6e4317d8855b01976a3fef112e56280b7a33954634ed4dc51e2cca",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/freqtrade/optimize/analysis/lookahead.py"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "3d7c48b07e464af710b916d5ad07ae5049859672171f07cb526ed7798be177f2",
+          "url": "https://github.com/freqtrade/freqtrade/blob/183351d57b26b006659bc9ed390a046bd47809fc/pyproject.toml"
+        }
+      ]
+    },
+    {
+      "repo": "hummingbot/condor",
+      "default_branch": "main",
+      "head_sha": "45e60d6067bd311c154d7890c1ecc46f207b17e2",
+      "commit_date": "2026-10-02T05:28:34Z",
+      "retrieved_at": "2026-10-15",
+      "recent_releases_observed": [],
+      "downloaded_source_files": [
+        {
+          "path": "README.md",
+          "sha256": "1546c1b2b51f17fe7d8d02ede311ae63203245a799f895647b4d7401fee251c7",
+          "url": "https://github.com/hummingbot/condor/blob/45e60d6067bd311c154d7890c1ecc46f207b17e2/README.md"
+        },
+        {
+          "path": "condor/agents/README.md",
+          "sha256": "b4677fc6a70371b057dadd3249d6237dafc1378fed17a113ae64d07e2aa3a24b",
+          "url": "https://github.com/hummingbot/condor/blob/45e60d6067bd311c154d7890c1ecc46f207b17e2/condor/agents/README.md"
+        },
+        {
+          "path": "condor/agents/engine.py",
+          "sha256": "aac60d032ab4695d1bf7116fd59aa8fbbdacd38d7f5b9d8a07d74e7e237d55f7",
+          "url": "https://github.com/hummingbot/condor/blob/45e60d6067bd311c154d7890c1ecc46f207b17e2/condor/agents/engine.py"
+        },
+        {
+          "path": "condor/agents/risk.py",
+          "sha256": "08a08d9e018acc1319284c22857b16a0297160212cf51691426af99ec404ea8c",
+          "url": "https://github.com/hummingbot/condor/blob/45e60d6067bd311c154d7890c1ecc46f207b17e2/condor/agents/risk.py"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "452003919f2c9158a874ca6ad781fb6cc12d03040b7eaddc05e012ecd7c8b2ce",
+          "url": "https://github.com/hummingbot/condor/blob/45e60d6067bd311c154d7890c1ecc46f207b17e2/pyproject.toml"
+        }
+      ]
+    },
+    {
+      "repo": "hummingbot/hummingbot",
+      "default_branch": "master",
+      "head_sha": "9af100d6822da7d2d0291a906c730ef172284ee2",
+      "commit_date": "2026-09-22T08:53:54Z",
+      "retrieved_at": "2026-10-15T04:34:05.326922+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v2.17.0",
+          "published_at": "2026-09-22T08:55:11Z",
+          "prerelease": false,
+          "url": "https://github.com/hummingbot/hummingbot/releases/tag/v2.17.0"
+        },
+        {
+          "tag": "v2.16.0",
+          "published_at": "2026-07-29T21:19:00Z",
+          "prerelease": false,
+          "url": "https://github.com/hummingbot/hummingbot/releases/tag/v2.16.0"
+        },
+        {
+          "tag": "v2.15.0",
+          "published_at": "2026-06-16T19:43:53Z",
+          "prerelease": false,
+          "url": "https://github.com/hummingbot/hummingbot/releases/tag/v2.15.0"
+        },
+        {
+          "tag": "v2.14.0",
+          "published_at": "2026-04-21T13:41:38Z",
+          "prerelease": false,
+          "url": "https://github.com/hummingbot/hummingbot/releases/tag/v2.14.0"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "Makefile",
+          "sha256": "b960f2701faf7906cabfafc01643cc1054b4fefbc85a2ac7d06d6497ea40c941",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/Makefile"
+        },
+        {
+          "path": "README.md",
+          "sha256": "179e404ee85129a0b714d234246b0b9c13345f1ce19f50dd065e8c83af28c1c7",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/README.md"
+        },
+        {
+          "path": "hummingbot/strategy_v2/controllers/controller_base.py",
+          "sha256": "1ea9e474c8495373bba65ca8e1918e506a512548c6fd58ca5a2d3081e69b7ee2",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/hummingbot/strategy_v2/controllers/controller_base.py"
+        },
+        {
+          "path": "hummingbot/strategy_v2/executors/executor_orchestrator.py",
+          "sha256": "c59eb274550df1a15a69d2cb7f95a3fd801c9159105aa01ce5e98f1d340c90c2",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/hummingbot/strategy_v2/executors/executor_orchestrator.py"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "e85650c33216ef0ebc8b04108b5602ef098ee4eef08d75cf74851328e78d4109",
+          "url": "https://github.com/hummingbot/hummingbot/blob/9af100d6822da7d2d0291a906c730ef172284ee2/pyproject.toml"
+        }
+      ]
+    },
+    {
+      "repo": "microsoft/RD-Agent",
+      "default_branch": "main",
+      "head_sha": "484776c211e4fbbeef03e0ec00d6bbee7362a4f4",
+      "commit_date": "2026-09-23T11:05:10Z",
+      "retrieved_at": "2026-10-15T04:34:07.285294+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v1.0.0",
+          "published_at": "2026-09-23T11:05:33Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/RD-Agent/releases/tag/v1.0.0"
+        },
+        {
+          "tag": "v0.8.0",
+          "published_at": "2025-11-03T14:01:36Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/RD-Agent/releases/tag/v0.8.0"
+        },
+        {
+          "tag": "v0.7.0",
+          "published_at": "2025-07-08T03:19:35Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/RD-Agent/releases/tag/v0.7.0"
+        },
+        {
+          "tag": "v0.6.1",
+          "published_at": "2025-06-28T12:07:17Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/RD-Agent/releases/tag/v0.6.1"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "Makefile",
+          "sha256": "0cd1efe21f34084ddc8814df964a8857af4a6ca45277dd043f1dc5f56926d18f",
+          "url": "https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a4f4/Makefile"
+        },
+        {
+          "path": "README.md",
+          "sha256": "b68ff14551944e1821023ae54a090fc0aabaad58170165cc9c17c6e0e7290c13",
+          "url": "https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a4f4/README.md"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "e77338c6f024c70adfeab8518227774fa5ecd14b421eba139d2c20f6148b3352",
+          "url": "https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a4f4/pyproject.toml"
+        },
+        {
+          "path": "rdagent/app/qlib_rd_loop/quant.py",
+          "sha256": "f3e4d2f2bb74b12578860386ec96fc0d0c6f628105109a4d0db7091f254dbb2a",
+          "url": "https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a4f4/rdagent/app/qlib_rd_loop/quant.py"
+        },
+        {
+          "path": "rdagent/scenarios/qlib/developer/feedback.py",
+          "sha256": "ec2fce044709e083119820d7cb2c1609df8ff429103cabe34ced640cc093bb68",
+          "url": "https://github.com/microsoft/RD-Agent/blob/484776c211e4fbbeef03e0ec00d6bbee7362a4f4/rdagent/scenarios/qlib/developer/feedback.py"
+        }
+      ]
+    },
+    {
+      "repo": "microsoft/qlib",
+      "default_branch": "main",
+      "head_sha": "54355232463878d2eebb91fe0ee5fa7fa1f5976c",
+      "commit_date": "2026-10-08T10:15:27Z",
+      "retrieved_at": "2026-10-15T04:34:07.597331+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v0.9.8",
+          "published_at": "2026-10-08T10:58:43Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/qlib/releases/tag/v0.9.8"
+        },
+        {
+          "tag": "v0.9.7",
+          "published_at": "2025-08-15T09:49:17Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/qlib/releases/tag/v0.9.7"
+        },
+        {
+          "tag": "v0.9.6",
+          "published_at": "2024-12-23T07:36:40Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/qlib/releases/tag/v0.9.6"
+        },
+        {
+          "tag": "v0.9.5",
+          "published_at": "2024-05-24T08:17:09Z",
+          "prerelease": false,
+          "url": "https://github.com/microsoft/qlib/releases/tag/v0.9.5"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "Makefile",
+          "sha256": "447fb576f14b0d8da95c9038b969ecafb71d217fb3c69ddb44a55b5c3c2c05cc",
+          "url": "https://github.com/microsoft/qlib/blob/54355232463878d2eebb91fe0ee5fa7fa1f5976c/Makefile"
+        },
+        {
+          "path": "README.md",
+          "sha256": "e9f7cc8eeb60e3fe3784ec496e350ecb584157c3240cda0651c20acb26fd9037",
+          "url": "https://github.com/microsoft/qlib/blob/54355232463878d2eebb91fe0ee5fa7fa1f5976c/README.md"
+        },
+        {
+          "path": "examples/model_rolling/task_manager_rolling.py",
+          "sha256": "4607c65821c41c56ce8320cea002d0dc284bf5841f24f8b1cd74d685f5b16ac9",
+          "url": "https://github.com/microsoft/qlib/blob/54355232463878d2eebb91fe0ee5fa7fa1f5976c/examples/model_rolling/task_manager_rolling.py"
+        },
+        {
+          "path": "package.json",
+          "sha256": "02e63bc3dad180f22d6c0fa9c9ab04c7115224e9981e7adecee54544b8a680d1",
+          "url": "https://github.com/microsoft/qlib/blob/54355232463878d2eebb91fe0ee5fa7fa1f5976c/package.json"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "c47849f143278fef2c114513ca123c6100f007947cdf051928e734985f35a4e9",
+          "url": "https://github.com/microsoft/qlib/blob/54355232463878d2eebb91fe0ee5fa7fa1f5976c/pyproject.toml"
+        }
+      ]
+    },
+    {
+      "repo": "nautechsystems/nautilus_trader",
+      "default_branch": "develop",
+      "head_sha": "ce453eb995731e3873f0267dda5e4c3a7c514ac6",
+      "commit_date": "2026-10-15T02:08:01Z",
+      "retrieved_at": "2026-10-15T04:34:05.296560+00:00",
+      "recent_releases_observed": [
+        {
+          "tag": "v2.0.0rc6",
+          "published_at": "2026-10-05T03:03:18Z",
+          "prerelease": true,
+          "url": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v2.0.0rc6"
+        },
+        {
+          "tag": "v2.0.0rc5",
+          "published_at": "2026-09-15T06:17:23Z",
+          "prerelease": true,
+          "url": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v2.0.0rc5"
+        },
+        {
+          "tag": "v2.0.0rc4",
+          "published_at": "2026-09-02T03:26:46Z",
+          "prerelease": true,
+          "url": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v2.0.0rc4"
+        },
+        {
+          "tag": "v2.0.0rc3",
+          "published_at": "2026-08-21T01:20:07Z",
+          "prerelease": true,
+          "url": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v2.0.0rc3"
+        }
+      ],
+      "downloaded_source_files": [
+        {
+          "path": "Makefile",
+          "sha256": "10b7ee1ac695ab3b3e7bca0725de9c752d5a8c1e2bbdbcb5fe8ea677f7347440",
+          "url": "https://github.com/nautechsystems/nautilus_trader/blob/ce453eb995731e3873f0267dda5e4c3a7c514ac6/Makefile"
+        },
+        {
+          "path": "README.md",
+          "sha256": "a9ea229350a74cc32b06021ab87b32ebcc8b99e876b9ec5bfe28e6a8e96e4435",
+          "url": "https://github.com/nautechsystems/nautilus_trader/blob/ce453eb995731e3873f0267dda5e4c3a7c514ac6/README.md"
+        },
+        {
+          "path": "crates/adapters/sandbox/README.md",
+          "sha256": "44a611ae42e2856a58962537abe21cb2db551387696df84b89dd5e8e0ae0a1dd",
+          "url": "https://github.com/nautechsystems/nautilus_trader/blob/ce453eb995731e3873f0267dda5e4c3a7c514ac6/crates/adapters/sandbox/README.md"
+        },
+        {
+          "path": "docs/concepts/execution/reconciliation.md",
+          "sha256": "ec93754d57953301db2fb1551ea1319ddb8707fe64102fb048dfbb6d093815f5",
+          "url": "https://github.com/nautechsystems/nautilus_trader/blob/ce453eb995731e3873f0267dda5e4c3a7c514ac6/docs/concepts/execution/reconciliation.md"
+        }
+      ]
+    }
+  ],
+  "upstream_tests_executed": false,
+  "paid_apis_called": false,
+  "broker_or_exchange_endpoints_called": false
+}
