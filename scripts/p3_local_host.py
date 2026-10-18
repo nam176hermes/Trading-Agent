@@ -251,43 +251,40 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
 
 
 def install_next_host(request_path, preflight, manifest, review):
-    """Admit only the next queued PARITY/PHASE_EXIT in the original live owner."""
-    from packages.alpha_lifecycle.authority import (
-        _LocalRequestFile, local_run_directory, validate_local_operation_authority,
-    )
-    from packages.local_authority import AuthorityStore
+    """Admit only the next queued PARITY/PHASE_EXIT in the original live owner (either lane)."""
+    from scripts.p3_lane import admitted_operation, issuer_kind, issuer_lock
     from scripts.p3_local_controller import _protected_model, publish_protected, _committed_source
     from packages.alpha_lifecycle.contracts.base import SourceIdentity
-    from packages.alpha_lifecycle.contracts.authority import LocalRunAuthorization
-    from services.job_worker.p3_session import LocalSessionProfile, SessionStageProfile
+    from services.job_worker.p3_session import SessionStageProfile, session_belongs_to, session_lane
     from services.job_worker.recovery import ProcProcessInspector
     if os.geteuid() != 0:
         raise PermissionError('host transition requires root')
-    request = _protected_model(request_path, _LocalRequestFile)
-    auth = request.authorization
     source = SourceIdentity.model_validate(_committed_source())
-    if (not isinstance(auth, LocalRunAuthorization)
-        or request.operation_input is None or auth.operation not in {'PARITY', 'PHASE_EXIT'}
-        or validate_local_operation_authority(auth, source) != request):
-        raise ValueError('host transition requires a current reviewed LOCAL stage')
-    directory = local_run_directory(auth.identity)
+    request, identity, directory = admitted_operation(request_path, source=source)
+    auth = request.authorization
+    if request.operation_input is None or auth.operation not in {'PARITY', 'PHASE_EXIT'}:
+        raise ValueError('host transition requires a current reviewed session stage')
+    session_model = session_lane(identity)[2]
     settings = _protected_model(directory/'host-inputs.json', HostInputs)
-    session = _protected_model(directory/'session.json', LocalSessionProfile)
-    previous = _protected_model(directory/'profile.json', LocalOfficialHostProfileV2)
+    session = _protected_model(directory/'session.json', session_model)
+    previous_document, _ = read_protected_canonical_json_current(directory/'profile.json')
+    previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(previous_document))
+    if type(previous) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2):
+        raise ValueError('host transition requires an image-transport session profile')
     now = datetime.now(UTC)
-    if (session.identity != auth.identity or session.source != source
+    if (not session_belongs_to(session, identity) or session.source != source
         or now >= session.expires_at or ProcProcessInspector().inspect(session.parent.pid) != session.parent):
         raise ValueError('original session owner or authority is unavailable')
     deadline = time.monotonic() + (session.expires_at-now).total_seconds()
     from scripts.p3_local_transport import _runtime_authority, _official_deadline
-    runtime = _runtime_authority(dict(identity=auth.identity.model_dump(mode='json')))
+    runtime = _runtime_authority(dict(identity=identity.model_dump(mode='json')))
     if runtime['uid'] != previous.image.worker_uid:
         raise ValueError('qualified runtime role changed during the session')
     deadline = _official_deadline(deadline, runtime.get('expires_at'))
     environment = dict(PATH='/usr/bin:/bin', LANG='C.UTF-8', PYTHONDONTWRITEBYTECODE='1',
         P3_APPLICATION_ROOT=str(_absolute(runtime['application_root'])),
         P3_APPLICATION_PYTHON=str(_absolute(runtime['application_python'])),
-        P3_ISSUER_KIND='LOCAL', P3_OPERATION=request.operation_input.workflow_operation,
+        P3_ISSUER_KIND=issuer_kind(identity), P3_OPERATION=request.operation_input.workflow_operation,
         P3_AUTHORITY_REQUEST_FILE=str(request_path), P3_PREFLIGHT_DIRECTORY=str(preflight),
         P3_MANIFEST_FILE=str(manifest), P3_REVIEW_FILE=str(review))
     observed = as_worker(previous.image.worker_uid, previous.image.worker_gid, deadline, environment,
@@ -297,16 +294,18 @@ def install_next_host(request_path, preflight, manifest, review):
     if (observed['environment_ref'] != profile.environment_ref.model_dump(mode='json')
         or observed['integration_receipt_ref'] != profile.integration_receipt_ref.model_dump(mode='json')):
         raise ValueError('late stage changes admitted environment or integration')
-    with AuthorityStore(auth.identity.issuer_identity).locked():
+    with issuer_lock(identity):
         stage = _protected_model(directory/'stage.json', SessionStageProfile)
         session_digest = read_protected_canonical_json_current(directory/'session.json')[1]
+        current_previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(
+            read_protected_canonical_json_current(directory/'profile.json')[0]))
         if (stage.session_sha256 != session_digest or stage.attempts[-1].job_id != previous.job_id
-            or _protected_model(directory/'session.json', LocalSessionProfile) != session
-            or _protected_model(directory/'profile.json', LocalOfficialHostProfileV2) != previous
+            or _protected_model(directory/'session.json', session_model) != session
+            or current_previous != previous
             or _protected_model(directory/'host-inputs.json', HostInputs) != settings
             or datetime.now(UTC) >= session.expires_at
             or ProcProcessInspector().inspect(session.parent.pid) != session.parent
-            or validate_local_operation_authority(auth, source) != request):
+            or admitted_operation(request_path, source=source)[0] != request):
             raise ValueError('stage, owner or authority changed before host transition')
         previous_succeeded(settings, previous)
         authenticate_job(settings, observed)

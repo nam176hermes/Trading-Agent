@@ -38,7 +38,7 @@ def parity_stage_owner(tmp_path, monkeypatch):
         attempt_id='attempt_'+'0'*32, worker_id='worker', lease_token_sha256='c'*64)
     previous = module.next_stage(None, prior, session_digest='a'*64, host_digest='d'*64)
     (tmp_path/'stage.json').touch()
-    context = (request, tmp_path, host, 'b'*64)
+    context = (request, tmp_path, host, 'b'*64, host.identity)
     monkeypatch.setattr(module, '_session_context', lambda _: context)
     monkeypatch.setattr(LocalSessionProfile, 'model_validate_json', lambda *_: session)
     monkeypatch.setattr(module, '_protected_model', lambda *_: previous)
@@ -62,7 +62,7 @@ def parity_stage_owner(tmp_path, monkeypatch):
         assert kwargs['options'] == '-c default_transaction_read_only=on -c statement_timeout=5000'
         return nullcontext(Connection())
     monkeypatch.setattr(psycopg, 'connect', connect)
-    monkeypatch.setattr(module, 'AuthorityStore', lambda _: SimpleNamespace(locked=lambda: nullcontext()))
+    monkeypatch.setattr('scripts.p3_lane.issuer_lock', lambda _: nullcontext())
     published = []
     monkeypatch.setattr(module, 'publish_protected', lambda *args, **kwargs: published.append(args))
     return SimpleNamespace(module=module, request_path=tmp_path/'request', credentials=tmp_path/'observer',
@@ -91,7 +91,7 @@ def qualified_parity_owner(parity_stage_owner, native_profile_inputs, monkeypatc
     x.runtime.update(uid=x.host.image.worker_uid, identity=x.host.identity.model_dump(mode='json'),
         source=x.session.source.model_dump(mode='json'),
         application_root='/qualified/app', application_python='/qualified/python')
-    monkeypatch.setattr(x.module, '_session_context', lambda _: (x.request, x.directory, x.host, 'b'*64))
+    monkeypatch.setattr(x.module, '_session_context', lambda _: (x.request, x.directory, x.host, 'b'*64, x.host.identity))
     x.files = {}
     def read(path):
         if path.name == 'session.json':
@@ -323,11 +323,11 @@ def test_stage_observer_keeps_worker_credentials_private_and_original_deadline(m
     monkeypatch.setattr(worker,'as_worker',observed)
     if fault:
         with pytest.raises(ValueError):
-            module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90))
+            module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90),host.identity)
         assert 'database-password' not in reads
         if fault=='uid':assert not reads
     else:
-        settings, observed_runtime, deadline = module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90))
+        settings, observed_runtime, deadline = module.owner_database_settings(tmp_path/'root-observer',host,now+timedelta(seconds=90),host.identity)
         assert (settings.host,settings.port,settings.database,settings.user) == ('127.0.0.1',55435,'synthetic','trading_owner')
         assert reads == [*values,'database-password']
         assert observed_runtime == runtime and 0 < deadline-time.monotonic() <= 20
@@ -382,7 +382,7 @@ def test_stage_publication_rechecks_runtime_after_readonly_sql(tmp_path,monkeypa
     monkeypatch.setattr(LocalSessionProfile,'model_validate_json',lambda *_:session)
     request = SimpleNamespace(authorization=SimpleNamespace(identity=identity,operation='HOLDOUT'),execution_source='source')
     host = SimpleNamespace(identity=identity,job_id='job_claimed',payload={})
-    context = (request,tmp_path,host,'b'*64)
+    context = (request,tmp_path,host,'b'*64,identity)
     monkeypatch.setattr(module,'_session_context',lambda _:context)
     monkeypatch.setattr(module,'_protected_model',lambda *_:session)
     monkeypatch.setattr(module,'read_protected_canonical_json_current',lambda _:({},'a'*64))
@@ -402,7 +402,7 @@ def test_stage_publication_rechecks_runtime_after_readonly_sql(tmp_path,monkeypa
         assert kwargs['options']=='-c default_transaction_read_only=on -c statement_timeout=5000'
         return nullcontext(Connection())
     monkeypatch.setattr(psycopg,'connect',connect)
-    monkeypatch.setattr(module,'AuthorityStore',lambda _:SimpleNamespace(locked=lambda:nullcontext()))
+    monkeypatch.setattr('scripts.p3_lane.issuer_lock',lambda _:nullcontext())
     def current(_):
         assert len(queries)==2
         return {'generation':'replaced'} if fault=='runtime_replaced' else runtime
@@ -418,8 +418,9 @@ def test_stage_publication_rechecks_runtime_after_readonly_sql(tmp_path,monkeypa
         assert len(published)==1 and result.attempts[0].job_id=='job_claimed'
 
 
+@pytest.mark.parametrize('lane', ['LOCAL', 'GITHUB'])
 @pytest.mark.parametrize('wrong_owner', [False, True])
-def test_session_issuer_observes_actual_process_before_publication(tmp_path, monkeypatch, wrong_owner):
+def test_session_issuer_observes_actual_process_before_publication(tmp_path, monkeypatch, wrong_owner, lane):
     """Real /proc observations; protected input/issuer IO is explicitly substituted."""
     from contextlib import nullcontext
     from types import SimpleNamespace
@@ -443,12 +444,22 @@ def test_session_issuer_observes_actual_process_before_publication(tmp_path, mon
     parent = dict(pid=process.pid, process_group=process.process_group,
         start_ticks=process.start_ticks, command_fingerprint=process.command_fingerprint)
     deadline = now+timedelta(minutes=30)
-    launch = LocalSessionLaunch.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-session-launch-v1', identity=identity, source=source, job_id='job_owner',
+    launch_model, launch_schema, observation_schema = LocalSessionLaunch, 'p3-local-session-launch-v1', 'p3-local-session-owner-observation-v1'
+    if lane == 'GITHUB':
+        from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+        from services.job_worker.p3_session import GithubSessionLaunch
+        from tests.p3.github_lane import GithubLane
+        identity = GithubRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='GITHUB',
+            issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent', workflow_ref='p3-authority.yml',
+            run_id=41, attempt=2)))
+        lane_double = GithubLane(monkeypatch, source=source, run_id=41, attempt=2, operation='p3-holdout-primary-v1')
+        launch_model, launch_schema, observation_schema = GithubSessionLaunch, 'p3-session-launch-v1', 'p3-session-owner-observation-v1'
+    launch = launch_model.model_validate_json(canonical_json_bytes(dict(
+        schema_version=launch_schema, identity=identity, source=source, job_id='job_owner',
         host_profile_sha256='a'*64, worker_pid=os.getpid(), worker_start_ticks=process.start_ticks,
         worker_uid=os.geteuid(), controller_pid=os.getppid(),
         issued_at=now.isoformat().replace('+00:00','Z'), workflow_deadline=deadline.isoformat().replace('+00:00','Z'))))
-    observation = dict(schema_version='p3-local-session-owner-observation-v1',
+    observation = dict(schema_version=observation_schema,
         identity=identity, source=source, job_id='job_owner', host_profile_sha256='a'*64,
         parent={**parent, 'pid':os.getpid()+1} if wrong_owner else parent,
         issued_at=now.isoformat().replace('+00:00','Z'), workflow_deadline=deadline.isoformat().replace('+00:00','Z'))
@@ -461,11 +472,11 @@ def test_session_issuer_observes_actual_process_before_publication(tmp_path, mon
         environment_ref=body.environment_ref, closure_sha256=source.closure_sha256)
     request = SimpleNamespace(operation_input=SimpleNamespace(body=body), execution_source=source,
         authorization=SimpleNamespace(identity=identity, expires_at=deadline))
-    monkeypatch.setattr(module, '_session_context', lambda _:(request, tmp_path, host, 'a'*64))
+    monkeypatch.setattr(module, '_session_context', lambda _:(request, tmp_path, host, 'a'*64, identity))
     monkeypatch.setattr(module, '_protected_model', lambda *_:launch)
     monkeypatch.setattr(module, 'ProtectedQualificationStore', lambda _:object())
     monkeypatch.setattr(module, '_read', lambda *_:SimpleNamespace(holdout_commitment='f'*64))
-    monkeypatch.setattr(module, 'AuthorityStore', lambda _:SimpleNamespace(locked=nullcontext))
+    monkeypatch.setattr('scripts.p3_lane.issuer_lock', lambda _:nullcontext())
     published = []
     monkeypatch.setattr(module, 'publish_protected', lambda path, raw:published.append((path,raw)))
     if wrong_owner:
@@ -476,3 +487,11 @@ def test_session_issuer_observes_actual_process_before_publication(tmp_path, mon
         session = module.install_session(tmp_path/'request', tmp_path/'proof')
         assert session.parent == process and session.workflow_deadline == deadline
         assert session.issued_at == now and len(published) == 1
+        if lane == 'GITHUB':
+            # The hosted session binds the attested run and the attested boot, never a LOCAL identity.
+            from tests.p3.github_lane import HOST
+            assert (session.workflow_run_id, session.workflow_attempt) == (41, 2)
+            assert session.boot_id == HOST[1] and not hasattr(session, 'identity')
+            lane_double.drift('revoked', 'p3-holdout-primary-v1')
+            with pytest.raises(ValueError):
+                module.install_session(tmp_path/'request', tmp_path/'proof')

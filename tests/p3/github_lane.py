@@ -26,6 +26,15 @@ def _z(value):
     return value.isoformat().replace('+00:00', 'Z')
 
 
+def _real_host_identity():
+    from packages.alpha_lifecycle import local_qualification
+    return local_qualification._host_identity
+
+
+# Captured at import, before any test replaces it, for tests that need the real host.
+REAL_HOST_IDENTITY = _real_host_identity()
+
+
 class GithubLane:
     def __init__(self, monkeypatch, *, source, run_id=1, attempt=1, operation='p3-baselines-v1'):
         from packages.alpha_lifecycle import local_qualification

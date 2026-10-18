@@ -104,6 +104,10 @@ def session_inputs(reference_seed, tmp_path, monkeypatch, request):
             host_id=machine,boot_id=str(boot))
         profile.pop('workflow_run_id');profile.pop('workflow_attempt')
         profile.update(schema_version='p3-local-holdout-session-v1',identity=local_identity)
+    else:
+        # A hosted session fences on the controller's run attestation staying present.
+        from tests.p3.github_lane import GithubLane
+        GithubLane(monkeypatch, source=manifest.source, run_id=1, attempt=1, operation='p3-holdout-primary-v1')
     host = {}
     stage_profile = {}
     attempts = []
@@ -210,12 +214,18 @@ def test_local_session_uses_authority_window_while_hosted_stays_bounded(session_
     document['workflow_deadline'] = end.isoformat().replace('+00:00', 'Z')
     expires = issued if fault == 'inverted' else end + timedelta(seconds=1 if fault == 'outside' else -1)
     document['expires_at'] = expires.isoformat().replace('+00:00', 'Z')
-    if fault or document['schema_version'] == 'p3-holdout-session-v1':
+    if fault:
         with pytest.raises(ValueError):
             x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
     else:
+        # 55 minutes fits both lanes now (the measured LOCAL session took about 49).
         profile = x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
         assert profile.issued_at == issued and profile.workflow_deadline == end
+        if document['schema_version'] == 'p3-holdout-session-v1':
+            beyond = issued + timedelta(minutes=x.module.HOSTED_SESSION_MINUTES, seconds=1)
+            document['workflow_deadline'] = beyond.isoformat().replace('+00:00', 'Z')
+            with pytest.raises(ValueError, match='hosted session exceeds'):
+                x.module.SESSION_PROFILE.validate_json(canonical_json_bytes(document))
 
 
 @pytest.mark.parametrize('session_inputs', ['GITHUB', 'LOCAL'], indirect=True)
@@ -259,11 +269,10 @@ def test_session_reuses_one_view_across_independently_admitted_stages(session_in
         assert view.read_bytes(x.manifest)
     # Root learns the commitment for the PARITY intent only from the worker's retained note.
     note = x.output_root/holdout.job_id/'session-refs'/'native-commitment.log'
-    if isinstance(x.session.profile, LocalSessionProfile):
-        assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid(),
-            store=x.store, expected_source=x.session.profile.source) == x.session.native_commitment_ref
-    else:  # The note channel is LOCAL-only until the GITHUB lane is verified separately.
-        assert not note.exists()
+    # Both lanes: the controller derives the PARITY intent from this note.
+    assert note.exists()
+    assert read_session_ref(x.output_root, holdout.job_id, 'NATIVE_COMMITMENT', worker_uid=os.geteuid(),
+        store=x.store, expected_source=x.session.profile.source) == x.session.native_commitment_ref
     for stage in ('PARITY', 'PHASE_EXIT'):
         with x.session.stage(x.claim(stage), fence=lambda: x.events.append(stage)):
             assert x.session.view is view
@@ -458,9 +467,12 @@ def test_local_session_uses_protected_local_identity_without_github_numbers(sess
     from services.job_worker import p3_session as module
     import hashlib
     x=session_inputs
+    from packages.alpha_lifecycle import local_qualification
+    from tests.p3.github_lane import REAL_HOST_IDENTITY
+    monkeypatch.setattr(local_qualification,'_host_identity',REAL_HOST_IDENTITY)
     document=x.session.profile.model_dump(mode='json')
     for name in ('workflow_run_id','workflow_attempt'):document.pop(name)
-    host,boot=_host_identity()
+    host,boot=REAL_HOST_IDENTITY()
     identity=dict(issuer_kind='LOCAL',issuer_identity='operator-a',run_id='00000000-0000-4000-8000-000000000002',
         attempt=1,host_id=host,boot_id=str(boot))
     document.update(schema_version='p3-local-holdout-session-v1',identity=identity)
@@ -618,7 +630,8 @@ def test_root_note_read_binds_runtime_to_this_session_before_the_worker_helper(m
     calls = []
     ref = {'content_sha256': 'a'*64, 'locator': 'a'*64+'.blob', 'size_bytes': 10, 'media_type': 'application/json'}
     monkeypatch.setattr(profiles, 'LocalOfficialHostProfileV2', V2)
-    monkeypatch.setattr(controller, '_session_context', lambda path: (request, Path('/run/session'), host, None))
+    monkeypatch.setattr(controller, '_session_context', lambda path: (request, Path('/run/session'), host, None,
+                                                                      request.authorization.identity))
     monkeypatch.setattr(controller, '_protected_model', lambda path, model: SimpleNamespace(worker_uid=980))
     monkeypatch.setattr(transport, '_runtime_authority', lambda value: runtime)
     monkeypatch.setattr(transport, '_official_deadline', lambda bound, expires: bound)

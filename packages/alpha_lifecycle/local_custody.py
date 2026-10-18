@@ -36,6 +36,18 @@ class LocalCustodyCipherProfile(StrictModel):
     gpg_version: Text
 
 
+class GithubCustodyCipherProfile(StrictModel):
+    """Hosted-lane storage/binary pins for this host's custodian; never a disclosure grant."""
+    schema_version: Literal['p3-github-custody-cipher-profile-v1']
+    host_id: Sha256
+    source: SourceIdentity
+    custodian_uid: Annotated[int, Field(gt=0)]
+    store_root: Text
+    key_ref: ArtifactRefV1
+    gpg_binary_sha256: Sha256
+    gpg_version: Text
+
+
 def crypt_bundle(data: bytes, key: bytes, *, binary: Path, binary_sha256: str,
                  version: str, decrypt: bool = False) -> bytes:
     """Keep secrets off argv/disk; verify MDC and bound output before returning it."""

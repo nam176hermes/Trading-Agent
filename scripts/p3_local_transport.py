@@ -1909,7 +1909,8 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
     """Bind the actual fork child and the original pre-build budget for the worker."""
     from datetime import UTC, datetime, timedelta
     from packages.runtime_release.config import read_protected_canonical_json_current
-    from services.job_worker.p3_session import LocalSessionLaunch
+    from services.job_worker.p3_session import session_lane
+    from scripts.p3_lane import identity_from_transport
     if invocation_deadline is None or invocation_started is None or invocation_expires_at is None:
         raise TransportHeld('official holdout lost its original transport interval')
     directory = _official_run_directory(request)
@@ -1920,8 +1921,12 @@ def _publish_session_launch(request, descriptor, child, deadline, invocation_dea
     expires = min(invocation_expires_at, now+timedelta(seconds=deadline-observed))
     if now >= expires:
         raise TransportHeld('official holdout authority expired before launch publication')
-    value = LocalSessionLaunch.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-session-launch-v1', identity=request['identity'],
+    identity = identity_from_transport(request['identity'])
+    launch_model = session_lane(identity)[0]
+    value = launch_model.model_validate_json(canonical_json_bytes(dict(
+        schema_version=('p3-session-launch-v1' if request['identity'].get('issuer_kind') == 'GITHUB'
+                        else 'p3-local-session-launch-v1'),
+        identity=identity.model_dump(mode='json'),
         source=host['payload']['expected_source'], job_id=host['job_id'], host_profile_sha256=digest,
         worker_pid=child, worker_start_ticks=_process_start_time(child), worker_uid=descriptor['worker_uid'],
         controller_pid=os.getpid(), issued_at=invocation_started.isoformat().replace('+00:00','Z'),

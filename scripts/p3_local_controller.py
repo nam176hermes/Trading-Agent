@@ -262,41 +262,44 @@ def stage_operation(request_path, review_path):
 
 
 def _session_context(request_path):
-    from packages.alpha_lifecycle.authority import _LocalRequestFile, local_run_directory, validate_local_operation_authority
-    from services.job_worker.p3_host_profile import OFFICIAL_PROFILE
+    """(request, run directory, image host profile, host digest, lane identity) for either lane."""
+    from scripts.p3_lane import admitted_operation
+    from services.job_worker.p3_host_profile import OFFICIAL_PROFILE, LocalOfficialHostProfileV2, OfficialHostProfileV2
     if os.geteuid() != 0:
         raise PermissionError('session issuer requires root')
-    request = _protected_model(request_path, _LocalRequestFile)
-    auth = request.authorization
-    if not isinstance(auth, LocalRunAuthorization) or request.operation_input is None:
-        raise ValueError('session requires an official LOCAL operation')
     source = SourceIdentity.model_validate(_committed_source())
-    if validate_local_operation_authority(auth, source) != request:
-        raise ValueError('current protected request differs')
-    directory = local_run_directory(auth.identity)
+    request, identity, directory = admitted_operation(request_path, source=source)
+    auth = request.authorization
+    if request.operation_input is None:
+        raise ValueError('session requires an official operation')
     document, host_digest = read_protected_canonical_json_current(directory/'profile.json')
     host = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
     expected = build_alpha_campaign_payload(auth, source, request.operation_input.workflow_operation,
         operation_input=request.operation_input)
-    if host.payload != expected or host.identity != auth.identity:
+    lane_host = (type(host) is LocalOfficialHostProfileV2 and host.identity == identity
+        if isinstance(auth, LocalRunAuthorization) else type(host) is OfficialHostProfileV2)
+    if host.payload != expected or not lane_host:
         raise ValueError('session host profile differs from admitted operation')
-    return request, directory, host, host_digest
+    return request, directory, host, host_digest, identity
 
 
 def install_session(request_path, proof_root):
     """Bind the genuine launched worker to the already-reviewed HOLDOUT intent."""
     import stat
-    from services.job_worker.p3_session import LocalSessionLaunch, LocalSessionOwnerObservation, LocalSessionProfile
+    from services.job_worker.p3_session import session_lane
     from services.job_worker.recovery import ProcProcessInspector
     from services.job_worker.results import _open_directory_chain
-    from packages.alpha_lifecycle.contracts.authority import CustodyRecord
+    from packages.alpha_lifecycle.contracts.authority import CustodyRecord, GithubRunIdentity
     from packages.alpha_lifecycle.operation_input import HoldoutInput
-    request, directory, host, host_digest = _session_context(request_path)
+    from scripts.p3_lane import issuer_lock
+    context = _session_context(request_path)
+    request, directory, host, host_digest, identity = context
+    launch_model, observation_model, session_model, _ = session_lane(identity)
     intent = request.operation_input
     if intent is None or not isinstance(intent.body, HoldoutInput):
         raise ValueError('only the initial HOLDOUT may create a session')
-    launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
+    launch = _protected_model(directory/'session-launch.json', launch_model)
     path = Path(host.output_root)/host.job_id/'session-owner'/'observation.log'
     parent_fd = _open_directory_chain(path.parent)
     try:
@@ -306,7 +309,7 @@ def install_session(request_path, proof_root):
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != launch.worker_uid
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600 or not 1 <= info.st_size <= 65536):
                 raise ValueError('worker observation custody differs')
-            observation = LocalSessionOwnerObservation.model_validate_json(stream.read(65537))
+            observation = observation_model.model_validate_json(stream.read(65537))
     finally:
         os.close(parent_fd)
     actual = ProcProcessInspector().inspect(launch.worker_pid)
@@ -315,7 +318,7 @@ def install_session(request_path, proof_root):
     if (actual != observation.parent or actual is None or actual.start_ticks != launch.worker_start_ticks
         or tuple(map(int, fields['Uid'].split())) != (launch.worker_uid,)*4
         or int(fields['PPid']) != launch.controller_pid
-        or launch.identity != request.authorization.identity or observation.identity != launch.identity
+        or launch.identity != identity or observation.identity != launch.identity
         or launch.source != request.execution_source or observation.source != launch.source
         or launch.job_id != host.job_id or observation.job_id != host.job_id
         or launch.host_profile_sha256 != host_digest or observation.host_profile_sha256 != host_digest
@@ -323,17 +326,25 @@ def install_session(request_path, proof_root):
         or not launch.issued_at <= datetime.now(UTC) < launch.workflow_deadline <= request.authorization.expires_at):
         raise ValueError('worker owner is not the current transport child')
     custody = _read(ProtectedQualificationStore(proof_root), intent.body.custody_record_ref, CustodyRecord)
-    profile = LocalSessionProfile.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-holdout-session-v1', source=request.execution_source,
+    if isinstance(identity, GithubRunIdentity):
+        # The hosted session binds the attested run and this host's current boot.
+        from packages.alpha_lifecycle.github_run import read_github_run
+        run, _ = read_github_run(identity.run_id, identity.attempt, admission=True)
+        lane = dict(schema_version='p3-holdout-session-v1', workflow_run_id=identity.run_id,
+                    workflow_attempt=identity.attempt, boot_id=str(run.boot_id))
+    else:
+        lane = dict(schema_version='p3-local-holdout-session-v1', identity=identity,
+                    boot_id=str(identity.boot_id))
+    profile = session_model.model_validate_json(canonical_json_bytes(dict(
+        **lane, source=request.execution_source,
         environment_ref=host.environment_ref, primary_selection_ref=intent.body.primary_selection_ref,
         custody_record_ref=intent.body.custody_record_ref, holdout_commitment=custody.holdout_commitment,
         closure_sha256=host.closure_sha256, parent=observation.model_dump(mode='json')['parent'],
-        identity=launch.identity, boot_id=str(launch.identity.boot_id),
         issued_at=launch.issued_at.isoformat().replace('+00:00','Z'),
         expires_at=launch.workflow_deadline.isoformat().replace('+00:00','Z'),
         workflow_deadline=launch.workflow_deadline.isoformat().replace('+00:00','Z'))))
-    with AuthorityStore(launch.identity.issuer_identity).locked():
-        if _session_context(request_path) != (request, directory, host, host_digest):
+    with issuer_lock(identity):
+        if _session_context(request_path) != context:
             raise ValueError('session admission changed')
         if ProcProcessInspector().inspect(launch.worker_pid) != actual:
             raise ValueError('session owner changed before activation')
@@ -354,18 +365,18 @@ def next_stage(previous, current, *, session_digest, host_digest):
         session_sha256=session_digest, host_profile_sha256=host_digest, attempts=(*attempts, current))
 
 
-def owner_database_settings(credentials, host, expires_at):
+def owner_database_settings(credentials, host, expires_at, identity):
     """Compare worker metadata under its UID before reading the root observer password."""
     import time
     from scripts.p3_local_host import as_worker
     from scripts.p3_local_transport import _runtime_authority, _official_deadline
     from services.job_store.config import JobStoreSettings, read_systemd_credential
-    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
-    if not isinstance(host, LocalOfficialHostProfileV2) or datetime.now(UTC) >= expires_at:
-        raise ValueError('stage observation requires a current LOCAL v2 session')
-    runtime = _runtime_authority(dict(identity=host.identity.model_dump(mode='json')))
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2, OfficialHostProfileV2
+    if type(host) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2) or datetime.now(UTC) >= expires_at:
+        raise ValueError('stage observation requires a current v2 session')
+    runtime = _runtime_authority(dict(identity=identity.model_dump(mode='json')))
     if (runtime['uid'] != host.image.worker_uid
-        or runtime['identity'] != host.identity.model_dump(mode='json')
+        or runtime['identity'] != identity.model_dump(mode='json')
         or runtime['source'] != host.payload.expected_source.model_dump(mode='json')):
         raise ValueError('stage observer runtime identity differs')
     deadline = _official_deadline(time.monotonic()+(expires_at-datetime.now(UTC)).total_seconds(),
@@ -413,18 +424,21 @@ def _observe_stage_claim(settings, host, operation):
         attempt_id=row[0], worker_id=row[1], lease_token_sha256=row[2])
 
 
-def _prepare_native_profile(request, host, session, session_digest, current, previous, config, runtime, deadline):
+def _prepare_native_profile(request, host, session, session_digest, current, previous, config, runtime, deadline,
+                            identity):
     from scripts.p3_local_host import as_worker
     from packages.runtime_release.config import _absolute
     from services.job_worker.nautilus_closure import NautilusClosureConfig
     from services.job_worker.p3_native_spawn import NativeLaunchProfile
-    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
+    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2, OfficialHostProfileV2
+    from services.job_worker.p3_session import session_belongs_to
     from packages.alpha_lifecycle.operation_input import NativeParityInput
-    if (type(config) is not NautilusClosureConfig or not isinstance(host, LocalOfficialHostProfileV2)
+    if (type(config) is not NautilusClosureConfig or type(host) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2)
         or not isinstance(request.operation_input.body, NativeParityInput)
         or previous is None or len(previous.attempts) != 1
         or runtime['uid'] != host.image.worker_uid
-        or runtime['identity'] != session.identity.model_dump(mode='json')
+        or not session_belongs_to(session, identity)
+        or runtime['identity'] != identity.model_dump(mode='json')
         or runtime['source'] != session.source.model_dump(mode='json')
         or str(config.sandbox_executable) != host.sandbox_executable):
         raise ValueError('native owner inputs or session binding differ')
@@ -452,13 +466,15 @@ def install_stage(request_path, credentials, *, native_closure=None):
     """Bind the exact claim; PARITY also requires qualified native readiness before admission."""
     import time
     from scripts.p3_local_transport import _runtime_authority
-    from services.job_worker.p3_session import LocalSessionProfile, SessionStageProfile
+    from services.job_worker.p3_session import SessionStageProfile, session_belongs_to, session_lane
     from services.job_worker.p3_native_spawn import NativeLaunchProfile
     from services.job_worker.recovery import ProcProcessInspector
-    request, directory, host, host_digest = _session_context(request_path)
+    from scripts.p3_lane import issuer_lock
+    context = _session_context(request_path)
+    request, directory, host, host_digest, identity = context
     session_doc, session_digest = read_protected_canonical_json_current(directory/'session.json')
-    session = LocalSessionProfile.model_validate_json(canonical_json_bytes(session_doc))
-    if (session.identity != request.authorization.identity or session.source != request.execution_source
+    session = session_lane(identity)[2].model_validate_json(canonical_json_bytes(session_doc))
+    if (not session_belongs_to(session, identity) or session.source != request.execution_source
         or session.parent != ProcProcessInspector().inspect(session.parent.pid)
         or not session.issued_at <= datetime.now(UTC) < session.expires_at):
         raise ValueError('stage session owner or deadline differs')
@@ -467,27 +483,27 @@ def install_stage(request_path, credentials, *, native_closure=None):
         raise ValueError('native inputs are only valid for PARITY')
     if parity and native_closure is None:
         raise ValueError('native qualified owner inputs are required before PARITY admission')
-    settings, runtime, deadline = owner_database_settings(credentials, host, session.expires_at)
+    settings, runtime, deadline = owner_database_settings(credentials, host, session.expires_at, identity)
     current = _observe_stage_claim(settings, host, request.authorization.operation)
     def check_authority():
-        if (_session_context(request_path) != (request, directory, host, host_digest)
+        if (_session_context(request_path) != context
             or read_protected_canonical_json_current(directory/'session.json')[1] != session_digest
             or ProcProcessInspector().inspect(session.parent.pid) != session.parent
             or datetime.now(UTC) >= session.expires_at or time.monotonic() >= deadline
-            or _runtime_authority(dict(identity=host.identity.model_dump(mode='json'))) != runtime
+            or _runtime_authority(dict(identity=identity.model_dump(mode='json'))) != runtime
             or parity and _observe_stage_claim(settings, host, request.authorization.operation) != current):
             raise ValueError('stage authority changed before publication')
     path = directory/'stage.json'
-    with AuthorityStore(session.identity.issuer_identity).locked():
+    with issuer_lock(identity):
         previous = _protected_model(path, SessionStageProfile) if path.exists() else None
         stage = next_stage(previous, current, session_digest=session_digest, host_digest=host_digest)
         if parity:
             native = _prepare_native_profile(request, host, session, session_digest, current, previous,
-                native_closure, runtime, deadline)
+                native_closure, runtime, deadline, identity)
             check_authority()
             # Re-observe private commitment and qualified closure after the issuer/claim fence.
             if _prepare_native_profile(request, host, session, session_digest, current, previous,
-                    native_closure, runtime, deadline) != native:
+                    native_closure, runtime, deadline, identity) != native:
                 raise ValueError('native readiness changed before publication')
             check_authority()
             native_path = directory/'native.json'
@@ -583,19 +599,16 @@ def read_session_ref(request_path, kind):
     import time
     from scripts.p3_local_host import as_worker
     from scripts.p3_local_transport import _official_deadline, _runtime_authority
-    from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2
-    from services.job_worker.p3_session import LocalSessionLaunch
+    from services.job_worker.p3_session import session_lane
     from packages.runtime_release.config import _absolute
     if kind not in {'NATIVE_COMMITMENT', 'PARITY_PAIR'}:
         raise ValueError('session reference kind differs')
-    request, directory, host, _ = _session_context(request_path)
-    if not isinstance(host, LocalOfficialHostProfileV2):
-        raise ValueError('session note reader requires a LOCAL v2 host profile')
-    launch = _protected_model(directory/'session-launch.json', LocalSessionLaunch)
-    runtime = _runtime_authority(dict(identity=request.authorization.identity.model_dump(mode='json')))
+    request, directory, host, _, identity = _session_context(request_path)
+    launch = _protected_model(directory/'session-launch.json', session_lane(identity)[0])
+    runtime = _runtime_authority(dict(identity=identity.model_dump(mode='json')))
     # Same runtime binding as owner_database_settings: this session's UID, run identity and source.
     if (runtime['uid'] != launch.worker_uid or runtime['uid'] != host.image.worker_uid
-        or runtime['identity'] != request.authorization.identity.model_dump(mode='json')
+        or runtime['identity'] != identity.model_dump(mode='json')
         or runtime['source'] != request.execution_source.model_dump(mode='json')):
         raise ValueError('session note reader runtime identity differs')
     deadline = _official_deadline(time.monotonic()+60, runtime.get('expires_at'))

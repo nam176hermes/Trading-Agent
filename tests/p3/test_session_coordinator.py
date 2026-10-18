@@ -143,6 +143,9 @@ def test_official_entry_dispatches_holdout_to_session_after_host_admission(synth
     monkeypatch.setattr(module, 'read_enqueued_job', lambda *a, **k: (job.job_id, SimpleNamespace(payload=job.payload), 'operator'))
     monkeypatch.setattr(module, 'read_protected_canonical_json_current', lambda *a: ({}, 'a'*64))
     monkeypatch.setattr(module, 'read_official_profile', lambda *a, **k: (profile, closure))
+    from services.job_worker import p3_session
+    owners = []
+    monkeypatch.setattr(p3_session, 'await_session_owner', lambda *a, **k: owners.append(k))
     monkeypatch.setattr(module, 'probe_p3_startup', lambda *a, **k: None)
     authority = SimpleNamespace(application_revision=closure.source.commit_sha)
     monkeypatch.setattr(module, 'attest_worker_runtime_authority', lambda: authority)
@@ -158,6 +161,8 @@ def test_official_entry_dispatches_holdout_to_session_after_host_admission(synth
         # The run directory comes from the admitted authorization, not from GITHUB_* values.
         assert kwargs['directory'] == Path('/run/trading-agent-p3/1-1')
         assert (kwargs['identity'].run_id, kwargs['identity'].attempt) == (1, 1)
+        # The hosted owner handshake completed first, bound to the same run directory.
+        assert owners and owners[0]['directory'] == kwargs['directory']
         return 3
     monkeypatch.setattr(module, 'run_session', session)
     assert module.run_official_once(values, build_worker=object()) == 3

@@ -209,3 +209,47 @@ def test_local_custody_waits_for_admitted_pre_send_fences(custodian_profile,rele
     module.serve_profiled_release(channel,profile_path=Path('/synthetic/profile'),profile_digest='a'*64,read_plaintext=plaintext)
     assert 6<channel.timeout<=300
     assert events==['peer','client-fence','client-consume','client-fence','claim','fence','plaintext','fence','send']
+
+
+@pytest.mark.parametrize('fault',[None,'run','authorization','intent','holdout','not_admitted','other_request'])
+def test_github_custodian_binds_the_run_published_holdout_before_plaintext(custodian_profile,released,monkeypatch,fault):
+    from datetime import UTC,datetime,timedelta
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle import authority as authority_module, holdout
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from tests.p3.test_local_qualification import sealed
+    module,document,digest=custodian_profile;store,*_=released
+    now=datetime.now(UTC)
+    ref=document['request']['custody_record_ref']
+    auth=RunAuthorization.model_validate_json(canonical_json_bytes(sealed(dict(
+        schema_version='p3-run-authorization-v1',issuer_workflow='p3-authority.yml',issuer_run_id=41,issuer_attempt=2,
+        input_set_ref=ref,review_ref=ref,operation='HOLDOUT',allowed_alpha_ids=['a0.donchian-20-10-close-confirm'],
+        issued_at=now.isoformat().replace('+00:00','Z'),expires_at=(now+timedelta(hours=1)).isoformat().replace('+00:00','Z'),
+        nonce='00000000-0000-4000-8000-000000000003',authority=dict(broker=False,live=False,network=False,production=False)))))
+    auth_ref=store.put_bytes(canonical_json_bytes(auth),media_type='application/json')
+    identity=dict(issuer_kind='GITHUB',issuer_identity='p3-authority',repository='nam176hermes/Trading-Agent',
+        workflow_ref='p3-authority.yml',run_id=41,attempt=2)
+    document.update(schema_version='p3-github-custodian-profile-v1',identity=identity,
+        authorization_ref=auth_ref.model_dump(mode='json'),catalog_sha256=module.SESSION_CATALOG_SHA256)
+    document['request'].update(authorization_digest=auth_ref.content_sha256,
+        holdout_request_sha256=hashlib.sha256(canonical_json_bytes({'synthetic':'request'})).hexdigest())
+    calls=[]
+    monkeypatch.setattr(module,'require_p3_source_ready',lambda root,who:calls.append(('gates',who)))
+    def protected(path,source,operation):
+        assert path==Path('/run/trading-agent-p3/41-2/operations/00000000-0000-4000-8000-000000000003.json')
+        assert operation=='HOLDOUT'
+        calls.append('run-request')
+        if fault=='not_admitted':raise authority_module.AuthorityHeld('HELD E_ISSUER: stale')
+        other=auth.model_copy(update={'nonce':__import__('uuid').UUID(int=9)}) if fault=='other_request' else auth
+        return SimpleNamespace(authorization=other,operation_input=SimpleNamespace(
+            digest='0'*64 if fault=='intent' else document['request']['intent_digest']))
+    monkeypatch.setattr(authority_module,'validate_request',protected)
+    monkeypatch.setattr(holdout,'derive_holdout_request',lambda *a,**k:{'synthetic':'request'})
+    if fault=='run':document['identity']={**identity,'attempt':3}
+    elif fault=='authorization':document['request']['authorization_digest']='0'*64
+    elif fault=='holdout':document['request']['holdout_request_sha256']='0'*64
+    if fault:
+        with pytest.raises(ValueError):module.read_custodian_profile(Path('/synthetic/profile'),digest())
+    else:
+        profile=module.read_custodian_profile(Path('/synthetic/profile'),digest())
+        assert profile.identity.run_id==41 and calls==[('gates',None),'run-request']
