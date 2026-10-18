@@ -376,7 +376,8 @@ def _private_paths(root: Path, paths: set[str]) -> None:
             match.group(1) not in _PLATFORM_HOMES for match in _PRIVATE_HOME.finditer(content)
         ):
             continue
-        blob = hashlib.sha1(b"blob %d\0" % len(content) + content).hexdigest()
+        # Git object identity of the working-tree bytes, not a security digest.
+        blob = hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).hexdigest()
         if allowlist.get(relative) != blob:
             raise CliError("E_PRIVATE_PATH", relative)
         found.add(relative)
