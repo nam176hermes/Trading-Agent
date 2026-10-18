@@ -41,6 +41,15 @@ def test_native_option_is_passed_to_wrapper_not_pytest(monkeypatch, command):
     assert args[-3:] == ("tests/foundation", "-k", "custody")
 
 
+@pytest.mark.parametrize("command", ["test", "test-debug"])
+def test_misplaced_native_option_fails_before_starting_pytest(monkeypatch, capsys, command):
+    calls = []
+    monkeypatch.setattr(dev, "_run", lambda args: calls.append(args) or 0)
+    assert dev.main([command, "tests/foundation", "--native-custody"]) == 2
+    assert calls == []
+    assert "before the test path" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("status", [0, 7])
 def test_native_wrapper_builds_validates_and_cleans_up(tmp_path, status):
     output = tmp_path / "build-path"

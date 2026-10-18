@@ -1,0 +1,753 @@
+{
+  "retrieved_at": "2026-10-15T04:59:01.025565+00:00",
+  "scope": "Read-only research. Issue and community claims are not independent runtime validation. Raw CLI session metadata was excluded.",
+  "agent_reach": {
+    "version": "1.5.0",
+    "github": "gh CLI",
+    "reddit": "rdt-cli",
+    "web": "Jina Reader plus web search",
+    "exa": "unavailable: mcporter not installed",
+    "twitter": "not authenticated; not used"
+  },
+  "repositories": [
+    {
+      "repo": "AIGeeksGroup/WebCryptoAgent",
+      "default_branch": "main",
+      "head": "7d479169501fdd21b6e0c529494a4c3070762544",
+      "commit_date": "2026-09-02T05:15:41Z",
+      "releases": []
+    },
+    {
+      "repo": "HKUDS/AI-Trader",
+      "default_branch": "main",
+      "head": "d03ff6c056b32ced735adf7c19ed8175adb1c8df",
+      "commit_date": "2026-06-11T09:26:01Z",
+      "releases": []
+    },
+    {
+      "repo": "ParadooxAI/TradeLens",
+      "default_branch": "main",
+      "head": "a2d299c7cfdd96adff387e6e5a8584ea089d920a",
+      "commit_date": "2026-09-01T10:04:31Z",
+      "releases": []
+    },
+    {
+      "repo": "QuantConnect/Lean",
+      "default_branch": "master",
+      "head": "80e7843f645673bcbeaab963049f76f20f6785e1",
+      "commit_date": "2026-10-06T17:34:53Z",
+      "releases": [
+        {
+          "tag": "v2.4.0.1",
+          "date": "2017-08-08T20:57:57Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v2.4.0.0",
+          "date": "2017-05-01T01:48:26Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v2.3.0.3",
+          "date": "2017-03-16T21:10:05Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "TauricResearch/TradingAgents",
+      "default_branch": "main",
+      "head": "1394a3f72aa4393e1a98f51b382434c4b4c2d972",
+      "commit_date": "2026-10-03T21:30:07Z",
+      "releases": [
+        {
+          "tag": "v0.6.0",
+          "date": "2026-10-03T21:30:11Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.5.2",
+          "date": "2026-09-29T05:59:23Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.5.1",
+          "date": "2026-09-24T07:51:56Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "freqtrade/freqtrade",
+      "default_branch": "develop",
+      "head": "b33068949fc16e69e288e0a5bef5bd1f086f0a27",
+      "commit_date": "2026-10-15T04:41:41Z",
+      "releases": [
+        {
+          "tag": "2026.9",
+          "date": "2026-09-29T17:06:05Z",
+          "prerelease": false
+        },
+        {
+          "tag": "2026.8",
+          "date": "2026-08-31T04:34:31Z",
+          "prerelease": false
+        },
+        {
+          "tag": "2026.7",
+          "date": "2026-07-31T18:04:13Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "general-liquidity/sharpebench",
+      "default_branch": "main",
+      "head": "26d9a2a91cfcffe6053c25f9b563830e0fe2de56",
+      "commit_date": "2026-10-15T04:36:57Z",
+      "releases": [
+        {
+          "tag": "v0.28.0",
+          "date": "2026-09-18T22:03:56Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.27.0",
+          "date": "2026-09-15T19:58:55Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.26.0",
+          "date": "2026-09-14T18:58:24Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "hummingbot/condor",
+      "default_branch": "main",
+      "head": "45e60d6067bd311c154d7890c1ecc46f207b17e2",
+      "commit_date": "2026-10-02T05:28:34Z",
+      "releases": []
+    },
+    {
+      "repo": "hummingbot/hummingbot",
+      "default_branch": "master",
+      "head": "9af100d6822da7d2d0291a906c730ef172284ee2",
+      "commit_date": "2026-09-22T08:53:54Z",
+      "releases": [
+        {
+          "tag": "v2.17.0",
+          "date": "2026-09-22T08:55:11Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v2.16.0",
+          "date": "2026-07-29T21:19:00Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v2.15.0",
+          "date": "2026-06-16T19:43:53Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "iterativv/NostalgiaForInfinity",
+      "default_branch": "main",
+      "head": "e244837dda4769809f5a94f5711ff97838fe34dd",
+      "commit_date": "2026-10-14T16:41:15Z",
+      "releases": [
+        {
+          "tag": "v18.0.116",
+          "date": "2026-09-29T15:17:55Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v17.5.40",
+          "date": "2026-09-06T09:21:39Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v17.4.562",
+          "date": "2026-08-21T15:13:07Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "jesse-ai/jesse",
+      "default_branch": "master",
+      "head": "5e642997f9623d67b63543962eab46caca30e613",
+      "commit_date": "2026-10-12T15:25:56Z",
+      "releases": []
+    },
+    {
+      "repo": "microsoft/RD-Agent",
+      "default_branch": "main",
+      "head": "484776c211e4fbbeef03e0ec00d6bbee7362a4f4",
+      "commit_date": "2026-09-23T11:05:10Z",
+      "releases": [
+        {
+          "tag": "v1.0.0",
+          "date": "2026-09-23T11:05:33Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.8.0",
+          "date": "2025-11-03T14:01:36Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.7.0",
+          "date": "2025-07-08T03:19:35Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "microsoft/qlib",
+      "default_branch": "main",
+      "head": "54355232463878d2eebb91fe0ee5fa7fa1f5976c",
+      "commit_date": "2026-10-08T10:15:27Z",
+      "releases": [
+        {
+          "tag": "v0.9.8",
+          "date": "2026-10-08T10:58:43Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.9.7",
+          "date": "2025-08-15T09:49:17Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v0.9.6",
+          "date": "2024-12-23T07:36:40Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "nautechsystems/nautilus_trader",
+      "default_branch": "develop",
+      "head": "ce453eb995731e3873f0267dda5e4c3a7c514ac6",
+      "commit_date": "2026-10-15T02:08:01Z",
+      "releases": [
+        {
+          "tag": "v2.0.0rc6",
+          "date": "2026-10-05T03:03:18Z",
+          "prerelease": true
+        },
+        {
+          "tag": "v2.0.0rc5",
+          "date": "2026-09-15T06:17:23Z",
+          "prerelease": true
+        },
+        {
+          "tag": "v2.0.0rc4",
+          "date": "2026-09-02T03:26:46Z",
+          "prerelease": true
+        }
+      ]
+    },
+    {
+      "repo": "nkaz001/hftbacktest",
+      "default_branch": "master",
+      "head": "5f3ec40b2afb764e0fea112f941ed85523ef4e88",
+      "commit_date": "2025-12-23T15:31:05Z",
+      "releases": [
+        {
+          "tag": "rust-v0.9.4",
+          "date": "2025-12-10T16:17:40Z",
+          "prerelease": false
+        },
+        {
+          "tag": "rust-v0.9.3",
+          "date": "2025-09-30T12:25:21Z",
+          "prerelease": false
+        },
+        {
+          "tag": "rust-v0.9.2",
+          "date": "2025-08-24T03:43:04Z",
+          "prerelease": false
+        }
+      ]
+    },
+    {
+      "repo": "polakowo/vectorbt",
+      "default_branch": "master",
+      "head": "e9cd2b10987163123f52424710647855ed0dfad9",
+      "commit_date": "2026-10-14T12:01:40Z",
+      "releases": [
+        {
+          "tag": "v1.1.2",
+          "date": "2026-10-09T19:03:00Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v1.1.1",
+          "date": "2026-09-26T06:12:54Z",
+          "prerelease": false
+        },
+        {
+          "tag": "v1.1.0",
+          "date": "2026-07-05T17:17:14Z",
+          "prerelease": false
+        }
+      ]
+    }
+  ],
+  "issues_read": [
+    {
+      "url": "https://github.com/TauricResearch/TradingAgents/issues/1196",
+      "number": 1196,
+      "title": "[Question] Debate layer shifts ambiguous/HOLD cases toward Overweight — does this reproduce elsewhere?",
+      "state": "CLOSED",
+      "createdAt": "2026-08-01T21:25:05Z",
+      "updatedAt": "2026-09-01T05:39:24Z"
+    },
+    {
+      "url": "https://github.com/TauricResearch/TradingAgents/issues/1251",
+      "number": 1251,
+      "title": "Decision-log lessons lack a point-in-time guard — possible lookahead in backtests",
+      "state": "CLOSED",
+      "createdAt": "2026-08-23T21:55:00Z",
+      "updatedAt": "2026-08-31T03:10:53Z"
+    },
+    {
+      "url": "https://github.com/TauricResearch/TradingAgents/issues/1518",
+      "number": 1518,
+      "title": "Backtest look-ahead: a decision dated d reads news published after the close of d, but is scored from close(d)",
+      "state": "OPEN",
+      "createdAt": "2026-10-13T14:00:45Z",
+      "updatedAt": "2026-10-13T14:00:45Z"
+    },
+    {
+      "url": "https://github.com/freqtrade/freqtrade/issues/13661",
+      "number": 13661,
+      "title": "Backtest: `_get_order_filled` rejects orders on zero-range candles (off by one ULP) — silently dropping force-exits and expiring ordinary exit orders",
+      "state": "CLOSED",
+      "createdAt": "2026-10-11T11:43:40Z",
+      "updatedAt": "2026-10-11T12:56:33Z"
+    },
+    {
+      "url": "https://github.com/hummingbot/condor/issues/151",
+      "number": 151,
+      "title": "dry_run execution mode doesn't block manage_bots deploy — can place real capital despite being labeled a safe test mode",
+      "state": "OPEN",
+      "createdAt": "2026-07-07T22:13:10Z",
+      "updatedAt": "2026-10-06T10:39:24Z"
+    },
+    {
+      "url": "https://github.com/hummingbot/condor/issues/284",
+      "number": 284,
+      "title": "Question: what checks an agent's edit to its own strategy before the live loop?",
+      "state": "OPEN",
+      "createdAt": "2026-10-15T03:31:06Z",
+      "updatedAt": "2026-10-15T03:31:06Z"
+    },
+    {
+      "url": "https://github.com/microsoft/RD-Agent/issues/1372",
+      "number": 1372,
+      "title": "\"The running time exceeds 3600 seconds\" during backtest",
+      "state": "OPEN",
+      "createdAt": "2026-03-30T09:41:47Z",
+      "updatedAt": "2026-04-03T07:13:27Z"
+    },
+    {
+      "url": "https://github.com/microsoft/RD-Agent/issues/1451",
+      "number": 1451,
+      "title": "Bandit scheduler reward: ARR term never fires (trailing space in metric key), and sharpe is derived from it",
+      "state": "OPEN",
+      "createdAt": "2026-08-22T03:38:43Z",
+      "updatedAt": "2026-09-08T22:12:00Z"
+    },
+    {
+      "url": "https://github.com/nautechsystems/nautilus_trader/issues/5113",
+      "number": 5113,
+      "title": "[v1] `OrderInitialized.reconciliation` always returns `False`, dropping the engine's `reconciliation=True`",
+      "state": "CLOSED",
+      "createdAt": "2026-09-26T18:32:15Z",
+      "updatedAt": "2026-09-27T11:08:33Z"
+    },
+    {
+      "url": "https://github.com/nautechsystems/nautilus_trader/issues/5280",
+      "number": 5280,
+      "title": "[Live] Periodic position check closes positions for clients that do not report them (Sandbox, Coinbase, Binance spot, OKX)",
+      "state": "OPEN",
+      "createdAt": "2026-10-09T19:25:44Z",
+      "updatedAt": "2026-10-09T19:25:44Z"
+    }
+  ],
+  "reddit_threads": [
+    {
+      "id": "1h7uyhg",
+      "read_succeeded": true,
+      "title": "Freqtrade vs Hummingbot 2024",
+      "url": "https://www.reddit.com/r/algotrading/comments/1h7uyhg/freqtrade_vs_hummingbot_2024/",
+      "records_retained": 14
+    },
+    {
+      "id": "1op0rel",
+      "read_succeeded": true,
+      "title": "NautilusTrader vs QuantConnect LEAN",
+      "url": "https://www.reddit.com/r/algotrading/comments/1op0rel/nautilustrader_vs_quantconnect_lean/",
+      "records_retained": 12
+    },
+    {
+      "id": "1tbslo0",
+      "read_succeeded": true,
+      "title": "Testirao sam TradingAgents, AI simulacija hedge fund tima za analizu SPY-a",
+      "url": "https://www.reddit.com/r/financije/comments/1tbslo0/testirao_sam_tradingagents_ai_simulacija_hedge/",
+      "records_retained": 12
+    },
+    {
+      "id": "1vua0r7",
+      "read_succeeded": false,
+      "title": null,
+      "url": null,
+      "records_retained": 0
+    },
+    {
+      "id": "1w5hz60",
+      "read_succeeded": true,
+      "title": "Built a freqtrade-based momentum-trend bot and documented its REAL edge (including the ugly parts)",
+      "url": "https://www.reddit.com/r/ai_trading/comments/1w5hz60/built_a_freqtradebased_momentumtrend_bot_and/",
+      "records_retained": 6
+    },
+    {
+      "id": "1x04kxr",
+      "read_succeeded": true,
+      "title": "What trading agents or skills are you actually using?",
+      "url": "https://www.reddit.com/r/Trading/comments/1x04kxr/what_trading_agents_or_skills_are_you_actually/",
+      "records_retained": 7
+    }
+  ],
+  "unavailable_sources": [
+    {
+      "url": "https://github.com/wiktorj137/btc-strategy-lab",
+      "effect": "Not used to validate public strategy performance"
+    },
+    {
+      "url": "https://sourcefeed.dev/a/tradingagents-has-100k-stars-and-one-three-month-backtest",
+      "effect": "Jina failed; search snippet not used as performance evidence"
+    },
+    {
+      "url": "https://alphaarena.ai/",
+      "effect": "No leaderboard/model ranking adopted"
+    }
+  ],
+  "raw_artifacts_directory": "/tmp/trading-v4-reviews-20261015-vjetqyqt",
+  "raw_artifact_hashes": [
+    {
+      "file": "571_freqtrade_strategies.json",
+      "sha256": "74a2c9e4bd066228f0327718ddf06fc42dcf6161a4368341d98c1ce8ad711cbe",
+      "bytes": 34338
+    },
+    {
+      "file": "AIGeeksGroup__WebCryptoAgent-README.md",
+      "sha256": "b795e1d3319d2ba1505a9d67f6247ca571b0bf3413b9e9da2df2b92bb00944b0",
+      "bytes": 3486
+    },
+    {
+      "file": "AIGeeksGroup__WebCryptoAgent-metadata.json",
+      "sha256": "46cec56935465b18d8b68ac5c9d42ed685975606eca4c0bca1a038a492dca468",
+      "bytes": 184
+    },
+    {
+      "file": "Freqtrade.json",
+      "sha256": "eaeef8a1626ea35bbca9fc34439eba2af2dd5733d2d12762262815ce19e05e2f",
+      "bytes": 9492
+    },
+    {
+      "file": "HKUDS__AI-Trader-README.md",
+      "sha256": "f3c6f8a67c8003237aa70773a76bf86fdbd32811c6d55fd5520922a98ecd9f02",
+      "bytes": 8656
+    },
+    {
+      "file": "HKUDS__AI-Trader-metadata.json",
+      "sha256": "65879885e94be2b64eed1ffffa2cea4e3f3ffe417d554632738f49adfcc33fba",
+      "bytes": 172
+    },
+    {
+      "file": "Hummingbot.json",
+      "sha256": "f26404bd4a04aedcb24fde619237f9e788095ba0a2cf18b4c369e6e04b9a06e7",
+      "bytes": 7227
+    },
+    {
+      "file": "NautilusTrader.json",
+      "sha256": "ebe801b74ed77349217f162d05f751c82273367e2159c2c445b102624021a274",
+      "bytes": 18053
+    },
+    {
+      "file": "ParadooxAI__TradeLens-README.md",
+      "sha256": "823e6c55aa384caec385a41206d3242c50c1d941ee1e67fc154d8d20d896259f",
+      "bytes": 11007
+    },
+    {
+      "file": "ParadooxAI__TradeLens-metadata.json",
+      "sha256": "86b91ca6740f2f5526674bb4d070cf06b3d67636cc04927e12378931f9f9789e",
+      "bytes": 177
+    },
+    {
+      "file": "QuantConnect__Lean-README.md",
+      "sha256": "c93d2d649740ffdbfeca35ee5035eff668dc1f0a6b97873756addb70f4f4b91e",
+      "bytes": 11001
+    },
+    {
+      "file": "QuantConnect__Lean-metadata.json",
+      "sha256": "b7b4f01cb9fb51deaff18007530a35a80d326d33cee160ad7027e18980ecfc82",
+      "bytes": 484
+    },
+    {
+      "file": "RD-Agent.json",
+      "sha256": "64989f206f1db53546f655296a9d9343812feddd21e03a4d72c530ca39194c88",
+      "bytes": 8323
+    },
+    {
+      "file": "TauricResearch__TradingAgents-backtest.json",
+      "sha256": "3d50bc7f7092114089c8d3a926eeb554374c512fdc29c11dd80b17a9fb86aa47",
+      "bytes": 2296
+    },
+    {
+      "file": "TauricResearch__TradingAgents-issue-1196.json",
+      "sha256": "d8cd25a5e2543d31c5fd741446ae419db67c6710851a1ad876898a1362578deb",
+      "bytes": 20660
+    },
+    {
+      "file": "TauricResearch__TradingAgents-issue-1251.json",
+      "sha256": "65097ab03a1748fac4cfe6f97ad3ce384480ddc0509b2ca9c70cd823f546f0c7",
+      "bytes": 5154
+    },
+    {
+      "file": "TauricResearch__TradingAgents-issue-1518.json",
+      "sha256": "f1d3a8f6e8f56b645a31dd9f655e716742b9b7f3ab8c79a7465b3a7b36e03d6a",
+      "bytes": 3839
+    },
+    {
+      "file": "TauricResearch__TradingAgents-lookahead.json",
+      "sha256": "d9918fc46c47e4d0abd089a955a12d272ce76310e7785a3c49417ecf6a44308f",
+      "bytes": 295
+    },
+    {
+      "file": "TauricResearch__TradingAgents-metadata.json",
+      "sha256": "f5c12d6ea98aeb18c27ebf4dd381ffcc829a52f0870103f7558ba91adfb3fbd0",
+      "bytes": 487
+    },
+    {
+      "file": "TauricResearch__TradingAgents-reproduce.json",
+      "sha256": "db90cbfddfd376d9da6942106836d0ccabd40d9ad45d8b41ae26b49ed8303861",
+      "bytes": 2225
+    },
+    {
+      "file": "TradingAgents.json",
+      "sha256": "60519610a807dd25eb3168b8bb1683a259ac1761aa33e9823f7420585c6ab234",
+      "bytes": 14434
+    },
+    {
+      "file": "freqtrade__freqtrade-backtest_dry_updated_>=2026-01-01.json",
+      "sha256": "d1882627c81ee90fc66f461e30f20c29134cde47ba07742e7ce3bc241141bad8",
+      "bytes": 2232
+    },
+    {
+      "file": "freqtrade__freqtrade-issue-13661.json",
+      "sha256": "03068629ddc70ec7a332955a84906d9f154305deeb1e9f3ae15998729f6bb371",
+      "bytes": 11880
+    },
+    {
+      "file": "freqtrade__freqtrade-metadata.json",
+      "sha256": "65d94ca62f78302bf8fdb4e72db8fc9041379d9cb910c814e2e53733f089b24e",
+      "bytes": 481
+    },
+    {
+      "file": "general-liquidity__sharpebench-README.md",
+      "sha256": "8a23a4052e0eca36c03f696aed34f3f2128a1c1f997e691e80a7990681114a22",
+      "bytes": 21133
+    },
+    {
+      "file": "general-liquidity__sharpebench-metadata.json",
+      "sha256": "a3421b4c17be910408da4ab88b2a53748b38eb3210339a4b948cefd0ca2104fd",
+      "bytes": 491
+    },
+    {
+      "file": "hummingbot__condor-condor__runtime__danger.py",
+      "sha256": "c3cfc06142b40533a84c2cadfcc6b7fcb3937944f550aa80987d8ff31f2ddcd0",
+      "bytes": 49710
+    },
+    {
+      "file": "hummingbot__condor-issue-151.json",
+      "sha256": "73e42aa7761b09d64220a7f9cd5973a4966d8d2c341f39d62890f2481774c145",
+      "bytes": 6873
+    },
+    {
+      "file": "hummingbot__condor-issue-284.json",
+      "sha256": "5920698ba444236ed0d62a0e8ce55bc5ffb361f67bb116ae5068f276ed18022f",
+      "bytes": 1326
+    },
+    {
+      "file": "hummingbot__condor-metadata.json",
+      "sha256": "372ae9872bda943056dc3a11cef46d02fc109fe79517dd33243a0da7f004ab61",
+      "bytes": 174
+    },
+    {
+      "file": "hummingbot__condor-risk.json",
+      "sha256": "0c7fe838ad2035541d66a1ddf70600e35ba0c80a0ac93036bade6bd9a438d89f",
+      "bytes": 2368
+    },
+    {
+      "file": "hummingbot__hummingbot-filled_balance_updated_>=2026-01-01.json",
+      "sha256": "73e3161115793382f8b28fd034629a071a6b451f8cd7f9eda7be68fea913b7d2",
+      "bytes": 2088
+    },
+    {
+      "file": "hummingbot__hummingbot-metadata.json",
+      "sha256": "33abd9d66f7563d0cefa2934ed34b7fbae0a0f8ec6f5c0b96804a4090ec2c06d",
+      "bytes": 485
+    },
+    {
+      "file": "investingstack_ai.md",
+      "sha256": "f5690649e5941fe33a8f7bdadfc9a609b98f0bb5f617276e6dc12cc1cfb8dcd4",
+      "bytes": 14641
+    },
+    {
+      "file": "iterativv__NostalgiaForInfinity-README.md",
+      "sha256": "d81c3f3169edced9d20cb79c108c05497c7a34acffb4f8101977f6f4684ae132",
+      "bytes": 5228
+    },
+    {
+      "file": "iterativv__NostalgiaForInfinity-metadata.json",
+      "sha256": "6ee88c7b1490b406a0142b8f6d03914aa87e6b771dcd22d2e2cf182c3cacd6fe",
+      "bytes": 497
+    },
+    {
+      "file": "jesse-ai__jesse-README.md",
+      "sha256": "fbf09540982ea0e138f1e09c9c16bbb65bff87be0f45c75049d2dc280c5bbe80",
+      "bytes": 12899
+    },
+    {
+      "file": "jesse-ai__jesse-jesse__version.py",
+      "sha256": "4a6cbd1e54cd57e4838272470e8db6ef60a0b19258b9ea31eda6a84612bbe389",
+      "bytes": 22
+    },
+    {
+      "file": "jesse-ai__jesse-metadata.json",
+      "sha256": "84257bbd1284c3cf1ac53e8497f00b0f6e5074331fb4d173bc8738d859e46504",
+      "bytes": 173
+    },
+    {
+      "file": "microsoft__RD-Agent-cost.json",
+      "sha256": "37692422687c24cb8548119c5d5d81d3735611b76561fc4c2a46b79b31348cfd",
+      "bytes": 2097
+    },
+    {
+      "file": "microsoft__RD-Agent-issue-1372.json",
+      "sha256": "748d1c99bcb87f7bcd4e63cca463826c605d2f79adc69a08e8cf20b1a43ffbc4",
+      "bytes": 8123
+    },
+    {
+      "file": "microsoft__RD-Agent-issue-1451.json",
+      "sha256": "b9034ac22a516491b8b942ce151bad1804a52a0b98bfb175301d22fa93b949d8",
+      "bytes": 4595
+    },
+    {
+      "file": "microsoft__RD-Agent-metadata.json",
+      "sha256": "bb6cbb0b822d41c648e3eefa1b62521fee3fe297be924afe4abba293824dadc7",
+      "bytes": 477
+    },
+    {
+      "file": "microsoft__RD-Agent-rdagent__scenarios__qlib__proposal__bandit.py",
+      "sha256": "5ae609b00426bb10f80e5ecd2398ffbe3c0d001af94d35871f9354f9d6d95536",
+      "bytes": 3528
+    },
+    {
+      "file": "microsoft__RD-Agent-reproduce.json",
+      "sha256": "2a507cc34ae4a673bce341f7d50810d01cd53fb34471b736476db0ada8a28066",
+      "bytes": 2206
+    },
+    {
+      "file": "microsoft__qlib-metadata.json",
+      "sha256": "0ff41c6fcbb031f550d2d9c8a5db051c2b4d8d452630cd44f7554d416ff96f02",
+      "bytes": 473
+    },
+    {
+      "file": "nautechsystems__nautilus_trader-issue-5113.json",
+      "sha256": "65c11d24843917ea4b4fcd7788bd54935149af0a4aef1715c3f66461443e6f3d",
+      "bytes": 4906
+    },
+    {
+      "file": "nautechsystems__nautilus_trader-issue-5280.json",
+      "sha256": "c55c54dab7dcf03b5de116c87550ca5e22a1b2e428e12029a4d5d6893edbfeac",
+      "bytes": 9714
+    },
+    {
+      "file": "nautechsystems__nautilus_trader-metadata.json",
+      "sha256": "fccbfe01ae9381c8fc4c2c0062c275bcc99c42c99b1a5e334271b17372558f65",
+      "bytes": 498
+    },
+    {
+      "file": "nautechsystems__nautilus_trader-nautilus_trader__model__events__order.pyx",
+      "sha256": "76c80b96879439906f8fcfe9eac87612d7fd1b4c5a8c9a503212e4b112f67a01",
+      "bytes": 137053
+    },
+    {
+      "file": "nkaz001__hftbacktest-README.md",
+      "sha256": "b42c9f012bd71d2e1ecb000eb5c5af3e1d24817258b4a812beffbb953a752e42",
+      "bytes": 14468
+    },
+    {
+      "file": "nkaz001__hftbacktest-metadata.json",
+      "sha256": "4d2374fc68a5e709c9d77524680e1ba6a5ea49167c0c4fcafa3ca04f5963c297",
+      "bytes": 495
+    },
+    {
+      "file": "polakowo__vectorbt-README.md",
+      "sha256": "acb5fc51727c0eac4a834bd7846da0735808f30771aa89f4bba0a6cf37766bf0",
+      "bytes": 14155
+    },
+    {
+      "file": "polakowo__vectorbt-metadata.json",
+      "sha256": "5608b84fe8f88d3e61f0f7e5f0bec457fe0eca80250c9b16a5d31940a21b9389",
+      "bytes": 478
+    },
+    {
+      "file": "reddit-1h7uyhg.json",
+      "sha256": "a5603866a8f2ea1445120a55369e5ccaaa7cca5d43cf1991b985103203c0fce6",
+      "bytes": 6319
+    },
+    {
+      "file": "reddit-1op0rel.json",
+      "sha256": "7333e5b7bb3be2f2946421380213c3265d621d7e8393e16b6ead135deb309d5c",
+      "bytes": 6256
+    },
+    {
+      "file": "reddit-1tbslo0.json",
+      "sha256": "d2889644ce93c679a8460b7c47baef6ab1c7ca141ad4994501ccc54af9a534cf",
+      "bytes": 9116
+    },
+    {
+      "file": "reddit-1vua0r7.json",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "bytes": 2
+    },
+    {
+      "file": "reddit-1w5hz60.json",
+      "sha256": "04976df953d0016c110c8dd2d6b1d0dca8527304ea5610a69d195a2d52ca02ae",
+      "bytes": 6456
+    },
+    {
+      "file": "reddit-1x04kxr.json",
+      "sha256": "f3b3bee10b9e8656de494d8f7979c76e1a8ce8cefcfee333ee71eca54bb0ca8d",
+      "bytes": 4562
+    },
+    {
+      "file": "sourcefeed_dev.md",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ],
+  "tests_or_benchmarks_executed": false,
+  "paid_model_calls": false,
+  "runtime_or_exchange_mutations": false
+}

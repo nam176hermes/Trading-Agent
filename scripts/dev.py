@@ -72,6 +72,13 @@ def _types() -> int:
 
 
 def _pytest(arguments: Sequence[str], *, debug: bool, native_custody: bool = False) -> int:
+    if "--native-custody" in arguments:
+        print(
+            "put --native-custody before the test path: "
+            "scripts/dev.py test --native-custody tests/path/to/test_file.py",
+            file=sys.stderr,
+        )
+        return 2
     if not arguments:
         print(
             "a focused pytest path or expression is required; use `make test-all` for the canonical suite",
