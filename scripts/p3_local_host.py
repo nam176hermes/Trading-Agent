@@ -1,4 +1,4 @@
-"""LOCAL v2 host profiles from the mounted image and an authenticated queued job.
+"""v2 host profiles (LOCAL or GITHUB lane) from the mounted image and an authenticated queued job.
 
 Private CAS/preflight access stays under the worker UID. Only root publishes the
 profile; the existing worker consumer still validates it before SQL admission.
@@ -24,7 +24,9 @@ from packages.job_contracts import EnqueueJobBody
 from packages.runtime_release.config import _absolute, read_protected_canonical_json_current
 from services.job_store.records import validate_p3_job_id
 from services.job_worker.p3_holdout_release import CustodianEndpoint
-from services.job_worker.p3_host_profile import LocalOfficialHostProfileV2, _HostFiles
+from services.job_worker.p3_host_profile import (
+    OFFICIAL_PROFILE, LocalOfficialHostProfileV2, OfficialHostProfileV2, _HostFiles,
+)
 
 
 class HostInputs(StrictModel):
@@ -148,14 +150,15 @@ def validate_transition(previous, profile):
         'p3-holdout-primary-v1', 'p3-native-parity-v1', 'p3-phase-exit-v1')
     before, after = previous.payload.logical_trial_id, profile.payload.logical_trial_id
     if (before not in operations[:-1] or after != operations[operations.index(before)+1]
-        or previous.job_id == profile.job_id or previous.identity != profile.identity
+        or previous.job_id == profile.job_id or type(previous) is not type(profile)
+        or getattr(previous, 'identity', None) != getattr(profile, 'identity', None)
         or previous.payload.expected_source != profile.payload.expected_source
         or previous.environment_ref != profile.environment_ref):
         raise ValueError('host transition is out of order or changes campaign identity')
 
 
 def next_session_host(previous, job_id, payload):
-    profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(dict(
+    profile = type(previous).model_validate_json(canonical_json_bytes(dict(
         previous.model_dump(mode='json'), job_id=job_id, payload=payload, custodian_endpoint=None)))
     validate_transition(previous, profile)
     if payload.operation not in {'PARITY', 'PHASE_EXIT'}:
@@ -166,8 +169,13 @@ def next_session_host(previous, job_id, payload):
 def assemble_profile(settings, identity, payload, integration_ref, closure, inventory_ref):
     if closure.source != payload.expected_source:
         raise ValueError('mounted closure source differs from admitted payload')
-    return LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(dict(
-        schema_version='p3-local-official-host-profile-v2', identity=identity,
+    # The GITHUB profile carries no identity: its run is the protected directory it lives in.
+    kind = identity.get('issuer_kind') if isinstance(identity, dict) else identity.issuer_kind
+    lane = (dict(schema_version='p3-official-host-profile-v2') if kind == 'GITHUB'
+            else dict(schema_version='p3-local-official-host-profile-v2', identity=identity))
+    model = OfficialHostProfileV2 if kind == 'GITHUB' else LocalOfficialHostProfileV2
+    return model.model_validate_json(canonical_json_bytes(dict(
+        **lane,
         job_id=closure.bound_job_id, payload=payload, environment_ref=closure.environment_ref,
         store_root=settings.store_root, output_root=settings.output_root,
         worker_credentials_directory=settings.worker_credentials_directory,
@@ -202,7 +210,7 @@ def prepare_host(request, root, deadline):
 
 
 def activate_mounted_host(request, root, descriptor, inventory, deadline, prepared):
-    from packages.local_authority import AuthorityStore
+    from scripts.p3_lane import identity_from_transport, issuer_lock
     from scripts.p3_local_controller import publish_protected
     from scripts.p3_local_transport import build_v2_closure, _official_run_directory, _worker_environment
     settings, settings_digest, observed, environment = prepared
@@ -216,7 +224,7 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
     profile = assemble_profile(settings, request['identity'], payload,
         observed['integration_receipt_ref'], closure, inventory_ref)
     path = directory/'profile.json'
-    with AuthorityStore(profile.identity.issuer_identity).locked():
+    with issuer_lock(identity_from_transport(request['identity'])):
         if (read_protected_canonical_json_current(directory/'host-inputs.json')[1] != settings_digest
             or _worker_environment(request, root/'mnt', request['release_root'], root/'worker',
                 host=settings.model_dump(mode='json')) != environment
@@ -225,7 +233,7 @@ def activate_mounted_host(request, root, descriptor, inventory, deadline, prepar
         authenticate_job(settings, observed)
         previous = None
         if path.exists():
-            previous = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(
+            previous = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(
                 read_protected_canonical_json_current(path)[0]))
             validate_transition(previous, profile)
             previous_succeeded(settings, previous)
@@ -380,7 +388,9 @@ def main():
             canonical_json_bytes(inventory), media_type='application/json')
     elif command['action'] == 'read-profile':
         from services.job_worker.p3_host_profile import read_official_profile
-        profile = LocalOfficialHostProfileV2.model_validate_json(canonical_json_bytes(command['profile']))
+        profile = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(command['profile']))
+        if type(profile) not in (LocalOfficialHostProfileV2, OfficialHostProfileV2):
+            raise ValueError('host helper reads only image-transport profiles')
         result, _ = read_official_profile(_absolute(command['path']), command['digest'],
             job_id=profile.job_id, payload=profile.payload, admission=True)
     elif command['action'] == 'session-ref':

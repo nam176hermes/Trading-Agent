@@ -317,7 +317,8 @@ def test_slow_job_readback_cannot_publish_after_original_deadline(tmp_path, monk
     assert not published
 
 
-def test_staging_keeps_exact_role_readable_bytes_and_refuses_nonce_replay(tmp_path, monkeypatch):
+@pytest.mark.parametrize('lane', ['LOCAL', 'GITHUB'])
+def test_staging_keeps_exact_role_readable_bytes_and_refuses_nonce_replay(tmp_path, monkeypatch, lane):
     """Real files/fsync; root custody and approved authority explicitly substituted."""
     import os
     import hashlib
@@ -336,10 +337,19 @@ def test_staging_keeps_exact_role_readable_bytes_and_refuses_nonce_replay(tmp_pa
     review = {'synthetic_review':'no authority'}
     raw_review = canonical_json_bytes(review)
     digest = hashlib.sha256(raw_review).hexdigest()
-    auth.update(schema_version='p3-local-run-authorization-v1', identity=_identity(),
-        review_ref=dict(content_sha256=digest, size_bytes=len(raw_review),
-                        locator=digest+'.blob', media_type='application/json'))
-    auth = LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(auth)))
+    review_ref = dict(content_sha256=digest, size_bytes=len(raw_review),
+                      locator=digest+'.blob', media_type='application/json')
+    if lane == 'LOCAL':
+        auth.update(schema_version='p3-local-run-authorization-v1', identity=_identity(), review_ref=review_ref)
+        auth = LocalRunAuthorization.model_validate_json(canonical_json_bytes(sealed(auth)))
+        identity = auth.identity
+    else:
+        from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+        from packages.alpha_lifecycle.github_run import github_run_identity
+        auth.update(schema_version='p3-run-authorization-v1', issuer_workflow='p3-authority.yml',
+                    issuer_run_id=41, issuer_attempt=2, review_ref=review_ref)
+        auth = RunAuthorization.model_validate_json(canonical_json_bytes(sealed(auth)))
+        identity = github_run_identity(auth)
     staged = SimpleNamespace(authorization=auth,
         operation_input=P3OperationInput.model_validate_json(intent(input_set_ref=auth.input_set_ref.model_dump(mode='json'))))
     uid, gid = os.getuid(), os.getgid()
@@ -349,11 +359,14 @@ def test_staging_keeps_exact_role_readable_bytes_and_refuses_nonce_replay(tmp_pa
     monkeypatch.setattr(module, '_committed_source', lambda:source)
     monkeypatch.setattr(module, '_protected_model', lambda path, _:
         staged if path.name=='request' else review if path.name=='review' else {})
-    monkeypatch.setattr(authority, 'validate_local_operation_authority', lambda *_:staged)
-    monkeypatch.setattr(authority, 'local_run_directory', lambda _:tmp_path)
-    monkeypatch.setattr(transport, '_runtime_authority', lambda _:dict(uid=uid))
+    from scripts import p3_lane
+    # Lane admission and the issuer lock have their own tests; staging bytes are tested here.
+    monkeypatch.setattr(p3_lane, 'admitted_operation', lambda path, *, source: (staged, identity, tmp_path))
+    locks = []
+    monkeypatch.setattr(p3_lane, 'issuer_lock', lambda value: locks.append(value) or nullcontext())
+    runtimes = []
+    monkeypatch.setattr(transport, '_runtime_authority', lambda value: runtimes.append(value) or dict(uid=uid))
     monkeypatch.setattr(transport, 'TaskLock', lambda _:nullcontext())
-    monkeypatch.setattr(module, 'AuthorityStore', lambda _:SimpleNamespace(locked=nullcontext))
     monkeypatch.setattr(module, 'publish_protected', lambda *_args, **_kwargs:None)
     original_lstat = Path.lstat
     def metadata(path):
@@ -373,5 +386,6 @@ def test_staging_keeps_exact_role_readable_bytes_and_refuses_nonce_replay(tmp_pa
     assert Path(result['review']).stat().st_mode & 0o777 == 0o440
     assert Path(result['preflight']).parent.stat().st_mode & 0o777 == 0o700
     assert not Path(result['preflight']).exists()  # Only enqueue creates it, under the worker UID.
+    assert locks[0] == identity and runtimes[0] == dict(identity=identity.model_dump(mode='json'))
     with pytest.raises(FileExistsError):
         module.stage_operation(tmp_path/'request', tmp_path/'review')

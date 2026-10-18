@@ -195,28 +195,25 @@ def stage_operation(request_path, review_path):
     import pwd
     import stat
     from contextlib import nullcontext
-    from packages.alpha_lifecycle.authority import (
-        _LocalRequestFile, local_run_directory, validate_local_operation_authority,
-    )
+    from scripts.p3_lane import admitted_operation, issuer_lock
     from scripts.p3_local_host import HostInputs
     from scripts.p3_local_transport import TaskLock, _runtime_authority
     from packages.local_authority import _fsync_directory
     if os.geteuid() != 0:
         raise PermissionError('operation staging requires root')
-    request = _protected_model(request_path, _LocalRequestFile)
-    auth = request.authorization
     source = SourceIdentity.model_validate(_committed_source())
-    if (not isinstance(auth, LocalRunAuthorization) or request.operation_input is None
-        or validate_local_operation_authority(auth, source) != request):
+    # Either lane: the request must be the current admitted operation of its own issuer.
+    request, identity, directory = admitted_operation(request_path, source=source)
+    auth = request.authorization
+    if request.operation_input is None:
         raise ValueError('staging requires an installed current reviewed operation')
     review = _protected_model(review_path, ReviewApproval)
     raw_review = canonical_json_bytes(review)
     if (len(raw_review) != auth.review_ref.size_bytes
         or hashlib.sha256(raw_review).hexdigest() != auth.review_ref.content_sha256):
         raise ValueError('staged review differs from admitted reference')
-    directory = local_run_directory(auth.identity)
     _protected_model(directory/'host-inputs.json', HostInputs)
-    runtime = _runtime_authority(dict(identity=auth.identity.model_dump(mode='json')))
+    runtime = _runtime_authority(dict(identity=identity.model_dump(mode='json')))
     uid = runtime['uid']
     if type(uid) is not int or uid <= 0:
         raise ValueError('runtime worker UID is invalid')
@@ -224,7 +221,7 @@ def stage_operation(request_path, review_path):
     if gid <= 0:
         raise ValueError('runtime worker group is invalid')
     late = auth.operation in {'PARITY', 'PHASE_EXIT'}
-    with (nullcontext() if late else TaskLock(directory)), AuthorityStore(auth.identity.issuer_identity).locked():
+    with (nullcontext() if late else TaskLock(directory)), issuer_lock(identity):
         operations = directory/'operations'
         if not operations.exists():
             operations.mkdir(mode=0o755)
@@ -253,7 +250,7 @@ def stage_operation(request_path, review_path):
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_gid != gid
             or stat.S_IMODE(info.st_mode) != 0o700):
             raise ValueError('preflight parent differs from the private worker role')
-        if validate_local_operation_authority(auth, source) != request:
+        if admitted_operation(request_path, source=source)[0] != request:
             raise ValueError('operation authority changed during staging')
         for folder in (destination, operations, private, directory):
             _fsync_directory(folder)

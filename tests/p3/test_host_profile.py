@@ -264,7 +264,7 @@ def test_local_v2_resolves_to_its_own_class_and_carries_an_image():
     ('p3-local-official-host-profile-v1', {'image': _image_descriptor()}, 'v1 cannot carry an image'),
     ('p3-local-official-host-profile-v2', {}, 'v2 cannot omit its image'),
     ('p3-official-host-profile-v1', {'image': _image_descriptor()}, 'GITHUB cannot carry an image'),
-    ('p3-official-host-profile-v2', {}, 'GITHUB has no v2 lane'),
+    ('p3-official-host-profile-v2', {}, 'GITHUB v2 cannot omit its image'),
     ('p3-local-official-host-profile-v3', {}, 'unknown version'),
 ])
 def test_cross_lane_and_cross_version_profiles_are_rejected(schema_version, extra, reason):
@@ -273,6 +273,20 @@ def test_cross_lane_and_cross_version_profiles_are_rejected(schema_version, extr
     document = _host_profile_document(schema_version, identity=_V2_IDENTITY, **extra)
     with pytest.raises(ValueError):
         OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+
+
+def test_github_v2_carries_an_image_without_a_local_identity_and_uses_the_v2_policy():
+    from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_V2_SHA256
+    from services.job_worker.p3_host_profile import (
+        OFFICIAL_PROFILE, LocalOfficialHostProfileLane, OfficialHostProfileV2, _transport_policy)
+    document = _host_profile_document('p3-official-host-profile-v2', image=_image_descriptor())
+    document.pop('identity', None)
+    profile = OFFICIAL_PROFILE.validate_json(canonical_json_bytes(document))
+    assert type(profile) is OfficialHostProfileV2
+    assert not isinstance(profile, LocalOfficialHostProfileLane)
+    assert _transport_policy(profile) == SANDBOX_PROFILE_V2_SHA256
+    with pytest.raises(ValueError):
+        OFFICIAL_PROFILE.validate_json(canonical_json_bytes(dict(document, identity=_V2_IDENTITY)))
 
 
 def test_lane_base_answers_for_both_local_versions_and_never_for_github():
