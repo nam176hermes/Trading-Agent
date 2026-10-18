@@ -549,7 +549,7 @@ packages/security_master/postgres_repository.py|333|Exception|PRODUCTION_CRITICA
 packages/security_master/postgres_repository.py|453|Exception|PRODUCTION_CRITICAL|RAISE
 packages/security_master/postgres_repository.py|505|Exception|PRODUCTION_CRITICAL|RAISE
 packages/security_master/resolver.py|70|Exception|PRODUCTION_CRITICAL|RAISE
-scripts/audit_canonical_repo.py|579|BaseException|TOOLING_MIGRATION|RETURN
+scripts/audit_canonical_repo.py|623|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_nautilus_engine.py|859|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|1264|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|1294|Exception|TOOLING_MIGRATION|RAISE
