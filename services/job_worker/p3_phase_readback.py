@@ -168,3 +168,45 @@ def terminal_phase_observation(job_detail_ref: ArtifactRefV1, *, store) -> Phase
         authority=dict(broker=False,live=False,network=False,production=False))
     value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
     return PhaseExitReceiptV2.model_validate_json(canonical_json_bytes(value))
+
+
+def phase_exit_v1(ref: ArtifactRefV1, *, repository, store, run, research):
+    """Bridge an authenticated committed GITHUB PASS to the tracked v1 receipt.
+
+    `run` and `research` are the protected attestation of the exporting run and its
+    reviewed research-input receipt. A recorded-API run, a REHEARSAL InputSet, a LOCAL
+    issuer, another run or any non-PASS outcome produces no v1 receipt at all.
+    """
+    from packages.p3_provenance import PhaseExitReceipt
+    if run.mode != 'GITHUB' or research.campaign != 'OFFICIAL':
+        raise ValueError('only an official, API-attested campaign can export a v1 phase receipt')
+    receipt=validate_phase_exit_receipt(ref,repository=repository,store=store)
+    if receipt.outcome!='PASS':
+        raise ValueError('only a committed PASS has a v1 phase receipt')
+    if type(receipt.identity) is not GithubRunIdentity or receipt.identity!=run.identity:
+        raise ValueError('phase receipt was not issued by this attested GitHub run')
+    if receipt.input_ref!=research.input_ref or receipt.source!=research.source:
+        raise ValueError('phase receipt does not bind the official research inputs')
+    raw=bounded_read(receipt.terminal_observation_ref,store,media_type='application/json',max_bytes=131072)
+    observation=_object(raw,('payload','publication_request','commit_result','committed_at',
+        'attempt_id','output_inventory_ref','registry_head'))
+    payload=AlphaCampaignPayload.model_validate_json(canonical_json_bytes(observation['payload']))
+    intent=_read(store,payload.manifest_ref,P3OperationInput)
+    inputs=_read(store,receipt.input_ref,InputSet)
+    inventory=ArtifactRefV1.model_validate(observation['output_inventory_ref'])
+    from services.job_store.p3_publication_repository import validate_publication_inventory
+    validate_publication_inventory(inventory,store=store)
+    event=read_registry_event(store,receipt.registry_head_ref)
+    if (not isinstance(intent.body,PhaseExitInput) or receipt.closure_report_ref is None
+        or event.record.lifecycle_status.value!='QUALIFIED'
+        or event.record.qualification_decision.value!='PASS'
+        or repository.read_phase_exit(receipt.job_id)!=raw):
+        raise ValueError('phase receipt registry head, intent or SQL observation differs')
+    value=dict(schema_version='p3-phase-exit-v1',source=receipt.source,epoch_id=inputs.epoch_id,
+        primary_selection_ref=intent.body.primary_selection_ref,exit_result_ref=receipt.result_ref,
+        qualified_registry_head_ref=receipt.registry_head_ref,closure_report_ref=receipt.closure_report_ref,
+        bundle_inventory_ref=inventory,qualification_workflow='p3-authority.yml',
+        qualification_run_id=run.identity.run_id,qualification_attempt=run.identity.attempt,status='PASS',
+        authority=dict(broker=False,live=False,network=False,production=False))
+    value['digest']=hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    return PhaseExitReceipt.model_validate_json(canonical_json_bytes(value))

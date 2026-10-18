@@ -582,3 +582,97 @@ def test_phase_exit_rejects_invalid_session_pair(exit_graph, fault):
         pair_ref = store.put_bytes(raw, media_type='application/json')
     with pytest.raises(ValidationError if fault in {'digest', 'unknown_field', 'parent_type'} else ValueError):
         phase_exit_body(intent.body.primary_selection_ref, held_ref, pair_ref, store=store)
+
+
+def _bridge_lane(run_id=41, attempt=2, *, mode='GITHUB', campaign='OFFICIAL', input_ref=None, source=None):
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+    identity=GithubRunIdentity(issuer_kind='GITHUB',issuer_identity='p3-authority',repository='nam176hermes/Trading-Agent',
+        workflow_ref='p3-authority.yml',run_id=run_id,attempt=attempt)
+    return (SimpleNamespace(mode=mode,identity=identity),
+            SimpleNamespace(campaign=campaign,input_ref=input_ref,source=source))
+
+
+def test_producer_v2_receipt_is_not_a_v1_receipt(committed_exit):
+    """RED for S4: the real exporter output is v2; consumers accept only v1."""
+    from services.job_worker.p3_phase_readback import export_phase_exit
+    from packages.p3_provenance import PhaseExitReceipt
+    store,repository,job_id,_,_=committed_exit
+    ref=export_phase_exit(job_id,repository=repository,store=store)
+    with pytest.raises(ValueError):
+        PhaseExitReceipt.model_validate_json(store.read_bytes(ref))
+
+
+@pytest.mark.parametrize('fault',['fail_outcome','fake_run','rehearsal'])
+def test_v1_bridge_refuses_real_fail_fake_runs_and_rehearsals(committed_exit,fault):
+    from services.job_worker.p3_phase_readback import export_phase_exit,phase_exit_v1
+    store,repository,job_id,_,_=committed_exit
+    ref=export_phase_exit(job_id,repository=repository,store=store)
+    run,research=_bridge_lane(mode='FAKE' if fault=='fake_run' else 'GITHUB',
+        campaign='REHEARSAL' if fault=='rehearsal' else 'OFFICIAL')
+    with pytest.raises(ValueError):
+        phase_exit_v1(ref,repository=repository,store=store,run=run,research=research)
+
+
+@pytest.mark.parametrize('fault',[None,'other_run','local_identity','inputs','sql_changed','rejected_head'])
+def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,fault):
+    """Mapping proof only: SQL-authenticated readback is substituted with a PASS outcome."""
+    import hashlib
+    from types import SimpleNamespace
+    from services.job_worker import p3_phase_readback as module
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from packages.p3_provenance import PhaseExitReceipt
+    store,repository,job_id,observation,_=committed_exit
+    ref=module.export_phase_exit(job_id,repository=repository,store=store)
+    real=module.validate_phase_exit_receipt(ref,repository=repository,store=store)
+    run,research=_bridge_lane(input_ref=real.input_ref,source=real.source)
+    identity=run.identity if fault!='local_identity' else real.identity
+    passed=real.model_copy(update=dict(outcome='PASS',identity=identity))
+    monkeypatch.setattr(module,'validate_phase_exit_receipt',lambda *a,**k:passed)
+    status='REJECTED' if fault=='rejected_head' else 'QUALIFIED'
+    monkeypatch.setattr(module,'read_registry_event',lambda store,ref:SimpleNamespace(record=SimpleNamespace(
+        lifecycle_status=SimpleNamespace(value=status),qualification_decision=SimpleNamespace(value='PASS'))))
+    if fault=='other_run':
+        run,_=_bridge_lane(run_id=42)
+    if fault=='inputs':
+        research.input_ref=real.environment_ref
+    if fault=='sql_changed':
+        original=repository.read_phase_exit
+        repository.read_phase_exit=lambda job:original(job)+b' '
+    if fault:
+        with pytest.raises(ValueError):
+            module.phase_exit_v1(ref,repository=repository,store=store,run=run,research=research)
+        return
+    v1=module.phase_exit_v1(ref,repository=repository,store=store,run=run,research=research)
+    assert type(v1) is PhaseExitReceipt and v1.status=='PASS'
+    intent=_read(store,module.AlphaCampaignPayload.model_validate_json(canonical_json_bytes(observation['payload'])).manifest_ref,P3OperationInput)
+    assert v1.epoch_id==_read(store,real.input_ref,InputSet).epoch_id
+    assert v1.primary_selection_ref==intent.body.primary_selection_ref
+    assert v1.exit_result_ref==real.result_ref and v1.closure_report_ref==real.closure_report_ref
+    assert v1.qualified_registry_head_ref==real.registry_head_ref
+    assert v1.bundle_inventory_ref.model_dump(mode='json')==observation['output_inventory_ref']
+    assert (v1.qualification_workflow,v1.qualification_run_id,v1.qualification_attempt)==('p3-authority.yml',41,2)
+    assert v1.source==real.source
+    body={k:v for k,v in json.loads(canonical_json_bytes(v1)).items() if k!='digest'}
+    assert v1.digest==hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+
+
+def test_exporter_v1_reads_the_protected_run_and_inputs_itself(monkeypatch):
+    """The v1 path takes no caller-supplied input binding (F-01)."""
+    from types import SimpleNamespace
+    from packages.alpha_lifecycle import github_run
+    from scripts import export_p3_phase_exit as exporter
+    run=SimpleNamespace(name='run')
+    receipt=SimpleNamespace(source='source',input_ref='input')
+    calls=[]
+    monkeypatch.setattr(github_run,'read_github_run',lambda r,a,admission:calls.append(('run',r,a,admission)) or (run,'d'))
+    monkeypatch.setattr(exporter,'validate_phase_exit_receipt',lambda ref,**k:receipt)
+    monkeypatch.setattr(github_run,'read_github_research_inputs',
+        lambda value,source,input_set_ref:calls.append(('inputs',value,source,input_set_ref)) or 'research')
+    monkeypatch.setattr(exporter,'phase_exit_v1',lambda ref,**k:calls.append(('v1',k['run'],k['research'])) or {'v1':True})
+    raw=exporter.github_v1('ref',repository=None,store=None,run_id=41,attempt=2)
+    assert raw==b'{"v1":true}\n'
+    assert calls==[('run',41,2,False),('inputs',run,'source','input'),('v1',run,'research')]
