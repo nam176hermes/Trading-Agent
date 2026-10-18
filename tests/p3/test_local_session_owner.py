@@ -29,8 +29,6 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
         identity = GithubRunIdentity.model_validate_json(canonical_json_bytes(dict(issuer_kind='GITHUB',
             issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
             workflow_ref='p3-authority.yml', run_id=41, attempt=2)))
-    if fault == 'other_run' and lane == 'LOCAL':
-        pytest.skip('LOCAL identity mismatch is the owner fault above')
     source = SourceIdentity(commit_sha='a'*40, tree_sha='b'*40, closure_schema_version='v1',
         closure_policy_sha256='c'*64, closure_sha256='d'*64)
     job = claim()
@@ -88,6 +86,8 @@ def test_owner_wait_binds_actual_process_and_keeps_original_deadline(tmp_path, m
             parent=observation['parent'], identity=identity, boot_id=str(boot),
             issued_at=observation['issued_at'], expires_at=observation['workflow_deadline'],
             workflow_deadline=observation['workflow_deadline'])
+        if lane == 'LOCAL' and fault == 'other_run':
+            value['identity'] = {**json.loads(canonical_json_bytes(identity)), 'attempt': 2}
         if lane == 'GITHUB':
             value.pop('identity')
             value.update(schema_version='p3-holdout-session-v1', workflow_run_id=41,
