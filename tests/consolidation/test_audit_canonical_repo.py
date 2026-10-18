@@ -477,11 +477,11 @@ def test_audit_git_calls_disable_repository_fsmonitor_and_hooks(tmp_path: Path) 
 def test_source_marker_policy_is_exact_without_self_matching() -> None:
     expected_global = (
         b".local/share/" + b"codex-worktrees",
-        b"/home/thenam176/projects/" + b"trading-dashboard",
-        b"/home/thenam176/projects/" + b"trading-agent-migration",
+        b"/home/" + b"thenam176/projects/" + b"trading-dashboard",
+        b"/home/" + b"thenam176/projects/" + b"trading-agent-migration",
     )
     expected_component = (
-        b"/home/thenam176/" + b".hermes",
+        b"/home/" + b"thenam176/" + b".hermes",
         b"~/" + b".hermes",
     )
     probe = subprocess.run(
@@ -521,7 +521,7 @@ def test_source_marker_policy_is_exact_without_self_matching() -> None:
 def test_base_audit_rejects_current_executable_source_checkout_path(tmp_path: Path) -> None:
     repository = _valid_root(tmp_path)
     target = repository / "apps/dashboard/src/legacy-path.ts"
-    forbidden_source = "/home/thenam176/projects/" + "trading-dashboard"
+    forbidden_source = "/home/" + "thenam176/projects/" + "trading-dashboard"
     assert forbidden_source == bytes.fromhex(
         "2f686f6d652f7468656e616d3137362f70726f6a656374732f"
         "74726164696e672d64617368626f617264"
@@ -537,7 +537,7 @@ def test_base_audit_rejects_current_executable_source_checkout_path(tmp_path: Pa
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_SOURCE_PATH: apps/dashboard/src/legacy-path.ts"
-    assert "/home/thenam176" not in result.stderr
+    assert "/home/" + "thenam176" not in result.stderr
 
 
 def test_json_success_has_exact_one_root_status_and_component_keys(tmp_path: Path) -> None:
@@ -904,3 +904,110 @@ def test_final_audit_release_rejects_dirty_isolated_copy(tmp_path: Path) -> None
         canonical_before,
         "credential-value-must-not-leak",
     )
+
+
+_PRIVATE = "/home/" + "operator-name/projects/x"
+_ALLOWLIST = "ops/consolidation/private-path-allowlist.json"
+
+
+def _blob(repository: Path, relative: str) -> str:
+    return _git(repository, "hash-object", "--", relative)
+
+
+def _commit_files(repository: Path, files: dict[str, str], message: str = "change") -> None:
+    for relative, content in files.items():
+        target = repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    _git(repository, "add", "-A")
+    _git(repository, "commit", "-qm", message)
+
+
+def _write_allowlist(repository: Path, files: dict[str, str]) -> None:
+    document = {"schema_version": 1, "files": dict(sorted(files.items()))}
+    _commit_files(repository, {_ALLOWLIST: json.dumps(document, indent=2) + "\n"}, "allowlist")
+
+
+@pytest.mark.parametrize("relative", ["docs/notes/new.md", "scripts/new.py", "data/new.json"])
+def test_new_private_home_path_is_rejected_in_any_tracked_text(tmp_path: Path, relative: str) -> None:
+    repository = _valid_root(tmp_path)
+    _commit_files(repository, {relative: f"path = '{_PRIVATE}'\n"})
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == f"E_PRIVATE_PATH: {relative}"
+    assert "/home/" not in result.stderr
+
+
+def test_platform_runner_home_is_allowed(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _commit_files(repository, {"docs/ci.md": "work in /home/runner/work/repo\n"})
+
+    result = _run(repository)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_historical_file_is_grandfathered_only_by_exact_path_and_blob(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _commit_files(repository, {"docs/old.md": f"legacy {_PRIVATE}\n"})
+    _write_allowlist(repository, {"docs/old.md": _blob(repository, "docs/old.md")})
+
+    assert _run(repository).returncode == 0
+
+    (repository / "docs/old.md").write_text(f"legacy {_PRIVATE}\nmore\n", encoding="utf-8")
+    modified = _run(repository)
+    assert modified.returncode != 0
+    assert modified.stderr.strip() == "E_PRIVATE_PATH: docs/old.md"
+
+
+def test_renamed_grandfathered_file_is_rejected(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _commit_files(repository, {"docs/old.md": f"legacy {_PRIVATE}\n"})
+    _write_allowlist(repository, {"docs/old.md": _blob(repository, "docs/old.md")})
+    _git(repository, "mv", "docs/old.md", "docs/renamed.md")
+    _git(repository, "commit", "-qm", "rename")
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_PRIVATE_PATH: docs/renamed.md"
+
+
+def test_stale_allowlist_entry_is_rejected(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _commit_files(repository, {"docs/old.md": "already cleaned\n"})
+    _write_allowlist(repository, {"docs/old.md": _blob(repository, "docs/old.md")})
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_PRIVATE_PATH_ALLOWLIST: docs/old.md"
+
+
+def test_new_receipt_is_not_exempt(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    relative = "docs/implementation/p3/receipts/new-receipt-v1.json"
+    _commit_files(repository, {relative: json.dumps({"root": _PRIVATE}) + "\n"})
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == f"E_PRIVATE_PATH: {relative}"
+
+
+def test_canonical_private_path_allowlist_matches_current_checkout() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys;"
+            f"sys.path.insert(0,{str(ROOT / 'scripts')!r});"
+            "import audit_canonical_repo as audit;"
+            "from pathlib import Path;"
+            f"root=Path({str(ROOT)!r});"
+            "audit._private_paths(root,set(audit._index(root)))"
+        )],
+        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]

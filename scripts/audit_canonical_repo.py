@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -121,13 +122,18 @@ _SOURCE_SUFFIXES = frozenset({
 _SOURCE_NAMES = frozenset({"AGENTS.md", "README.md", "Makefile"})
 _GLOBAL_SOURCE_MARKERS = (
     b".local/share/" + b"codex-worktrees",
-    b"/home/thenam176/projects/" + b"trading-dashboard",
-    b"/home/thenam176/projects/" + b"trading-agent-migration",
+    b"/home/" + b"thenam176/projects/" + b"trading-dashboard",
+    b"/home/" + b"thenam176/projects/" + b"trading-agent-migration",
 )
 _COMPONENT_SOURCE_MARKERS = (
-    b"/home/thenam176/" + b".hermes",
+    b"/home/" + b"thenam176/" + b".hermes",
     b"~/" + b".hermes",
 )
+
+# Operator home directories; the GitHub-hosted runner home is platform, not private.
+_PRIVATE_HOME = re.compile(rb"/home/([A-Za-z_][A-Za-z0-9._-]*)")
+_PLATFORM_HOMES = frozenset({b"runner"})
+_PRIVATE_PATH_ALLOWLIST = "ops/consolidation/private-path-allowlist.json"
 
 
 def _safe_relative(value: str | None) -> str | None:
@@ -314,6 +320,24 @@ def _status(root: Path) -> tuple[str, str | None]:
     return "dirty", _safe_relative(path)
 
 
+def _read_tracked(root: Path, relative: str, max_bytes: int, code: str) -> bytes:
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(root / relative, os.O_RDONLY | _NOFOLLOW | _CLOEXEC)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > max_bytes:
+            raise OSError
+        content = bytearray()
+        while chunk := os.read(descriptor, 65536):
+            content += chunk
+        return bytes(content)
+    except OSError:
+        raise CliError(code, relative) from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _scan_sources(root: Path, paths: set[str]) -> None:
     for relative in sorted(paths, key=lambda value: value.encode("utf-8")):
         path = PurePosixPath(relative)
@@ -321,25 +345,44 @@ def _scan_sources(root: Path, paths: set[str]) -> None:
             continue
         if path.suffix not in _SOURCE_SUFFIXES and path.name not in _SOURCE_NAMES:
             continue
-        descriptor: int | None = None
-        try:
-            descriptor = os.open(root / relative, os.O_RDONLY | _NOFOLLOW | _CLOEXEC)
-            metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4 * 1024 * 1024:
-                raise OSError
-            content = b""
-            while chunk := os.read(descriptor, 65536):
-                content += chunk
-        except OSError:
-            raise CliError("E_SOURCE_PATH", relative) from None
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
+        content = _read_tracked(root, relative, 4 * 1024 * 1024, "E_SOURCE_PATH")
         markers = _GLOBAL_SOURCE_MARKERS
         if relative.startswith(("legacy/research-backend/", "apps/dashboard/")):
             markers += _COMPONENT_SOURCE_MARKERS
         if any(marker in content for marker in markers):
             raise CliError("E_SOURCE_PATH", relative)
+
+
+def _private_paths(root: Path, paths: set[str]) -> None:
+    """Reject operator home paths in tracked text unless frozen by exact path and blob."""
+    allowlist: dict[str, str] = {}
+    if _PRIVATE_PATH_ALLOWLIST in paths:
+        try:
+            document = json.loads(_read_tracked(
+                root, _PRIVATE_PATH_ALLOWLIST, 1024 * 1024, "E_PRIVATE_PATH_ALLOWLIST"))
+            files = document["files"]
+            if (set(document) != {"schema_version", "files"} or document["schema_version"] != 1
+                or not isinstance(files, dict)
+                or not all(isinstance(key, str) and isinstance(value, str) and _GIT_ID.fullmatch(value)
+                           for key, value in files.items())):
+                raise ValueError
+        except (ValueError, KeyError, TypeError):
+            raise CliError("E_PRIVATE_PATH_ALLOWLIST") from None
+        allowlist = files
+    found: set[str] = set()
+    for relative in sorted(paths, key=lambda value: value.encode("utf-8")):
+        content = _read_tracked(root, relative, 64 * 1024 * 1024, "E_PRIVATE_PATH")
+        if not any(
+            match.group(1) not in _PLATFORM_HOMES for match in _PRIVATE_HOME.finditer(content)
+        ):
+            continue
+        # Git object identity of the working-tree bytes, not a security digest.
+        blob = hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).hexdigest()
+        if allowlist.get(relative) != blob:
+            raise CliError("E_PRIVATE_PATH", relative)
+        found.add(relative)
+    for relative in sorted(set(allowlist) - found, key=lambda value: value.encode("utf-8")):
+        raise CliError("E_PRIVATE_PATH_ALLOWLIST", relative)
 
 
 def _introduction(root: Path, sentinel: str, prefix: str) -> str:
@@ -495,6 +538,7 @@ def audit(
         ),
     )
     _scan_sources(root, paths)
+    _private_paths(root, paths)
     components: dict[str, object] = {
         "core": {"commit": authority.components["core"].commit, "result": "PASS"},
     }
