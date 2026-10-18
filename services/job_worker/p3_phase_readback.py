@@ -196,8 +196,10 @@ def phase_exit_v1(ref: ArtifactRefV1, *, repository, store, run, research):
     inventory=ArtifactRefV1.model_validate(observation['output_inventory_ref'])
     from services.job_store.p3_publication_repository import validate_publication_inventory
     validate_publication_inventory(inventory,store=store)
+    if receipt.registry_head_ref is None or receipt.closure_report_ref is None:
+        raise ValueError('committed PASS lacks its registry head or closure report')
     event=read_registry_event(store,receipt.registry_head_ref)
-    if (not isinstance(intent.body,PhaseExitInput) or receipt.closure_report_ref is None
+    if (not isinstance(intent.body,PhaseExitInput)
         or event.record.lifecycle_status.value!='QUALIFIED'
         or event.record.qualification_decision.value!='PASS'
         or repository.read_phase_exit(receipt.job_id)!=raw):
