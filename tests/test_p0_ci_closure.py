@@ -505,6 +505,17 @@ def test_foundation_timeout_covers_portable_gate_and_hwc_evidence() -> None:
         assert not closure._foundation_workflow_valid(changed.encode())
 
 
+def test_host_timeout_and_uv_pin_cover_the_portable_gate() -> None:
+    """The self-hosted lane runs the same portable suite as Foundation, with the pinned uv."""
+    workflow = (ROOT / ".github/workflows/host-authority.yml").read_text(encoding="utf-8")
+    assert "    timeout-minutes: 180\n" in workflow
+    assert closure._host_workflow_valid(workflow.encode())
+    for timeout in (90, 120, 181, 360):
+        changed = workflow.replace("    timeout-minutes: 180\n", f"    timeout-minutes: {timeout}\n")
+        assert not closure._host_workflow_valid(changed.encode())
+    assert not closure._host_workflow_valid(workflow.replace('version: "0.11.7"', 'version: "0.13.1"').encode())
+
+
 @pytest.mark.parametrize(
     ("workflow", "old", "new", "code"),
     [
@@ -531,7 +542,8 @@ def test_foundation_timeout_covers_portable_gate_and_hwc_evidence() -> None:
         ("host-authority.yml", b"runs-on: [self-hosted, linux, x64, trading-authority]", b"runs-on: ubuntu-24.04", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"make ci-pre-p3-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"          - p2-security-master-runtime-green-v1", b"          - unapproved-operation", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
-        ("host-authority.yml", b"timeout-minutes: 90", b"timeout-minutes: 900", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"timeout-minutes: 180", b"timeout-minutes: 900", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b'          version: "0.11.7"\n', b"", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"qualify_pre_p3.py p2-runtime-v2", b"qualify_pre_p3.py p2-source-v2", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         (
             "host-authority.yml",
@@ -540,7 +552,7 @@ def test_foundation_timeout_covers_portable_gate_and_hwc_evidence() -> None:
             "P0_CLOSURE_HOST_WORKFLOW_INVALID",
         ),
     ],
-    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "attestation-read", "gate-token", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route", "host-operation", "host-timeout", "host-runtime", "host-artifact-path"],
+    ids=["live-true", "portable-runner", "check-context", "permission", "job-permission", "attestation-read", "gate-token", "trigger", "hidden", "classifier-base", "classifier-event", "classifier-label", "pull-request-events", "upload-path", "host-trigger", "host-runner", "host-route", "host-operation", "host-timeout", "host-uv-unpinned", "host-runtime", "host-artifact-path"],
 )
 def test_structural_workflow_contract_attacks_fail_closed(context: closure._ValidationContext, workflow: str, old: bytes, new: bytes, code: str) -> None:
     """Break caught: workflow authority, route, runner or artifact custody drifts."""

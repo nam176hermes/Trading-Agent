@@ -917,7 +917,7 @@ def _host_workflow_valid(raw: bytes) -> bool:
         direct = _direct_map(job, 4)
         if direct != {
             "runs-on": "[self-hosted, linux, x64, trading-authority]",
-            "environment": "trading-authority", "timeout-minutes": "90",
+            "environment": "trading-authority", "timeout-minutes": "180",
             "env": "", "steps": "",
         }:
             return False
@@ -927,6 +927,8 @@ def _host_workflow_valid(raw: bytes) -> bool:
             "LIVE_TRADING_APPROVED": '"false"',
         }:
             return False
+        common = _approved_common_steps()
+        common[1][1].update({"version": '\"0.11.7\"'})
         expected = [
             (
                 {
@@ -941,7 +943,7 @@ def _host_workflow_valid(raw: bytes) -> bool:
                 },
                 {},
             ),
-        ] + _approved_common_steps() + [
+        ] + common + [
             (
                 {
                     "name": "Sync legacy research environment",
