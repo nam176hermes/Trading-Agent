@@ -17,7 +17,7 @@ jobs:
   qualify:
     runs-on: [self-hosted, linux, x64, trading-authority]
     environment: trading-authority
-    timeout-minutes: 90
+    timeout-minutes: 180
     env:
       CI: "true"
       LIVE_EXECUTION_ENABLED: "false"
@@ -35,6 +35,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          version: "0.11.7"
 
       - name: Install Python 3.11
         run: uv python install 3.11
