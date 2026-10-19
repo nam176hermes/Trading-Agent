@@ -23,9 +23,9 @@
       "component": "legacy-research-backend",
       "runtime": "Python 3.11",
       "manifest": "legacy/research-backend/pyproject.toml",
-      "manifest_sha256": "c48580d90a1ca82d019a79e8315f5400b0da8ef8c40ba71f32061cc1e2e49474",
+      "manifest_sha256": "acf610144e245ad13ce5a746f1c4955503fce79c57cee1ab2b85e3948c0c2607",
       "lockfile": "legacy/research-backend/uv.lock",
-      "lockfile_sha256": "fe48fdc3a68bf8429ceb9abffe293f461282f5e05bc6cef0849e7889b1b0656d"
+      "lockfile_sha256": "1492b8815942e080660d5b4917fc300ae256294217dc4c782cf2247f099ac67d"
     },
     {
       "component": "dashboard",
