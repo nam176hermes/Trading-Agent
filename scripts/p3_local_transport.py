@@ -1806,7 +1806,8 @@ def _command_run(request: dict, root: Path, deadline: float, invocation_started:
     operation = validate_request(Path(environment['P3_AUTHORITY_REQUEST_FILE']),
         SourceIdentity.model_validate_json(canonical_json_bytes(request['source'])),
         WORKFLOW_OPERATIONS[_admitted_official_operation(request)])
-    if operation.authorization.identity.model_dump(mode='json') != request['identity']:
+    from scripts.p3_lane import authorization_identity, identity_from_transport
+    if authorization_identity(operation.authorization) != identity_from_transport(request['identity']):
         raise TransportHeld('current operation differs from transport identity')
     runtime_expiry = _runtime_authority(request).get('expires_at')
     granted = _official_deadline(deadline, runtime_expiry)
