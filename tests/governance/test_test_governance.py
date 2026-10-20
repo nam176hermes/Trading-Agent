@@ -200,11 +200,11 @@ def test_allowlist_schema_is_exact_and_unknown_is_never_accepted() -> None:
         and item["approval_record_type"] == "disposable-postgres-test-approval-v1"
     ]
     assert migrated_pg_skips == []
-    assert len(tracked) == 64
+    assert len(tracked) == 65
     assert sum(
         item["component"] == "root" and item["outcome"] == "deselected"
         for item in tracked
-    ) == 62                          # includes 7 SV01 and 2 LOCAL timing host deselections
+    ) == 63                          # includes 7 SV01 and 2 LOCAL timing host deselections
     assert sum(
         item["component"] == "legacy" and item["outcome"] == "skipped"
         for item in tracked
@@ -1350,7 +1350,7 @@ def test_p3_separate_runtime_tests_have_exact_portable_deselection_records(tmp_p
         cwd=test_governance.ROOT, env=environment, capture_output=True, text=True, timeout=60)
     assert result.returncode == 0, result.stdout + result.stderr
     observed = [row for row in json.loads(report.read_text())['tests'] if row['outcome']=='deselected']
-    assert len(observed) == 11
+    assert len(observed) == 12
     entries = validate_allowlist_document(json.loads(test_governance.DEFAULT_ALLOWLIST.read_text()))
     scoped = [row for row in entries if row['test_node_id'].split('::')[0] in paths]
     compare_inventory(observed, scoped)
