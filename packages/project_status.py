@@ -43,6 +43,15 @@ class ProjectStatusError(ValueError):
 
 def require_p3_source_ready(root: Path, identity=None):
     """Select one authenticated lane explicitly; never fall back across issuers."""
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+    if isinstance(identity, GithubRunIdentity):
+        # Never re-derive: that needs a GitHub origin, gh and a token no staged role process has.
+        from packages.alpha_lifecycle import github_run
+        try:
+            github_run.read_github_source_ready(identity, root)
+        except github_run.GithubRunHeld as error:
+            raise ProjectStatusError('P3 GITHUB source-ready record is not current') from error
+        return None
     if identity is not None:
         from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity
         from packages.local_pre_p3 import read_local_pre_p3

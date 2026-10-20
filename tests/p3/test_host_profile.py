@@ -51,8 +51,8 @@ def profile_inputs(synthetic_provider,monkeypatch):
     monkeypatch.setattr(module,'_release_files',p3_spawn._release_files)
     monkeypatch.setattr(module,'inspect_python_runtime',p3_spawn.inspect_python_runtime)
     monkeypatch.setattr(module,'canonical_source_identity',lambda root:closure.source.model_dump(mode='json'))
-    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates={
-        'HWC_SOURCE_READY':'PASS','PRE_P3_READY':'PASS'},p3_alpha_development_allowed=True))
+    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',
+        lambda root:pytest.fail('GITHUB host profile must not re-derive networked status'))
     observations=[]
     def qualify(ref,**kwargs):
         observations.append((ref,kwargs))
@@ -100,8 +100,7 @@ def test_profile_rejects_changed_binding_or_evidence(profile_inputs,monkeypatch,
     elif fault=='context':
         context.attest(job.payload.logical_trial_id,observed_at='2020-01-01T00:00:00Z')
     elif fault=='gates':
-        monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates={
-            'HWC_SOURCE_READY':'HELD','PRE_P3_READY':'PASS'},p3_alpha_development_allowed=False))
+        context.revoke_source_ready()  # D-S7-02: GITHUB reads the controller's record, never re-derives
     elif fault=='receipt':
         monkeypatch.setattr(module,'validate_integration_job_result',lambda *args,**kwargs:(_ for _ in ()).throw(ValueError('bad retained proof')))
     elif fault=='inventory':
@@ -111,7 +110,7 @@ def test_profile_rejects_changed_binding_or_evidence(profile_inputs,monkeypatch,
     if fault!='digest':
         expected=digest()  # Even a coherently root-pinned document must obey bindings.
     reasons=dict(digest='digest changed',job='another workflow job',payload='another workflow job',
-        source='source is not current',context='current workflow',gates='source gates',
+        source='source is not current',context='current workflow',gates='source-ready',
         receipt='bad retained proof',inventory='schema_version|files',file='file identity differs')
     with pytest.raises(ValueError,match=reasons[fault]):
         module.read_official_profile(Path('/synthetic/profile.json'),expected,

@@ -119,7 +119,9 @@ def _validated_request(request_file: Path, workflow_operation: str):
     authorization = request.authorization
     payload = build_alpha_campaign_payload(authorization, source, workflow_operation, operation_input=request.operation_input)
     try:
-        require_p3_source_ready(ROOT,getattr(authorization,'identity',None))
+        # LOCAL authorizations carry their identity; GITHUB ones bind their attested run (D-S7-02).
+        from packages.alpha_lifecycle.github_run import github_run_identity
+        require_p3_source_ready(ROOT,getattr(authorization,'identity',None) or github_run_identity(authorization))
     except ValueError as error:
         raise RuntimeError('HELD E_SOURCE_READY: protected source gates are not current') from error
     return request, payload

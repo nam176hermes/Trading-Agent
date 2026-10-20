@@ -198,6 +198,46 @@ def read_github_research_inputs(run: GithubRunAttestation, *, source: SourceIden
     return inputs
 
 
+SOURCE_READY_NAME = 'source-ready.json'
+
+
+class GithubSourceReady(DigestModel):
+    """The controller's protected observation that this run's exact source is P3-ready.
+
+    Staged role processes have no GitHub `origin`, `gh` or token, so they cannot re-derive the
+    attested HWC/PRE_P3 status themselves. The root controller derives it once per run from the
+    protected-main checkout and publishes this record next to `github-run.json`; consumers check
+    it offline against their own source. Revocation is by deletion, like the attestation.
+    """
+    schema_version: Literal['p3-github-source-ready-v1']
+    mode: Literal['GITHUB', 'FAKE']
+    identity: GithubRunIdentity
+    source: SourceIdentity
+    project_status_sha256: Sha256
+    observed_at: CanonicalUtcDateTime
+    authority: SafeAuthority
+
+
+def _current_source(root: Path):
+    from packages.pre_p3_provenance import canonical_source_identity
+    return canonical_source_identity(root)
+
+
+def read_github_source_ready(identity: GithubRunIdentity, root: Path) -> GithubSourceReady:
+    """Admit this process's source only through its own run's attestation and source-ready record."""
+    run, _ = read_github_run(identity.run_id, identity.attempt, admission=False)
+    document, _ = _protected(github_run_directory(identity.run_id, identity.attempt)/SOURCE_READY_NAME)
+    try:
+        ready = GithubSourceReady.model_validate_json(canonical_json_bytes(document))
+        current = SourceIdentity.model_validate(_current_source(root))
+    except ValueError as error:
+        raise GithubRunHeld('GitHub source-ready record is invalid') from error
+    if (ready.identity != identity or run.identity != identity or ready.mode != run.mode
+            or ready.source != current or current.commit_sha != run.head_sha):
+        raise GithubRunHeld('GitHub source-ready record does not bind this run and source')
+    return ready
+
+
 class ExpectedRun(StrictModel):
     """What the controller dispatched; compared with the API, never trusted alone."""
     head_sha: Annotated[str, Field(pattern=r'^[0-9a-f]{40}$')]
@@ -272,5 +312,5 @@ def authenticate_run(fetch: Fetch, *, run_id: int, attempt: int, expected: Expec
 __all__ = [
     'ADMISSION_MAX_AGE', 'ExpectedRun', 'GithubResearchInputs', 'GithubRunAttestation', 'GithubRunHeld',
     'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'require_admissible_mode', 'github_run_directory', 'github_run_identity', 'read_github_research_inputs',
-    'read_github_run',
+    'read_github_run', 'GithubSourceReady', 'SOURCE_READY_NAME', 'read_github_source_ready',
 ]

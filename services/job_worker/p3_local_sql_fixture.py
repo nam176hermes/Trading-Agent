@@ -24,8 +24,33 @@ from .recovery import ProcessIdentity, ProcProcessInspector
 REVISION='0033_p3_core_closure_repair'
 
 
-def check_local_identity(sock: Path,name: str,source) -> dict[str,object]:
+def _upgrade_to_session_catalog(connection,config,label='LOCAL'):
     from services.job_store.p3_catalog import SESSION_CATALOG_SQL, SESSION_CATALOG_SHA256
+    command.upgrade(config,REVISION)
+    connection.execute(text('SET LOCAL search_path=pg_catalog'))
+    catalog=connection.execute(text(SESSION_CATALOG_SQL)).scalar()
+    print(label+'_SESSION_CATALOG_SHA256='+str(catalog),flush=True)
+    assert catalog==SESSION_CATALOG_SHA256
+    return catalog
+
+
+def upgrade_hosted_session_revision(sock: Path,name: str) -> None:
+    """Hosted (GITHUB) coverage ends at the campaign ledger's session revision too (D-S7-03).
+
+    Only the LOCAL identity checks used to reach 0031-0033, so a hosted fixture stopped at 0030
+    while GithubFixturePlan v2 and its validator require 0033.
+    """
+    engine=create_engine(URL.create('postgresql+psycopg',username='trading_owner',database=name,query={'host':str(sock)}))
+    try:
+        with engine.begin() as connection:
+            config=Config(str(Path(__file__).resolve().parents[2]/'alembic.ini'))
+            config.attributes['connection']=connection
+            _upgrade_to_session_catalog(connection,config,'HOSTED')
+    finally:
+        engine.dispose()
+
+
+def check_local_identity(sock: Path,name: str,source) -> dict[str,object]:
     engine=create_engine(URL.create('postgresql+psycopg',username='trading_owner',database=name,query={'host':str(sock)}))
     try:
         with engine.begin() as connection:
@@ -44,11 +69,7 @@ def check_local_identity(sock: Path,name: str,source) -> dict[str,object]:
                     connection.execute(text('GRANT UPDATE ON public.p3_alpha_heads TO trading_job_worker'))
                     connection.execute(text('RESET ROLE'))
                     command.upgrade(config,REVISION)
-            command.upgrade(config,REVISION)
-            connection.execute(text('SET LOCAL search_path=pg_catalog'))
-            catalog=connection.execute(text(SESSION_CATALOG_SQL)).scalar()
-            print('LOCAL_SESSION_CATALOG_SHA256='+str(catalog),flush=True)
-            assert catalog==SESSION_CATALOG_SHA256
+            catalog=_upgrade_to_session_catalog(connection,config)
     finally:
         engine.dispose()
     enqueue_checks=check_enqueue_freshness(sock,name,source)

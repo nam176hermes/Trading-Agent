@@ -252,4 +252,4 @@ def test_github_custodian_binds_the_run_published_holdout_before_plaintext(custo
         with pytest.raises(ValueError):module.read_custodian_profile(Path('/synthetic/profile'),digest())
     else:
         profile=module.read_custodian_profile(Path('/synthetic/profile'),digest())
-        assert profile.identity.run_id==41 and calls==[('gates',None),'run-request']
+        assert profile.identity.run_id==41 and calls==[('gates',profile.identity),'run-request']

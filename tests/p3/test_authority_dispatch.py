@@ -265,7 +265,10 @@ def test_wait_rechecks_protected_source_before_any_job_read(dispatch_fixture,mon
     command,args,kwargs,calls,state=dispatch_fixture
     command.enqueue(*args,**kwargs)
     state.worker_ran=True
-    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',lambda root:dict(gates=dict(HWC_SOURCE_READY='HELD',PRE_P3_READY='PASS'),p3_alpha_development_allowed=False))
+    # GITHUB consumers read the controller's source-ready record; its revocation holds the wait.
+    monkeypatch.setattr(__import__('packages.project_status',fromlist=['derive_project_status']),'derive_project_status',
+                        lambda root:pytest.fail('GITHUB wait must not re-derive networked status'))
+    state.lane.revoke_source_ready()
     with pytest.raises(RuntimeError,match='E_SOURCE_READY'):
         command.wait_for_result(*args,**kwargs)
     assert calls==[('POST','/v1/jobs')]

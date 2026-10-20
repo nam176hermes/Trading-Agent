@@ -65,7 +65,7 @@ def read_custodian_profile(path: Path,expected_digest: str) -> CustodianHostProf
     if (profile.request.source!=SourceIdentity.model_validate(canonical_source_identity(ROOT))
         or profile.catalog_sha256!=catalog):
         raise ValueError('custodian source or catalog differs')
-    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,LocalCustodianProfile) else None)
+    require_p3_source_ready(ROOT,profile.identity if isinstance(profile,(LocalCustodianProfile,GithubCustodianProfile)) else None)
     _ = _absolute(profile.credentials_directory)
     _ = _directory_identity(_absolute(profile.metadata_root))
     if isinstance(profile,LocalCustodianProfile):

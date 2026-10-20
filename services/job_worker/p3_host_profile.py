@@ -264,11 +264,6 @@ def read_official_profile(
     source=SourceIdentity.model_validate(canonical_source_identity(ROOT))
     if source!=payload.expected_source:
         raise ValueError('P3 protected profile source is not current')
-    # LOCAL issuer admission below already authenticates current prerequisites
-    # against the exact authorization identity, source and expiry. GITHUB issuer
-    # validation only checks workflow context and still needs this source gate.
-    if not isinstance(profile,LocalOfficialHostProfileLane):
-        require_p3_source_ready(ROOT)
     store_root,output_root,python_root=map(_absolute,(profile.store_root,profile.output_root,profile.python_root))
     if (_directory_identity(store_root)==_directory_identity(output_root)
         or store_root in output_root.parents or output_root in store_root.parents):
@@ -279,6 +274,12 @@ def read_official_profile(
     if (isinstance(profile,LocalOfficialHostProfileLane) != isinstance(authorization,LocalRunAuthorization)
         or isinstance(profile,LocalOfficialHostProfileLane) and profile.identity != getattr(authorization,'identity',None)):
         raise ValueError('P3 protected profile and operation issuer differ')
+    # LOCAL issuer admission below already authenticates current prerequisites against the exact
+    # authorization identity, source and expiry. GITHUB issuer validation only checks workflow
+    # context, so the run's protected source-ready record is checked here (D-S7-02).
+    if not isinstance(profile,LocalOfficialHostProfileLane):
+        from packages.alpha_lifecycle.github_run import github_run_identity
+        require_p3_source_ready(ROOT,github_run_identity(authorization))
     try:
         validate_operation_issuer(authorization,source,workflow_operation=payload.logical_trial_id,
             admission=admission,root=ROOT)

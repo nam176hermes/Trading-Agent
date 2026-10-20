@@ -167,6 +167,23 @@ def test_private_holdout_claim_in_disposable_postgres():
     assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']
 
 
+@pytest.mark.runtime_postgres
+@pytest.mark.skipif(os.environ.get('P3_SESSION_HOLDOUT_SQL_SOURCE_TEST') != '1',
+    reason='explicit disposable session holdout SQL source selection required')
+def test_hosted_fixture_reaches_session_revision_without_local_identity():
+    """GITHUB fixture plan v2 and its validator require 0033; hosted coverage must reach it too."""
+    from packages.alpha_lifecycle.contracts.base import SourceIdentity
+    from packages.pre_p3_provenance import canonical_source_identity
+    from services.job_worker import p3_fixture_sql
+    source = SourceIdentity.model_validate(canonical_source_identity(p3_fixture_sql.ROOT))
+    result = p3_fixture_sql.run_sql_fixture(source, native_process_source_checks=True,
+        session_holdout_source_checks=True, custodian_release_source_checks=True)
+    assert result['sql_revision'] == '0033_p3_core_closure_repair'
+    assert 'local_identity_checks' not in result
+    p3_fixture_sql.validate_github_sql_fixture_checks(result)
+    assert result['cleanup']['root_absent'] and result['cleanup']['server_stopped']
+
+
 @pytest.mark.parametrize('action',['claim','start','control','finalize','recover'])
 def test_local_identity_is_passed_intact_to_private_sql_overloads(action):
     from packages.alpha_lifecycle.contracts.authority import LocalRunIdentity

@@ -29,8 +29,8 @@ from pydantic import Field  # noqa: E402
 
 from packages.alpha_lifecycle.contracts.base import StrictModel, Sha256  # noqa: E402
 from packages.alpha_lifecycle.github_run import (  # noqa: E402
-    REPOSITORY, WORKFLOW_PATH, ExpectedRun, GithubRunAttestation, GithubRunHeld, authenticate_run,
-    github_run_directory,
+    REPOSITORY, SOURCE_READY_NAME, WORKFLOW_PATH, ExpectedRun, GithubRunAttestation, GithubRunHeld,
+    GithubSourceReady, authenticate_run, github_run_directory,
 )
 from packages.engine_contracts.serialization import canonical_json_bytes  # noqa: E402
 
@@ -139,7 +139,8 @@ def create_jit_runner(api, run_id: int, attempt: int) -> tuple[str, int, str]:
     """(runner name, runner id, encoded JIT config); the config is a one-job credential."""
     name = f'p3-jit-{run_id}-{attempt}'
     value = api.post(f'/repos/{REPOSITORY}/actions/runners/generate-jitconfig', dict(
-        name=name, runner_group_id=1, labels=['p3-authority', runner_label(run_id, attempt)], work_folder='_work'))
+        name=name, runner_group_id=1, labels=['self-hosted', 'p3-authority', runner_label(run_id, attempt)],
+        work_folder='_work'))
     runner, config = value.get('runner') or {}, value.get('encoded_jit_config')
     if runner.get('name') != name or type(runner.get('id')) is not int or not isinstance(config, str):
         raise ControllerHeld('just-in-time runner registration differs')
@@ -156,8 +157,45 @@ class Primitives:
     stop_runner: Callable[[Any], None]
     admit: Callable[[GithubRunAttestation, str], dict[str, Any]]
     execute: Callable[[GithubRunAttestation, str, dict[str, Any]], dict[str, Any]]
+    # {source, project_status_sha256} for the protected-main checkout; see observe_source_ready.
+    source_ready: Callable[[ControllerPlan], dict[str, Any]]
     sleep: Callable[[float], None] = time.sleep
     now: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
+
+
+def observe_source_ready(root: Path, head_sha: str) -> dict[str, Any]:
+    """Host primitive: derive the attested status of the protected-main checkout `root`.
+
+    Runs only in the root controller, which has the GitHub origin, `gh` and token that a staged
+    role process lacks (D-S7-02); consumers then check the published record offline.
+    """
+    from packages.pre_p3_provenance import canonical_source_identity
+    from packages.project_status import derive_project_status
+    status = derive_project_status(root)
+    source = canonical_source_identity(root)
+    if (source['commit_sha'] != head_sha or status['gates']['HWC_SOURCE_READY'] != 'PASS'
+            or status['gates']['PRE_P3_READY'] != 'PASS' or status['p3_alpha_development_allowed'] is not True):
+        raise ControllerHeld('protected-main source is not P3-ready')
+    return dict(source=source, project_status_sha256=hashlib.sha256(canonical_json_bytes(status)).hexdigest())
+
+
+def publish_source_ready(plan: ControllerPlan, primitives: Primitives, run: GithubRunAttestation) -> Path:
+    observed = primitives.source_ready(plan)
+    value = dict(schema_version='p3-github-source-ready-v1', mode=plan.mode,
+                 identity=run.identity.model_dump(mode='json'), source=observed.get('source'),
+                 project_status_sha256=observed.get('project_status_sha256'),
+                 observed_at=primitives.now().isoformat().replace('+00:00', 'Z'),
+                 authority=dict(broker=False, live=False, network=False, production=False))
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    try:
+        ready = GithubSourceReady.model_validate_json(canonical_json_bytes(value))
+    except ValueError as error:
+        raise ControllerHeld('source-ready observation is invalid') from error
+    if ready.source.commit_sha != plan.head_sha or ready.source.commit_sha != run.head_sha:
+        raise ControllerHeld('source-ready observation is for another commit')
+    path = github_run_directory(run.identity.run_id, run.identity.attempt)/SOURCE_READY_NAME
+    primitives.publish(path, canonical_json_bytes(ready) + b'\n', True)
+    return path
 
 
 def attest(api, plan: ControllerPlan, primitives: Primitives, run_id: int, attempt: int, runner_name: str,
@@ -252,20 +290,11 @@ def serve_operation(api, plan: ControllerPlan, primitives: Primitives, operation
         run = await_assignment(api, plan, primitives, run_id, attempt, runner_name, operation,
                                deadline=time.monotonic() + assignment_seconds)
         with Refresher(api, plan, primitives, run_id, attempt, runner_name, operation) as refresher:
-            admitted = primitives.admit(run, operation)
-            if refresher.failed is not None:
-                raise ControllerHeld('run attestation lapsed during admission')
-            result = primitives.execute(run, operation, admitted)
-            if refresher.failed is not None:
-                result = dict(result, outcome='HELD')
-            # Phase receipts leave the host only with a SUCCEEDED, still-attested operation.
-            if result.get('outcome') != 'SUCCEEDED':
-                result = dict(result, files={}, phase_exit='NONE')
-            files = {name: value for name, value in result.get('files', {}).items()}
-            files['status.json'] = status_document(operation, run, result)
-            write_outbox(plan, primitives, run_id, attempt, files)
-        return dict(run_id=run_id, attempt=attempt, outcome=result['outcome'],
-                    status_sha256=hashlib.sha256(files['status.json']).hexdigest())
+            ready = publish_source_ready(plan, primitives, run)
+            try:
+                return _admit_and_execute(api, plan, primitives, run, operation, refresher)
+            finally:
+                primitives.revoke(ready)
     finally:
         primitives.stop_runner(process)
         try:
@@ -274,6 +303,25 @@ def serve_operation(api, plan: ControllerPlan, primitives: Primitives, operation
             pass
 
 
+def _admit_and_execute(api, plan, primitives, run, operation, refresher) -> dict[str, Any]:
+    run_id, attempt = run.identity.run_id, run.identity.attempt
+    admitted = primitives.admit(run, operation)
+    if refresher.failed is not None:
+        raise ControllerHeld('run attestation lapsed during admission')
+    result = primitives.execute(run, operation, admitted)
+    if refresher.failed is not None:
+        result = dict(result, outcome='HELD')
+    # Phase receipts leave the host only with a SUCCEEDED, still-attested operation.
+    if result.get('outcome') != 'SUCCEEDED':
+        result = dict(result, files={}, phase_exit='NONE')
+    files = {name: value for name, value in result.get('files', {}).items()}
+    files['status.json'] = status_document(operation, run, result)
+    write_outbox(plan, primitives, run_id, attempt, files)
+    return dict(run_id=run_id, attempt=attempt, outcome=result['outcome'],
+                status_sha256=hashlib.sha256(files['status.json']).hexdigest())
+
+
 __all__ = ['ControllerHeld', 'ControllerPlan', 'GitHubApi', 'Primitives', 'Refresher', 'attest',
+           'observe_source_ready', 'publish_source_ready',
            'check_repository_guards', 'create_jit_runner', 'precheck_queued', 'serve_operation',
            'status_document', 'write_outbox']
