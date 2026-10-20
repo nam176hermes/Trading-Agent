@@ -357,8 +357,14 @@ def test_prepare_image_includes_required_nested_sandbox_libraries(tmp_path, monk
                    release_root='release', python_root='python', job_id='probe',
                    loader_sha256='a'*64, mksquashfs_sha256='b'*64, bwrap_sha256='c'*64)
     expected = Captured if case == 'complete' else TransportHeld
-    with pytest.raises(expected):
-        transport._prepare_image(request, root, deadline=0)
+    previous = os.umask(0o077)  # a root controller may run with a private umask (S7 run 900000000306)
+    try:
+        with pytest.raises(expected):
+            transport._prepare_image(request, root, deadline=0)
+    finally:
+        os.umask(previous)
+    if case == 'complete':
+        assert stat.S_IMODE((root/'libraries').stat().st_mode) == 0o755, 'worker must read library snapshots'
     if case in {'missing-sandbox-library', 'combined-bound'}:
         assert not (root/'quarantine.json').exists(), 'refuse before building an image'
 

@@ -1470,6 +1470,7 @@ def _prepare_image(request: dict, root: Path, deadline: float) -> dict:
     snapshots = root / 'libraries'
     snapshots.mkdir(mode=0o755, exist_ok=True)
     os.chown(snapshots, 0, 0)
+    os.chmod(snapshots, 0o755)  # the worker profile reads these; never depend on the caller's umask
     # Both descriptors stay open across the build. The expected digests come from the
     # protected request, not from whatever the paths currently hold: hashing the present
     # bytes and then treating that digest as the authority pins nothing at all.
