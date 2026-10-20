@@ -88,6 +88,41 @@ def prepare(configuration):
         stream.write(canonical_json_bytes(result)+b'\n');stream.flush();os.fsync(stream.fileno())
 
 
+def materialize(store_root, acquisitions, output):
+    """Holdout/buffer partitions and their PIT query from retained public-archive acquisitions."""
+    import time
+    from datetime import UTC, datetime, timedelta
+    from packages.alpha_lifecycle.acquisition import daily_arrow_table, validate_acquisition_receipt
+    from packages.alpha_lifecycle.data_view import _RANGES
+    from packages.alpha_lifecycle.pit_evidence import materialize_daily_revision
+    from packages.data_contracts import ArtifactRefV1
+    if output.exists() or output.resolve().is_relative_to(ROOT):
+        raise ValueError('custody segment output must be new and outside source')
+    store=LocalArtifactStore(store_root)
+    refs=[ArtifactRefV1.model_validate_json(line) for line in acquisitions.read_text().splitlines() if line]
+    days=[validate_acquisition_receipt(ref,store).day for ref in refs]
+    first,last=_RANGES['HOLDOUT'][0],_RANGES['BUFFER'][1]
+    if days!=[first+timedelta(days=offset) for offset in range((last-first).days+1)]:
+        raise ValueError('acquisitions do not match exact holdout and buffer coverage')
+    ingested_at=datetime.now(UTC)  # after every acquisition; never backdated
+    segments={}
+    for name,dataset,(start,end) in (('holdout','p3.holdout.daily',_RANGES['HOLDOUT']),
+                                     ('buffer','p3.buffer.daily',_RANGES['BUFFER'])):
+        selected=[ref for ref,day in zip(refs,days) if start<=day<=end]
+        segments[name]=dict(partitions=[materialize_daily_revision(ref,store,ingested_at=ingested_at,
+            dataset=dataset).partition.model_dump(mode='json') for ref in selected],
+            schema=daily_arrow_table(selected[0],store)[0].model_dump(mode='json'))
+    cutoff=datetime.now(UTC).replace(microsecond=0)+timedelta(seconds=1)
+    query=dict(mode='SYSTEM_OBSERVED',valid_at=(last+timedelta(days=1)).isoformat()+'T00:00:00Z',
+        cutoff=cutoff.isoformat().replace('+00:00','Z'))
+    for item in segments.values():item['query']=query
+    while datetime.now(UTC)<=cutoff:  # sealing requires the query cutoff to have passed
+        time.sleep(0.2)
+    descriptor=os.open(output,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'wb') as stream:
+        stream.write(canonical_json_bytes(segments)+b'\n');stream.flush();os.fsync(stream.fileno())
+
+
 def plaintext_reader(profile):
     """Decrypt only through the protected cipher pins of the profile's own lane."""
     github=isinstance(profile,GithubCustodianProfile)
@@ -144,12 +179,17 @@ def main(argv=None):
     commands=parser.add_subparsers(dest='command',required=True)
     prepare_parser=commands.add_parser('prepare')
     prepare_parser.add_argument('--configuration',type=Path,required=True)
+    materialize_parser=commands.add_parser('materialize')
+    materialize_parser.add_argument('--store',type=Path,required=True)
+    materialize_parser.add_argument('--acquisitions',type=Path,required=True)
+    materialize_parser.add_argument('--output',type=Path,required=True)
     serve_parser=commands.add_parser('serve')
     serve_parser.add_argument('--profile',type=Path,required=True)
     serve_parser.add_argument('--profile-digest',required=True)
     serve_parser.add_argument('--listener-fd',type=int,required=True)
     args=parser.parse_args(argv)
     if args.command=='prepare':prepare(json.loads(args.configuration.read_bytes()))
+    elif args.command=='materialize':materialize(args.store,args.acquisitions,args.output)
     else:serve(args.profile,args.profile_digest,args.listener_fd)
     return 0
 

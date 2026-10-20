@@ -44,3 +44,20 @@ def test_daily_materialization_binds_p2_revision_and_truthful_observation(tmp_pa
     assert revised.partition.revision_ordinal == 2
     assert revised.partition.supersedes_partition_id == entry.partition.partition_id
     assert revised.partition.supersedes_manifest_sha256 == entry.partition.digest
+
+
+def test_daily_materialization_uses_only_declared_campaign_namespaces(tmp_path):
+    store = _store(tmp_path / "artifacts")
+    day = date(2025, 9, 1)
+    filename, raw = _archive(day)
+    base = "https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/"
+    acquired = acquire_day_receipt(day, FixtureTransport({
+        base + filename: raw,
+        base + filename + ".CHECKSUM": f"{hashlib.sha256(raw).hexdigest()}  {filename}\n".encode(),
+    }), store)
+    now = datetime.now(UTC)
+    entry = materialize_daily_revision(acquired.artifact_ref, store, ingested_at=now, dataset="p3.holdout.daily")
+    assert entry.partition.dataset == "p3.holdout.daily"
+    assert entry.partition.revision_series_id == uuid5(NAMESPACE_URL, f"p3.holdout.daily/BTCUSDT.BINANCE/{day.isoformat()}")
+    with pytest.raises(ValueError, match="namespace"):
+        materialize_daily_revision(acquired.artifact_ref, store, ingested_at=now, dataset="p3.other.daily")
