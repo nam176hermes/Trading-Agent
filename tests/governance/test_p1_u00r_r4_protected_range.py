@@ -15,7 +15,7 @@ P3_REVIEWED_MAKEFILE_BLOB = "b2cf2dcea80400b9c8ca3dcd4ed4d1f5dd91ceaf"
 # PR 56 reviewed dev security refresh; all runtime/input authority pins remain.
 P3_ROOT_MANIFEST_BLOB = "2c1ff193803bcb0d94e1b06cfa71de19ab7ce579"
 # PR 71 audited security lock; the original candidate remains independently pinned.
-P3_ROOT_LOCK_BLOB = "cd95c41f7ae4f3b254100849933506e9b3e7981b"
+P3_ROOT_LOCK_BLOB = "dae514f5545985e9b525672342eeedde86ad948a"
 HISTORICAL_P3_ROOT_LOCK_BLOB = "814be3f3ce0d34259ba03c1efe27993ba3c3e966"
 # R05 operator-approved distro bubblewrap re-pin; retain exact policy bytes/mode.
 # Owner A: exact cache exception; all other ACCEPTED_A entries remain unchanged.

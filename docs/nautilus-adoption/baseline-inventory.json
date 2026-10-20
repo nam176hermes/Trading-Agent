@@ -17,7 +17,7 @@
       "manifest": "pyproject.toml",
       "manifest_sha256": "dec0ab937874a667a99eadf898a2b4c4200daa5f84ba5ece1b08692c5e04f308",
       "lockfile": "uv.lock",
-      "lockfile_sha256": "9180db4298209fd66209609891bbb3abc79de070750210f97a356bf1072b46f7"
+      "lockfile_sha256": "62369020d1b1fc690ddee338387a6b5812e7279ef84b4fd2034e77b747f7d97e"
     },
     {
       "component": "legacy-research-backend",
@@ -25,7 +25,7 @@
       "manifest": "legacy/research-backend/pyproject.toml",
       "manifest_sha256": "acf610144e245ad13ce5a746f1c4955503fce79c57cee1ab2b85e3948c0c2607",
       "lockfile": "legacy/research-backend/uv.lock",
-      "lockfile_sha256": "1492b8815942e080660d5b4917fc300ae256294217dc4c782cf2247f099ac67d"
+      "lockfile_sha256": "55baca6473a1a46512bbdae1ce9f01c750816b56c74e4e79e9bff1b158bdd7a3"
     },
     {
       "component": "dashboard",
