@@ -234,7 +234,11 @@ def test_refresh_republishes_the_source_ready_observation(monkeypatch):
     initial = value.source_ready
     value.source_ready = lambda plan: observed.append(plan.head_sha) or initial(plan)
     module.serve_operation(Api(), plan(), value, 'p3-baselines-v1')
-    assert events.count(('publish', '/run/trading-agent-p3/7-1/source-ready.json')) >= 3
+    ready = ('publish', '/run/trading-agent-p3/7-1/source-ready.json')
+    assert events.count(ready) >= 3
+    last_publish = len(events) - 1 - events[::-1].index(ready)
+    assert ('revoke', ready[1]) in events[last_publish:]
+    assert events.index(('revoke', '/run/trading-agent-p3/7-1/github-run.json')) > last_publish
 
 
 @pytest.mark.parametrize('fault', ['HWC_SOURCE_READY', 'PRE_P3_READY', 'not_allowed', 'other_commit'])

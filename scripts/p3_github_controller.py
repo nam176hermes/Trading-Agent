@@ -250,6 +250,8 @@ class Refresher:
     def __exit__(self, *_):
         self._stop.set()
         self._thread.join()
+        # Only after the refresh thread stopped, so no refresh can republish source-ready afterwards.
+        self._arguments[2].revoke(self._path.with_name(SOURCE_READY_NAME))
         self._arguments[2].revoke(self._path)
 
 
@@ -291,11 +293,8 @@ def serve_operation(api, plan: ControllerPlan, primitives: Primitives, operation
         run = await_assignment(api, plan, primitives, run_id, attempt, runner_name, operation,
                                deadline=time.monotonic() + assignment_seconds)
         with Refresher(api, plan, primitives, run_id, attempt, runner_name, operation) as refresher:
-            ready = publish_source_ready(plan, primitives, run)
-            try:
-                return _admit_and_execute(api, plan, primitives, run, operation, refresher)
-            finally:
-                primitives.revoke(ready)
+            publish_source_ready(plan, primitives, run)
+            return _admit_and_execute(api, plan, primitives, run, operation, refresher)
     finally:
         primitives.stop_runner(process)
         try:
