@@ -205,9 +205,10 @@ class GithubSourceReady(DigestModel):
     """The controller's protected observation that this run's exact source is P3-ready.
 
     Staged role processes have no GitHub `origin`, `gh` or token, so they cannot re-derive the
-    attested HWC/PRE_P3 status themselves. The root controller derives it once per run from the
-    protected-main checkout and publishes this record next to `github-run.json`; consumers check
-    it offline against their own source. Revocation is by deletion, like the attestation.
+    attested HWC/PRE_P3 status themselves. The root controller derives it from the
+    protected-main checkout, republishes it on every attestation refresh and publishes it next to
+    `github-run.json`; consumers check it offline against their own source and its age. Revocation is
+    by deletion, like the attestation.
     """
     schema_version: Literal['p3-github-source-ready-v1']
     mode: Literal['GITHUB', 'FAKE']
@@ -223,8 +224,13 @@ def _current_source(root: Path):
     return canonical_source_identity(root)
 
 
-def read_github_source_ready(identity: GithubRunIdentity, root: Path) -> GithubSourceReady:
-    """Admit this process's source only through its own run's attestation and source-ready record."""
+def read_github_source_ready(identity: GithubRunIdentity, root: Path, *,
+                             now: datetime | None = None) -> GithubSourceReady:
+    """Admit this process's source only through its own run's attestation and source-ready record.
+
+    The controller re-observes and republishes the record on every attestation refresh, so a gate
+    that drops to HELD mid-run stops later admissions once the record is older than ADMISSION_MAX_AGE.
+    """
     run, _ = read_github_run(identity.run_id, identity.attempt, admission=False)
     document, _ = _protected(github_run_directory(identity.run_id, identity.attempt)/SOURCE_READY_NAME)
     try:
@@ -235,6 +241,8 @@ def read_github_source_ready(identity: GithubRunIdentity, root: Path) -> GithubS
     if (ready.identity != identity or run.identity != identity or ready.mode != run.mode
             or ready.source != current or current.commit_sha != run.head_sha):
         raise GithubRunHeld('GitHub source-ready record does not bind this run and source')
+    if not timedelta(0) <= _now(now) - ready.observed_at <= ADMISSION_MAX_AGE:
+        raise GithubRunHeld('GitHub source-ready record is not current')
     return ready
 
 

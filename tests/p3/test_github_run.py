@@ -296,11 +296,11 @@ def test_source_ready_record_admits_its_own_run_source_and_mode(protected, curre
     from packages.alpha_lifecycle.github_run import read_github_source_ready
     _publish_run(protected)
     _publish_source_ready(protected)
-    ready = read_github_source_ready(_identity(), Path('/stage/application'))
+    ready = read_github_source_ready(_identity(), Path('/stage/application'), now=NOW)
     assert ready.project_status_sha256 == '9' * 64 and ready.source.commit_sha == HEAD
 
 
-@pytest.mark.parametrize('fault', ['absent', 'run_absent', 'other_run', 'mode', 'source', 'current_source'])
+@pytest.mark.parametrize('fault', ['absent', 'run_absent', 'other_run', 'mode', 'source', 'current_source', 'stale'])
 def test_source_ready_record_is_held_for_any_mismatch(protected, current_source, monkeypatch, fault):
     from packages.alpha_lifecycle import github_run
     from packages.alpha_lifecycle.github_run import GithubRunHeld, read_github_source_ready
@@ -312,8 +312,9 @@ def test_source_ready_record_is_held_for_any_mismatch(protected, current_source,
             source=dict(source={**SOURCE, 'closure_sha256': '0' * 64})).get(fault, {}))
     if fault == 'current_source':
         monkeypatch.setattr(github_run, '_current_source', lambda root: {**SOURCE, 'tree_sha': '0' * 40})
+    now = NOW + timedelta(seconds=121) if fault == 'stale' else NOW
     with pytest.raises(GithubRunHeld):
-        read_github_source_ready(_identity(), Path('/stage/application'))
+        read_github_source_ready(_identity(), Path('/stage/application'), now=now)
 
 
 def test_github_source_gate_never_rederives_status_or_falls_back(monkeypatch):

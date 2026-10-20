@@ -224,7 +224,7 @@ def await_assignment(api, plan, primitives, run_id, attempt, runner_name, operat
 
 
 class Refresher:
-    """Re-authenticate every REFRESH_SECONDS; on any failure revoke by deletion and stop."""
+    """Re-authenticate and re-observe source readiness every REFRESH_SECONDS; on any failure revoke and stop."""
 
     def __init__(self, api, plan, primitives, run_id, attempt, runner_name, operation):
         self._arguments = (api, plan, primitives, run_id, attempt, runner_name, operation)
@@ -236,7 +236,8 @@ class Refresher:
     def _loop(self):
         while not self._stop.wait(REFRESH_SECONDS):
             try:
-                attest(*self._arguments)
+                api, plan, primitives, *_ = self._arguments
+                publish_source_ready(plan, primitives, attest(*self._arguments))
             except BaseException as error:  # noqa: BLE001 - any failure revokes; nothing is retried
                 self.failed = error
                 self._arguments[2].revoke(self._path)

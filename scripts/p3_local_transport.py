@@ -1776,6 +1776,13 @@ def command_run(request: dict, root: Path, deadline: float, invocation_started: 
     return _command_run(request, root, deadline, invocation_started, invocation_expires_at)
 
 
+def _require_operation_identity(authorization, carried):
+    """The admitted operation must belong to the run this transport carries (LOCAL or GITHUB)."""
+    from scripts.p3_lane import authorization_identity, identity_from_transport
+    if authorization_identity(authorization) != identity_from_transport(carried):
+        raise TransportHeld('current operation differs from transport identity')
+
+
 def _command_run(request: dict, root: Path, deadline: float, invocation_started: datetime,
                  invocation_expires_at: datetime) -> dict:
     """Build, mount, then become the worker entrypoint that already exists.
@@ -1807,9 +1814,7 @@ def _command_run(request: dict, root: Path, deadline: float, invocation_started:
     operation = validate_request(Path(environment['P3_AUTHORITY_REQUEST_FILE']),
         SourceIdentity.model_validate_json(canonical_json_bytes(request['source'])),
         WORKFLOW_OPERATIONS[_admitted_official_operation(request)])
-    from scripts.p3_lane import authorization_identity, identity_from_transport
-    if authorization_identity(operation.authorization) != identity_from_transport(request['identity']):
-        raise TransportHeld('current operation differs from transport identity')
+    _require_operation_identity(operation.authorization, request['identity'])
     runtime_expiry = _runtime_authority(request).get('expires_at')
     granted = _official_deadline(deadline, runtime_expiry)
     expires_at = min(invocation_expires_at, operation.authorization.expires_at,

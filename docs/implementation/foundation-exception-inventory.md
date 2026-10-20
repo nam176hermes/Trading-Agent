@@ -685,8 +685,8 @@ scripts/nautilus_pin_inventory/git_source.py|5567|BaseException|TOOLING_MIGRATIO
 scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATION|OTHER
 scripts/p3_authority.py|222|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_authority.py|276|Exception|TOOLING_MIGRATION|RAISE
-scripts/p3_github_controller.py|240|BaseException|TOOLING_MIGRATION|RETURN
-scripts/p3_github_controller.py|302|Exception|TOOLING_MIGRATION|PASS
+scripts/p3_github_controller.py|241|BaseException|TOOLING_MIGRATION|RETURN
+scripts/p3_github_controller.py|303|Exception|TOOLING_MIGRATION|PASS
 scripts/p3_local_controller.py|588|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_local_host.py|89|Exception|TOOLING_MIGRATION|PASS
 scripts/p3_local_install_approval.py|93|Exception|TOOLING_MIGRATION|RETURN
@@ -697,9 +697,9 @@ scripts/p3_local_transport.py|365|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|409|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|453|BaseException|TOOLING_MIGRATION|RAISE
 scripts/p3_local_transport.py|1349|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_local_transport.py|2031|BaseException|TOOLING_MIGRATION|OTHER
-scripts/p3_local_transport.py|2230|BaseException|TOOLING_MIGRATION|RAISE
-scripts/p3_local_transport.py|2239|Exception|TOOLING_MIGRATION|RETURN
+scripts/p3_local_transport.py|2036|BaseException|TOOLING_MIGRATION|OTHER
+scripts/p3_local_transport.py|2235|BaseException|TOOLING_MIGRATION|RAISE
+scripts/p3_local_transport.py|2244|Exception|TOOLING_MIGRATION|RETURN
 scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|445|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_input_cache.py|453|BaseException|TOOLING_MIGRATION|OTHER

@@ -32,10 +32,20 @@ staged release interpreter) does the following:
    protected. It then publishes root-owned `0444`
    `/run/trading-agent-p3/<run>-<attempt>/github-run.json`. This file pins the digest
    of the reviewed research-input receipt.
-3. **Refresh and revocation.** It refreshes the attestation while the job runs and
-   deletes it on completion or cancellation.
+3. **Source readiness.** It derives the project status of the protected-main checkout
+   (`observe_source_ready`). It publishes root-owned
+   `/run/trading-agent-p3/<run>-<attempt>/source-ready.json` only when the checkout is the
+   run's head SHA, `HWC_SOURCE_READY` and `PRE_P3_READY` are PASS, and P3 development is
+   allowed. The host's `Primitives.source_ready` must be
+   `observe_source_ready(<protected-main checkout>, plan.head_sha)`. Staged role processes
+   cannot re-derive this status, so this record is the only HWC/PRE_P3 gate of the lane.
+4. **Refresh and revocation.** Every 60 s it re-authenticates the run and re-observes
+   source readiness. Any failure revokes the attestation. On completion or cancellation it
+   deletes both files.
 
-Worker-side consumers read only `github-run.json`; they never read `GITHUB_*`.
+Worker-side consumers read only `github-run.json` and `source-ready.json`; they never read
+`GITHUB_*`. A `source-ready.json` older than 120 s is HELD at every check, so a gate that
+drops mid-run stops the next stage.
 
 - **Admission points** (accept, enqueue, worker startup, next-stage install, custodian
   release) require an observation younger than 120 s.

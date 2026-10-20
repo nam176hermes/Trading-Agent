@@ -217,3 +217,37 @@ def test_source_ready_for_another_commit_holds_before_admission():
         serve_operation(Api(), plan(), value, 'p3-baselines-v1')
     assert 'admit' not in [event[0] for event in events]
     assert '/run/trading-agent-p3/7-1/source-ready.json' not in published
+
+
+def test_refresh_republishes_the_source_ready_observation(monkeypatch):
+    """The source-ready record is the GITHUB HWC/PRE_P3 gate; the refresher keeps it current."""
+    from scripts import p3_github_controller as module
+    monkeypatch.setattr(module, 'REFRESH_SECONDS', 0.01)
+    events, observed = [], []
+    def slow(run, operation, admitted):
+        time_limit = __import__('time').monotonic() + 2
+        while len(observed) < 3:
+            assert __import__('time').monotonic() < time_limit
+            __import__('time').sleep(0.01)
+        return dict(outcome='SUCCEEDED', files={})
+    value, published = primitives(events, execute=slow)
+    initial = value.source_ready
+    value.source_ready = lambda plan: observed.append(plan.head_sha) or initial(plan)
+    module.serve_operation(Api(), plan(), value, 'p3-baselines-v1')
+    assert events.count(('publish', '/run/trading-agent-p3/7-1/source-ready.json')) >= 3
+
+
+@pytest.mark.parametrize('fault', ['HWC_SOURCE_READY', 'PRE_P3_READY', 'not_allowed', 'other_commit'])
+def test_observe_source_ready_holds_unless_protected_main_is_p3_ready(monkeypatch, fault):
+    from packages import pre_p3_provenance, project_status
+    from scripts.p3_github_controller import ControllerHeld, observe_source_ready
+    status = dict(gates=dict(HWC_SOURCE_READY='PASS', PRE_P3_READY='PASS'), p3_alpha_development_allowed=True)
+    monkeypatch.setattr(project_status, 'derive_project_status', lambda root: status)
+    monkeypatch.setattr(pre_p3_provenance, 'canonical_source_identity', lambda root: dict(SOURCE))
+    assert observe_source_ready(Path('/srv/main'), HEAD)['source'] == SOURCE
+    if fault == 'not_allowed':
+        status['p3_alpha_development_allowed'] = False
+    elif fault in status['gates']:
+        status['gates'][fault] = 'HELD'
+    with pytest.raises(ControllerHeld):
+        observe_source_ready(Path('/srv/main'), '0' * 40 if fault == 'other_commit' else HEAD)
