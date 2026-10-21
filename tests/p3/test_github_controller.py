@@ -7,8 +7,20 @@ from uuid import UUID
 import pytest
 
 HEAD = 'a' * 40
+SOURCE = dict(commit_sha=HEAD, tree_sha='c' * 40, closure_schema_version='pre-p3-source-closure-v1',
+              closure_policy_sha256='d' * 64, closure_sha256='e' * 64)
 HOST = ('b' * 64, UUID('00000000-0000-4000-8000-000000000009'))
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+
+
+def _runs_on(run_id, attempt):
+    """The p3 job's runs-on labels, read from the workflow itself so the two cannot drift."""
+    import re
+    text = (Path(__file__).resolve().parents[2]/'.github/workflows/p3-authority.yml').read_text()
+    (line,) = re.findall(r'^    runs-on: \[(.*)\]$', text, re.M)
+    labels = [label.strip().strip("'") for label in line.split(',')]
+    return [label.replace('${{ github.run_id }}', str(run_id)).replace('${{ github.run_attempt }}', str(attempt))
+            for label in labels]
 
 
 class Api:
@@ -47,7 +59,10 @@ class Api:
 
     def post(self, path, body):
         self.calls.append(('POST', path))
-        assert body['labels'] == ['p3-authority', f'p3-run-7-{self.attempt}']
+        # A just-in-time runner carries only the labels it is registered with (no self-hosted default),
+        # so it must carry every label of the workflow's runs-on or the job is never assigned.
+        assert set(_runs_on(7, self.attempt)) <= set(body['labels'])
+        assert body['labels'] == ['self-hosted', 'p3-authority', f'p3-run-7-{self.attempt}']
         return dict(runner=dict(name=body['name'], id=33), encoded_jit_config='one-job-credential')
 
     def delete(self, path):
@@ -75,6 +90,7 @@ def primitives(events, *, admit=None, execute=None):
     value = Primitives(publish=publish, revoke=lambda path: events.append(('revoke', str(path))),
         host_identity=lambda: HOST, start_runner=lambda plan, config: events.append(('runner', config)) or 'proc',
         stop_runner=lambda process: events.append(('stop', process)),
+        source_ready=lambda plan: dict(source=dict(SOURCE, commit_sha=plan.head_sha), project_status_sha256='9' * 64),
         admit=admit or (lambda run, operation: events.append(('admit', operation)) or {'nonce': 'n'}),
         execute=execute or default_execute, sleep=lambda seconds: None, now=lambda: NOW)
     return value, published
@@ -87,9 +103,15 @@ def test_operation_is_attested_admitted_executed_and_published_in_order():
     result = serve_operation(api, plan(), value, 'p3-baselines-v1')
     assert result['outcome'] == 'SUCCEEDED' and (result['run_id'], result['attempt']) == (7, 1)
     names = [event[0] for event in events]
-    assert names == ['runner', 'publish', 'admit', 'execute', 'publish', 'revoke', 'stop']
+    assert names == ['runner', 'publish', 'publish', 'admit', 'execute', 'publish', 'revoke', 'revoke', 'stop']
     assert events[1] == ('publish', '/run/trading-agent-p3/7-1/github-run.json')
-    assert events[4] == ('publish', '/srv/trading-agent-p3/outbox/7-1/status.json')
+    # D-S7-02: the source-ready record exists before anything is admitted and is revoked with the run.
+    assert events[2] == ('publish', '/run/trading-agent-p3/7-1/source-ready.json')
+    assert events[5] == ('publish', '/srv/trading-agent-p3/outbox/7-1/status.json')
+    assert events[6] == ('revoke', '/run/trading-agent-p3/7-1/source-ready.json')
+    ready = json.loads(published['/run/trading-agent-p3/7-1/source-ready.json'])
+    assert ready['schema_version'] == 'p3-github-source-ready-v1' and ready['mode'] == 'GITHUB'
+    assert ready['source']['commit_sha'] == HEAD and ready['identity']['run_id'] == 7
     status = json.loads(published['/srv/trading-agent-p3/outbox/7-1/status.json'])
     assert status['outcome'] == 'SUCCEEDED' and status['phase_exit'] == 'NONE' and status['run_id'] == 7
     attestation = json.loads(published['/run/trading-agent-p3/7-1/github-run.json'])
@@ -132,7 +154,7 @@ def test_failed_admission_stops_the_runner_revokes_and_publishes_nothing():
     value, published = primitives(events, admit=refuse)
     with pytest.raises(ValueError):
         serve_operation(api, plan(), value, 'p3-baselines-v1')
-    assert [event[0] for event in events] == ['runner', 'publish', 'revoke', 'stop']
+    assert [event[0] for event in events] == ['runner', 'publish', 'publish', 'revoke', 'revoke', 'stop']
     assert not any(path.startswith('/srv/trading-agent-p3/outbox') for path in published)
     assert api.calls[-1][0] == 'DELETE'
 
@@ -184,3 +206,52 @@ def test_refresh_failure_revokes_the_attestation_and_holds_the_result(monkeypatc
     status = json.loads(published['/srv/trading-agent-p3/outbox/7-1/status.json'])
     assert status['outcome'] == 'HELD' and status['phase_exit'] == 'NONE'
     assert '/srv/trading-agent-p3/outbox/7-1/p3-phase-exit-v1.json' not in published  # PR77-03
+
+
+def test_source_ready_for_another_commit_holds_before_admission():
+    from scripts.p3_github_controller import ControllerHeld, serve_operation
+    events = []
+    value, published = primitives(events)
+    value.source_ready = lambda plan: dict(source=dict(SOURCE, commit_sha='0' * 40), project_status_sha256='9' * 64)
+    with pytest.raises(ControllerHeld):
+        serve_operation(Api(), plan(), value, 'p3-baselines-v1')
+    assert 'admit' not in [event[0] for event in events]
+    assert '/run/trading-agent-p3/7-1/source-ready.json' not in published
+
+
+def test_refresh_republishes_the_source_ready_observation(monkeypatch):
+    """The source-ready record is the GITHUB HWC/PRE_P3 gate; the refresher keeps it current."""
+    from scripts import p3_github_controller as module
+    monkeypatch.setattr(module, 'REFRESH_SECONDS', 0.01)
+    events, observed = [], []
+    def slow(run, operation, admitted):
+        time_limit = __import__('time').monotonic() + 2
+        while len(observed) < 3:
+            assert __import__('time').monotonic() < time_limit
+            __import__('time').sleep(0.01)
+        return dict(outcome='SUCCEEDED', files={})
+    value, published = primitives(events, execute=slow)
+    initial = value.source_ready
+    value.source_ready = lambda plan: observed.append(plan.head_sha) or initial(plan)
+    module.serve_operation(Api(), plan(), value, 'p3-baselines-v1')
+    ready = ('publish', '/run/trading-agent-p3/7-1/source-ready.json')
+    assert events.count(ready) >= 3
+    last_publish = len(events) - 1 - events[::-1].index(ready)
+    assert ('revoke', ready[1]) in events[last_publish:]
+    assert events.index(('revoke', '/run/trading-agent-p3/7-1/github-run.json')) > last_publish
+
+
+@pytest.mark.parametrize('fault', ['HWC_SOURCE_READY', 'PRE_P3_READY', 'not_allowed', 'other_commit'])
+def test_observe_source_ready_holds_unless_protected_main_is_p3_ready(monkeypatch, fault):
+    from packages import pre_p3_provenance, project_status
+    from scripts.p3_github_controller import ControllerHeld, observe_source_ready
+    status = dict(gates=dict(HWC_SOURCE_READY='PASS', PRE_P3_READY='PASS'), p3_alpha_development_allowed=True)
+    monkeypatch.setattr(project_status, 'derive_project_status', lambda root: status)
+    monkeypatch.setattr(pre_p3_provenance, 'canonical_source_identity', lambda root: dict(SOURCE))
+    assert observe_source_ready(Path('/srv/main'), HEAD)['source'] == SOURCE
+    if fault == 'not_allowed':
+        status['p3_alpha_development_allowed'] = False
+    elif fault in status['gates']:
+        status['gates'][fault] = 'HELD'
+    with pytest.raises(ControllerHeld):
+        observe_source_ready(Path('/srv/main'), '0' * 40 if fault == 'other_commit' else HEAD)

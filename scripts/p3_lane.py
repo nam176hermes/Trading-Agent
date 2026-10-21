@@ -62,6 +62,14 @@ def issuer_kind(identity) -> str:
     return 'GITHUB' if isinstance(identity, GithubRunIdentity) else 'LOCAL'
 
 
+def authorization_identity(authorization):
+    """Run identity of an admitted authorization; GITHUB derives it from the issuer run."""
+    from packages.alpha_lifecycle.github_run import github_run_identity
+    if isinstance(authorization, LocalRunAuthorization):
+        return authorization.identity
+    return github_run_identity(authorization)
+
+
 def transport_identity(identity, host_id: str, boot_id: str) -> dict:
     """The identity a transport request carries; GITHUB adds the attested host and boot."""
     value = identity.model_dump(mode='json')

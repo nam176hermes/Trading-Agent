@@ -55,6 +55,7 @@ def materialize_daily_revision(
     *,
     ingested_at: datetime,
     previous: P3RevisionEntry | None = None,
+    dataset: str = 'p3.research.daily',
 ) -> P3RevisionEntry:
     """Prepare one retained archive through P2; observation time is never backdated."""
     from packages.alpha_lifecycle.acquisition import (
@@ -63,11 +64,13 @@ def materialize_daily_revision(
     )
     from packages.data_catalog.v3 import materialize_arrow_partition_v3
 
+    if dataset not in ('p3.research.daily', 'p3.holdout.daily', 'p3.buffer.daily'):
+        raise ValueError('daily revision namespace is not a P3 campaign dataset')
     acquired = validate_acquisition_receipt(acquisition_ref, store)
     if ingested_at.tzinfo is not UTC or ingested_at < acquired.fetched_at:
         raise ValueError("ingestion must be UTC and no earlier than acquisition")
     pair = (acquired.archive_ref.content_sha256, acquired.checksum_ref.content_sha256)
-    series = uuid5(NAMESPACE_URL, f'p3.research.daily/BTCUSDT.BINANCE/{acquired.day.isoformat()}')
+    series = uuid5(NAMESPACE_URL, f'{dataset}/BTCUSDT.BINANCE/{acquired.day.isoformat()}')
     if previous is not None:
         previous = P3RevisionEntry.model_validate(previous)
         prior = validate_acquisition_receipt(previous.acquisition_ref, store)
@@ -89,7 +92,7 @@ def materialize_daily_revision(
     schema, table = daily_arrow_table(acquisition_ref, store)
     partition = materialize_arrow_partition_v3(
         table, schema=schema, store=store, partition_id=uuid5(series, identity),
-        dataset='p3.research.daily', partition_key=('BTCUSDT.BINANCE', acquired.day.isoformat()),
+        dataset=dataset, partition_key=('BTCUSDT.BINANCE', acquired.day.isoformat()),
         partition_spec_version='p3.utc-day.v1', source_available_at=acquired.system_observed_at,
         system_observed_at=acquired.system_observed_at, ingested_at=ingested_at,
         raw_evidence_sha256s=pair, transform_receipt_sha256=provider_ref.content_sha256,

@@ -266,3 +266,67 @@ def test_unreviewed_or_mismatched_inputs_are_held(protected, fault):
         store.review = sealed({**store.review, 'review_execution_id': 'review-2'})
     with pytest.raises(GithubRunHeld):
         _admit(protected, store, inputs, **admit)
+
+
+# D-S7-02: staged role processes have no GitHub origin, gh or token, so GITHUB consumers read the
+# controller's protected source-ready record for their run instead of re-deriving HWC status.
+GITHUB_IDENTITY = dict(issuer_kind='GITHUB', issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
+                       workflow_ref='p3-authority.yml', run_id=7, attempt=1)
+
+
+def _publish_source_ready(documents, **changes):
+    value = dict(schema_version='p3-github-source-ready-v1', mode='GITHUB', identity=GITHUB_IDENTITY,
+                 source=SOURCE, project_status_sha256='9' * 64, observed_at=_z(NOW), authority=AUTHORITY)
+    value.update(changes)
+    documents[Path('/run/trading-agent-p3/7-1/source-ready.json')] = sealed(value)
+
+
+def _identity():
+    from packages.alpha_lifecycle.contracts.authority import GithubRunIdentity
+    return GithubRunIdentity.model_validate(GITHUB_IDENTITY)
+
+
+@pytest.fixture
+def current_source(monkeypatch):
+    from packages.alpha_lifecycle import github_run
+    monkeypatch.setattr(github_run, '_current_source', lambda root: SOURCE)
+
+
+def test_source_ready_record_admits_its_own_run_source_and_mode(protected, current_source):
+    from packages.alpha_lifecycle.github_run import read_github_source_ready
+    _publish_run(protected)
+    _publish_source_ready(protected)
+    ready = read_github_source_ready(_identity(), Path('/stage/application'), now=NOW)
+    assert ready.project_status_sha256 == '9' * 64 and ready.source.commit_sha == HEAD
+
+
+@pytest.mark.parametrize('fault', ['absent', 'run_absent', 'other_run', 'mode', 'source', 'current_source', 'stale'])
+def test_source_ready_record_is_held_for_any_mismatch(protected, current_source, monkeypatch, fault):
+    from packages.alpha_lifecycle import github_run
+    from packages.alpha_lifecycle.github_run import GithubRunHeld, read_github_source_ready
+    if fault != 'run_absent':
+        _publish_run(protected)
+    if fault != 'absent':
+        _publish_source_ready(protected, **dict(
+            other_run=dict(identity={**GITHUB_IDENTITY, 'attempt': 2}), mode=dict(mode='FAKE'),
+            source=dict(source={**SOURCE, 'closure_sha256': '0' * 64})).get(fault, {}))
+    if fault == 'current_source':
+        monkeypatch.setattr(github_run, '_current_source', lambda root: {**SOURCE, 'tree_sha': '0' * 40})
+    now = NOW + timedelta(seconds=121) if fault == 'stale' else NOW
+    with pytest.raises(GithubRunHeld):
+        read_github_source_ready(_identity(), Path('/stage/application'), now=now)
+
+
+def test_github_source_gate_never_rederives_status_or_falls_back(monkeypatch):
+    from packages import project_status
+    from packages.alpha_lifecycle import github_run
+    monkeypatch.setattr(project_status, 'derive_project_status',
+                        lambda root: pytest.fail('GITHUB consumers must not re-derive networked status'))
+    seen = []
+    monkeypatch.setattr(github_run, 'read_github_source_ready', lambda identity, root: seen.append(identity) or 'ok')
+    assert project_status.require_p3_source_ready(Path('/stage'), _identity()) is None
+    assert seen == [_identity()]
+    monkeypatch.setattr(github_run, 'read_github_source_ready',
+                        lambda identity, root: (_ for _ in ()).throw(github_run.GithubRunHeld('absent')))
+    with pytest.raises(project_status.ProjectStatusError):
+        project_status.require_p3_source_ready(Path('/stage'), _identity())

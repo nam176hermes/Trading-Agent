@@ -56,3 +56,25 @@ def test_transport_identity_round_trips_and_lanes_use_separate_locks():
     assert run_directory(identity) == Path('/run/trading-agent-p3/9-2')
     assert AuthorityStore('p3-authority', root=GITHUB_AUTHORITY_ROOT).path != STORE_ROOT/'p3-authority'
     assert not GITHUB_AUTHORITY_ROOT.is_relative_to(STORE_ROOT)
+
+
+def test_authorization_identity_resolves_github_run_authorization(monkeypatch):
+    # The official transport compares this with its request identity; a GITHUB
+    # RunAuthorization has no `.identity` (S7 run 900000000304 HELD on AttributeError).
+    from scripts.p3_lane import admitted_operation, authorization_identity, identity_from_transport, transport_identity
+    lane, path, source = _github_request(monkeypatch)
+    request, identity, _ = admitted_operation(path, source=source)
+    carried = transport_identity(identity, 'a' * 64, '00000000-0000-4000-8000-000000000001')
+    assert authorization_identity(request.authorization) == identity == identity_from_transport(carried)
+
+
+def test_transport_admission_compares_a_github_authorization_with_the_carried_identity(monkeypatch):
+    """The exact check the official transport runs (S7 run 900000000304), with a real GITHUB authorization."""
+    from scripts.p3_lane import admitted_operation, transport_identity
+    from scripts.p3_local_transport import TransportHeld, _require_operation_identity
+    lane, path, source = _github_request(monkeypatch)
+    request, identity, _ = admitted_operation(path, source=source)
+    carried = transport_identity(identity, 'a' * 64, '00000000-0000-4000-8000-000000000001')
+    _require_operation_identity(request.authorization, carried)
+    with pytest.raises(TransportHeld):
+        _require_operation_identity(request.authorization, {**carried, 'run_id': carried['run_id'] + 1})

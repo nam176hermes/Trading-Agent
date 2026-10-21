@@ -57,6 +57,25 @@ class GithubLane:
         monkeypatch.setattr(local_qualification, '_host_identity', lambda: HOST)
         self.research_inputs_sha256 = '0' * 64
         self.attest(operation)
+        # The controller's source-ready record (D-S7-02); consumers compare it with their own source.
+        from packages.alpha_lifecycle import github_run
+        monkeypatch.setattr(github_run, '_current_source', lambda root: self._source_dict())
+        self.publish_source_ready()
+
+    def _source_dict(self):
+        return self.source if isinstance(self.source, dict) else self.source.model_dump(mode='json')
+
+    def publish_source_ready(self, **changes):
+        value = dict(schema_version='p3-github-source-ready-v1', mode='GITHUB',
+            identity=dict(issuer_kind='GITHUB', issuer_identity='p3-authority', repository='nam176hermes/Trading-Agent',
+                          workflow_ref='p3-authority.yml', run_id=self.run_id, attempt=self.attempt),
+            source=self._source_dict(), project_status_sha256='9' * 64, observed_at=_z(datetime.now(UTC)),
+            authority=AUTHORITY)
+        value.update(changes)
+        self.documents[self.directory/'source-ready.json'] = _sealed(value)
+
+    def revoke_source_ready(self):
+        self.documents.pop(self.directory/'source-ready.json', None)
 
     def attest(self, operation, **changes):
         value = dict(schema_version='p3-github-run-attestation-v1', mode='GITHUB',

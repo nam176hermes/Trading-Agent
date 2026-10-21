@@ -758,6 +758,9 @@ def run_sql_fixture(source, *, progress=lambda: None, heartbeat=None, owned_root
         if local_identity_source_checks:
             from .p3_local_sql_fixture import check_local_identity
             local_checks = check_local_identity(sock,name,source)
+        elif session_holdout_source_checks:
+            from .p3_local_sql_fixture import upgrade_hosted_session_revision
+            upgrade_hosted_session_revision(sock,name)
         with psycopg.connect(host=str(sock),dbname=name,user='trading_owner') as owner:
             revision_row = owner.execute('SELECT version_num FROM public.alembic_version').fetchone()
             if revision_row is None:

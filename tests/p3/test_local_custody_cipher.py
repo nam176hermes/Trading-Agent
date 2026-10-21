@@ -102,3 +102,41 @@ def test_github_custody_reader_binds_attested_run_host_and_source(monkeypatch, f
         assert decrypted == []
     else:
         assert reader(object()) == b'plaintext' and len(decrypted) == 1
+
+
+def test_custody_materializer_produces_exact_holdout_and_buffer_segments(tmp_path):
+    import json
+    from datetime import date, timedelta
+    from packages.alpha_lifecycle.acquisition import acquire_day_receipt
+    from packages.alpha_lifecycle.data_view import seal_research_dataset
+    from packages.data_catalog.artifact_store import LocalArtifactStore
+    from packages.data_contracts import ArrowSchemaV1, DatasetPartitionManifestV3, PITQueryV1
+    from packages.engine_contracts.serialization import canonical_json_bytes
+    from scripts.prepare_p3_local_custody import main
+    from tests.p3.test_acquisition import FixtureTransport, _archive, _store
+    store=_store(tmp_path/'store')
+    base='https://data.binance.vision/data/spot/daily/klines/BTCUSDT/1d/'
+    refs=[]
+    for offset in range(366):
+        day=date(2025,9,1)+timedelta(days=offset)
+        filename,raw=_archive(day)
+        refs.append(acquire_day_receipt(day,FixtureTransport({base+filename:raw,
+            base+filename+'.CHECKSUM':f'{hashlib.sha256(raw).hexdigest()}  {filename}\n'.encode()}),
+            store).artifact_ref.model_dump_json())
+    acquisitions=tmp_path/'acquisitions.jsonl'
+    acquisitions.write_text('\n'.join(refs[:-1])+'\n')
+    with pytest.raises(ValueError,match='coverage'):
+        main(['materialize','--store',str(tmp_path/'store'),'--acquisitions',str(acquisitions),'--output',str(tmp_path/'short.json')])
+    acquisitions.write_text('\n'.join(refs)+'\n')
+    output=tmp_path/'segments.json'
+    main(['materialize','--store',str(tmp_path/'store'),'--acquisitions',str(acquisitions),'--output',str(output)])
+    segments=json.loads(output.read_bytes())
+    for name,segment,count in (('holdout','HOLDOUT',365),('buffer','BUFFER',1)):
+        item=segments[name]
+        dataset=seal_research_dataset(tuple(DatasetPartitionManifestV3.model_validate_json(canonical_json_bytes(p))
+            for p in item['partitions']),PITQueryV1.model_validate_json(canonical_json_bytes(item['query'])),
+            ArrowSchemaV1.model_validate_json(canonical_json_bytes(item['schema'])),LocalArtifactStore(tmp_path/'store'))
+        assert dataset.segment==segment and len(dataset.row_refs)==count
+    with pytest.raises(ValueError,match='new'):
+        main(['materialize','--store',str(tmp_path/'store'),'--acquisitions',str(acquisitions),'--output',str(output)])
+

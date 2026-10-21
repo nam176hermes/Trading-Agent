@@ -32,10 +32,20 @@ staged release interpreter) does the following:
    protected. It then publishes root-owned `0444`
    `/run/trading-agent-p3/<run>-<attempt>/github-run.json`. This file pins the digest
    of the reviewed research-input receipt.
-3. **Refresh and revocation.** It refreshes the attestation while the job runs and
-   deletes it on completion or cancellation.
+3. **Source readiness.** It derives the project status of the protected-main checkout
+   (`observe_source_ready`). It publishes root-owned
+   `/run/trading-agent-p3/<run>-<attempt>/source-ready.json` only when the checkout is the
+   run's head SHA, `HWC_SOURCE_READY` and `PRE_P3_READY` are PASS, and P3 development is
+   allowed. The host's `Primitives.source_ready` must be
+   `observe_source_ready(<protected-main checkout>, plan.head_sha)`. Staged role processes
+   cannot re-derive this status, so this record is the only HWC/PRE_P3 gate of the lane.
+4. **Refresh and revocation.** Every 60 s it re-authenticates the run and re-observes
+   source readiness. Any failure revokes the attestation. On completion or cancellation it
+   deletes both files.
 
-Worker-side consumers read only `github-run.json`; they never read `GITHUB_*`.
+Worker-side consumers read only `github-run.json` and `source-ready.json`; they never read
+`GITHUB_*`. A `source-ready.json` older than 120 s is HELD at every check, so a gate that
+drops mid-run stops the next stage.
 
 - **Admission points** (accept, enqueue, worker startup, next-stage install, custodian
   release) require an observation younger than 120 s.
@@ -74,6 +84,41 @@ Worker-side consumers read only `github-run.json`; they never read `GITHUB_*`.
   -j REJECT`). A refused connection attempt is recorded before the runner starts.
 - **Paths.** The runner, release, CAS, PG and outbox live under `/srv`, so no private
   home path reaches a receipt.
+
+## Host provisioning found by the S7 rehearsal
+
+The recorded-API rehearsal (FAKE runs `9000000xxx`) needed these host steps. None of them
+is created by the repository; the host controller performs them before admission.
+
+- **Issuer store.** `/etc/trading-agent-p3/github/authority/p3-authority` exists, root-owned
+  and `0755`, before the first authority request is published.
+- **Safety source.** For each run, `safety_source_root(identity)` under
+  `/var/lib/trading-agent-p3/github/<run>-<attempt>/safety` is created by root as the worker
+  UID with mode `0700`. The worker UID then writes `.mode` = `PAPER` and the first safety
+  snapshot and activation before the Job API starts. A stale activation from an earlier run
+  holds the worker with "protected runtime authority is unavailable".
+- **Observer token.** The transport runs as root and refuses a token file that root does not
+  own. Give it a root-owned `0400` copy of the worker's Job API token.
+- **Custody listener.** The custody socket is bound by root (owner custodian, group research,
+  mode `0660`), but `listen()` must happen in the custodian process after its UID change.
+  `SO_PEERCRED` records the credentials current at `listen()`, and the research side checks
+  the custodian UID.
+- **Holdout custody inputs.** As the custodian UID:
+  1. `scripts/acquire_p3_binance_daily.py --start 2025-09-01 --end 2026-09-01 --receipt-jsonl`
+     into the custodian store;
+  2. `scripts/prepare_p3_local_custody.py materialize` to write the holdout and buffer
+     segments;
+  3. merge those segments into the `prepare` configuration (lane `GITHUB`) and run
+     `prepare`.
+
+  Materialization stamps one ingestion time after every acquisition, and it waits until
+  the PIT cutoff has passed.
+- **Session budget.** The staging runtime authority lasts 60 minutes. The rehearsal session
+  (HOLDOUT, PARITY, PHASE_EXIT) took 48 minutes. Run the whole session inside one
+  authority window.
+- **v1 export.** The v1 export must run while `github-run.json` is present, that is,
+  before the controller revokes it at run end. Afterwards it fails with "protected GitHub
+  lane document is unavailable".
 
 ## Per operation
 

@@ -223,7 +223,7 @@ def test_run_prepares_host_before_image_and_passes_same_deadline(tmp_path, monke
     import time
     from types import SimpleNamespace
     from packages.alpha_lifecycle import authority
-    from scripts import p3_local_transport as transport, p3_local_host as host
+    from scripts import p3_lane, p3_local_transport as transport, p3_local_host as host
     from tests.p3.test_local_transport_fences import _run_request
     (tmp_path/'host-inputs.json').write_text('{}')
     events = []
@@ -244,8 +244,9 @@ def test_run_prepares_host_before_image_and_passes_same_deadline(tmp_path, monke
         assert str(path) == '/protected/op' and expected_source.model_dump() == source and operation == 'BASELINES'
         events.append('authorized-operation')
         return SimpleNamespace(authorization=SimpleNamespace(
-            expires_at=operation_expiry, identity=SimpleNamespace(model_dump=lambda **_:request['identity'])))
+            expires_at=operation_expiry, identity=p3_lane.identity_from_transport(request['identity'])))
     monkeypatch.setattr(authority, 'validate_request', authorize)
+    monkeypatch.setattr(p3_lane, 'authorization_identity', lambda authorization: authorization.identity)
     monkeypatch.setattr(transport, '_prepare_image', lambda *_:(events.append('image'),dict(
         descriptor={}, inventory={}, summary={}))[1])
     def launch(*args, **kwargs):
