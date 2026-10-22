@@ -6,9 +6,10 @@ at their named seams; every byte, listing and binding check runs for real.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -181,8 +182,11 @@ class Api:
 
 
 @pytest.fixture
-def registration(custody, protected, tmp_path):
-    request = _request(issued_at=_z(NOW - timedelta(hours=2)), expires_at=_z(NOW + timedelta(hours=3)))
+def registration(custody, protected, tmp_path, monkeypatch):
+    monkeypatch.setattr('scripts.p3_github_research.RECORD_PATH', tmp_path/'research-batches'/'0001.json')
+    (tmp_path/'research-batches').mkdir()
+    request = _request(issued_at=_z(NOW - timedelta(hours=2)), expires_at=_z(NOW + timedelta(hours=3)),
+                       integration_receipt_ref=custody.graph.integration_ref)
     protected[Path('/etc/trading-agent-p3/github/research-batch-request.json')] = request
     protected[Path('/etc/trading-agent-p3/github/research-batch-request-review.json')] = _review(
         [request['digest']], issued_at=_z(NOW - timedelta(hours=3)))
@@ -195,7 +199,7 @@ def registration(custody, protected, tmp_path):
     state = dict(api=_completed(run__run_started_at=_z(NOW - timedelta(minutes=110)),
                                 p3__completed_at=_z(NOW - timedelta(minutes=30))),
                  subject=custody.graph.commitment_ref['content_sha256'],
-                 attested=NOW - timedelta(minutes=25), pin=_digest(request))
+                 attested=NOW - timedelta(minutes=25), pin=_digest(request), sealed=[], idle=lambda: None)
 
     def register(now=NOW - timedelta(minutes=20)):
         from scripts.p3_github_research import register_research_batch
@@ -203,15 +207,18 @@ def registration(custody, protected, tmp_path):
             Api(state['api']), head_sha=SOURCE['commit_sha'], actor='nam176hermes', run_id=RUN, attempt=ATTEMPT,
             request_pin=state['pin'], outbox_root=outbox, now=now,
             verify=lambda path, head: (state['subject'], state['attested']),
-            seal=lambda roots: None, backup_identity=lambda path: (1, 2, 3, 4),
-            publish=lambda path, raw: published.setdefault(path, raw))
+            seal=state['sealed'].append, backup_identity=lambda path: (1, 2, 3, 4),
+            publish=lambda path, raw: published.setdefault(path, raw), idle=lambda: state['idle']())
     return register, state, published, custody, outbox
 
 
 def test_registration_writes_one_record_binding_run_custody_attestation_and_request(registration):
-    from packages.alpha_lifecycle.github_research import RECORD_PATH, GithubResearchBatchRecord
+    from packages.alpha_lifecycle.github_research import GithubResearchBatchRecord
+    from scripts.p3_github_research import RECORD_PATH
     register, state, published, custody, _ = registration
+    state['attested'] = (NOW - timedelta(minutes=25)).astimezone(timezone(timedelta(hours=-4)))  # gh local time
     record = register()
+    assert record.attestation_timestamp == NOW - timedelta(minutes=25) and state['sealed']
     assert isinstance(record, GithubResearchBatchRecord) and list(published) == [RECORD_PATH]
     assert record.attestation_subject_sha256 == custody.graph.commitment_ref['content_sha256']
     assert record.request_sha256 == state['pin'] and record.backup_root_identity == (1, 2, 3, 4)
@@ -220,8 +227,9 @@ def test_registration_writes_one_record_binding_run_custody_attestation_and_requ
 
 
 @pytest.mark.parametrize('fault', ['attest_job', 'run_failed', 'subject', 'attested_early', 'request_pin',
-                                   'request_expired_at_start', 'outbox_changed', 'extra_blob', 'started_late'])
-def test_registration_holds_on_any_unverified_precondition(registration, fault):
+                                   'request_expired_at_start', 'outbox_changed', 'extra_blob', 'started_late',
+                                   'hard_link', 'producer_running', 'registry_present', 'request_policy'])
+def test_registration_holds_on_any_unverified_precondition(registration, protected, fault):
     from packages.alpha_lifecycle.github_run import GithubRunHeld
     register, state, published, custody, outbox = registration
     api = state['api']
@@ -244,6 +252,40 @@ def test_registration_holds_on_any_unverified_precondition(registration, fault):
         custody.write('work', b'{"stray":1}')
     elif fault == 'started_late':
         api[attempt]['run_started_at'] = _z(NOW - timedelta(minutes=49))
+    elif fault == 'hard_link':
+        blob = next(custody.roots['backup'].iterdir())
+        os.link(blob, custody.roots['work'].parent/'outside')
+    elif fault == 'producer_running':
+        def running():
+            raise GithubRunHeld('producer still running')
+        state['idle'] = running
+    elif fault == 'request_policy':  # a reviewed request field the batch does not follow
+        request = _request(issued_at=_z(NOW - timedelta(hours=2)), expires_at=_z(NOW + timedelta(hours=3)),
+                       integration_receipt_ref=custody.graph.integration_ref,
+                           policy_digest='0' * 64)
+        protected[Path('/etc/trading-agent-p3/github/research-batch-request.json')] = request
+        protected[Path('/etc/trading-agent-p3/github/research-batch-request-review.json')] = _review(
+            [request['digest']], issued_at=_z(NOW - timedelta(hours=3)))
+        state['pin'] = _digest(request)
+    elif fault == 'registry_present':
+        from scripts.p3_github_research import RECORD_PATH
+        RECORD_PATH.write_text('{}')
     with pytest.raises((GithubRunHeld, ValueError)):
         register()
-    assert not published
+    assert not published and not state['sealed']  # nothing irreversible happens before every check holds
+
+
+def test_sealing_makes_custody_root_owned_and_read_only(custody, monkeypatch):
+    from scripts.p3_github_research import seal_research_custody
+    owners = {}
+    monkeypatch.setattr(os, 'chown', lambda path, uid, gid, **_: owners.__setitem__(Path(path), (uid, gid)))
+    custody.write('work', b'{"w":1}')
+    custody.write('backup', b'{"b":1}')
+    seal_research_custody(custody.roots)
+    for key, directory_mode, file_mode in (('work', 0o555, 0o444), ('backup', 0o500, 0o400)):
+        root = custody.roots[key]
+        assert owners[root] == (0, 0) and root.stat().st_mode & 0o7777 == directory_mode
+        for path in root.iterdir():
+            assert owners[path] == (0, 0) and path.stat().st_mode & 0o7777 == file_mode
+    for key in ('work', 'backup'):
+        os.chmod(custody.roots[key], 0o755)  # let tmp_path cleanup proceed

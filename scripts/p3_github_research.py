@@ -14,7 +14,7 @@ custody, never the producer's own output.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import hashlib
 import json
 import os
@@ -179,6 +179,8 @@ def _entries(root: Path) -> set[str]:
         for entry in entries:
             if not entry.is_file(follow_symlinks=False) or not entry.name.endswith('.blob'):
                 raise GithubRunHeld('research custody holds a non-blob entry')
+            if entry.stat(follow_symlinks=False).st_nlink != 1:  # no second name outside custody
+                raise GithubRunHeld('research custody object has another hard link')
             names.add(entry.name)
     return names
 
@@ -242,13 +244,20 @@ def parse_attestation(verified) -> tuple[str, datetime]:
         raise GithubRunHeld('research attestation result has no single subject and Tlog time') from error
     if moment.tzinfo is None or not isinstance(digest, str):
         raise GithubRunHeld('research attestation time or subject is invalid')
-    return digest, moment
+    return digest, moment.astimezone(UTC)  # gh reports the Tlog time in the host's local offset
+
+
+def producer_idle() -> None:
+    """No producer process may still hold custody files open when root observes and seals them."""
+    result = subprocess.run(['pgrep', '-u', PRODUCER_USER], capture_output=True, timeout=10, check=False)
+    if result.returncode != 1:
+        raise GithubRunHeld('a research producer process is still running or pgrep failed')
 
 
 def register_research_batch(api, *, head_sha: str, actor: str, run_id: int, attempt: int, request_pin: str,
                             outbox_root: Path, now: datetime, verify=verify_commitment_attestation,
                             observe=observe_custody, seal=seal_research_custody, backup_identity=None,
-                            publish=None) -> GithubResearchBatchRecord:
+                            publish=None, idle=producer_idle) -> GithubResearchBatchRecord:
     """Register the completed producer run's batch once; every precondition failure is HELD."""
     from packages.alpha_lifecycle.contracts.data import PITProof
     from packages.alpha_lifecycle.contracts.execution import InputSet
@@ -286,20 +295,15 @@ def register_research_batch(api, *, head_sha: str, actor: str, run_id: int, atte
     request, request_sha256 = _protected(REQUEST_PATH)
     review, review_sha256 = _protected(REQUEST_REVIEW_PATH)
     # Validity at the attempt's API start time: the request was current when the run began.
-    validate_research_batch_request(request, request_sha256, review, source=commitment.source,
-                                    pin_sha256=request_pin, at=started)
+    reviewed = validate_research_batch_request(request, request_sha256, review, source=commitment.source,
+                                               pin_sha256=request_pin, at=started)
+    if (reviewed.policy_digest != commitment.policy_digest
+            or reviewed.integration_receipt_ref != inputs.integration_receipt_ref):
+        raise GithubRunHeld('research batch does not follow its reviewed request')
+    idle()
     closure, inventory_ref = observe(roots, proposal.input_set_ref)
     if inventory_ref != proposal.backup_inventory_ref:
         raise GithubRunHeld('research backup inventory differs from the proposal')
-    seal(roots)
-    evidence = roots['evidence']
-    evidence.mkdir(mode=0o755)
-    for ref in (proposal.input_set_ref, inputs.environment_ref, inputs.pit_proof_ref, pit.no_future_suite_ref,
-                proposal.commitment_ref, proposal.backup_receipt_ref):
-        _publish(evidence/ref.locator, reader.read_bytes(ref), mode=0o444)
-    os.chmod(evidence, 0o555)
-    if backup_identity is None:
-        from packages.alpha_lifecycle.local_research import protected_backup_identity as backup_identity
     value = dict(schema_version='p3-github-research-batch-record-v1',
                  identity=proposal.identity.model_dump(mode='json'), head_sha=head_sha,
                  request_sha256=request_sha256, request_review_sha256=review_sha256,
@@ -311,27 +315,42 @@ def register_research_batch(api, *, head_sha: str, actor: str, run_id: int, atte
                  environment_ref=inputs.environment_ref.model_dump(mode='json'),
                  pit_proof_ref=inputs.pit_proof_ref.model_dump(mode='json'),
                  roots={key: str(path) for key, path in roots.items()},
-                 backup_root_identity=list(backup_identity(roots['backup'])),
+                 backup_root_identity=[0, 0, 0, 0],
                  attestation_subject_sha256=subject, attestation_timestamp=_utc(attested_at),
                  run_started_at=_utc(started), job_completed_at=_utc(finished), registered_at=_utc(now),
                  authority=dict(broker=False, live=False, network=False, production=False))
-    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-    record = GithubResearchBatchRecord.model_validate_json(canonical_json_bytes(value))
+
+    def build():
+        document = dict(value)
+        document['digest'] = hashlib.sha256(canonical_json_bytes(document)).hexdigest()
+        return GithubResearchBatchRecord.model_validate_json(canonical_json_bytes(document))
+    build()  # every record field is valid before custody is sealed (sealing is irreversible)
+    if any(RECORD_PATH.parent.glob('*.json')):
+        raise GithubRunHeld('a research batch is already registered; only the first batch exists')
+    seal(roots)
+    evidence = roots['evidence']
+    evidence.mkdir(mode=0o755)
+    for ref in (proposal.input_set_ref, inputs.environment_ref, inputs.pit_proof_ref, pit.no_future_suite_ref,
+                proposal.commitment_ref, proposal.backup_receipt_ref):
+        _publish(evidence/ref.locator, reader.read_bytes(ref), mode=0o444)
+    os.chmod(evidence, 0o555)
+    if backup_identity is None:
+        from packages.alpha_lifecycle.local_research import protected_backup_identity as backup_identity
+    value['backup_root_identity'] = list(backup_identity(roots['backup']))
+    record = build()
     if publish is None:
         from scripts.p3_local_controller import publish_protected
 
         def publish(path, raw):
             publish_protected(path, raw, once=True)
-    if any(RECORD_PATH.parent.glob('*.json')):
-        raise GithubRunHeld('a research batch is already registered; only the first batch exists')
     publish(RECORD_PATH, canonical_json_bytes(record) + b'\n')
     return record
 
 
 def _utc(moment: datetime) -> str:
-    return moment.isoformat().replace('+00:00', 'Z')
+    return moment.astimezone(UTC).isoformat().replace('+00:00', 'Z')
 
 
 __all__ = ['COMMITMENT_NAME', 'GithubResearchProposal', 'PRODUCER_USER', 'RootCasReader', 'create_research_custody',
-           'observe_custody', 'parse_attestation', 'register_research_batch', 'research_closure', 'research_files',
+           'observe_custody', 'parse_attestation', 'producer_idle', 'register_research_batch', 'research_closure', 'research_files',
            'seal_research_custody', 'stage_integration_receipt', 'verify_commitment_attestation']
