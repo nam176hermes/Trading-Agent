@@ -41,7 +41,8 @@ def _write_new(path, raw):
 
 def github_v1(ref,*,repository,store,run_id,attempt):
     """v1 bytes for the tracked receipt, from this run's protected attestation and inputs."""
-    from packages.alpha_lifecycle.github_run import read_github_research_inputs,read_github_run
+    from packages.alpha_lifecycle.github_research import read_github_research_inputs
+    from packages.alpha_lifecycle.github_run import read_github_run
     run,_=read_github_run(run_id,attempt,admission=False)
     receipt=validate_phase_exit_receipt(ref,repository=repository,store=store)
     research=read_github_research_inputs(run,source=receipt.source,input_set_ref=receipt.input_ref)

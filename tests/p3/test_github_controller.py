@@ -185,9 +185,21 @@ def test_status_document_accepts_only_closed_terminal_outcomes():
     run = authenticate()
     assert json.loads(status_document('p3-holdout-primary-v1', run,
         dict(outcome='SUCCEEDED', phase_exit='PASS')))['phase_exit'] == 'PASS'
-    for result in (dict(outcome='MAYBE'), dict(outcome='SUCCEEDED', phase_exit='FAIL')):
+    for result in (dict(outcome='MAYBE'), dict(outcome='SUCCEEDED', phase_exit='FAIL'),
+                   dict(outcome='SUCCEEDED', research='MAYBE')):
         with pytest.raises(ControllerHeld):
             status_document('p3-baselines-v1', run, result)
+
+
+def test_status_reports_research_pass_only_for_a_succeeded_producer_run():
+    from scripts.p3_github_controller import status_document
+    from tests.p3.test_github_run import authenticate
+    run = authenticate()
+    def research(**result):
+        return json.loads(status_document('p3-research-inputs-v1', run, result))['research']
+    assert research(outcome='SUCCEEDED', research='PASS') == 'PASS'
+    assert research(outcome='FAILED', research='PASS') == 'NONE'
+    assert research(outcome='SUCCEEDED') == 'NONE'
 
 
 def test_refresh_failure_revokes_the_attestation_and_holds_the_result(monkeypatch):

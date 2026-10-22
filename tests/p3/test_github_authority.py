@@ -33,7 +33,7 @@ def _intent(input_set_ref):
 
 @pytest.fixture
 def lane(protected, monkeypatch):
-    """A fresh API-attested run 7/1 for p3-baselines-v1 with reviewed OFFICIAL inputs."""
+    """A fresh API-attested run 7/1 for p3-baselines-v1 with reviewed inputs (REHEARSAL: OFFICIAL needs the research batch registry)."""
     from packages.alpha_lifecycle import authority
     monkeypatch.setattr(authority, 'datetime', _Clock)
     store = Store()
@@ -46,6 +46,15 @@ def lane(protected, monkeypatch):
         _publish_run(protected, research_inputs_sha256=pin, **changes)
     publish()
     return protected, publish
+
+
+def _pin_official(protected):
+    """A well-formed OFFICIAL v2 receipt, so a FAKE run is refused for its campaign, not its shape."""
+    store = Store()
+    inputs = research_inputs(store, campaign='OFFICIAL', batch_record_sha256='7' * 64)
+    protected[Path('/etc/trading-agent-p3/github/research-inputs.json')] = inputs
+    protected[Path('/etc/trading-agent-p3/github/research-inputs-review.json')] = store.review
+    return hashlib.sha256(canonical_json_bytes(inputs) + b'\n').hexdigest()
 
 
 class _Clock:
@@ -111,7 +120,7 @@ def test_github_request_faults_are_held(lane, fault):
     elif fault == 'inputs':
         authorization = _authorization(input_set_ref=_ref('9' * 64))
     elif fault == 'fake_official':
-        publish(mode='FAKE')
+        _publish_run(protected, research_inputs_sha256=_pin_official(protected), mode='FAKE')
     with pytest.raises(AuthorityHeld):
         _validate(_request(protected, authorization, path=path))
 
@@ -198,11 +207,12 @@ def _fixture_request(protected):
 def test_fake_run_is_held_without_a_pinned_rehearsal_receipt_even_without_inputs(lane):
     """PR77-01: a recorded-API run must never admit anything an OFFICIAL campaign could cite."""
     from packages.alpha_lifecycle.authority import AuthorityHeld
-    protected, publish = lane
-    publish(operation='p3-integration-fixture-v1', mode='FAKE')
+    protected, _ = lane
+    pin = _pin_official(protected)
+    _publish_run(protected, research_inputs_sha256=pin, operation='p3-integration-fixture-v1', mode='FAKE')
     with pytest.raises(AuthorityHeld):
         _validate(_fixture_request(protected), 'PARITY')
-    publish(operation='p3-holdout-primary-v1', mode='FAKE')
+    _publish_run(protected, research_inputs_sha256=pin, operation='p3-holdout-primary-v1', mode='FAKE')
     with pytest.raises(AuthorityHeld):
         _issuer('PARITY', protected, session=True)
 

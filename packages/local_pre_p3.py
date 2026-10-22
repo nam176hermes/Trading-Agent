@@ -100,6 +100,23 @@ def _validate_local_gate_proof(receipt: QualificationReceipt, *, root: Path, sto
         raise ValueError('local foundation proof has unexpected evidence')
 
 
+def build_environment_identity(root: Path, *, sandbox_policy_digest: str):
+    """The runtime facts `validate_local_environment` checks, read from this source and host."""
+    from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+    import sys
+    import platform
+
+    if sys.version_info[:2] != (3,11) or sys.platform != 'linux' or platform.machine() != 'x86_64':
+        raise ValueError('P3 environment identity requires CPython 3.11 on linux-x86_64')
+    value = dict(schema_version='p3-environment-identity-v1', python_version='3.11',
+        root_lock_digest=hashlib.sha256((root/'uv.lock').read_bytes()).hexdigest(),
+        native_manifest_digest=P1_REAL_BACKTEST_POLICY.closure_sha256,
+        sandbox_policy_digest=sandbox_policy_digest, platform='linux-x86_64', decimal_precision=50)
+    value['digest'] = hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    return EnvironmentIdentity.model_validate_json(canonical_json_bytes(value))
+
+
 def validate_local_environment(root: Path, environment_ref, *, store) -> None:
     from packages.alpha_lifecycle.contracts.execution import EnvironmentIdentity
     from packages.alpha_lifecycle.sandbox_policy import SANDBOX_PROFILE_SHA256

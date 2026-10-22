@@ -24,6 +24,7 @@ import json
 import os
 import stat
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,6 +133,26 @@ def _publish(path: Path, payload: bytes, mode: int = 0o444) -> None:
         staging.unlink(missing_ok=True)
         raise
     os.replace(staging, path)
+    _fsync_directory(path.parent)
+
+
+def _publish_once(path: Path, payload: bytes, mode: int = 0o444) -> None:
+    """Create-only publication: a unique staging file, then one atomic hard link.
+
+    `os.link` fails if `path` exists, so two concurrent writers cannot both succeed and no
+    existing record is ever replaced; the stat-then-rename of `_publish` cannot promise that.
+    """
+    staging = path.with_name(f'.{path.name}.{uuid.uuid4().hex}')
+    fd = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            os.fchmod(handle.fileno(), mode)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(staging, path, follow_symlinks=False)
+    finally:
+        staging.unlink(missing_ok=True)
     _fsync_directory(path.parent)
 
 

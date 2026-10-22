@@ -21,6 +21,7 @@ on:
           - p3-holdout-primary-v1
           - p3-native-parity-v1
           - p3-phase-exit-v1
+          - p3-research-inputs-v1
 
 permissions:
   contents: read
@@ -35,9 +36,10 @@ jobs:
   # admits and executes the operation, and publishes only public-safe results to the outbox.
   p3:
     runs-on: [self-hosted, p3-authority, 'p3-run-${{ github.run_id }}-${{ github.run_attempt }}']
-    timeout-minutes: ${{ inputs.operation == 'p3-holdout-primary-v1' && 180 || 60 }}
+    timeout-minutes: ${{ inputs.operation == 'p3-holdout-primary-v1' && 180 || inputs.operation == 'p3-research-inputs-v1' && 150 || 60 }}
     outputs:
       phase_exit: ${{ steps.result.outputs.phase_exit }}
+      research: ${{ steps.result.outputs.research }}
     steps:
       - name: Guard protected-main dispatch
         run: |
@@ -60,7 +62,7 @@ jobs:
           until test -f "$outbox/status.json"; do sleep 15; done
           for name in $(ls -A -- "$outbox"); do
             case "$name" in
-              status.json|p3-phase-exit-v2.json|p3-phase-exit-v1.json) cp -- "$outbox/$name" "$destination/$name" ;;
+              status.json|p3-phase-exit-v2.json|p3-phase-exit-v1.json|p3-research-commitment-v1.json) cp -- "$outbox/$name" "$destination/$name" ;;
               *) echo "unexpected outbox file" >&2; exit 65 ;;
             esac
           done
@@ -74,6 +76,10 @@ jobs:
           if v1 != (status.get('phase_exit') == 'PASS'):
               raise SystemExit('phase exit receipt and status differ')
           print('phase_exit=' + ('PASS' if v1 else 'NONE'))
+          research = (root / 'p3-research-commitment-v1.json').exists()
+          if research != (status.get('research') == 'PASS'):
+              raise SystemExit('research commitment and status differ')
+          print('research=' + ('PASS' if research else 'NONE'))
           if status.get('outcome') != 'SUCCEEDED':
               raise SystemExit('P3 operation did not succeed: ' + str(status.get('outcome')))
           PY
@@ -125,3 +131,45 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: ${{ runner.temp }}/p3/p3-phase-exit-v1.json
+
+  attest-research-inputs:
+    name: attest-research-inputs
+    if: inputs.operation == 'p3-research-inputs-v1' && needs.p3.outputs.research == 'PASS'
+    needs: p3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download the research batch commitment
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.operation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/p3
+
+      - name: Bind the commitment to this protected-main producer run
+        run: |
+          set -euo pipefail
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          /usr/bin/python3 -I - "$RUNNER_TEMP/p3/p3-research-commitment-v1.json" <<'PY'
+          import json, os, sys
+          commitment = json.loads(open(sys.argv[1], 'rb').read())
+          expected = dict(schema_version='p3-research-batch-commitment-v2', status='PASS', batch_ordinal=1,
+                          predecessor_commitment_content_sha256=None,
+                          producer_repository='nam176hermes/Trading-Agent',
+                          producer_workflow_ref='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main',
+                          producer_run_id=int(os.environ['GITHUB_RUN_ID']),
+                          producer_attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          if any(commitment.get(key) != value for key, value in expected.items()):
+              raise SystemExit('research commitment does not bind this run')
+          if commitment['source']['commit_sha'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('research commitment source differs from this run')
+          PY
+
+      - name: Attest the research batch commitment
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/p3/p3-research-commitment-v1.json

@@ -35,7 +35,8 @@ from packages.alpha_lifecycle.github_run import (  # noqa: E402
 from packages.engine_contracts.serialization import canonical_json_bytes  # noqa: E402
 
 API = 'https://api.github.com'
-OUTBOX_NAMES = frozenset({'status.json', 'p3-phase-exit-v2.json', 'p3-phase-exit-v1.json'})
+OUTBOX_NAMES = frozenset({'status.json', 'p3-phase-exit-v2.json', 'p3-phase-exit-v1.json',
+                          'p3-research-commitment-v1.json'})
 REFRESH_SECONDS = 60
 _HEX40 = r'^[0-9a-f]{40}$'
 
@@ -270,10 +271,14 @@ def write_outbox(plan: ControllerPlan, primitives: Primitives, run_id: int, atte
 def status_document(operation: str, run: GithubRunAttestation, result: dict[str, Any]) -> bytes:
     outcome = result.get('outcome')
     phase_exit = result.get('phase_exit', 'NONE')
-    if outcome not in {'SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED', 'HELD'} or phase_exit not in {'PASS', 'NONE'}:
+    # The attest-research-inputs job runs only for a SUCCEEDED producer run with its commitment file.
+    research = result.get('research', 'NONE') if outcome == 'SUCCEEDED' else 'NONE'
+    if (outcome not in {'SUCCEEDED', 'FAILED', 'BLOCKED', 'CANCELLED', 'HELD'} or phase_exit not in {'PASS', 'NONE'}
+            or research not in {'PASS', 'NONE'}):
         raise ControllerHeld('operation result is not a closed terminal outcome')
     value = dict(schema_version='p3-github-run-status-v1', operation=operation, run_id=run.identity.run_id,
         attempt=run.identity.attempt, source_commit=run.head_sha, outcome=outcome, phase_exit=phase_exit,
+        research=research,
         job_ids=list(result.get('job_ids', ())), digests=dict(result.get('digests', {})),
         authority=dict(broker=False, live=False, network=False, production=False))
     return canonical_json_bytes(value) + b'\n'
@@ -313,7 +318,7 @@ def _admit_and_execute(api, plan, primitives, run, operation, refresher) -> dict
         result = dict(result, outcome='HELD')
     # Phase receipts leave the host only with a SUCCEEDED, still-attested operation.
     if result.get('outcome') != 'SUCCEEDED':
-        result = dict(result, files={}, phase_exit='NONE')
+        result = dict(result, files={}, phase_exit='NONE', research='NONE')
     files = {name: value for name, value in result.get('files', {}).items()}
     files['status.json'] = status_document(operation, run, result)
     write_outbox(plan, primitives, run_id, attempt, files)

@@ -431,3 +431,48 @@ def test_local_commitment_consumes_matching_local_backup(inputs, fault):
         result = validate_research_batch_commitment(ref, source=source, policy_digest='5'*64,
             dataset_ref=dataset_ref, dataset=dataset, store=store)
         assert str(result.identity.run_id) == _LOCAL_IDENTITY['run_id']
+
+
+_AUTHORITY_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main'
+
+
+def _v2(payload, schema):
+    value={k:v for k,v in payload.items() if k!='digest'}
+    return _sealed(**dict(value,schema_version=schema,producer_workflow_ref=_AUTHORITY_WORKFLOW_REF))
+
+
+def test_github_v2_binds_the_protected_authority_workflow_and_leaves_v1_frozen():
+    """v2 names the existing p3-authority.yml producer operation; v1 bytes never move."""
+    from packages.alpha_lifecycle.research_custody import (
+        P3ResearchBackupReceiptV2, P3ResearchBatchCommitmentV2, parse_research_backup_receipt,
+        parse_research_batch_commitment)
+    backup=_v2(_github_backup_payload(),'p3-research-backup-receipt-v2')
+    assert isinstance(parse_research_backup_receipt(canonical_json_bytes(backup)),P3ResearchBackupReceiptV2)
+    commitment=_v2(_github_commitment_payload(),'p3-research-batch-commitment-v2')
+    assert isinstance(parse_research_batch_commitment(canonical_json_bytes(commitment)),P3ResearchBatchCommitmentV2)
+    for schema,payload in (('p3-research-backup-receipt-v2',_github_backup_payload()),
+                           ('p3-research-batch-commitment-v2',_github_commitment_payload())):
+        stale=_sealed(**{k:v for k,v in dict(payload,schema_version=schema).items() if k!='digest'})
+        with pytest.raises(ValueError):
+            (parse_research_backup_receipt if 'backup' in schema else parse_research_batch_commitment)(
+                canonical_json_bytes(stale))
+    test_github_v1_canonical_bytes_and_digest_are_unchanged()
+    test_github_v1_commitment_canonical_bytes_and_digest_are_unchanged()
+
+
+@pytest.mark.parametrize('fault',[None,'v1_backup','run'])
+def test_github_v2_commitment_requires_a_v2_backup_of_the_same_run(inputs,fault):
+    from packages.alpha_lifecycle.research_custody import validate_research_batch_commitment
+    store,retain,source,query,dataset,dataset_ref,backup,value=inputs
+    backup_v2=backup if fault=='v1_backup' else _v2(dict(backup,producer_run_id=2 if fault=='run' else 1),
+                                                      'p3-research-backup-receipt-v2')
+    commitment=_v2(dict(value,backup_receipt_ref=retain(backup_v2)),'p3-research-batch-commitment-v2')
+    ref=retain(commitment)
+    def run():
+        return validate_research_batch_commitment(ref,source=source,policy_digest='5'*64,
+            dataset_ref=dataset_ref,dataset=dataset,store=store)
+    if fault is None:
+        assert run().schema_version=='p3-research-batch-commitment-v2'
+    else:
+        with pytest.raises(ValueError):
+            run()

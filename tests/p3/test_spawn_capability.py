@@ -508,6 +508,7 @@ print('projected official owners imported')
 # SQL fixtures), never by the sandboxed driver. A new entry needs the same argument, not just a listing.
 _HOST_ONLY_PROJECTION_IMPORTS = frozenset({
     ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.github_run'),
+    ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.github_research'),
     ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.local_qualification'),
     ('packages/alpha_lifecycle/authority.py', 'packages.alpha_lifecycle.local_research'),
     ('packages/alpha_lifecycle/authority.py', 'packages.local_pre_p3'),
