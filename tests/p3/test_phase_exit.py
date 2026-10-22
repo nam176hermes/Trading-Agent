@@ -668,14 +668,14 @@ def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,
 def test_exporter_v1_reads_the_protected_run_and_inputs_itself(monkeypatch):
     """The v1 path takes no caller-supplied input binding (F-01)."""
     from types import SimpleNamespace
-    from packages.alpha_lifecycle import github_run
+    from packages.alpha_lifecycle import github_research, github_run
     from scripts import export_p3_phase_exit as exporter
     run=SimpleNamespace(name='run')
     receipt=SimpleNamespace(source='source',input_ref='input')
     calls=[]
     monkeypatch.setattr(github_run,'read_github_run',lambda r,a,admission:calls.append(('run',r,a,admission)) or (run,'d'))
     monkeypatch.setattr(exporter,'validate_phase_exit_receipt',lambda ref,**k:receipt)
-    monkeypatch.setattr(github_run,'read_github_research_inputs',
+    monkeypatch.setattr(github_research,'read_github_research_inputs',
         lambda value,source,input_set_ref:calls.append(('inputs',value,source,input_set_ref)) or 'research')
     monkeypatch.setattr(exporter,'phase_exit_v1',lambda ref,**k:calls.append(('v1',k['run'],k['research'])) or {'v1':True})
     raw=exporter.github_v1('ref',repository=None,store=None,run_id=41,attempt=2)

@@ -54,6 +54,19 @@ class P3ResearchBackupReceipt(_BackupReceipt):
     producer_attempt: Annotated[int, Field(ge=1)]
 
 
+# The GITHUB producer is the protected p3-authority.yml operation `p3-research-inputs-v1`.
+AUTHORITY_WORKFLOW_REF='nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main'
+
+
+class P3ResearchBackupReceiptV2(_BackupReceipt):
+    """GITHUB v2 lane: produced inside an authenticated p3-authority.yml run."""
+    schema_version: Literal['p3-research-backup-receipt-v2']
+    producer_repository: Literal['nam176hermes/Trading-Agent']
+    producer_workflow_ref: Literal['nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main']
+    producer_run_id: Annotated[int, Field(ge=1)]
+    producer_attempt: Annotated[int, Field(ge=1)]
+
+
 class P3LocalResearchBackupReceipt(_BackupReceipt):
     """LOCAL lane; carries LocalRunIdentity and never GitHub producer provenance."""
     schema_version: Literal['p3-local-research-backup-receipt-v1']
@@ -101,6 +114,15 @@ class P3ResearchBatchCommitment(_BatchCommitment):
     producer_attempt: Annotated[int, Field(ge=1)]
 
 
+class P3ResearchBatchCommitmentV2(_BatchCommitment):
+    """GITHUB v2 lane: produced inside an authenticated p3-authority.yml run."""
+    schema_version: Literal['p3-research-batch-commitment-v2']
+    producer_repository: Literal['nam176hermes/Trading-Agent']
+    producer_workflow_ref: Literal['nam176hermes/Trading-Agent/.github/workflows/p3-authority.yml@refs/heads/main']
+    producer_run_id: Annotated[int, Field(ge=1)]
+    producer_attempt: Annotated[int, Field(ge=1)]
+
+
 class P3LocalResearchBatchCommitment(_BatchCommitment):
     """LOCAL lane; carries LocalRunIdentity and never GitHub producer provenance."""
     schema_version: Literal['p3-local-research-batch-commitment-v1']
@@ -108,9 +130,14 @@ class P3LocalResearchBatchCommitment(_BatchCommitment):
 
 
 _BACKUP_LANES={'p3-research-backup-receipt-v1':P3ResearchBackupReceipt,
+    'p3-research-backup-receipt-v2':P3ResearchBackupReceiptV2,
     'p3-local-research-backup-receipt-v1':P3LocalResearchBackupReceipt}
 _COMMITMENT_LANES={'p3-research-batch-commitment-v1':P3ResearchBatchCommitment,
+    'p3-research-batch-commitment-v2':P3ResearchBatchCommitmentV2,
     'p3-local-research-batch-commitment-v1':P3LocalResearchBatchCommitment}
+# Each GITHUB commitment schema consumes only the backup schema of the same producer workflow.
+_GITHUB_BACKUP={P3ResearchBatchCommitment:P3ResearchBackupReceipt,
+    P3ResearchBatchCommitmentV2:P3ResearchBackupReceiptV2}
 
 
 def _parse_lane(raw: bytes, lanes: Mapping[str, type[_ResearchReceipt]]):
@@ -140,13 +167,13 @@ def parse_research_batch_commitment(raw: bytes):
 
 def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIdentity,
     policy_digest: str, dataset_ref: ArtifactRefV1, dataset: DatasetEvidence,
-    store: ArtifactStore) -> P3ResearchBatchCommitment | P3LocalResearchBatchCommitment:
+    store: ArtifactStore) -> P3ResearchBatchCommitment | P3ResearchBatchCommitmentV2 | P3LocalResearchBatchCommitment:
     """Verify retained structure only; never infer authentic custody from hashes."""
     _reference(ref,65536)
     _reference(dataset_ref,2097152)
     reader=_ReadBudget(store)
     commitment=_read(reader,ref,TypeAdapter(Annotated[
-        P3ResearchBatchCommitment | P3LocalResearchBatchCommitment,
+        P3ResearchBatchCommitment | P3ResearchBatchCommitmentV2 | P3LocalResearchBatchCommitment,
         Field(discriminator='schema_version')]))
     dataset=DatasetEvidence.model_validate(dataset)
     if _read(reader,dataset_ref,DatasetEvidence)!=dataset:
@@ -175,12 +202,12 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
         or dataset.observed_cutoff!=commitment.completed_at):
         raise ValueError('research commitment source, policy or fixed dataset differs')
     backup=_read(reader,commitment.backup_receipt_ref,TypeAdapter(Annotated[
-        P3ResearchBackupReceipt | P3LocalResearchBackupReceipt,
+        P3ResearchBackupReceipt | P3ResearchBackupReceiptV2 | P3LocalResearchBackupReceipt,
         Field(discriminator='schema_version')]))
     if isinstance(commitment,P3LocalResearchBatchCommitment):
         if not isinstance(backup,P3LocalResearchBackupReceipt) or backup.identity!=commitment.identity:
             raise ValueError('research backup lane or LOCAL producer differs')
-    elif (not isinstance(backup,P3ResearchBackupReceipt)
+    elif (type(backup) is not _GITHUB_BACKUP[type(commitment)]
         or backup.producer_run_id!=commitment.producer_run_id
         or backup.producer_attempt!=commitment.producer_attempt):
         raise ValueError('research backup lane or GITHUB producer differs')
@@ -195,7 +222,7 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
     return commitment
 
 
-def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment | P3LocalResearchBatchCommitment:
+def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment | P3ResearchBatchCommitmentV2 | P3LocalResearchBatchCommitment:
     """Resolve the exact structural commitment; producer and reviewer admission is separate."""
     from packages.alpha_lifecycle.contracts.execution import InputSet
     from packages.alpha_lifecycle.contracts.data import PITProof
@@ -275,18 +302,23 @@ def _seal(payload: Mapping[str, object], model):
 def backup_revision_inventory(ref: ArtifactRefV1, *, source: SourceIdentity,
     policy_digest: str, query: PITQueryV1, dataset_ref: ArtifactRefV1,
     store: LocalArtifactStore, backup: LocalArtifactStore,
-    producer_run_id: int, producer_attempt: int) -> tuple[P3ResearchBackupReceipt, ArtifactRefV1]:
-    """GITHUB lane; copy and read back before any receipt is emitted."""
+    producer_run_id: int, producer_attempt: int,
+    version: Literal[1, 2]=1) -> tuple[P3ResearchBackupReceipt | P3ResearchBackupReceiptV2, ArtifactRefV1]:
+    """GITHUB lane; copy and read back before any receipt is emitted. v2 names p3-authority.yml."""
     if (type(producer_run_id) is not int or producer_run_id<1
         or type(producer_attempt) is not int or producer_attempt<1):
         raise ValueError('backup producer run and attempt must be positive integers')
+    if version not in (1,2):
+        raise ValueError('GITHUB backup receipt version is 1 or 2')
     facts,inventory_ref=_reconstruct_and_backup(ref,source=source,policy_digest=policy_digest,
         query=query,dataset_ref=dataset_ref,store=store,backup=backup)
-    payload=dict(schema_version='p3-research-backup-receipt-v1',
+    model=P3ResearchBackupReceiptV2 if version==2 else P3ResearchBackupReceipt
+    payload=dict(schema_version=f'p3-research-backup-receipt-v{version}',
         producer_repository='nam176hermes/Trading-Agent',
-        producer_workflow_ref='nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main',
+        producer_workflow_ref=AUTHORITY_WORKFLOW_REF if version==2 else
+            'nam176hermes/Trading-Agent/.github/workflows/p3-research-inputs.yml@refs/heads/main',
         producer_run_id=producer_run_id,producer_attempt=producer_attempt,**facts)
-    return _seal(payload,P3ResearchBackupReceipt),inventory_ref
+    return _seal(payload,model),inventory_ref
 
 
 def backup_revision_inventory_local(ref: ArtifactRefV1, *, source: SourceIdentity,

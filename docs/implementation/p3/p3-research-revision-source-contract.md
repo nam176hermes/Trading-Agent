@@ -122,8 +122,9 @@ protected batch commitment after upstream raw validation; it must not recursivel
 load the full raw dataset into the existing 8192-reference output closure.
 Missing protected proof remains HELD. Synthetic tests qualify only reconstruction
 and rejection behavior; they cannot grant C01 or official InputSet authority.
-The standalone scripts in runbook section 5 own acquisition and offline sealing;
-section 6's official workflow enum and SQL publication remain unchanged.
+The standalone scripts in runbook section 5 own acquisition and offline sealing.
+Section 6's SQL publication remains unchanged. The official workflow enum adds exactly one
+operation, `p3-research-inputs-v1`, under the amendment at the end of this document.
 The typed reconstruction inventory is implemented below. Protected batch commitment,
 provenance and receipt-admission contracts remain unresolved. Until implemented
 and reviewed, raw reconstruction cannot enable official qualification or OOS
@@ -236,10 +237,11 @@ depends on completing its own backup or commitment. The structural validator
 requires `frozen_at <= completed_at <= backup.verified_at <= issued_at`, exact
 source/run/attempt and fixed 2,800-day retrospective dataset bindings.
 
-The proposed producer identity is a separate protected standalone
-`p3-research-inputs.yml` workflow. That workflow, its approved pre-run request,
-serialization/no-clobber, actual backup producer and attestation/admission checks
-are still missing. Recorded workflow strings and a self-digest cannot replace
+The v1 models name a proposed standalone `p3-research-inputs.yml` producer. That
+workflow was never built, and the v1 bytes stay frozen. The GITHUB producer is the
+`p3-authority.yml` operation `p3-research-inputs-v1`, recorded by the v2 models. Its
+pre-run request, serialization/no-clobber, backup producer, attestation and admission
+checks are specified in the amendment below. Recorded workflow strings and a self-digest cannot replace
 them. The later existing P3 authority review must cover both operation-input and
 commitment digests, with authentic source/producer evidence checked before
 enqueue and spawn. No new official operation, SQL catalog, job authority or
@@ -313,3 +315,70 @@ correction, then 53 PIT/qualification tests passed in 99.17 seconds, including
 exact four-artifact closure. Independent source review passed and static remains
 at 117 existing diagnostics. Media metadata changes invalidate old source-bound
 PIT receipt references; no protected receipt is synthesized by these tests.
+
+## Amendment 2026-10-21: GITHUB research producer
+
+Spec `SPEC-GITHUB-RESEARCH-PRODUCER` v2 plus the v3 delta was independently reviewed and
+approved in three rounds. It closes the protected-producer items above for the GITHUB lane.
+The LOCAL lane is unchanged.
+
+- **Producer.** The producer is operation `p3-research-inputs-v1` of the protected
+  `p3-authority.yml`, run inside a run that the root controller authenticated through the REST
+  API. It is not a separate workflow, so it reuses the same run authentication, per-run JIT
+  label, single-job check and root `github-run.json` as every P3 operation.
+  - The producer is `scripts/prepare_p3_github_research.py`. It runs as its own UID
+    (`ta-p3-producer`), not the worker UID.
+  - It acquires the fixed 2,800 days inside the run, using the committed M7 monthly exception
+    for 2018-02-08 only.
+  - It then seals the dataset, backs it up with readback, executes the PIT suite with this
+    run's id and attempt, and assembles the InputSet.
+- **Models.** `p3-research-batch-commitment-v2` and `p3-research-backup-receipt-v2` name
+  `p3-authority.yml@refs/heads/main`. A v2 commitment consumes only a v2 backup of the same run.
+  The v1 GITHUB models stay byte-frozen and are never produced.
+- **Approved pre-run request.** The pre-run request is `p3-github-research-batch-request-v1`.
+  It covers:
+  - FIRST batch only (ordinal 1, no predecessor);
+  - the fixed research range and the single monthly exception;
+  - the fixture integration receipt;
+  - a validity window of at most 6 h.
+
+  An independent review must cover it, with the operator different from the reviewer. The run
+  attestation pins its file digest in `research_inputs_sha256`. The producer checks it at run
+  time, and root checks it again at the attempt's API start time.
+- **Publication and attestation.** Root, not the producer, publishes the exact commitment bytes
+  to the outbox (`p3-research-commitment-v1.json`, `status.research = PASS`). The GitHub-hosted
+  `attest-research-inputs` job binds them to this run and source and signs them with
+  `actions/attest`.
+- **Registration (`scripts/p3_github_research.register_research_batch`, root, after the
+  run).** Every step below is required; any failure leaves the batch HELD.
+  1. Authenticate the completed run and both jobs from the API.
+  2. Verify the attestation with `gh attestation verify` (signer `p3-authority.yml`, source and
+     signer digest equal to the head, `--deny-self-hosted-runners`). Take the Tlog time from
+     `verificationResult.verifiedTimestamps`.
+  3. Check that the outbox bytes, the attestation subject, the custody blob, the PIT
+     `revision_proof_ref` and the proposal all name the same commitment.
+  4. Check the time order: run start ≤ frozen ≤ completed ≤ backup verified ≤ issued ≤ job
+     completion ≤ attestation time.
+  5. Observe exhaustiveness. `work` must be exactly the typed InputSet closure plus the backup
+     objects. `backup` must be exactly the backup objects plus the object inventory. Every backup
+     copy must equal its source object.
+  6. Seal the custody: `work` read-only and root-owned; `backup` root `0500`.
+  7. Copy the six small admission objects into a root evidence store.
+  8. Write one create-only registry record, `research-batches/0001.json`, using an atomic hard
+     link.
+- **Admission.** OFFICIAL GITHUB research inputs require `p3-github-research-inputs-v2`, which
+  pins the record digest. v1 is accepted only for REHEARSAL. `read_github_research_batch`
+  re-reads the record, compares the sealed backup root identity before and after, and validates
+  the graph through the root evidence store. That graph check covers:
+  - the GITHUB lane;
+  - the producer run;
+  - the PIT suite run;
+  - the dataset, fold, vintage and limitations bindings;
+  - backup accounting;
+  - timing.
+
+  The review must cover the InputSet, the binding digest and the record digest.
+
+Residual risks: the root host controller is the trust anchor for custody and registry, as it
+already is for `github-run.json`. The public archive's origin is authenticated only by HTTPS and
+its CHECKSUM files.

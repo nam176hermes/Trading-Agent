@@ -187,15 +187,23 @@ class Store:
         return self.blobs[ref.content_sha256]
 
 
-def research_inputs(store, *, campaign='OFFICIAL', review_changes=None, subjects=None, **changes):
-    from packages.alpha_lifecycle.github_run import GithubResearchInputs
-    body = dict(schema_version='p3-github-research-inputs-v1', campaign=campaign, source=SOURCE,
+def research_inputs(store, *, campaign='REHEARSAL', review_changes=None, subjects=None, batch_record_sha256=None,
+                    **changes):
+    """A v1 receipt, or v2 when a research batch record digest is given (the only OFFICIAL shape)."""
+    from packages.alpha_lifecycle.github_run import parse_github_research_inputs
+    version = 'v1' if batch_record_sha256 is None else 'v2'
+    body = dict(schema_version=f'p3-github-research-inputs-{version}', campaign=campaign, source=SOURCE,
                 policy_digest='1' * 64, input_ref=_ref('2' * 64), environment_ref=_ref('3' * 64),
                 integration_receipt_ref=_ref('4' * 64), review_ref=_ref('5' * 64),
                 issued_at=_z(NOW - timedelta(minutes=5)), expires_at=_z(NOW + timedelta(hours=6)),
                 authority=AUTHORITY)
+    if batch_record_sha256 is not None:
+        body['batch_record_sha256'] = batch_record_sha256
     body.update(changes)
-    binding = GithubResearchInputs.model_validate(sealed(body)).binding_digest
+    try:
+        binding = parse_github_research_inputs(sealed(body)).binding_digest
+    except ValueError:  # an OFFICIAL v1 receipt is invalid by design; still give it a well-formed review
+        binding = hashlib.sha256(canonical_json_bytes({k: v for k, v in body.items() if k != 'review_ref'})).hexdigest()
     review = dict(schema_version='p3-review-approval-v1', source=SOURCE,
                   subject_digests=subjects if subjects is not None else ['2' * 64, binding],
                   operator_identity='nam176hermes', reviewer_identity='claude-agent-reviewer',
@@ -210,7 +218,8 @@ def research_inputs(store, *, campaign='OFFICIAL', review_changes=None, subjects
 
 def _admit(protected, store, inputs, *, mode='GITHUB', pin=None, input_ref=None, now=NOW):
     from packages.alpha_lifecycle.contracts.base import SourceIdentity
-    from packages.alpha_lifecycle.github_run import read_github_research_inputs, read_github_run
+    from packages.alpha_lifecycle.github_research import read_github_research_inputs
+    from packages.alpha_lifecycle.github_run import read_github_run
     from packages.data_contracts import ArtifactRefV1
     protected[Path('/etc/trading-agent-p3/github/research-inputs.json')] = inputs
     protected[Path('/etc/trading-agent-p3/github/research-inputs-review.json')] = store.review
@@ -221,18 +230,26 @@ def _admit(protected, store, inputs, *, mode='GITHUB', pin=None, input_ref=None,
         input_set_ref=ArtifactRefV1.model_validate(input_ref or _ref('2' * 64)), now=now)
 
 
-def test_reviewed_official_inputs_are_admitted(protected):
+def test_reviewed_rehearsal_inputs_are_admitted_on_a_genuine_run(protected):
     store = Store()
     admitted = _admit(protected, store, research_inputs(store))
-    assert admitted.campaign == 'OFFICIAL'
+    assert admitted.campaign == 'REHEARSAL'
+
+
+def test_official_v1_inputs_without_a_research_batch_record_are_held(protected):
+    """A review alone is not producer provenance (D-S7-04): OFFICIAL needs the v2 registry path."""
+    from packages.alpha_lifecycle.github_run import GithubRunHeld
+    store = Store()
+    with pytest.raises(GithubRunHeld, match='invalid'):
+        _admit(protected, store, research_inputs(store, campaign='OFFICIAL'))
 
 
 def test_fake_run_admits_only_rehearsal_inputs(protected):
     from packages.alpha_lifecycle.github_run import GithubRunHeld
     store = Store()
     assert _admit(protected, store, research_inputs(store, campaign='REHEARSAL'), mode='FAKE').campaign == 'REHEARSAL'
-    with pytest.raises(GithubRunHeld, match='REHEARSAL'):
-        _admit(protected, store, research_inputs(store), mode='FAKE')
+    with pytest.raises(GithubRunHeld):
+        _admit(protected, store, research_inputs(store, campaign='OFFICIAL'), mode='FAKE')
 
 
 @pytest.mark.parametrize('fault', ['pin', 'input', 'expired', 'same_identity', 'rejected', 'missing_binding',

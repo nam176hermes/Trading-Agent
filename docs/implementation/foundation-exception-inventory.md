@@ -469,7 +469,7 @@ packages/data_catalog/security_master.py|425|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/security_master.py|443|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/security_master.py|488|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_normalization.py|79|Exception|PRODUCTION_CRITICAL|RAISE
-packages/local_authority.py|131|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/local_authority.py|132|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
@@ -685,9 +685,9 @@ scripts/nautilus_pin_inventory/git_source.py|5567|BaseException|TOOLING_MIGRATIO
 scripts/nautilus_pin_inventory/git_source.py|5577|BaseException|TOOLING_MIGRATION|OTHER
 scripts/p3_authority.py|222|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_authority.py|276|Exception|TOOLING_MIGRATION|RAISE
-scripts/p3_github_controller.py|241|BaseException|TOOLING_MIGRATION|RETURN
-scripts/p3_github_controller.py|302|Exception|TOOLING_MIGRATION|PASS
-scripts/p3_local_controller.py|588|Exception|TOOLING_MIGRATION|RAISE
+scripts/p3_github_controller.py|242|BaseException|TOOLING_MIGRATION|RETURN
+scripts/p3_github_controller.py|307|Exception|TOOLING_MIGRATION|PASS
+scripts/p3_local_controller.py|593|Exception|TOOLING_MIGRATION|RAISE
 scripts/p3_local_host.py|89|Exception|TOOLING_MIGRATION|PASS
 scripts/p3_local_install_approval.py|93|Exception|TOOLING_MIGRATION|RETURN
 scripts/p3_local_issue_runtime.py|152|Exception|TOOLING_MIGRATION|RETURN

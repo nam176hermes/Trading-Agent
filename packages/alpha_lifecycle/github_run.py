@@ -85,9 +85,8 @@ class GithubRunAttestation(DigestModel):
     authority: SafeAuthority
 
 
-class GithubResearchInputs(DigestModel):
+class _GithubResearchInputsBody(DigestModel):
     """Reviewed admission of one campaign InputSet for the GITHUB lane."""
-    schema_version: Literal['p3-github-research-inputs-v1']
     campaign: Literal['OFFICIAL', 'REHEARSAL']
     source: SourceIdentity
     policy_digest: Sha256
@@ -104,6 +103,28 @@ class GithubResearchInputs(DigestModel):
         """What the review covers: everything except the review reference itself."""
         body = self.model_dump(mode='json', exclude={'digest', 'review_ref'})
         return hashlib.sha256(canonical_json_bytes(body)).hexdigest()
+
+
+class GithubResearchInputs(_GithubResearchInputsBody):
+    """v1: REHEARSAL only (an OFFICIAL v1 has no producer provenance)."""
+    schema_version: Literal['p3-github-research-inputs-v1']
+
+
+class GithubResearchInputsV2(_GithubResearchInputsBody):
+    """OFFICIAL admission: also pins the root registry record of the GITHUB research batch."""
+    schema_version: Literal['p3-github-research-inputs-v2']
+    batch_record_sha256: Sha256
+
+
+def parse_github_research_inputs(document) -> GithubResearchInputs | GithubResearchInputsV2:
+    """v2 for any campaign; v1 only for REHEARSAL (an OFFICIAL v1 has no producer provenance)."""
+    raw = canonical_json_bytes(document)
+    declared = document.get('schema_version') if isinstance(document, Mapping) else None
+    model = GithubResearchInputsV2 if declared == 'p3-github-research-inputs-v2' else GithubResearchInputs
+    inputs = model.model_validate_json(raw)
+    if inputs.campaign == 'OFFICIAL' and not isinstance(inputs, GithubResearchInputsV2):
+        raise ValueError('OFFICIAL research inputs require the v2 receipt with a research batch record')
+    return inputs
 
 
 def _now(now: datetime | None) -> datetime:
@@ -158,44 +179,11 @@ def require_admissible_mode(run: GithubRunAttestation) -> None:
         return
     document, digest = _protected(RESEARCH_INPUTS_PATH)
     try:
-        inputs = GithubResearchInputs.model_validate_json(canonical_json_bytes(document))
+        inputs = parse_github_research_inputs(document)
     except ValueError as error:
         raise GithubRunHeld('research inputs receipt is invalid') from error
     if digest != run.research_inputs_sha256 or inputs.campaign != 'REHEARSAL':
         raise GithubRunHeld('recorded-API runs may only use pinned REHEARSAL inputs')
-
-
-def read_github_research_inputs(run: GithubRunAttestation, *, source: SourceIdentity,
-                                input_set_ref: ArtifactRefV1,
-                                now: datetime | None = None) -> GithubResearchInputs:
-    """Authenticate the reviewed InputSet admission pinned by this run."""
-    document, digest = _protected(RESEARCH_INPUTS_PATH)
-    try:
-        inputs = GithubResearchInputs.model_validate_json(canonical_json_bytes(document))
-    except ValueError as error:
-        raise GithubRunHeld('research inputs receipt is invalid') from error
-    current = _now(now)
-    if digest != run.research_inputs_sha256:
-        raise GithubRunHeld('research inputs receipt differs from the run pin')
-    if run.mode == 'FAKE' and inputs.campaign != 'REHEARSAL':
-        raise GithubRunHeld('recorded-API runs may only use REHEARSAL inputs')
-    if inputs.source != source or inputs.input_ref != input_set_ref:
-        raise GithubRunHeld('research inputs receipt binds another source or InputSet')
-    if not inputs.issued_at <= current < inputs.expires_at:
-        raise GithubRunHeld('research inputs receipt is not current')
-    document, _ = _protected(RESEARCH_REVIEW_PATH)
-    try:
-        review = ReviewApproval.model_validate_json(canonical_json_bytes(document))
-    except ValueError as error:
-        raise GithubRunHeld('research inputs review is invalid') from error
-    raw = canonical_json_bytes(review)
-    if (inputs.review_ref.content_sha256 != hashlib.sha256(raw).hexdigest()
-            or inputs.review_ref.size_bytes != len(raw) or review.source != source or review.verdict != 'APPROVED'
-            or review.operator_identity == review.reviewer_identity
-            or not {inputs.input_ref.content_sha256, inputs.binding_digest} <= set(review.subject_digests)
-            or not review.issued_at <= inputs.issued_at < inputs.expires_at <= review.expires_at):
-        raise GithubRunHeld('research inputs are not covered by a current independent review')
-    return inputs
 
 
 SOURCE_READY_NAME = 'source-ready.json'
@@ -318,7 +306,8 @@ def authenticate_run(fetch: Fetch, *, run_id: int, attempt: int, expected: Expec
 
 
 __all__ = [
-    'ADMISSION_MAX_AGE', 'ExpectedRun', 'GithubResearchInputs', 'GithubRunAttestation', 'GithubRunHeld',
-    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'require_admissible_mode', 'github_run_directory', 'github_run_identity', 'read_github_research_inputs',
+    'ADMISSION_MAX_AGE', 'ExpectedRun', 'GithubResearchInputs', 'GithubResearchInputsV2', 'GithubRunAttestation',
+    'GithubRunHeld', 'parse_github_research_inputs',
+    'RESEARCH_INPUTS_PATH', 'RESEARCH_REVIEW_PATH', 'authenticate_run', 'require_admissible_mode', 'github_run_directory', 'github_run_identity',
     'read_github_run', 'GithubSourceReady', 'SOURCE_READY_NAME', 'read_github_source_ready',
 ]

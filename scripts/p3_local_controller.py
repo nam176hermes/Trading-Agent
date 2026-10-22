@@ -35,13 +35,18 @@ from packages.alpha_lifecycle.research_custody import _seal
 from packages.data_catalog.artifact_store import LocalArtifactStore
 from packages.data_contracts import ArtifactRefV1
 from packages.engine_contracts.serialization import canonical_json_bytes
-from packages.local_authority import AuthorityStore, _publish
+from packages.local_authority import AuthorityStore, _publish, _publish_once
 from packages.runtime_release.config import _safe_directory, read_protected_canonical_json_current
 from scripts.seal_p3_dataset import _committed_source
 
 
-def publish_protected(path: Path, raw: bytes, *, replace=False):
-    """Publish only beneath an existing authenticated root-owned directory chain."""
+def publish_protected(path: Path, raw: bytes, *, replace=False, once=False):
+    """Publish only beneath an existing authenticated root-owned directory chain.
+
+    `once=True` is atomic create-only (a registry entry): an existing path always fails.
+    """
+    if once and replace:
+        raise ValueError('a create-only publication never replaces')
     if os.geteuid() != 0:
         raise PermissionError('protected issuer requires root')
     if not path.is_absolute() or '..' in path.parts:
@@ -65,7 +70,7 @@ def publish_protected(path: Path, raw: bytes, *, replace=False):
             if not replace:
                 raise FileExistsError('authority already exists; no automatic replay')
             read_protected_canonical_json_current(path)
-        _publish(path, raw, mode=0o444)
+        (_publish_once if once else _publish)(path, raw, mode=0o444)
     finally:
         os.close(fd)
 

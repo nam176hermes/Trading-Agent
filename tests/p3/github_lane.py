@@ -88,7 +88,7 @@ class GithubLane:
         value.update(changes)
         self.documents[self.directory/'github-run.json'] = _sealed(value)
 
-    def admit_inputs(self, input_set_ref, *, campaign='OFFICIAL', operation='p3-baselines-v1'):
+    def admit_inputs(self, input_set_ref, *, campaign='REHEARSAL', operation='p3-baselines-v1'):
         """Publish a reviewed research-input receipt for this InputSet and pin it in the run."""
         from datetime import timedelta
         from packages.alpha_lifecycle.github_run import GithubResearchInputs

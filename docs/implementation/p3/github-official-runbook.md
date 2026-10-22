@@ -58,8 +58,9 @@ drops mid-run stops the next stage.
 - **Main frozen.** `main` equals the frozen candidate `M2`. `PRE_P3_READY` and
   `HWC_SOURCE_READY` must be PASS in tracked status. No merge of any kind to `main` is
   allowed from the first P3 dispatch through the PHASE_EXIT export.
-- **Reviewed research inputs.** The reviewed research-input receipt and its review are
-  installed root-protected:
+- **Reviewed research inputs.** OFFICIAL inputs come only from a registered GITHUB research batch
+  (see "Research producer run" below). The reviewed v2 research-input receipt, which pins the batch
+  record digest, and its review are installed root-protected:
 
   ```text
   /etc/trading-agent-p3/github/research-inputs.json
@@ -82,6 +83,10 @@ drops mid-run stops the next stage.
 - **Runner network isolation.** The runner UID is rejected for every local destination
   in both IPv4 and IPv6 (`-m owner --uid-owner <runner> -m addrtype --dst-type LOCAL
   -j REJECT`). A refused connection attempt is recorded before the runner starts.
+  - **DNS exception.** On WSL the resolver (`10.255.255.254`) is a local address. Insert before
+    the REJECT an ACCEPT for the runner UID to that address on port 53 only, both UDP and TCP.
+    Without it the runner cannot resolve GitHub and never takes its job. Verify DNS and HTTPS work
+    while 8400 and the resolver's other ports stay refused.
 - **Paths.** The runner, release, CAS, PG and outbox live under `/srv`, so no private
   home path reaches a receipt.
 
@@ -119,6 +124,31 @@ is created by the repository; the host controller performs them before admission
 - **v1 export.** The v1 export must run while `github-run.json` is present, that is,
   before the controller revokes it at run end. Afterwards it fails with "protected GitHub
   lane document is unavailable".
+
+## Research producer run (`p3-research-inputs-v1`)
+
+The OFFICIAL research InputSet is produced inside one genuine run of this workflow. FAKE mode cannot
+rehearse it.
+
+1. **Provision the host.**
+   - System user `ta-p3-producer` (UID 985) with a private home. Its PIT suite needs trusted
+     temporary storage.
+   - `/srv/trading-agent-p3/research`, root-owned `0755`.
+   - `/etc/trading-agent-p3/github/research-batches`, root-owned `0755` and empty.
+2. **Install the reviewed pre-run request.** Install `research-batch-request.json`
+   (`p3-github-research-batch-request-v1`) and its independent review, root `0444`, next to the
+   research-input files. The controller plan pins the request file's digest for this dispatch.
+3. **Dispatch** `p3-research-inputs-v1`. The job timeout is 150 min.
+4. **The controller runs the producer.** Before the producer starts, the controller authenticates
+   the run, calls `create_research_custody`, and stages the fixture integration receipt with
+   `stage_integration_receipt`. It then runs `scripts/prepare_p3_github_research.py --run-id N
+   --attempt N` as UID 985 and publishes `research_files(...)`. The `attest-research-inputs` job
+   signs the commitment.
+5. **Register after the run completes.** Run `register_research_batch` as root. It authenticates
+   the run, verifies the attestation, observes and seals custody, and writes
+   `research-batches/0001.json`. Any failure leaves the batch HELD; custody is never reused.
+6. **Install the receipt.** Install the OFFICIAL v2 research-input receipt pinning that record,
+   with an independent review over the InputSet, the binding digest and the record digest.
 
 ## Per operation
 

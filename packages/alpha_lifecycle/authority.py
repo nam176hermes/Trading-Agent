@@ -197,7 +197,7 @@ def _validate_github_request(path: Path, source: SourceIdentity | None, operatio
     run = _validate_workflow_context(auth, source, workflow_operation=(
         'p3-integration-fixture-v1' if request.operation_input is None else request.operation_input.workflow_operation))
     if request.operation_input is not None:
-        from packages.alpha_lifecycle.github_run import read_github_research_inputs
+        from packages.alpha_lifecycle.github_research import read_github_research_inputs
         try:
             read_github_research_inputs(run, source=source, input_set_ref=request.operation_input.input_set_ref)
         except GithubRunHeld as error:

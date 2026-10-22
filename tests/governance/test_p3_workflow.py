@@ -5,7 +5,7 @@ OPERATIONS = (
     "p3-integration-fixture-v1", "p3-baselines-v1", "p3-register-family-v1",
     "p3-oos-a0-v1", "p3-oos-a1-v1", "p3-oos-a2-v1", "p3-oos-a3-v1",
     "p3-select-primary-v1", "p3-holdout-primary-v1", "p3-native-parity-v1",
-    "p3-phase-exit-v1",
+    "p3-phase-exit-v1", "p3-research-inputs-v1",
 )
 
 
@@ -15,7 +15,8 @@ def _source():
 
 def _job(source, name):
     start = source.index(f"\n  {name}:\n")
-    following = [source.find(f"\n  {other}:\n", start+1) for other in ("p3", "attest-phase-exit") if other != name]
+    following = [source.find(f"\n  {other}:\n", start+1)
+                 for other in ("p3", "attest-phase-exit", "attest-research-inputs") if other != name]
     ends = [index for index in following if index > start]
     return source[start:min(ends) if ends else len(source)]
 
@@ -41,20 +42,22 @@ def test_p3_job_holds_no_secrets_or_authoritative_tooling() -> None:
     assert "runs-on: [self-hosted, p3-authority, 'p3-run-${{ github.run_id }}-${{ github.run_attempt }}']" in job
     assert "permissions:\n  contents: read\n" in source and "permissions:" not in job
     assert '/srv/trading-agent-p3/outbox/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' in job
-    assert "status.json|p3-phase-exit-v2.json|p3-phase-exit-v1.json)" in job
+    assert "status.json|p3-phase-exit-v2.json|p3-phase-exit-v1.json|p3-research-commitment-v1.json)" in job
 
 
 def test_p3_job_timeout_covers_the_hosted_session_bound() -> None:
     from services.job_worker.p3_session import HOSTED_SESSION_MINUTES
     job = _job(_source(), "p3")
-    assert "timeout-minutes: ${{ inputs.operation == 'p3-holdout-primary-v1' && 180 || 60 }}" in job
+    assert ("timeout-minutes: ${{ inputs.operation == 'p3-holdout-primary-v1' && 180 || "
+            "inputs.operation == 'p3-research-inputs-v1' && 150 || 60 }}") in job
     assert HOSTED_SESSION_MINUTES + 20 <= 180
 
 
 def test_only_the_hosted_attestation_job_can_mint_identity_tokens() -> None:
     source = _source()
     attest = _job(source, "attest-phase-exit")
-    assert source.count("id-token: write") == 1 and "id-token: write" in attest
+    assert source.count("id-token: write") == 2 and "id-token: write" in attest
+    assert "id-token: write" in _job(source, "attest-research-inputs") and "id-token" not in _job(source, "p3")
     assert "    needs: p3\n    runs-on: ubuntu-24.04\n" in attest
     assert "if: inputs.operation == 'p3-holdout-primary-v1' && needs.p3.outputs.phase_exit == 'PASS'" in attest
     assert ("permissions:\n      contents: read\n      id-token: write\n      attestations: write\n"
@@ -63,6 +66,28 @@ def test_only_the_hosted_attestation_job_can_mint_identity_tokens() -> None:
     assert "subject-path: ${{ runner.temp }}/p3/p3-phase-exit-v1.json" in attest
     assert "qualification_run_id=int(os.environ['GITHUB_RUN_ID'])" in attest
     assert "receipt['source']['commit_sha'] != os.environ['GITHUB_SHA']" in attest
+
+
+def test_research_attestation_signs_only_this_runs_first_batch_commitment() -> None:
+    """The GitHub attestation of the research producer's exact commitment bytes (spec v2 §1)."""
+    attest = _job(_source(), "attest-research-inputs")
+    assert "    needs: p3\n    runs-on: ubuntu-24.04\n" in attest
+    assert "if: inputs.operation == 'p3-research-inputs-v1' && needs.p3.outputs.research == 'PASS'" in attest
+    assert ("permissions:\n      contents: read\n      id-token: write\n      attestations: write\n"
+            "      artifact-metadata: write\n") in attest
+    assert attest.index("actions/download-artifact@v4") < attest.index("actions/attest@v4")
+    assert "subject-path: ${{ runner.temp }}/p3/p3-research-commitment-v1.json" in attest
+    for binding in ("schema_version='p3-research-batch-commitment-v2'", "producer_run_id=int(os.environ['GITHUB_RUN_ID'])",
+                    "producer_attempt=int(os.environ['GITHUB_RUN_ATTEMPT'])", "batch_ordinal=1", "status='PASS'",
+                    "p3-authority.yml@refs/heads/main", "commitment['source']['commit_sha'] != os.environ['GITHUB_SHA']"):
+        assert binding in attest, binding
+
+
+def test_research_result_output_matches_status_and_file() -> None:
+    job = _job(_source(), "p3")
+    assert "research: ${{ steps.result.outputs.research }}" in job
+    assert "research = (root / 'p3-research-commitment-v1.json').exists()" in job
+    assert "if research != (status.get('research') == 'PASS'):" in job
 
 
 def test_foundation_attests_exact_p3_promotion() -> None:
