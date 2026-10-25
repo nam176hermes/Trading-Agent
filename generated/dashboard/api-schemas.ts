@@ -1,6 +1,5 @@
 import { makeApi, Zodios, type ZodiosOptions } from "@zodios/core";
 import { z } from "zod";
-
 type CanonicalMarketDataLatestData = Readonly<{
   snapshot:
     | (CanonicalMarketDataSnapshot | null)
@@ -370,7 +369,6 @@ type SystemStatusEnvelope = Readonly<{
   schema_version: string;
   trace_id: string;
 }>;
-
 const HealthData: z.ZodType<HealthData> = z
   .object({ status: z.enum(["UP", "READY", "NOT_READY"]) })
   .strict()
@@ -504,7 +502,7 @@ const DecisionRecord: z.ZodType<DecisionRecord> = z
     decision_id: z.string(),
     price_at_decision: z.number(),
     reflected: z.boolean(),
-    report_snippet: z.string().optional().default(""),
+    report_snippet: z.string().optional().prefault(""),
     signals: DecisionSignals,
   })
   .strict()
@@ -561,16 +559,16 @@ const MarketContinuity: z.ZodType<MarketContinuity> = z
   .object({
     duplicate_open_times: z
       .array(z.string().datetime({ offset: true }))
-      .readonly()
       .max(4096)
+      .readonly()
       .optional()
-      .default([]),
+      .prefault([]),
     missing_open_times: z
       .array(z.string().datetime({ offset: true }))
-      .readonly()
       .max(4096)
+      .readonly()
       .optional()
-      .default([]),
+      .prefault([]),
     timeframe: MarketTimeframe,
   })
   .strict()
@@ -619,7 +617,7 @@ const MarketDataProvenance: z.ZodType<MarketDataProvenance> = z
   .readonly();
 const MarketSnapshot: z.ZodType<MarketSnapshot> = z
   .object({
-    candles: z.array(MarketCandle).readonly().min(1).max(4096),
+    candles: z.array(MarketCandle).min(1).max(4096).readonly(),
     instrument: InstrumentId,
     known_at: z.string().datetime({ offset: true }),
     normalization_version: z
@@ -722,7 +720,10 @@ const MarketAssetSnapshot: z.ZodType<MarketAssetSnapshot> = z
     rsi_14: z.number(),
     rsi_signal: z.enum(["oversold", "overbought", "neutral"]),
     sentiment: z.union([z.string(), z.null()]),
-    sentiment_distribution: z.union([z.record(z.number()), z.null()]),
+    sentiment_distribution: z.union([
+      z.record(z.string(), z.number()),
+      z.null(),
+    ]),
     sentiment_score: z.union([z.number(), z.null()]),
     sentiment_source: z.union([z.string(), z.null()]),
     sentiment_summary: z.union([z.string(), z.null()]),
@@ -853,7 +854,6 @@ const SystemStatusEnvelope: z.ZodType<SystemStatusEnvelope> = z
   })
   .strict()
   .readonly();
-
 export const schemas = {
   HealthData,
   FreshnessStatus,
@@ -906,7 +906,6 @@ export const schemas = {
   SystemStatus,
   SystemStatusEnvelope,
 };
-
 const endpoints = makeApi([
   {
     method: "get",
@@ -940,12 +939,12 @@ const endpoints = makeApi([
       {
         name: "page",
         type: "Query",
-        schema: z.number().int().gte(1).optional().default(1),
+        schema: z.number().int().gte(1).optional().prefault(1),
       },
       {
         name: "page_size",
         type: "Query",
-        schema: z.number().int().gte(1).lte(200).optional().default(50),
+        schema: z.number().int().gte(1).lte(200).optional().prefault(50),
       },
       {
         name: "asset",
@@ -1081,9 +1080,7 @@ const endpoints = makeApi([
     response: SystemStatusEnvelope,
   },
 ]);
-
 export const api = new Zodios(endpoints);
-
 export function createApiClient(baseUrl: string, options?: ZodiosOptions) {
   return new Zodios(baseUrl, endpoints, options);
 }

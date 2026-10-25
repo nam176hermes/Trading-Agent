@@ -25,15 +25,15 @@
       "manifest": "legacy/research-backend/pyproject.toml",
       "manifest_sha256": "acf610144e245ad13ce5a746f1c4955503fce79c57cee1ab2b85e3948c0c2607",
       "lockfile": "legacy/research-backend/uv.lock",
-      "lockfile_sha256": "55baca6473a1a46512bbdae1ce9f01c750816b56c74e4e79e9bff1b158bdd7a3"
+      "lockfile_sha256": "50356b4b7d43045e2c88088c158eec382608b4f9ef3969e6e64566fd02a8de19"
     },
     {
       "component": "dashboard",
       "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
       "manifest": "apps/dashboard/package.json",
-      "manifest_sha256": "73c9d895ccfd5a2ea71949979dd61ee9bcee89df92781724439b491781ae3ffe",
+      "manifest_sha256": "58418c4ea1a0d948458e626eca06745413f1d9b5154e93131abe0b047d875400",
       "lockfile": "apps/dashboard/package-lock.json",
-      "lockfile_sha256": "71328684c215d6716e964ac282e61c8709fc617195c6a6d8fa5df28ca6143b5f"
+      "lockfile_sha256": "57ede120f2f2f9033cd9ac206df6c545a597e1479974290bab5680a51afe6f80"
     },
     {
       "component": "sealed-paper-release",

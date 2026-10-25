@@ -145,6 +145,7 @@ from scripts.operator_contract_generation import render_operator_contracts
 
 DEFAULT_TOOL_ROOT = ROOT / "apps" / "dashboard"
 TYPESCRIPT_FACTORY_COMPAT = ROOT / "scripts" / "typescript_factory_compat.cjs"
+ZOD_COMPAT = ROOT / "scripts" / "normalize_generated_zod.cjs"
 CONTROL_SCHEMA_MODELS = (
     Asset,
     MarketReport,
@@ -423,7 +424,12 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         ],
         check=True,
     )
-    (dashboard_output / "api-schemas.ts").chmod(0o644)
+    zod_output = dashboard_output / "api-schemas.ts"
+    subprocess.run(
+        [node_executable, str(ZOD_COMPAT), str(tool_root.resolve()), str(zod_output)],
+        check=True,
+    )
+    zod_output.chmod(0o644)
     return {
         destination / "generated": ROOT / "generated",
         job_dashboard_output / "api-types.ts": (
