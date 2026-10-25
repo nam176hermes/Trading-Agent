@@ -42,6 +42,8 @@ PORT=$(node -e '
   });
 ')
 BASE_URL="http://localhost:${PORT}"
+# Keep any upstream reads inside this test's isolated server.
+export TRADING_CONTROL_API_ORIGIN="http://127.0.0.1:${PORT}"
 COOKIE_JAR="$WORK/admin-cookies.txt"
 SERVER_LOG="$WORK/server.log"
 

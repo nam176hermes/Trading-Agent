@@ -43,6 +43,9 @@ PORT=$(node -e '
   });
 ')
 BASE_URL="http://127.0.0.1:${PORT}"
+# The isolated dashboard has no Control API routes. Its 404 exercises the
+# unavailable upstream without contacting an ambient service on port 8400.
+export TRADING_CONTROL_API_ORIGIN="$BASE_URL"
 APP="$ROOT"
 HOME_FIXTURE="$WORK/home"
 RESEARCH_FIXTURE="$WORK/crypto-research"

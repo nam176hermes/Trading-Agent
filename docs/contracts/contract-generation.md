@@ -40,6 +40,15 @@ excluded from ESLint because the upstream generator emits types outside local
 style rules; they remain covered by TypeScript compilation and runtime parsing
 tests.
 
+The toolchain overrides the generator's legacy Zod dependency with the patched
+Zod version in `package.json`. An AST normalization step supplies explicit
+string keys for records and places numeric array bounds before `.readonly()`.
+The upstream generator emits the opposite array order, and the readonly
+wrapper has no array constraint methods. The dashboard's
+`generated-zod-compatibility.test.mjs` exercises the generated client with the
+installed toolchain, including typechecking, strict response validation and
+array bounds.
+
 The Control API dashboard client uses the generated `openapi-typescript` types
 for static typing and the generated Zod object for network validation. The Job
 API dashboard client imports its generated static aliases from
