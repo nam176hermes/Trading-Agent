@@ -25,6 +25,20 @@ function normalizeGeneratedZod(source, toolRoot) {
     const f = context.factory;
     function visit(node) {
       node = ts.visitEachChild(node, visit, context);
+      // Zod 3 parsed defaults through the inner schema. Zod 4's default
+      // short-circuits that validation; prefault preserves the old behavior.
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === "default") {
+        let root = node.expression.expression;
+        while (ts.isCallExpression(root) && ts.isPropertyAccessExpression(root.expression)) {
+          root = root.expression.expression;
+        }
+        if (ts.isIdentifier(root) && root.text === "z") {
+          return f.updateCallExpression(node,
+            f.updatePropertyAccessExpression(node.expression,
+              node.expression.expression, "prefault"), node.typeArguments, node.arguments);
+        }
+      }
       if (isZodCall(node, "record") && node.arguments.length === 1) {
         const stringKey = f.createCallExpression(
           f.createPropertyAccessExpression(f.createIdentifier("z"), "string"), undefined, [],

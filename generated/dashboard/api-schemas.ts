@@ -502,7 +502,7 @@ const DecisionRecord: z.ZodType<DecisionRecord> = z
     decision_id: z.string(),
     price_at_decision: z.number(),
     reflected: z.boolean(),
-    report_snippet: z.string().optional().default(""),
+    report_snippet: z.string().optional().prefault(""),
     signals: DecisionSignals,
   })
   .strict()
@@ -562,13 +562,13 @@ const MarketContinuity: z.ZodType<MarketContinuity> = z
       .max(4096)
       .readonly()
       .optional()
-      .default([]),
+      .prefault([]),
     missing_open_times: z
       .array(z.string().datetime({ offset: true }))
       .max(4096)
       .readonly()
       .optional()
-      .default([]),
+      .prefault([]),
     timeframe: MarketTimeframe,
   })
   .strict()
@@ -939,12 +939,12 @@ const endpoints = makeApi([
       {
         name: "page",
         type: "Query",
-        schema: z.number().int().gte(1).optional().default(1),
+        schema: z.number().int().gte(1).optional().prefault(1),
       },
       {
         name: "page_size",
         type: "Query",
-        schema: z.number().int().gte(1).lte(200).optional().default(50),
+        schema: z.number().int().gte(1).lte(200).optional().prefault(50),
       },
       {
         name: "asset",

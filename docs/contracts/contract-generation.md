@@ -42,7 +42,8 @@ tests.
 
 The toolchain overrides the generator's legacy Zod dependency with the patched
 Zod version in `package.json`. An AST normalization step supplies explicit
-string keys for records and places numeric array bounds before `.readonly()`.
+string keys for records, places numeric array bounds before `.readonly()`, and
+uses `.prefault()` to preserve Zod 3's validation of default values.
 The upstream generator emits the opposite array order, and the readonly
 wrapper has no array constraint methods. The dashboard's
 `generated-zod-compatibility.test.mjs` exercises the generated client with the

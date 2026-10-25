@@ -107,3 +107,17 @@ test('generated readonly arrays enforce the canonical 4096-row bound', () => {
     timeframe: '1d', missing_open_times: [...dates, dates[0]],
   }).success, false);
 });
+
+test('generated defaults still pass through validation and readonly wrappers', () => {
+  const empty = schemas.MarketContinuity.parse({ timeframe: '1d' });
+  assert.ok(Object.isFrozen(empty.missing_open_times));
+  assert.ok(Object.isFrozen(empty.duplicate_open_times));
+  const result = {};
+  const normalized = normalizeGeneratedZod(`
+    result.valid = z.array(z.number()).readonly().optional().default([1]);
+    result.invalid = z.number().min(2).optional().default(1);
+  `, toolRoot);
+  runInNewContext(normalized, { z: generatorRequire('zod').z, result });
+  assert.ok(Object.isFrozen(result.valid.parse(undefined)));
+  assert.equal(result.invalid.safeParse(undefined).success, false);
+});
