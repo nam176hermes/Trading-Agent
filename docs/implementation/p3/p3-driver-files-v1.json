@@ -52,6 +52,8 @@
     "packages/alpha_lifecycle/robustness.py",
     "packages/alpha_lifecycle/sandbox.py",
     "packages/alpha_lifecycle/sandbox_policy.py",
+    "packages/alpha_lifecycle/synthetic_data.py",
+    "packages/alpha_lifecycle/synthetic_prices.py",
     "packages/alpha_lifecycle/trials.py",
     "packages/data_catalog/__init__.py",
     "packages/data_catalog/artifact_store.py",

@@ -192,12 +192,25 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
     inputs=_read(reader,intent.input_set_ref,InputSet)
     h_inputs=_read(reader,body.holdout_input_set_ref,InputSet)
     context=_dataset(reader,body.context_dataset_ref,'RESEARCH',date(2018,1,1),date(2025,8,31))
+    synthetic = inputs.synthetic_generation_ref is not None
+    if synthetic:
+        from packages.alpha_lifecycle.authority import require_synthetic_operation_context
+        from packages.alpha_lifecycle.synthetic_data import SyntheticCommitment
+        receipt = require_synthetic_operation_context(authorization,expected_source,intent,reader,now=now)
+        if receipt is None:
+            raise ValueError('synthetic holdout requires a current same-run context')
+        commitment = _read(reader,receipt.commitment_ref,SyntheticCommitment)
+        if (commitment.holdout_dataset_ref != body.holdout_dataset_ref
+                or commitment.buffer_dataset_ref != body.buffer_ref
+                or any(item.vintage_class != 'SYNTHETIC_REHEARSAL' for item in (context,holdout,buffer))):
+            raise ValueError('synthetic holdout segments differ from the reviewed generation')
     if (inputs.source!=expected_source or h_inputs.source!=expected_source
         or inputs.dataset_evidence_ref!=body.context_dataset_ref
         or h_inputs.dataset_evidence_ref!=body.holdout_dataset_ref
         or inputs.policy_digest!=body.policy_digest or inputs.environment_ref!=body.environment_ref
         or any(getattr(inputs,key)!=getattr(h_inputs,key) for key in
-            ('epoch_id','family_digest','policy_digest','environment_ref','cost_model','regime_threshold_ref','integration_receipt_ref'))):
+            ('epoch_id','family_digest','policy_digest','environment_ref','cost_model','regime_threshold_ref','integration_receipt_ref',
+             'synthetic_generation_ref'))):
         raise ValueError('holdout operation differs from its research and holdout InputSets')
     roles=(*context.row_refs,*holdout.row_refs,*buffer.row_refs,
         context.snapshot_ref,holdout.snapshot_ref,buffer.snapshot_ref,
@@ -219,7 +232,8 @@ def validate_holdout_operation_input(intent: P3OperationInput, authorization: Ru
     if (folds!=build_holdout_fold_manifest(context,holdout,policy_digest=body.policy_digest)
         or pit.dataset_ref!=h_inputs.dataset_evidence_ref or pit.fold_manifest_ref!=h_inputs.fold_manifest_ref
         or pit.vintage_class!=holdout.vintage_class or pit.limitations!=holdout.limitations
-        or pit.historical_vintage_verified or holdout.vintage_class!='RETROSPECTIVE_CURRENT_ARCHIVE'):
+        or pit.historical_vintage_verified
+        or holdout.vintage_class != ('SYNTHETIC_REHEARSAL' if synthetic else 'RETROSPECTIVE_CURRENT_ARCHIVE')):
         raise ValueError('holdout InputSet fold or PIT metadata differs')
     for ref in (pit.revision_proof_ref,pit.no_future_suite_ref):
         _reference(ref,65536)

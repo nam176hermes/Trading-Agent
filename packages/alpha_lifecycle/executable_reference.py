@@ -186,6 +186,11 @@ def _execution_inputs(
     context=_dataset(budget,manifest.context_dataset_ref,'RESEARCH',date(2018,1,1),date(2025,8,31))
     holdout=_dataset(budget,manifest.holdout_dataset_ref,'HOLDOUT',date(2025,9,1),date(2026,8,31))
     buffer=_dataset(budget,manifest.buffer_ref,'BUFFER',date(2026,9,1),date(2026,9,1))
+    if inputs.synthetic_generation_ref is not None:
+        if any(item.vintage_class != 'SYNTHETIC_REHEARSAL' for item in (context,holdout,buffer)):
+            raise ValueError('synthetic calculation purpose cannot mix market segments')
+    elif any(item.vintage_class == 'SYNTHETIC_REHEARSAL' for item in (context,holdout,buffer)):
+        raise ValueError('synthetic calculation requires its hash-bound InputSet purpose')
     all_refs=(*context.row_refs,*holdout.row_refs,*buffer.row_refs)
     if len({ref.content_sha256 for ref in all_refs})!=len(all_refs):
         raise ValueError('executable dataset roles overlap')

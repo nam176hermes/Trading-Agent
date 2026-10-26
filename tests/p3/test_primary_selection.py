@@ -278,7 +278,7 @@ def test_family_disclosure_binds_all_trials_and_noncyclic_review(disclosed_famil
 
 
 @pytest.mark.parametrize('fault',['expired','future','short_interval','wrong_input_set','wrong_operator',None])
-def test_selection_staging_requires_current_inner_review(disclosed_family,fault):
+def test_selection_staging_requires_current_inner_review(disclosed_family,fault,monkeypatch):
     from datetime import UTC,datetime,timedelta
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload,AuthorityHeld
     from packages.alpha_lifecycle.contracts.authority import ReviewApproval,RunAuthorization
@@ -286,6 +286,10 @@ def test_selection_staging_requires_current_inner_review(disclosed_family,fault)
     from tests.p3.test_baseline_operation import _cli_authorization
     from tests.p3.test_replica_execution import _seal
     from tests.p3.test_publication import _changed
+    # Isolate the inner family-review window from protected run admission.
+    # The latter is exercised by synthetic admission and host-profile tests.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *a, **kw: None)
     store,inputs,_,review=disclosed_family
     def retain(value): return store.put_bytes(canonical_json_bytes(value),media_type='application/json')
     now=datetime.now(UTC)

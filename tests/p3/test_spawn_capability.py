@@ -494,7 +494,7 @@ def test_projected_driver_imports_official_calculation_owners(tmp_path):
     probe="""import sys
 sys.path.insert(0,sys.argv[1])
 from scripts import run_p3_alpha_campaign
-from packages.alpha_lifecycle import primary_selection, qualification, research_custody, pit_evidence, pit_suite
+from packages.alpha_lifecycle import primary_selection, qualification, research_custody, pit_evidence, pit_suite, synthetic_data
 print('projected official owners imported')
 """
     result=subprocess.run([sys.executable,'-I','-B','-c',probe,str(tmp_path)],cwd=tmp_path,

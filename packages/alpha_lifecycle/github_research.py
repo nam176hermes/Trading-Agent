@@ -29,7 +29,7 @@ from packages.alpha_lifecycle.contracts.base import DigestModel, SafeAuthority, 
 from packages.alpha_lifecycle.contracts.models import json_array
 from packages.alpha_lifecycle.github_run import (
     REPOSITORY, RESEARCH_INPUTS_PATH, RESEARCH_REVIEW_PATH, WORKFLOW, WORKFLOW_PATH, ExpectedRun, GithubResearchInputs,
-    GithubResearchInputsV2, GithubRunAttestation, GithubRunHeld, _api, _protected, github_run_directory,
+    GithubResearchInputsV2, GithubSyntheticInputs, GithubRunAttestation, GithubRunHeld, _api, _protected, github_run_directory,
     parse_github_research_inputs,
 )
 from packages.data_contracts import ArtifactRefV1
@@ -174,6 +174,8 @@ def validate_github_research_graph(record: GithubResearchBatchRecord, receipt, s
     from packages.alpha_lifecycle.replica_store import _read
     from packages.alpha_lifecycle.research_custody import P3ResearchBackupReceiptV2, P3ResearchBatchCommitmentV2
     inputs = _read(store, record.input_set_ref, InputSet)
+    if inputs.synthetic_generation_ref is not None:
+        raise GithubRunHeld('OFFICIAL research cannot admit synthetic purpose')
     _read(store, inputs.environment_ref, EnvironmentIdentity)
     pit = _read(store, inputs.pit_proof_ref, PITProof)
     commitment = _read(store, record.commitment_ref, P3ResearchBatchCommitmentV2)
@@ -280,7 +282,7 @@ def authenticate_completed_run(fetch, *, run_id: int, attempt: int, expected: Ex
 
 def read_github_research_inputs(run: GithubRunAttestation, *, source: SourceIdentity,
                                 input_set_ref: ArtifactRefV1,
-                                now: datetime | None = None) -> GithubResearchInputs | GithubResearchInputsV2:
+                                now: datetime | None = None) -> GithubResearchInputs | GithubResearchInputsV2 | GithubSyntheticInputs:
     """Authenticate the reviewed InputSet admission pinned by this run."""
     document, digest = _protected(RESEARCH_INPUTS_PATH)
     try:
@@ -290,6 +292,9 @@ def read_github_research_inputs(run: GithubRunAttestation, *, source: SourceIden
     current = _lane._now(now)
     if digest != run.research_inputs_sha256:
         raise GithubRunHeld('research inputs receipt differs from the run pin')
+    if isinstance(inputs, GithubSyntheticInputs) and (
+            run.mode != 'GITHUB' or inputs.identity != run.identity or run.head_sha != source.commit_sha):
+        raise GithubRunHeld('synthetic rehearsal requires its exact genuine GitHub run and source')
     if run.mode == 'FAKE' and inputs.campaign != 'REHEARSAL':
         raise GithubRunHeld('recorded-API runs may only use REHEARSAL inputs')
     if inputs.source != source or inputs.input_ref != input_set_ref:

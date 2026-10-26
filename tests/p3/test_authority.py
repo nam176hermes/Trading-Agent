@@ -131,7 +131,11 @@ def test_official_authorization_cannot_bootstrap_integration_fixture() -> None:
         build_alpha_campaign_payload(authorization, source, "p3-integration-fixture-v1")
 
 
-def test_staging_publishes_authorization_and_verifies_manifest_before_enqueue(tmp_path):
+def test_staging_publishes_authorization_and_verifies_manifest_before_enqueue(tmp_path, monkeypatch):
+    # Storage/readback unit only; protected campaign context is exercised through
+    # the real staging boundary in test_synthetic_admission.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     from packages.alpha_lifecycle.authority import stage_alpha_campaign_payload
     from packages.data_catalog.artifact_store import LocalArtifactStore
     tmp_path.chmod(0o700)
@@ -140,6 +144,16 @@ def test_staging_publishes_authorization_and_verifies_manifest_before_enqueue(tm
     body = request['authorization']
     manifest = b'{"fixture":"source-test-only"}'
     ref = store.put_bytes(manifest,media_type='application/json')
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from tests.p3.test_synthetic_provenance import sealed
+    policy = json.loads((Path(__file__).resolve().parents[2] /
+        'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes())
+    inputs = sealed(InputSet, schema_version='p3-input-set-v1', source=source,
+        epoch_id='test-epoch', policy_digest='a'*64, family_digest='b'*64,
+        cost_model=policy['costs']['base'], **{key:ref for key in
+            ('dataset_evidence_ref','fold_manifest_ref','pit_proof_ref','environment_ref',
+             'regime_threshold_ref','integration_receipt_ref')})
+    ref = store.put_bytes(canonical_json_bytes(inputs),media_type='application/json')
     body['input_set_ref'] = ref.model_dump(mode='json')
     body['review_ref'] = ref.model_dump(mode='json')
     body.pop('digest')

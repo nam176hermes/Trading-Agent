@@ -615,7 +615,7 @@ def test_v1_bridge_refuses_real_fail_fake_runs_and_rehearsals(committed_exit,fau
 
 
 @pytest.mark.parametrize('fault',[None,'other_run','local_identity','inputs','sql_changed','rejected_head',
-                                   'fake_run','rehearsal'])
+                                   'fake_run','rehearsal','synthetic'])
 def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,fault):
     """Mapping proof only: SQL-authenticated readback is substituted with a PASS outcome."""
     import hashlib
@@ -632,6 +632,14 @@ def test_v1_bridge_maps_an_authenticated_github_pass(committed_exit,monkeypatch,
     run,research=_bridge_lane(input_ref=real.input_ref,source=real.source)
     identity=run.identity if fault!='local_identity' else real.identity
     passed=real.model_copy(update=dict(outcome='PASS',identity=identity))
+    if fault=='synthetic':
+        from tests.p3.test_synthetic_provenance import sealed
+        inputs=_read(store,real.input_ref,InputSet)
+        synthetic=sealed(InputSet,**(inputs.model_dump(mode='json',exclude={'digest'}) |
+            dict(synthetic_generation_ref=real.environment_ref)))
+        synthetic_ref=store.put_bytes(canonical_json_bytes(synthetic),media_type='application/json')
+        passed=passed.model_copy(update=dict(input_ref=synthetic_ref))
+        research.input_ref=synthetic_ref
     monkeypatch.setattr(module,'validate_phase_exit_receipt',lambda *a,**k:passed)
     status='REJECTED' if fault=='rejected_head' else 'QUALIFIED'
     monkeypatch.setattr(module,'read_registry_event',lambda store,ref:SimpleNamespace(record=SimpleNamespace(

@@ -334,6 +334,7 @@ def stage_alpha_campaign_payload(store, authorization, source, workflow_operatio
             now = datetime.now(UTC)
             review=validate_operation_review(authorization,source,operation_input,store,now=now)
             store.read_bytes(review.evidence_ref)
+            require_synthetic_operation_context(authorization,source,operation_input,store,now=now)
             from packages.alpha_lifecycle.operation_input import SelectPrimaryInput
             if isinstance(operation_input.body,SelectPrimaryInput):
                 from packages.alpha_lifecycle.baseline_campaign import _read
@@ -361,3 +362,57 @@ __all__ = [
     "AuthorityHeld", "WORKFLOW_OPERATIONS", "build_alpha_campaign_payload",
     "validate_request", "validate_workflow_operation",
 ]
+
+
+def require_synthetic_operation_context(authorization, source, intent, store, *, now=None):
+    """Return the current typed receipt only for a fully bound synthetic InputSet.
+
+    No cached context or caller-supplied campaign flag is accepted. This function
+    belongs to live parent boundaries, never historical receipt reconstruction.
+    GITHUB receipt and InputSet purpose are checked in both directions. A genuine
+    rehearsal cannot carry market input; legacy recorded-API fixtures remain
+    distinct from genuine synthetic execution. LOCAL market admission is owned
+    by its existing protected graph validator.
+    """
+    from packages.alpha_lifecycle.contracts.data import PITProof
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.github_run import GithubSyntheticInputs
+    from packages.alpha_lifecycle.pit_evidence import _ReadBudget, _reference
+    from packages.alpha_lifecycle.replica_store import _read
+    from packages.alpha_lifecycle.synthetic_data import read_synthetic_commitment_metadata
+    reader = _ReadBudget(store)
+    _reference(intent.input_set_ref, 65536)
+    inputs = _read(reader, intent.input_set_ref, InputSet)
+    if type(authorization) is LocalRunAuthorization and inputs.synthetic_generation_ref is None:
+        return None
+    current = datetime.now(UTC) if now is None else now
+    if (type(authorization) is not RunAuthorization or inputs.source != source
+            or authorization.input_set_ref != intent.input_set_ref
+            or current.tzinfo is None or not authorization.issued_at <= current < authorization.expires_at):
+        raise ValueError('synthetic input requires current GITHUB operation authority for this InputSet')
+    from packages.alpha_lifecycle.github_research import read_github_research_inputs
+    run = _validate_workflow_context(authorization, source,
+        workflow_operation=intent.workflow_operation, admission=False)
+    receipt = read_github_research_inputs(run, source=source, input_set_ref=intent.input_set_ref, now=current)
+    if inputs.synthetic_generation_ref is None:
+        if type(receipt) is GithubSyntheticInputs or (run.mode == 'GITHUB' and receipt.campaign == 'REHEARSAL'):
+            raise ValueError('genuine rehearsal requires a synthetic InputSet and its typed receipt')
+        return None
+    if run.mode != 'GITHUB':
+        raise ValueError('synthetic execution cannot use recorded API authority')
+    if (type(receipt) is not GithubSyntheticInputs
+            or receipt.generation_ref != inputs.synthetic_generation_ref
+            or receipt.environment_ref != inputs.environment_ref
+            or receipt.integration_receipt_ref != inputs.integration_receipt_ref
+            or receipt.policy_digest != inputs.policy_digest):
+        raise ValueError('synthetic operation differs from its same-run reviewed provenance receipt')
+    _reference(inputs.pit_proof_ref, 65536)
+    pit = _read(reader, inputs.pit_proof_ref, PITProof)
+    if (pit.revision_proof_ref != receipt.commitment_ref or pit.dataset_ref != inputs.dataset_evidence_ref
+            or pit.fold_manifest_ref != inputs.fold_manifest_ref
+            or pit.vintage_class != 'SYNTHETIC_REHEARSAL' or pit.historical_vintage_verified):
+        raise ValueError('synthetic operation PIT graph differs from its reviewed commitment')
+    read_synthetic_commitment_metadata(receipt.commitment_ref,
+        generation_ref=receipt.generation_ref, dataset_ref=inputs.dataset_evidence_ref,
+        source=source, policy_digest=inputs.policy_digest, store=reader)
+    return receipt

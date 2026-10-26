@@ -222,7 +222,7 @@ def validate_research_batch_commitment(ref: ArtifactRefV1, *, source: SourceIden
     return commitment
 
 
-def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore) -> P3ResearchBatchCommitment | P3ResearchBatchCommitmentV2 | P3LocalResearchBatchCommitment:
+def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactStore):
     """Resolve the exact structural commitment; producer and reviewer admission is separate."""
     from packages.alpha_lifecycle.contracts.execution import InputSet
     from packages.alpha_lifecycle.contracts.data import PITProof
@@ -238,6 +238,13 @@ def validate_input_commitment(input_set_ref: ArtifactRefV1, *, store: ArtifactSt
         or pit.vintage_class!=dataset.vintage_class or pit.limitations!=dataset.limitations
         or pit.historical_vintage_verified):
         raise ValueError('InputSet PIT proof does not bind the current-archive research dataset')
+    if inputs.synthetic_generation_ref is not None:
+        from packages.alpha_lifecycle.synthetic_data import read_synthetic_commitment_metadata
+        if pit.vintage_class != 'SYNTHETIC_REHEARSAL' or pit.limitations != ('synthetic.rehearsal_only',):
+            raise ValueError('synthetic InputSet purpose cannot admit market evidence')
+        return read_synthetic_commitment_metadata(pit.revision_proof_ref,
+            generation_ref=inputs.synthetic_generation_ref, dataset_ref=inputs.dataset_evidence_ref,
+            source=inputs.source, policy_digest=inputs.policy_digest, store=reader)
     return validate_research_batch_commitment(pit.revision_proof_ref,source=inputs.source,
         policy_digest=inputs.policy_digest,dataset_ref=inputs.dataset_evidence_ref,dataset=dataset,store=reader)
 
