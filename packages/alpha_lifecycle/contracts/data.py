@@ -24,7 +24,16 @@ Vintage = Literal[
     "RETROSPECTIVE_CURRENT_ARCHIVE",
     "HISTORICAL_VINTAGE_VERIFIED",
     "LIVE_OBSERVED_APPEND_ONLY",
+    "SYNTHETIC_REHEARSAL",
 ]
+
+
+def _synthetic_classification(vintage: str, limitations: tuple[str, ...]) -> None:
+    if vintage == 'SYNTHETIC_REHEARSAL':
+        if limitations != ('synthetic.rehearsal_only',):
+            raise ValueError('synthetic evidence requires its exact rehearsal limitation')
+    elif 'synthetic.rehearsal_only' in limitations:
+        raise ValueError('market evidence cannot carry synthetic classification')
 
 
 def _day(value: object) -> date:
@@ -110,6 +119,7 @@ class DatasetEvidence(DigestModel):
 
     @model_validator(mode="after")
     def _row_count(self) -> "DatasetEvidence":
+        _synthetic_classification(self.vintage_class, self.limitations)
         expected = {"HOLDOUT": 365, "BUFFER": 1}.get(self.segment)
         if self.segment == "RESEARCH" and self.usable_rows < 750:
             raise ValueError("research dataset requires at least 750 usable rows")
@@ -176,6 +186,9 @@ class PITProof(DigestModel):
 
     @model_validator(mode="after")
     def _vintage(self) -> "PITProof":
+        _synthetic_classification(self.vintage_class, self.limitations)
+        if self.vintage_class == 'SYNTHETIC_REHEARSAL' and self.historical_vintage_verified:
+            raise ValueError('synthetic evidence cannot claim historical-vintage proof')
         if self.vintage_class == "RETROSPECTIVE_CURRENT_ARCHIVE" and self.historical_vintage_verified:
             raise ValueError("retrospective data cannot claim historical-vintage proof")
         return self

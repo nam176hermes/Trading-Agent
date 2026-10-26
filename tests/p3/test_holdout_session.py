@@ -74,6 +74,11 @@ def session_inputs(reference_seed, tmp_path, monkeypatch, request):
     from services.job_worker.recovery import ProcProcessInspector
     from tests.p3.test_replica_execution import _seal
 
+    # This coordinator fixture injects protected-host custody and historical
+    # calculation data. Current synthetic provenance admission has separate real
+    # staging/profile tests; it is not a qualification claim of this fixture.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *a, **kw: None)
     root, manifest_ref, spec_ref, *_ = reference_seed
     destination = tmp_path/'store'
     shutil.copytree(root, destination)

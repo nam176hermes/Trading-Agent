@@ -87,7 +87,6 @@ class GithubRunAttestation(DigestModel):
 
 class _GithubResearchInputsBody(DigestModel):
     """Reviewed admission of one campaign InputSet for the GITHUB lane."""
-    campaign: Literal['OFFICIAL', 'REHEARSAL']
     source: SourceIdentity
     policy_digest: Sha256
     input_ref: ArtifactRefV1
@@ -107,20 +106,35 @@ class _GithubResearchInputsBody(DigestModel):
 
 class GithubResearchInputs(_GithubResearchInputsBody):
     """v1: REHEARSAL only (an OFFICIAL v1 has no producer provenance)."""
+    campaign: Literal['OFFICIAL', 'REHEARSAL']
     schema_version: Literal['p3-github-research-inputs-v1']
 
 
 class GithubResearchInputsV2(_GithubResearchInputsBody):
     """OFFICIAL admission: also pins the root registry record of the GITHUB research batch."""
+    campaign: Literal['OFFICIAL', 'REHEARSAL']
     schema_version: Literal['p3-github-research-inputs-v2']
     batch_record_sha256: Sha256
 
 
-def parse_github_research_inputs(document) -> GithubResearchInputs | GithubResearchInputsV2:
+class GithubSyntheticInputs(_GithubResearchInputsBody):
+    """A reviewed synthetic campaign in one genuine run, never workflow-produced data."""
+    schema_version: Literal['p3-github-synthetic-inputs-v1']
+    campaign: Literal['REHEARSAL']
+    identity: GithubRunIdentity
+    generation_ref: ArtifactRefV1
+    commitment_ref: ArtifactRefV1
+    provenance: Literal['LOCAL_DETERMINISTIC_GENERATOR_NO_WORKFLOW_PRODUCER']
+
+
+def parse_github_research_inputs(document) -> GithubResearchInputs | GithubResearchInputsV2 | GithubSyntheticInputs:
     """v2 for any campaign; v1 only for REHEARSAL (an OFFICIAL v1 has no producer provenance)."""
     raw = canonical_json_bytes(document)
     declared = document.get('schema_version') if isinstance(document, Mapping) else None
-    model = GithubResearchInputsV2 if declared == 'p3-github-research-inputs-v2' else GithubResearchInputs
+    if not isinstance(declared, str):
+        raise ValueError('research inputs require an explicit schema version')
+    model = {'p3-github-research-inputs-v2': GithubResearchInputsV2,
+             'p3-github-synthetic-inputs-v1': GithubSyntheticInputs}.get(declared, GithubResearchInputs)
     inputs = model.model_validate_json(raw)
     if inputs.campaign == 'OFFICIAL' and not isinstance(inputs, GithubResearchInputsV2):
         raise ValueError('OFFICIAL research inputs require the v2 receipt with a research batch record')
@@ -182,7 +196,7 @@ def require_admissible_mode(run: GithubRunAttestation) -> None:
         inputs = parse_github_research_inputs(document)
     except ValueError as error:
         raise GithubRunHeld('research inputs receipt is invalid') from error
-    if digest != run.research_inputs_sha256 or inputs.campaign != 'REHEARSAL':
+    if digest != run.research_inputs_sha256 or inputs.campaign != 'REHEARSAL' or isinstance(inputs, GithubSyntheticInputs):
         raise GithubRunHeld('recorded-API runs may only use pinned REHEARSAL inputs')
 
 

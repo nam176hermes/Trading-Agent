@@ -41,6 +41,9 @@ def test_register_operation_binds_sealed_family_before_proposing(retained_baseli
 @pytest.mark.parametrize('lane', ['GITHUB','LOCAL'])
 @pytest.mark.parametrize('fault', [None, 'wrong_authorization_scope'])
 def test_register_cli_returns_proposal_without_replica_or_database_access(retained_baseline, tmp_path, monkeypatch, capsys, fault, lane):
+    # Proposal reconstruction is isolated from protected host provenance admission.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     import sys
     from pathlib import Path
     from uuid import UUID

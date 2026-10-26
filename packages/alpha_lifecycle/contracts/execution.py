@@ -36,6 +36,11 @@ class InputSet(DigestModel):
     cost_model: CostModelV1
     regime_threshold_ref: ArtifactRefV1
     integration_receipt_ref: ArtifactRefV1
+    # Explicit structural purpose, retained in every manifest's InputSet hash.
+    # Absent in official artifacts, whose canonical bytes remain unchanged.
+    # A reference alone never admits execution: protected consumers must bind it
+    # to the currently reviewed GITHUB synthetic receipt and run attestation.
+    synthetic_generation_ref: ArtifactRefV1 | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class EvaluationManifest(DigestModel):

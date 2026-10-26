@@ -18,6 +18,9 @@ from tests.p3.test_replica_execution import _seal
 
 
 def test_oos_cli_runs_three_children_and_retains_failed_candidate_proposal(synthetic_oos,tmp_path,monkeypatch,capsys):
+    # Portable numerical children, not current protected provenance qualification.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     from scripts import run_p3_alpha_campaign as command
     store,evaluation,_=synthetic_oos
     manifest=_read(store,evaluation.manifest_ref,EvaluationManifest)

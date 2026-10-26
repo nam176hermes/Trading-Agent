@@ -257,6 +257,8 @@ def read_local_research_inputs(
 
 def validate_local_research_graph(profile, inputs, receipt, store):
     """One compact semantic validator shared by issuer preflight and admission."""
+    if inputs.synthetic_generation_ref is not None:
+        raise ValueError('LOCAL research cannot admit synthetic purpose')
     identity = profile.identity
     policy_digest = inputs.policy_digest
     _read(store, inputs.environment_ref, EnvironmentIdentity)

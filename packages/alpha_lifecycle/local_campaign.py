@@ -25,13 +25,19 @@ from packages.engine_contracts.serialization import canonical_json_bytes
 
 
 def assemble_input_set(*, source, dataset_ref, commitment_ref, pit_suite_ref,
-                       environment_ref, integration_receipt_ref, store):
+                       environment_ref, integration_receipt_ref, store, synthetic_generation_ref=None):
     """Use frozen policy, training-only regimes and existing graph validation."""
     from scripts.generate_p3_specs import _candidate_specs
     policy = json.loads((Path(__file__).resolve().parents[2] /
         'docs/implementation/p3/specs/p3-policy-set-v21.json').read_bytes())
     policy_digest = hashlib.sha256(canonical_json_bytes(policy)).hexdigest()
     dataset = _read(store, dataset_ref, DatasetEvidence)
+    purpose = {}
+    if synthetic_generation_ref is not None:
+        from packages.alpha_lifecycle.synthetic_data import validate_synthetic_commitment
+        validate_synthetic_commitment(commitment_ref, generation_ref=synthetic_generation_ref,
+            dataset_ref=dataset_ref, source=source, policy_digest=policy_digest, store=store)
+        purpose['synthetic_generation_ref'] = synthetic_generation_ref
     if (dataset.segment != 'RESEARCH' or dataset.usable_rows != 2800
         or str(dataset.date_range.start) != '2018-01-01' or str(dataset.date_range.end) != '2025-08-31'):
         raise ValueError('research requires the frozen 2800-day window')
@@ -69,7 +75,7 @@ def assemble_input_set(*, source, dataset_ref, commitment_ref, pit_suite_ref,
         family_digest=hashlib.sha256(canonical_json_bytes(_candidate_specs(policy))).hexdigest(),
         dataset_evidence_ref=dataset_ref, fold_manifest_ref=retain(folds), pit_proof_ref=retain(pit),
         environment_ref=environment_ref, cost_model=policy['costs']['base'],
-        regime_threshold_ref=retain(regime), integration_receipt_ref=integration_receipt_ref), InputSet)
+        regime_threshold_ref=retain(regime), integration_receipt_ref=integration_receipt_ref, **purpose), InputSet)
     result = retain(inputs)
     validate_research_inputs(result, store)
     return result

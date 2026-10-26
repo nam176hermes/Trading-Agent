@@ -144,6 +144,9 @@ def test_baseline_operation_returns_selection_after_three_real_child_runs(isolat
         selection = execute_baseline_manifest(manifest_ref,executor,logical_trial_id='synthetic-baselines',output_root=tmp_path/'runs')
     else:
         from scripts import run_p3_alpha_campaign as command
+        # Portable numerical children; this fixture has no protected host receipt.
+        monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+            lambda *args, **kwargs: None)
         from tests.p3.test_replica_execution import _seal
         intent_ref = _seal(store,schema_version='p3-operation-input-v1',
             workflow_operation='p3-baselines-v1',operation='BASELINES',

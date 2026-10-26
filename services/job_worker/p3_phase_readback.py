@@ -181,6 +181,9 @@ def phase_exit_v1(ref: ArtifactRefV1, *, repository, store, run, research):
     if run.mode != 'GITHUB' or research.campaign != 'OFFICIAL':
         raise ValueError('only an official, API-attested campaign can export a v1 phase receipt')
     receipt=validate_phase_exit_receipt(ref,repository=repository,store=store)
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    if _read(store,receipt.input_ref,InputSet).synthetic_generation_ref is not None:
+        raise ValueError('synthetic provenance cannot be exported as an official v1 receipt')
     if receipt.outcome!='PASS':
         raise ValueError('only a committed PASS has a v1 phase receipt')
     if type(receipt.identity) is not GithubRunIdentity or receipt.identity!=run.identity:

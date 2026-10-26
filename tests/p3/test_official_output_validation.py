@@ -81,6 +81,9 @@ def portable_attempt(tmp_path_factory):
     captured=SimpleNamespace(buffer=io.BytesIO())
     with pytest.MonkeyPatch.context() as patch:
         # Real deterministic children; portable transport intentionally replaces host isolation.
+        # Output custody validation is not protected host provenance qualification.
+        patch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+            lambda *args, **kwargs: None)
         patch.setattr(command,'parent_replica_fence',lambda *,expires_at:lambda:None)
         patch.setattr(sandbox,'require_official_sandbox',lambda path:path)
         patch.setattr(sandbox.BubblewrapExecutor,'_argv',lambda self,request,result,output,seccomp_fd:
@@ -100,7 +103,10 @@ def portable_attempt(tmp_path_factory):
 
 
 @pytest.mark.parametrize('fault',[None,'empty','missing','extra','wrong_replica','invalid_stdout','omit_pack','duplicate','permutation'])
-def test_official_baseline_requires_exact_attempt_output_closure(portable_attempt,tmp_path,fault):
+def test_official_baseline_requires_exact_attempt_output_closure(portable_attempt,tmp_path,fault,monkeypatch):
+    # Parent output reconstruction re-enters admission; the fixture is portable only.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     import hashlib
     import os
     from packages.alpha_lifecycle.contracts.results import BaselineSelection
@@ -199,7 +205,10 @@ def test_official_baseline_requires_exact_attempt_output_closure(portable_attemp
 
 
 @pytest.mark.parametrize('fault',[None,'empty','extra'])
-def test_registration_proposal_is_reconstructed_before_publication(portable_attempt,tmp_path,fault):
+def test_registration_proposal_is_reconstructed_before_publication(portable_attempt,tmp_path,fault,monkeypatch):
+    # Isolate output/publication reconstruction from current protected host provenance.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     import hashlib,json,os
     from packages.alpha_lifecycle.contracts.execution import BaselineManifest
     from packages.alpha_lifecycle.contracts.results import BaselineSelection

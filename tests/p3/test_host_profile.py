@@ -6,6 +6,7 @@ import pytest
 
 from packages.engine_contracts import canonical_json_bytes
 from tests.p3.test_spawn_capability import synthetic_provider
+from packages.alpha_lifecycle.authority import require_synthetic_operation_context as _real_context
 
 
 def test_unprotected_profile_cannot_issue_a_closure(tmp_path):
@@ -24,6 +25,10 @@ def profile_inputs(synthetic_provider,monkeypatch):
     from packages.alpha_lifecycle.contracts.execution import InputSet
     from packages.alpha_lifecycle.operation_input import P3OperationInput
     provider,job,closure=synthetic_provider
+    from packages.alpha_lifecycle import authority
+    # Closure transport fixtures have no dataset/PIT graph. Admission is tested
+    # separately below with the real context function restored.
+    monkeypatch.setattr(authority, 'require_synthetic_operation_context', lambda *a, **kw: None)
     store=provider._store
     intent=P3OperationInput.model_validate_json(store.read_bytes(job.payload.manifest_ref))
     inputs=InputSet.model_validate_json(store.read_bytes(intent.input_set_ref))
@@ -333,3 +338,92 @@ def test_image_descriptor_excludes_run_scoped_mount_identity():
     fields = set(P3RuntimeImageDescriptor.model_fields)
     assert not fields & {'backing_dev', 'backing_ino', 'loop_device', 'mount_nonce',
                          'controller_pid', 'mount_generation', 'boot_id'}
+
+
+@pytest.mark.parametrize('typed', [False, True])
+def test_profile_real_staging_rejects_rehearsal_receipt_with_market_input(profile_inputs, monkeypatch, typed):
+    from packages.alpha_lifecycle import authority
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.alpha_lifecycle.github_run import parse_github_research_inputs
+    from tests.p3.github_lane import _sealed
+    module, provider, job, _, _, context, digest, _ = profile_inputs
+    monkeypatch.setattr(authority, 'require_synthetic_operation_context', _real_context)
+    intent = P3OperationInput.model_validate_json(provider._store.read_bytes(job.payload.manifest_ref))
+    context.admit_inputs(intent.input_set_ref)
+    path = Path('/etc/trading-agent-p3/github/research-inputs.json')
+    if typed:
+        receipt = dict(context.documents[path])
+        receipt.update(schema_version='p3-github-synthetic-inputs-v1',
+            generation_ref=receipt['environment_ref'], commitment_ref=receipt['integration_receipt_ref'],
+            provenance='LOCAL_DETERMINISTIC_GENERATOR_NO_WORKFLOW_PRODUCER',
+            identity=context.documents[context.directory/'github-run.json']['identity'])
+        binding = parse_github_research_inputs(_sealed(receipt)).binding_digest
+        review_path = path.with_name('research-inputs-review.json')
+        review = _sealed({**context.documents[review_path],
+            'subject_digests': [intent.input_set_ref.content_sha256, binding]})
+        receipt['review_ref'] = provider._store.put_bytes(canonical_json_bytes(review),
+            media_type='application/json').model_dump(mode='json')
+        context.documents[path] = _sealed(receipt)
+        context.documents[review_path] = review
+        context.research_inputs_sha256 = hashlib.sha256(canonical_json_bytes(context.documents[path])+b'\n').hexdigest()
+        context.attest(job.payload.logical_trial_id)
+    with pytest.raises(authority.AuthorityHeld, match='REVIEW') as caught:
+        module.read_official_profile(Path('/synthetic/profile.json'), digest(),
+            job_id=job.job_id, payload=job.payload, admission=True)
+    assert 'genuine rehearsal requires a synthetic InputSet' in str(caught.value.__cause__)
+
+
+def test_profile_synthetic_context_is_rechecked_after_successful_staging(profile_inputs, monkeypatch):
+    from packages.alpha_lifecycle import authority, synthetic_data
+    from packages.alpha_lifecycle.contracts.authority import RunAuthorization
+    from packages.alpha_lifecycle.contracts.execution import InputSet
+    from packages.alpha_lifecycle.github_run import parse_github_research_inputs
+    from packages.alpha_lifecycle.operation_input import P3OperationInput
+    from packages.alpha_lifecycle.replica_store import _read
+    from tests.p3.test_baseline_operation import _cli_authorization
+    from tests.p3.test_reference_input import _changed
+    from tests.p3.test_replica_execution import _seal
+    from tests.p3.github_lane import _sealed
+    module, provider, job, closure, document, context, digest, observations = profile_inputs
+    monkeypatch.setattr(authority, 'require_synthetic_operation_context', _real_context)
+    store = provider._store
+    intent = _read(store, job.payload.manifest_ref, P3OperationInput)
+    inputs = _read(store, intent.input_set_ref, InputSet)
+    generation = store.put_bytes(b'{"unit":"generation"}', media_type='application/json')
+    commitment = store.put_bytes(b'{"unit":"commitment"}', media_type='application/json')
+    pit = _seal(store, schema_version='p3-p-i-t-proof-v1', dataset_ref=inputs.dataset_evidence_ref,
+        fold_manifest_ref=inputs.fold_manifest_ref, vintage_class='SYNTHETIC_REHEARSAL',
+        historical_vintage_verified=False, revision_proof_ref=commitment,
+        no_future_suite_ref=generation, limitations=['synthetic.rehearsal_only'])
+    input_ref = store.put_bytes(canonical_json_bytes(_changed(inputs,
+        synthetic_generation_ref=generation, pit_proof_ref=pit)), media_type='application/json')
+    intent_ref = store.put_bytes(canonical_json_bytes(_changed(intent, input_set_ref=input_ref)), media_type='application/json')
+    intent = _read(store, intent_ref, P3OperationInput)
+    auth = _read(store, _cli_authorization(store, intent_ref, closure.source), RunAuthorization)
+    payload = authority.build_alpha_campaign_payload(auth, closure.source, intent.workflow_operation, operation_input=intent)
+    document['payload'] = payload.model_dump(mode='json')
+    context.admit_inputs(input_ref)
+    path = Path('/etc/trading-agent-p3/github/research-inputs.json')
+    receipt = {**context.documents[path], 'schema_version':'p3-github-synthetic-inputs-v1',
+        'generation_ref':generation, 'commitment_ref':commitment,
+        'policy_digest':inputs.policy_digest, 'environment_ref':inputs.environment_ref,
+        'integration_receipt_ref':inputs.integration_receipt_ref,
+        'provenance':'LOCAL_DETERMINISTIC_GENERATOR_NO_WORKFLOW_PRODUCER',
+        'identity':context.documents[context.directory/'github-run.json']['identity']}
+    binding = parse_github_research_inputs(_sealed(receipt)).binding_digest
+    review_path = path.with_name('research-inputs-review.json')
+    review = _sealed({**context.documents[review_path], 'subject_digests':[input_ref.content_sha256, binding]})
+    receipt['review_ref'] = store.put_bytes(canonical_json_bytes(review), media_type='application/json')
+    context.documents[path], context.documents[review_path] = _sealed(receipt), review
+    context.research_inputs_sha256 = hashlib.sha256(canonical_json_bytes(context.documents[path])+b'\n').hexdigest()
+    context.attest(intent.workflow_operation)
+    checks = []
+    # Full generation validation is exercised in test_synthetic_provenance. This
+    # test exercises the real protected files -> host profile -> stage fence.
+    monkeypatch.setattr(synthetic_data, 'read_synthetic_commitment_metadata', lambda *a, **kw: checks.append(kw))
+    module.read_official_profile(Path('/synthetic/profile.json'), digest(), job_id=job.job_id, payload=payload, admission=True)
+    assert len(checks) == len(observations) == 1
+    context.documents.pop(path)
+    with pytest.raises(authority.AuthorityHeld, match='REVIEW'):
+        module.read_official_profile(Path('/synthetic/profile.json'), digest(), job_id=job.job_id, payload=payload, admission=False)
+    assert len(checks) == len(observations) == 1
