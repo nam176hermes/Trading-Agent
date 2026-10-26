@@ -3785,8 +3785,9 @@ def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
     assert reader.process is not None and reader.process.poll() is not None
 
 
+@pytest.mark.parametrize("interrupt_marker_write", [False, True], ids=["streaming", "marker-write-interrupted"])
 def test_controlled_runner_combines_cache_deadline_and_stream_caps(
-    git_fixture: GitFixture, tmp_path: Path
+    git_fixture: GitFixture, tmp_path: Path, interrupt_marker_write: bool
 ) -> None:
     """Break caught: cache bounds disappear or stream activity resets the command deadline/caps."""
     import json
@@ -3807,7 +3808,13 @@ def test_controlled_runner_combines_cache_deadline_and_stream_caps(
         "    end = time.monotonic() + 1.5\n"
         "    count = 0\n"
         "    while time.monotonic() < end:\n"
-        "        count += 1; ticks.write_text(str(count), encoding='ascii')\n"
+        "        count += 1\n"
+        # The timeout may kill the child during any write: publish only complete counts.
+        "        pending = ticks.with_suffix('.pending')\n"
+        "        with pending.open('w', encoding='ascii') as handle:\n"
+        f"            if {interrupt_marker_write!r} and count == 4: time.sleep(1.5)\n"
+        "            handle.write(str(count))\n"
+        "        pending.replace(ticks)\n"
         "        sys.stdout.buffer.write(b'o'); sys.stdout.flush()\n"
         "        sys.stderr.buffer.write(b'e'); sys.stderr.flush(); time.sleep(0.02)\n"
         "elif mode == 'stdout-cap':\n"

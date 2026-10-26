@@ -28,7 +28,10 @@ TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
 )
 # Reviewed M7/M4 fixtures cover real packs and existing fanout; reader assertions remain exact.
-PACK_LAYOUT_TEST_BLOB = "22aa8236048dc3cea333cd773ce23c248423807b"
+HISTORICAL_PACK_LAYOUT_TEST_BLOB = "22aa8236048dc3cea333cd773ce23c248423807b"
+# PR 99: reviewed atomic deadline marker and interrupted-write regression only.
+# Independent review ad94547a-d37c-4cf4-a038-ff17cf44b53c; runner bytes stay pinned below.
+PACK_LAYOUT_TEST_BLOB = "4b28cc5b5ed738b6c0e79766eb893374d17e55a4"
 TASK1_ACCEPTED_PATHS = ("tests/governance/nautilus_pin_inventory/test_source_io.py",)
 OVERLAY_PATH = "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md"
 ACCEPTED_A_PATHS = (
@@ -70,6 +73,10 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
         assert _entry(head, path) == _entry(FIX7_R3, path)
     assert _entry(head, "tests/governance/nautilus_pin_inventory/test_git_source.py") == (
         f"100644 blob {PACK_LAYOUT_TEST_BLOB}\t"
+        "tests/governance/nautilus_pin_inventory/test_git_source.py"
+    )
+    assert _entry("439e280dbb045bb0c4d261f9751ab071a4b62261", "tests/governance/nautilus_pin_inventory/test_git_source.py") == (
+        f"100644 blob {HISTORICAL_PACK_LAYOUT_TEST_BLOB}\t"
         "tests/governance/nautilus_pin_inventory/test_git_source.py"
     )
     for path in TASK1_ACCEPTED_PATHS:
