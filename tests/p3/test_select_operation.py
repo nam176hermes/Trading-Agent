@@ -92,6 +92,9 @@ def selection_run(retained_family,tmp_path_factory):
     before={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in store._root.iterdir()}
     captured=SimpleNamespace(buffer=io.BytesIO())
     with pytest.MonkeyPatch.context() as patch:
+        # Selection reconstruction uses retained synthetic unit-test evidence only.
+        patch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+            lambda *args, **kwargs: None)
         patch.setattr(command,'BubblewrapExecutor',no_execution)
         patch.setattr(sys,'argv',argv)
         patch.setattr(command.sys,'stdout',captured)
@@ -106,7 +109,10 @@ def selection_run(retained_family,tmp_path_factory):
 
 
 @pytest.mark.parametrize('fault',[None,'forged_primary'])
-def test_select_primary_cli_preserves_complete_failed_family(selection_run,tmp_path,fault):
+def test_select_primary_cli_preserves_complete_failed_family(selection_run,tmp_path,fault,monkeypatch):
+    # Parent output reconstruction re-enters admission; this is a portable unit graph.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     store,inputs,family_ref,intent_ref,auth_ref,result,output=selection_run
     family=_read(store,family_ref,FamilyReview)
     # Each validator receives a fresh private copy, including the forged case.

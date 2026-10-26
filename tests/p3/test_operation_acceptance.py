@@ -85,6 +85,10 @@ def test_job_settings_do_not_allow_the_protected_authority_role():
 
 
 def _dispatch_inputs(tmp_path,monkeypatch):
+    # Dispatch credential/envelope isolation uses a deliberately placeholder graph.
+    # Protected provenance admission is covered by the real staging/profile tests.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     from scripts import p3_authority as dispatch
     from services.job_store import p3_operation_authority as authority
     from services.job_worker import p3_integration

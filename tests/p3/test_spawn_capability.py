@@ -9,6 +9,10 @@ from pathlib import Path, PurePosixPath
 
 @pytest.fixture
 def synthetic_provider(tmp_path, monkeypatch):
+    # This fixture isolates descriptor/transport custody, not protected provenance.
+    # Real same-run admission is exercised in test_synthetic_admission/host_profile.
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context',
+        lambda *args, **kwargs: None)
     from services.job_worker import p3_spawn as module
     from packages.alpha_lifecycle.authority import build_alpha_campaign_payload
     from packages.alpha_lifecycle.contracts.authority import RunAuthorization
@@ -82,6 +86,25 @@ def synthetic_provider(tmp_path, monkeypatch):
     provider = module.P3SpawnProvider(attest_closure=lambda:closure,store=store,
         store_root=tmp_path/'store',output_root=output)
     return provider,job,closure
+
+
+def test_provider_provenance_refusal_precedes_descriptor_grant(synthetic_provider, monkeypatch):
+    from packages.alpha_lifecycle.authority import AuthorityHeld
+    from services.job_worker.p3_spawn_interface import P3SpawnError
+    provider, job, _ = synthetic_provider
+    before = set(os.listdir('/proc/self/fd'))
+    calls = []
+    def revoked(*args, **kwargs):
+        calls.append(True)
+        raise AuthorityHeld('test provenance revoked')
+    monkeypatch.setattr('packages.alpha_lifecycle.authority.require_synthetic_operation_context', revoked)
+    with pytest.raises(P3SpawnError) as error:
+        provider.prepare(job)
+    assert calls == [True]
+    assert isinstance(error.value.__cause__, AuthorityHeld)
+    assert str(error.value.__cause__) == 'test provenance revoked'
+    assert set(os.listdir('/proc/self/fd')) == before
+    assert list(provider._output_root.iterdir()) == []
 
 
 def test_forged_p3_capability_cannot_be_consumed():
